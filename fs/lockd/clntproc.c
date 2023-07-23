@@ -649,7 +649,9 @@ nlmclnt_reclaim(struct nlm_host *host, struct file_lock *fl,
 	 * Until someone comes up with a simple implementation
 	 * for b or c, I'll choose option a.
 	 */
-
+	asm("nop");
+	asm("nop");
+	asm("nop");
 	return -ENOLCK;
 }
 
