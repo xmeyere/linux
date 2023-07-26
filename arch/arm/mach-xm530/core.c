@@ -228,7 +228,7 @@ MACHINE_START(XM530, "xm530")
 	.init_irq       = xm530_gic_init_irq,
 	.init_time    	= xm530_timer_init,
 	.init_machine   = xm530_init,
-	//.smp          = smp_ops(xm530_smp_ops),
+	.smp          = smp_ops(xm530_smp_ops),
 	.reserve      = xm530_reserve,
 	.restart      = xm530_restart,
 MACHINE_END
