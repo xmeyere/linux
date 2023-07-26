@@ -3,6 +3,7 @@
 #include <linux/dma-mapping.h>
 #include <linux/platform_device.h>
 #include <linux/interrupt.h>
+#include <linux/device.h>
 #include <linux/amba/bus.h>
 #include <linux/amba/clcd.h>
 #include <linux/clocksource.h>
@@ -24,6 +25,7 @@
 #include <asm/mach/irq.h>
 #include <asm/mach/time.h>
 #include <asm/mach/map.h>
+#include <asm/setup.h>
 
 #include <mach/time.h>
 #include <mach/hardware.h>
@@ -35,6 +37,7 @@
 #include <linux/amba/pl330.h> 
 #include "mach/clock.h" 
 #include "platsmp.h"
+#include <asm/device.h>
 
 #define GPIO0_MULT_USE_EN (GPIO_BASE)
 
@@ -78,14 +81,16 @@ void __iomem *xm530_gic_cpu_base_addr;
 void __init xm530_gic_init_irq(void)
 {
 	edb_trace();
-	xm530_gic_cpu_base_addr = __io_address(CFG_GIC_CPU_BASE);
+	xm530_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
 #ifdef CONFIG_LOCAL_TIMERS
-	gic_init(0, IRQ_LOCALTIMER, __io_address(CFG_GIC_DIST_BASE),
-			__io_address(CFG_GIC_CPU_BASE));
+edb_putstr("using local timer\n");
+	gic_init(0, IRQ_LOCALTIMER, (void*)0xfe301000,
+			(void*)0xfe300100);
 #else
 	gic_init(0, XM530_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE),
 			__io_address(CFG_GIC_CPU_BASE));
 #endif
+		edb_putstr("ixm530_gic_init_irq end\n");
 }
 
 
@@ -116,29 +121,32 @@ void __init xm530_gic_init_irq(void)
 
 XM_AMBA_DEVICE(uart0, "uart:0",  UART0,    NULL);
 XM_AMBA_DEVICE(uart1, "uart:1",  UART1,    NULL);
+XM_AMBA_DEVICE(uart2, "uart:2",  UART2,    NULL);
 //XM_AMBA_DEVICE(uart1, "uart:1",  UART1,    &uart1_plat_data);
 
 static struct amba_device *amba_devs[] __initdata = {
 	&XM_AMBADEV_NAME(uart0),
 	&XM_AMBADEV_NAME(uart1),
+	&XM_AMBADEV_NAME(uart2),
 };
 
 /*
  * These are fixed clocks.
  */
 static struct clk uart_clk = {
-	.rate   = 12000000,
+	.rate   = 24000000,
 };
 static struct clk sp804_clk = { 
-	.rate = 12000000,
+	.rate = 24000000,
 };
 static struct clk dma_clk = { 
-	.rate = 12000000,
+	.rate = 24000000,
 };
 
 //正式芯片为CPU时钟的1/4 或与CPU时钟相等
+//The official chip is 1/4 of the CPU clock or equal to the CPU clock
 static struct clk twd_clk = { 
-	.rate = 150000000,
+	.rate = 60000000,
 };
 
 static struct clk_lookup lookups[] = {
@@ -148,6 +156,10 @@ static struct clk_lookup lookups[] = {
 	},
 	{       /* UART1 */
 		.dev_id         = "uart:1",
+		.clk            = &uart_clk,
+	},
+	{       /* UART2 */
+		.dev_id         = "uart:2",
 		.clk            = &uart_clk,
 	},
 	{ /* SP804 timers */
@@ -177,6 +189,8 @@ static void __init xm530_init_early(void)
 
 	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
 
+	early_print("machine desc size: %d\n", sizeof(struct machine_desc));
+
 }
 
 void __init xm530_init(void)
@@ -184,7 +198,8 @@ void __init xm530_init(void)
 	unsigned long i;
 
 	edb_trace();
-	
+	writel(0x84, (void*)0xfe020050);
+	writel(0x84, (void*)0xfe020054);
 
 	for (i = 0; i < ARRAY_SIZE(amba_devs); i++) {
 		amba_device_register(amba_devs[i], &iomem_resource);
@@ -213,7 +228,7 @@ MACHINE_START(XM530, "xm530")
 	.init_irq       = xm530_gic_init_irq,
 	.init_time    	= xm530_timer_init,
 	.init_machine   = xm530_init,
-	.smp          = smp_ops(xm530_smp_ops),
+	//.smp          = smp_ops(xm530_smp_ops),
 	.reserve      = xm530_reserve,
 	.restart      = xm530_restart,
 MACHINE_END

@@ -21,7 +21,7 @@
 static inline void xm530_scu_power_off(int cpu)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
-	if(cpu != 1)
+	if(cpu == 1)
 	{
 		writel(0XCA11C100, __io_address(SYS_CTRL_BASE + REG_CPU1_SOFT_RST));
 	}
@@ -69,7 +69,7 @@ void set_scu_boot_addr(unsigned int start_addr, unsigned int jump_addr)
 void xm530_scu_power_up(int cpu)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
-	if(cpu != 1)
+	if(cpu == 1)
 	{
 		writel(1, __io_address(SYS_CTRL_BASE + REG_CPU1_SOFT_RST));
 	}

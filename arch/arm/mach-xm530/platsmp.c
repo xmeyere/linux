@@ -36,7 +36,7 @@ static void __cpuinit write_pen_release(int val)
 /*****************************************************************************/
 static void __iomem *scu_base_addr(void)
 {
-	return __io_address(ARM_INTNL_BASE + REG_A5_PERI_SCU);
+	return (void*)0xfe300000;//__io_address(ARM_INTNL_BASE + REG_A5_PERI_SCU);
 }
 
 static int __cpuinit xm530_boot_secondary(unsigned int cpu,

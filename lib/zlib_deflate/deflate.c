@@ -1138,7 +1138,6 @@ static block_state deflate_fast(
         if (bflush) FLUSH_BLOCK(s, 0);
     }
     FLUSH_BLOCK(s, flush == Z_FINISH);
-    asm("nop");
     return flush == Z_FINISH ? finish_done : block_done;
 }
 
