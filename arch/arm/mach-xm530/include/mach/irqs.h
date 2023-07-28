@@ -17,6 +17,6 @@
 #define SDIO0_IRQ		(XM530_GIC_IRQ_START + 41)
 #define SDIO1_IRQ		(XM530_GIC_IRQ_START + 42)
 
-#define NR_IRQS			(XM530_GIC_IRQ_START + 160)
+#define NR_IRQS			(XM530_GIC_IRQ_START + 96)
 
 #endif

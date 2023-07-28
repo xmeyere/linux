@@ -110,7 +110,7 @@ static int __init l2_cache_init(void)
 	writel_relaxed(0, l2x0_virt_base + L2X0_TAG_LATENCY_CTRL);
 	writel_relaxed(0, l2x0_virt_base + L2X0_DATA_LATENCY_CTRL);
 
-	l2x0_init(l2x0_virt_base, 0x00420000, 0xFFB0FFFF);
+	l2x0_init(l2x0_virt_base, 0x430000, 0xffb0ffff);
 
 	return 0;
 }

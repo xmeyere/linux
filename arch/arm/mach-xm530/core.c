@@ -83,14 +83,12 @@ void __init xm530_gic_init_irq(void)
 	edb_trace();
 	xm530_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
 #ifdef CONFIG_LOCAL_TIMERS
-edb_putstr("using local timer\n");
 	gic_init(0, IRQ_LOCALTIMER, (void*)0xfe301000,
 			(void*)0xfe300100);
 #else
 	gic_init(0, XM530_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE),
 			__io_address(CFG_GIC_CPU_BASE));
 #endif
-		edb_putstr("ixm530_gic_init_irq end\n");
 }
 
 
@@ -188,9 +186,6 @@ static void __init xm530_init_early(void)
 	twd_clk.rate = pllclk / ((tmp  & 0xFF) + 1) / (((tmp >> 20) & 0x1) == 0 ? 1 : 4);
 
 	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
-
-	early_print("machine desc size: %d\n", sizeof(struct machine_desc));
-
 }
 
 void __init xm530_init(void)
@@ -228,7 +223,7 @@ MACHINE_START(XM530, "xm530")
 	.init_irq       = xm530_gic_init_irq,
 	.init_time    	= xm530_timer_init,
 	.init_machine   = xm530_init,
-	//.smp          = smp_ops(xm530_smp_ops),
+	.smp          = smp_ops(xm530_smp_ops),
 	.reserve      = xm530_reserve,
 	.restart      = xm530_restart,
 MACHINE_END

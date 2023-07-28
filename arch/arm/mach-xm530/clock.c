@@ -231,14 +231,14 @@ void clk_init(struct clk *c)
 EXPORT_SYMBOL(clk_init);
 
 
-void xm580_get_timestamp(long long *tv)
+void clk_get_pts(long long *tv)
 {
 	struct timespec ts;
 
 	ktime_get_ts(&ts);
 	*tv = 1000000 * ts.tv_sec + (long long)(ts.tv_nsec / 1000);
 }
-EXPORT_SYMBOL(xm580_get_timestamp);
+EXPORT_SYMBOL(clk_get_pts);
 
 void clk_exit(struct clk *c)
 {

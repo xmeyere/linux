@@ -1792,7 +1792,6 @@ static int __init console_setup(char *str)
 	char buf[sizeof(console_cmdline[0].name) + 4]; /* 4 for index */
 	char *s, *options, *brl_options = NULL;
 	int idx;
-	early_print("console_setup called with %s\n", str);
 	if (xminfo.xmuart == 1)
 	{    
 		early_print("warn: uart disabled\n");
@@ -1842,7 +1841,6 @@ static int __init console_setup(char *str)
 			break;
 	idx = simple_strtoul(s, NULL, 10);
 	*s = 0;
-	early_print("adding console %s\n", buf);
 	__add_preferred_console(buf, idx, options, brl_options);
 	console_set_on_cmdline = 1;
 	return 1;

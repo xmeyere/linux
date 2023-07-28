@@ -1,4 +1,4 @@
-obj-y                   := core.o clock.o timer.o
+obj-y                   := core.o clock.o timer.o sata.o
 obj-$(CONFIG_SMP)           += platsmp.o headsmp.o
 obj-$(CONFIG_HOTPLUG_CPU)       += hotplug.o
 obj-$(CONFIG_CACHE_L2X0)        += l2cache.o
