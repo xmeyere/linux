@@ -1,16 +1,16 @@
-if ARCH_XM530
+if ARCH_XM580
 
-menu "xm530 board feature"
+menu "xm580 board feature"
 
-config MACH_XM530
-	bool "Support xm530 platform"
+config MACH_XM580
+	bool "Support xm580 platform"
 	select CPU_V7
 	select ARM_GIC
 	select ARM_TIMER_SP804
 	select PL330
 	select DMA_SHARED_BUFFER
 	help
-	  Includes support for the  xm530 platform.
+	  Includes support for the  xm580 platform.
 
 	  This includes specific configurations for the module and
 	  its peripherals.
@@ -20,6 +20,12 @@ config DEFAULT_BUSCLK
 	default "50000000"
 	help
 	  Default AHB clock rate
+
+config XM580_RTC
+	bool "Add support for XM 580 RTC"
+	default "y"
+	help
+	  Includes support for the xm580 RTC device.
 
 endmenu
 

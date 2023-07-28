@@ -5,7 +5,7 @@
 .endm
 
 .macro  get_irqnr_preamble, base, tmp
-ldr	\base, =xm530_gic_cpu_base_addr
+ldr	\base, =xm580_gic_cpu_base_addr
 ldr	\base, [\base]
 .endm
 

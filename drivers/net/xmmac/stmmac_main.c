@@ -1643,7 +1643,7 @@ static struct platform_driver stmmac_driver = {
 
 
 /* PLATFORM DEVICE */
-struct plat_stmmacenet_data xm550_gmac_platdata = {
+struct plat_stmmacenet_data xm580_gmac_platdata = {
     .bus_id      = 0,  /* MAC挂在哪条总线上面，默认axi为0,需要和phy的bus_id保持一致， --0*/
     .pbl        = 16,
     .clk_csr    = 0,  /* mdio的时钟频率范围， 必须确保在1-2.5M之间，传输时钟为50M，设为--0000（存在一点问题?） */
@@ -1662,7 +1662,7 @@ struct plat_stmmacenet_data xm550_gmac_platdata = {
 
 
 
-static struct resource xm550_gmac_resource[] = {
+static struct resource xm580_gmac_resource[] = {
     [0] = {
         .name  = "gmac_addr",
         .start = GMAC_BASE,
@@ -1677,23 +1677,23 @@ static struct resource xm550_gmac_resource[] = {
     }
 
 };
-static void xm550_gmac_release(struct device *dev)
+static void xm580_gmac_release(struct device *dev)
 {
     return;
 }
-struct platform_device xm550_gmac = { 
+struct platform_device xm580_gmac = { 
     .name             = STMMAC_RESOURCE_NAME,
     .id               = -1, 
-    .num_resources    = ARRAY_SIZE(xm550_gmac_resource),
-    .resource         = xm550_gmac_resource,
+    .num_resources    = ARRAY_SIZE(xm580_gmac_resource),
+    .resource         = xm580_gmac_resource,
     .dev = { 
         .coherent_dma_mask = DMA_BIT_MASK(32), /* 不然dma_alloc_coherent会失败 */
-        .platform_data = &xm550_gmac_platdata,
-        .release = xm550_gmac_release,
+        .platform_data = &xm580_gmac_platdata,
+        .release = xm580_gmac_release,
     }   
 };
 
-struct plat_stmmacphy_data xm550_phy_platdata = {
+struct plat_stmmacphy_data xm580_phy_platdata = {
     0, 
     1,
     0, /* phy_mask */    
@@ -1702,16 +1702,16 @@ struct plat_stmmacphy_data xm550_phy_platdata = {
     NULL                      
 };
 
-static void xm550_phy_release(struct device *dev)
+static void xm580_phy_release(struct device *dev)
 {
     return;
 }
-struct platform_device xm550_phy = { 
+struct platform_device xm580_phy = { 
     .name  = PHY_RESOURCE_NAME,
     .id = -1 ,
     .dev = {
-        .platform_data = &xm550_phy_platdata,
-        .release = xm550_phy_release,
+        .platform_data = &xm580_phy_platdata,
+        .release = xm580_phy_release,
     }
 };
 
@@ -1725,7 +1725,7 @@ static int __init stmmac_init_module(void)
     int ret;
 
     /* first phy,不然在gmac当中探测不到phy */
-    ret = platform_device_register(&xm550_phy);
+    ret = platform_device_register(&xm580_phy);
     if (ret) {
         pr_err("No MAC device registered!\n");
         return -ENODEV;
@@ -1743,7 +1743,7 @@ static int __init stmmac_init_module(void)
         return -ENODEV;
     }
 
-    ret = platform_device_register(&xm550_gmac);
+    ret = platform_device_register(&xm580_gmac);
     if (ret) {
         pr_err("No MAC device registered!\n");
         return -ENODEV;
@@ -1759,9 +1759,9 @@ static int __init stmmac_init_module(void)
 static void __exit stmmac_cleanup_module(void)
 {
     platform_driver_unregister(&stmmacphy_driver);
-    platform_device_unregister(&xm550_phy);
+    platform_device_unregister(&xm580_phy);
     platform_driver_unregister(&stmmac_driver);
-    platform_device_unregister(&xm550_gmac);
+    platform_device_unregister(&xm580_gmac);
 }
 
 #ifndef MODULE

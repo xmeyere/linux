@@ -1,5 +1,5 @@
 config XMMAC_ETH
-	tristate "xm550 10/100/1000 Ethernet driver"
+	tristate "xm580 10/100/1000 Ethernet driver"
 	select MII
 	select PHYLIB
 	select CRC32

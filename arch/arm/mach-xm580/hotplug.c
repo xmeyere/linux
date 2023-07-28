@@ -18,7 +18,7 @@
 
 /*****************************************************************************/
 
-static inline void xm530_scu_power_off(int cpu)
+static inline void xm580_scu_power_off(int cpu)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
 	if(cpu == 1)
@@ -31,10 +31,10 @@ static inline void xm530_scu_power_off(int cpu)
 
 /*****************************************************************************/
 
-void xm530_cpu_die(unsigned int cpu)
+void xm580_cpu_die(unsigned int cpu)
 {
 	flush_cache_all();
-	xm530_scu_power_off(cpu);
+	xm580_scu_power_off(cpu);
 	BUG();
 }
 /*****************************************************************************/
@@ -66,7 +66,7 @@ void set_scu_boot_addr(unsigned int start_addr, unsigned int jump_addr)
 }
 /*****************************************************************************/
 
-void xm530_scu_power_up(int cpu)
+void xm580_scu_power_up(int cpu)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
 	if(cpu == 1)

@@ -8,10 +8,10 @@
 #ifndef __PLATSMP__H__
 #define __PLATSMP__H__
 
-extern struct smp_operations xm530_smp_ops;
+extern struct smp_operations xm580_smp_ops;
 
-void xm530_scu_power_up(int cpu);
-void xm530_secondary_startup(void);
+void xm580_scu_power_up(int cpu);
+void xm580_secondary_startup(void);
 
 #endif
 

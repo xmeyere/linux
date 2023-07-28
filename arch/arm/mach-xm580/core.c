@@ -43,33 +43,33 @@
 
 
 
-static struct map_desc xm530_io_desc[] __initdata = {
+static struct map_desc xm580_io_desc[] __initdata = {
 	{
-		.virtual        = XM530_IOCH1_VIRT,
-		.pfn            = __phys_to_pfn(XM530_IOCH1_PHYS),
-		.length         = XM530_IOCH1_SIZE,
+		.virtual        = XM580_IOCH1_VIRT,
+		.pfn            = __phys_to_pfn(XM580_IOCH1_PHYS),
+		.length         = XM580_IOCH1_SIZE,
 		.type           = MT_DEVICE
 	},
 	{
-		.virtual        = XM530_IOCH2_VIRT,
-		.pfn            = __phys_to_pfn(XM530_IOCH2_PHYS),
-		.length         = XM530_IOCH2_SIZE,
+		.virtual        = XM580_IOCH2_VIRT,
+		.pfn            = __phys_to_pfn(XM580_IOCH2_PHYS),
+		.length         = XM580_IOCH2_SIZE,
 		.type           = MT_DEVICE
 	}
 };
 
 
-void __init xm530_map_io(void)
+void __init xm580_map_io(void)
 {
 	int i;
 
-	iotable_init(xm530_io_desc, ARRAY_SIZE(xm530_io_desc));
+	iotable_init(xm580_io_desc, ARRAY_SIZE(xm580_io_desc));
 
-	for (i = 0; i < ARRAY_SIZE(xm530_io_desc); i++) {
-		edb_putstr(" V: ");     edb_puthex(xm530_io_desc[i].virtual);
-		edb_putstr(" P: ");     edb_puthex(xm530_io_desc[i].pfn);
-		edb_putstr(" S: ");     edb_puthex(xm530_io_desc[i].length);
-		edb_putstr(" T: ");     edb_putul(xm530_io_desc[i].type);
+	for (i = 0; i < ARRAY_SIZE(xm580_io_desc); i++) {
+		edb_putstr(" V: ");     edb_puthex(xm580_io_desc[i].virtual);
+		edb_putstr(" P: ");     edb_puthex(xm580_io_desc[i].pfn);
+		edb_putstr(" S: ");     edb_puthex(xm580_io_desc[i].length);
+		edb_putstr(" T: ");     edb_putul(xm580_io_desc[i].type);
 		edb_putstr("\n");
 	}
 
@@ -77,16 +77,16 @@ void __init xm530_map_io(void)
 }
 
 
-void __iomem *xm530_gic_cpu_base_addr;     
-void __init xm530_gic_init_irq(void)
+void __iomem *xm580_gic_cpu_base_addr;     
+void __init xm580_gic_init_irq(void)
 {
 	edb_trace();
-	xm530_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
+	xm580_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
 #ifdef CONFIG_LOCAL_TIMERS
 	gic_init(0, IRQ_LOCALTIMER, (void*)0xfe301000,
 			(void*)0xfe300100);
 #else
-	gic_init(0, XM530_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE),
+	gic_init(0, XM580_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE),
 			__io_address(CFG_GIC_CPU_BASE));
 #endif
 }
@@ -174,7 +174,7 @@ static struct clk_lookup lookups[] = {
 	},
 };
 
-static void __init xm530_init_early(void)    
+static void __init xm580_init_early(void)    
 {
 	unsigned int tmp;
 	unsigned int pllclk;
@@ -188,7 +188,7 @@ static void __init xm530_init_early(void)
 	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
 }
 
-void __init xm530_init(void)
+void __init xm580_init(void)
 {
 	unsigned long i;
 
@@ -200,30 +200,30 @@ void __init xm530_init(void)
 		amba_device_register(amba_devs[i], &iomem_resource);
 	}
 }
-static void __init xm530_reserve(void)
+static void __init xm580_reserve(void)
 {
 }
-void xm530_restart(char mode, const char *cmd)
+void xm580_restart(char mode, const char *cmd)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
 	writel(0xca110000, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RST));
 }
 
-extern void __init xm530_timer_init(void);
+extern void __init xm580_timer_init(void);
 
 asmlinkage void asmprint(void)
 {
 	edb_trace();
 }
 
-MACHINE_START(XM530, "xm530")
+MACHINE_START(XM580, "xm580")
 	.atag_offset  = 0x100,
-	.map_io         = xm530_map_io,
-	.init_early     = xm530_init_early,
-	.init_irq       = xm530_gic_init_irq,
-	.init_time    	= xm530_timer_init,
-	.init_machine   = xm530_init,
-	.smp          = smp_ops(xm530_smp_ops),
-	.reserve      = xm530_reserve,
-	.restart      = xm530_restart,
+	.map_io         = xm580_map_io,
+	.init_early     = xm580_init_early,
+	.init_irq       = xm580_gic_init_irq,
+	.init_time    	= xm580_timer_init,
+	.init_machine   = xm580_init,
+	.smp          = smp_ops(xm580_smp_ops),
+	.reserve      = xm580_reserve,
+	.restart      = xm580_restart,
 MACHINE_END

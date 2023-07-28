@@ -15,7 +15,7 @@
 #include <mach/dma.h>
 
 
-static u8  xm530_dma_peri[] = {
+static u8  xm580_dma_peri[] = {
 	DMACH_MAX,
 	DMACH_MAX,
 	DMACH_SPI0_TX,
@@ -36,22 +36,22 @@ static u8  xm530_dma_peri[] = {
 	DMACH_MAX,
 };
 
-static struct dma_pl330_platdata xm530_dma_platdata = {
-	.nr_valid_peri = ARRAY_SIZE(xm530_dma_peri),
-	.peri_id = xm530_dma_peri,
+static struct dma_pl330_platdata xm580_dma_platdata = {
+	.nr_valid_peri = ARRAY_SIZE(xm580_dma_peri),
+	.peri_id = xm580_dma_peri,
 };
 
 
-static AMBA_AHB_DEVICE(xm530_dma, "dma-pl330", 0x00041330,
+static AMBA_AHB_DEVICE(xm580_dma, "dma-pl330", 0x00041330,
 	DMAC_BASE, {DMAC_IRQ}, NULL);
 
-static int __init xm530_dmac_init(void)
+static int __init xm580_dmac_init(void)
 {
-	dma_cap_set(DMA_SLAVE, xm530_dma_platdata.cap_mask);
-	dma_cap_set(DMA_CYCLIC, xm530_dma_platdata.cap_mask);
-	xm530_dma_device.dev.platform_data = &xm530_dma_platdata;
-	amba_device_register(&xm530_dma_device, &iomem_resource);
+	dma_cap_set(DMA_SLAVE, xm580_dma_platdata.cap_mask);
+	dma_cap_set(DMA_CYCLIC, xm580_dma_platdata.cap_mask);
+	xm580_dma_device.dev.platform_data = &xm580_dma_platdata;
+	amba_device_register(&xm580_dma_device, &iomem_resource);
 
 	return 0;
 }
-arch_initcall(xm530_dmac_init);
+arch_initcall(xm580_dmac_init);

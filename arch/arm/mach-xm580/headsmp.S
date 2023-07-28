@@ -19,7 +19,7 @@
  * a "holding pen" into which all secondary cores are held until we're
  * ready for them to initialise.
  */
-ENTRY(xm530_secondary_startup)
+ENTRY(xm580_secondary_startup)
 
 	/* set the cpu to SVC32 mode */
 	mrs	r0, cpsr

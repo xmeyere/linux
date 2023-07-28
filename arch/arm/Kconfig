@@ -865,8 +865,8 @@ config ARCH_OMAP1
 	help
 	  Support for older TI OMAP1 (omap7xx, omap15xx or omap16xx)
 
-config ARCH_XM530
-	bool "XM 530"
+config ARCH_XM580
+	bool "XM 580"
 	select ARM_AMBA
 	select HAVE_CLK
 	select CLKDEV_LOOKUP
@@ -886,7 +886,7 @@ config ARCH_XM530
 	select USB_ARCH_HAS_EHCI
 	select USB_ARCH_HAS_XHCI
 	help 
-		This enables support for XM xm530 platform.
+		This enables support for XM xm580 platform.
 
 endchoice
 
@@ -1052,7 +1052,7 @@ source "arch/arm/mach-w90x900/Kconfig"
 
 source "arch/arm/mach-zynq/Kconfig"
 
-source "arch/arm/mach-xm530/Kconfig"
+source "arch/arm/mach-xm580/Kconfig"
 
 # Definitions to make life easier
 config ARCH_ACORN

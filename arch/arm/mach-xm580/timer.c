@@ -167,7 +167,7 @@ static irqreturn_t sp804_timer_isr(int irq, void *dev_id)
 /*****************************************************************************/
 
 /* every should have it's timer irq. */
-static int __cpuinit xm530_local_timer_setup(struct clock_event_device *evt)
+static int __cpuinit xm580_local_timer_setup(struct clock_event_device *evt)
 {
 	unsigned int cpu = smp_processor_id();
 	struct xm_timer_t *timer = GET_SMP_TIMER(cpu);
@@ -194,19 +194,19 @@ static int __cpuinit xm530_local_timer_setup(struct clock_event_device *evt)
 	return 0;
 }
 
-static void xm530_local_timer_stop(struct clock_event_device *evt)
+static void xm580_local_timer_stop(struct clock_event_device *evt)
 {
 	evt->set_mode(CLOCK_EVT_MODE_UNUSED, evt);
 	disable_irq(evt->irq);
 }
 /*****************************************************************************/
 
-static struct local_timer_ops xm530_timer_tick_ops __cpuinitdata = {
-	.setup	= xm530_local_timer_setup,
-	.stop	= xm530_local_timer_stop,
+static struct local_timer_ops xm580_timer_tick_ops __cpuinitdata = {
+	.setup	= xm580_local_timer_setup,
+	.stop	= xm580_local_timer_stop,
 };
 
-static void __init xm530_local_timer_init(void)
+static void __init xm580_local_timer_init(void)
 {
 	unsigned int cpu = 0;
 	unsigned int ncores = num_possible_cpus();
@@ -221,7 +221,7 @@ static void __init xm530_local_timer_init(void)
 		disable_irq(cpu_timer->irq.irq);
 	}
 
-	local_timer_register(&xm530_timer_tick_ops);
+	local_timer_register(&xm580_timer_tick_ops);
 }
 #endif
 
@@ -233,20 +233,20 @@ DEFINE_TWD_LOCAL_TIMER(twd_localtimer, (resource_size_t)(ARM_INTNL_BASE + REG_A5
 
 /*****************************************************************************/
 
-struct xm530_clocksource {
+struct xm580_clocksource {
 	void __iomem *base;
 	struct clocksource clksrc;
 };
 
-static struct xm530_clocksource xm530_clocksource = {0};
+static struct xm580_clocksource xm580_clocksource = {0};
 
-static inline struct xm530_clocksource
-			*to_xm530_clksrc(struct clocksource *cs)
+static inline struct xm580_clocksource
+			*to_xm580_clksrc(struct clocksource *cs)
 {
-	return container_of(cs, struct xm530_clocksource, clksrc);
+	return container_of(cs, struct xm580_clocksource, clksrc);
 }
 
-static void xm530_clocksource_start(void __iomem *base)
+static void xm580_clocksource_start(void __iomem *base)
 {
 	writel(0, IOMEM(base + TIMER_CTRL));
 	writel(0xffffffff, IOMEM(base + TIMER_LOAD));
@@ -255,58 +255,58 @@ static void xm530_clocksource_start(void __iomem *base)
 		IOMEM(base + TIMER_CTRL));
 }
 
-static cycle_t xm530_clocksource_read(struct clocksource *cs)
+static cycle_t xm580_clocksource_read(struct clocksource *cs)
 {
-	return ~readl_relaxed(to_xm530_clksrc(cs)->base + TIMER_VALUE);
+	return ~readl_relaxed(to_xm580_clksrc(cs)->base + TIMER_VALUE);
 }
 
-static notrace u32 xm530_sched_clock_read(void)
+static notrace u32 xm580_sched_clock_read(void)
 {
-	return ~readl_relaxed(xm530_clocksource.base + TIMER_VALUE);
+	return ~readl_relaxed(xm580_clocksource.base + TIMER_VALUE);
 }
 
-static void xm530_clocksource_resume(struct clocksource *cs)
+static void xm580_clocksource_resume(struct clocksource *cs)
 {
-	xm530_clocksource_start(to_xm530_clksrc(cs)->base);
+	xm580_clocksource_start(to_xm580_clksrc(cs)->base);
 }
 
-static void __init xm530_clocksource_init(void __iomem *base,
+static void __init xm580_clocksource_init(void __iomem *base,
 						const char *name)
 {
 	long rate = sp804_get_clock_rate(name);
-	struct clocksource *clksrc = &xm530_clocksource.clksrc;
+	struct clocksource *clksrc = &xm580_clocksource.clksrc;
 
 	if (rate < 0)
 		return;
 
 	clksrc->name   = name;
 	clksrc->rating = 200;
-	clksrc->read   = xm530_clocksource_read;
+	clksrc->read   = xm580_clocksource_read;
 	clksrc->mask   = CLOCKSOURCE_MASK(32),
 	clksrc->flags  = CLOCK_SOURCE_IS_CONTINUOUS,
-	clksrc->resume = xm530_clocksource_resume,
+	clksrc->resume = xm580_clocksource_resume,
 
-	xm530_clocksource.base = base;
+	xm580_clocksource.base = base;
 
-	xm530_clocksource_start(base);
+	xm580_clocksource_start(base);
 
 	clocksource_register_hz(clksrc, rate);
 
-	setup_sched_clock(xm530_sched_clock_read, 32, rate);
+	setup_sched_clock(xm580_sched_clock_read, 32, rate);
 }
 
 
-void __init xm530_timer_init(void)
+void __init xm580_timer_init(void)
 {
 
 	/* set the bus clock for all timer */
 
 #ifdef CONFIG_LOCAL_TIMERS
-	//xm530_local_timer_init();
+	//xm580_local_timer_init();
 	twd_local_timer_register(&twd_localtimer);
 #endif
 
-	xm530_clocksource_init((void *)TIMER(0)->addr,
+	xm580_clocksource_init((void *)TIMER(0)->addr,
 		TIMER(0)->name);
 
 	sp804_clockevents_init((void *)TIMER(1)->addr,

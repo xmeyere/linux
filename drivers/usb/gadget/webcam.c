@@ -52,7 +52,7 @@ USB_GADGET_COMPOSITE_OPTIONS();
 
 
 static char webcam_vendor_label[] = "HZXM";
-static char webcam_product_label[] = "XM530";
+static char webcam_product_label[] = "XM580";
 static char webcam_config_label[] = "Video";
 
 /* string IDs are assigned dynamically */

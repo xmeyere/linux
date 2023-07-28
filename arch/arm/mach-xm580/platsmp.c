@@ -39,14 +39,14 @@ static void __iomem *scu_base_addr(void)
 	return (void*)0xfe300000;//__io_address(ARM_INTNL_BASE + REG_A5_PERI_SCU);
 }
 
-static int __cpuinit xm530_boot_secondary(unsigned int cpu,
+static int __cpuinit xm580_boot_secondary(unsigned int cpu,
 					struct task_struct *idle)
 {
 	unsigned long timeout;
 	
 
 	set_scu_boot_addr(0x00000000,
-			(unsigned int)virt_to_phys(xm530_secondary_startup));
+			(unsigned int)virt_to_phys(xm580_secondary_startup));
 
 	/*
 	 * set synchronisation state between this boot processor
@@ -54,7 +54,7 @@ static int __cpuinit xm530_boot_secondary(unsigned int cpu,
 	 */
 	spin_lock(&boot_lock);
 
-	xm530_scu_power_up(cpu);
+	xm580_scu_power_up(cpu);
 
 	/*
 	 * The secondary processor is waiting to be released from
@@ -96,7 +96,7 @@ static int __cpuinit xm530_boot_secondary(unsigned int cpu,
 }
 /*****************************************************************************/
 
-static void __cpuinit xm530_secondary_init(unsigned int cpu)
+static void __cpuinit xm580_secondary_init(unsigned int cpu)
 {
 	/*
 	 * 1. enable L1 prefetch                       [2]
@@ -131,7 +131,7 @@ static void __cpuinit xm530_secondary_init(unsigned int cpu)
 }
 /*****************************************************************************/
 
-static void __init xm530_smp_init_cpus(void)
+static void __init xm580_smp_init_cpus(void)
 {
 	void __iomem *scu_base = scu_base_addr();
 	unsigned int i, ncores;
@@ -152,18 +152,18 @@ static void __init xm530_smp_init_cpus(void)
 }
 /*****************************************************************************/
 
-static void __init xm530_smp_prepare_cpus(unsigned int max_cpus)
+static void __init xm580_smp_prepare_cpus(unsigned int max_cpus)
 {
 	scu_enable(scu_base_addr());
 }
 /*****************************************************************************/
 
-struct smp_operations xm530_smp_ops __initdata = {
-	.smp_init_cpus = xm530_smp_init_cpus,
-	.smp_prepare_cpus = xm530_smp_prepare_cpus,
-	.smp_secondary_init = xm530_secondary_init,
-	.smp_boot_secondary = xm530_boot_secondary,
+struct smp_operations xm580_smp_ops __initdata = {
+	.smp_init_cpus = xm580_smp_init_cpus,
+	.smp_prepare_cpus = xm580_smp_prepare_cpus,
+	.smp_secondary_init = xm580_secondary_init,
+	.smp_boot_secondary = xm580_boot_secondary,
 #ifdef CONFIG_HOTPLUG_CPU
-	.cpu_die = xm530_cpu_die,
+	.cpu_die = xm580_cpu_die,
 #endif
 };
