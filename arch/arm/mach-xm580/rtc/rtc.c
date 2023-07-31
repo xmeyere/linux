@@ -105,24 +105,24 @@ static long rtc_ioctl(struct file *file,uint cmd_in,unsigned long arg)
     u64 rtctimeraw;
     unsigned long time;
     struct rtc_time time_struct;
-    uint* ptr;
     if (cmd_in == RTC_SET_TIME)
     {
         printk("RTC_SET_TIME is 0x%X!\n", cmd_in);
         if (copy_from_user(&time_struct, (void __user *)arg, sizeof(time_struct)))
 			return -EFAULT;
         rtc_tm_to_time(&time_struct, &time);
-        mutex_lock(&g_rtc_lock);
         rtctimeraw = (u64)time << 15;
-        ptr = ((uint*)(void*)&rtctimeraw);
-        printk("setting time to %d with raw value %d. ptr[0]: %d ptr[1]: %d\n", time, rtctimeraw, ptr[0],ptr[1]);
-        writel(rtctimeraw&0xFFFFFFFF, (void*)0xfe0a0084);
-        writel(((rtctimeraw >> 32)&0xFFFFFFFF), (void*)0xfe0a0088);
+
+        mutex_lock(&g_rtc_lock);
+
+        writel(rtctimeraw & 0xFFFFFFFF, (void*)0xfe0a0084);
+        writel(((rtctimeraw >> 32) & 0xFFFFFFFF), (void*)0xfe0a0088);
 
         writel(1, (void*)0xfe0a0080);
         //wait for the write to complete
         while((readl((void*)0xfe0a0094) & 1) == 0) {}
         mutex_unlock(&g_rtc_lock);
+        
         return 0;
     }
     if (cmd_in == RTC_RD_TIME)
