@@ -29,7 +29,7 @@ static struct miscdevice xm_rtc_dev = {
 };
 
 static struct timer_list g_timer;
-static u64 last_tick;
+//static u64 last_tick;
 
 static u64 rtc_get(void)
 {

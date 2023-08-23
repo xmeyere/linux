@@ -202,7 +202,7 @@ void __init xm580_init(void)
 static void __init xm580_reserve(void)
 {
 }
-void xm580_restart(char mode, const char *cmd)
+void xm580_restart(enum reboot_mode mode, const char *cmd)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
 	writel(0xca110000, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RST));
