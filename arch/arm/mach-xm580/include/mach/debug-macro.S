@@ -5,4 +5,4 @@
 	ldr	\rv, =(UART0_BASE + IO_IOCH1_OFFSET)
 	.endm
 
-#include <asm/hardware/debug-pl01x.S>
+#include <debug/pl01x.S>

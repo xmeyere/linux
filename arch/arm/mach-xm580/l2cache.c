@@ -103,12 +103,12 @@ static int __init l2_cache_init(void)
 	 * [20:5]  0 : SBZ
 	 * [4:0]   0 : use the Prefetch offset values 0.
 	 */
-	writel_relaxed(0x71000000, l2x0_virt_base + L2X0_PREFETCH_CTRL);
+	writel_relaxed(0x71000000, l2x0_virt_base + L310_PREFETCH_CTRL);
 
 	
 	//FPGA 配置0  正式芯片不用配置默认值777
-	writel_relaxed(0, l2x0_virt_base + L2X0_TAG_LATENCY_CTRL);
-	writel_relaxed(0, l2x0_virt_base + L2X0_DATA_LATENCY_CTRL);
+	writel_relaxed(0, l2x0_virt_base + L310_TAG_LATENCY_CTRL);
+	writel_relaxed(0, l2x0_virt_base + L310_DATA_LATENCY_CTRL);
 
 	l2x0_init(l2x0_virt_base, 0x430000, 0xffb0ffff);
 

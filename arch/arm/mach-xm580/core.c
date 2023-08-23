@@ -11,9 +11,9 @@
 #include <linux/cnt32_to_63.h>
 #include <linux/io.h>
 #include <linux/clkdev.h>
-#include <asm/sched_clock.h>
+//#include <asm/sched_clock.h>
 
-#include <asm/system.h>
+//#include <asm/system.h>
 #include <asm/irq.h>
 #include <linux/leds.h>
 #include <asm/hardware/arm_timer.h>

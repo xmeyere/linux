@@ -16,14 +16,14 @@
 #include <linux/delay.h>
 #include <linux/percpu.h>
 
-#include <asm/localtimer.h>
+//#include <asm/localtimer.h>
 
 #include <mach/hardware.h>
 #include <mach/platform.h>
 #include <mach/irqs.h>
 #include <asm/hardware/timer-sp.h>
 #include <asm/mach/time.h>
-#include <asm/sched_clock.h>
+#include <linux/sched_clock.h>
 #include <asm/hardware/arm_timer.h>
 #include <asm/smp_twd.h>
 
@@ -260,7 +260,7 @@ static cycle_t xm580_clocksource_read(struct clocksource *cs)
 	return ~readl_relaxed(to_xm580_clksrc(cs)->base + TIMER_VALUE);
 }
 
-static notrace u32 xm580_sched_clock_read(void)
+static notrace u64 xm580_sched_clock_read(void)
 {
 	return ~readl_relaxed(xm580_clocksource.base + TIMER_VALUE);
 }
@@ -292,7 +292,7 @@ static void __init xm580_clocksource_init(void __iomem *base,
 
 	clocksource_register_hz(clksrc, rate);
 
-	setup_sched_clock(xm580_sched_clock_read, 32, rate);
+	sched_clock_register(xm580_sched_clock_read, 32, rate);
 }
 
 
