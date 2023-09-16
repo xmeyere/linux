@@ -291,7 +291,7 @@ static void __init xm580_clocksource_init(void __iomem *base,
 	xm580_clocksource_start(base);
 
 	clocksource_register_hz(clksrc, rate);
-
+	printk("intitializing xm580 clock...");
 	sched_clock_register(xm580_sched_clock_read, 32, rate);
 }
 

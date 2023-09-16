@@ -27,6 +27,18 @@ config XM580_RTC
 	help
 	  Includes support for the xm580 RTC device.
 
+config XM580_VO
+	bool "Add support for XM 580 Video Output"
+	default "y"
+	help
+	  Includes support for the xm580 VO device.
+
+config XM580_AUDIO
+	bool "Add support for XM 580 Audio Output"
+	default "y"
+	help
+	  Includes support for the xm580 Audio device.
+
 endmenu
 
 endif

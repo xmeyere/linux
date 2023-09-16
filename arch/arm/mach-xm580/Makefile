@@ -4,3 +4,7 @@ obj-$(CONFIG_HOTPLUG_CPU)       += hotplug.o
 obj-$(CONFIG_CACHE_L2X0)        += l2cache.o
 obj-$(CONFIG_DMA_ENGINE) += dma.o
 obj-$(CONFIG_XM580_RTC) += rtc/
+obj-$(CONFIG_XM580_AUDIO) += i2s/
+obj-$(CONFIG_XM580_AUDIO) += acodec/
+obj-$(CONFIG_XM580_VO) += vo/
+obj-y += usb.o
