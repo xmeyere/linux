@@ -145,6 +145,26 @@ config MACVTAP
 	  To compile this driver as a module, choose M here: the module
 	  will be called macvtap.
 
+
+config IPVLAN
+    tristate "IP-VLAN support"
+    depends on INET
+    depends on IPV6
+    ---help---
+      This allows one to create virtual devices off of a main interface
+      and packets will be delivered based on the dest L3 (IPv6/IPv4 addr)
+      on packets. All interfaces (including the main interface) share L2
+      making it transparent to the connected L2 switch.
+
+      Ipvlan devices can be added using the "ip" command from the
+      iproute2 package starting with the iproute2-X.Y.ZZ release:
+
+      "ip link add link <main-dev> [ NAME ] type ipvlan"
+
+      To compile this driver as a module, choose M here: the module
+      will be called ipvlan.
+
+
 config VXLAN
        tristate "Virtual eXtensible Local Area Network (VXLAN)"
        depends on INET
@@ -359,37 +379,5 @@ config VMXNET3
 	  module will be called vmxnet3.
 
 source "drivers/net/hyperv/Kconfig"
-
-#-------------------------------------
-
-
-#
-#	Gigabit Ethernet
-#
-
-menuconfig NETDEV_1000
-	bool "Ethernet (1000 Mbit)"
-	depends on !UML
-	default y
-	---help---
-	  Ethernet (also called IEEE 802.3 or ISO 8802-2) is the most common
-	  type of Local Area Network (LAN) in universities and companies.
-
-	  Say Y here to get to see options for Gigabit Ethernet drivers.
-	  This option alone does not add any kernel code.
-	  Note that drivers supporting both 100 and 1000 MBit may be listed
-	  under "Ethernet (10 or 100MBit)" instead.
-
-	  If you say N, all options in this submenu will be skipped and disabled.
-
-if NETDEV_1000
-
-	source "drivers/net/xmmac/Kconfig"
-
-endif
-
-#------------------------------------
-
-
 
 endif # NETDEVICES

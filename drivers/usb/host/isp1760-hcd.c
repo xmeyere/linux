@@ -1739,7 +1739,7 @@ static int isp1760_hub_status_data(struct usb_hcd *hcd, char *buf)
 	int retval = 1;
 	unsigned long flags;
 
-	/* if !PM_RUNTIME, root hub timers won't get shut down ... */
+	/* if !PM, root hub timers won't get shut down ... */
 	if (!HC_IS_RUNNING(hcd->state))
 		return 0;
 
@@ -2246,6 +2246,9 @@ struct usb_hcd *isp1760_register(phys_addr_t res_start, resource_size_t res_len,
 	hcd->irq = irq;
 	hcd->rsrc_start = res_start;
 	hcd->rsrc_len = res_len;
+
+	/* This driver doesn't support wakeup requests */
+	hcd->cant_recv_wakeups = 1;
 
 	ret = usb_add_hcd(hcd, irq, irqflags);
 	if (ret)

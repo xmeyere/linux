@@ -978,6 +978,7 @@ static int omap_dma_terminate_all(struct omap_chan *c)
 	 * c->desc is NULL and exit.)
 	 */
 	if (c->desc) {
+		omap_dma_desc_free(&c->desc->vd);
 		c->desc = NULL;
 		/* Avoid stopping the dma twice */
 		if (!c->paused)
@@ -1073,8 +1074,6 @@ static int omap_dma_chan_init(struct omap_dmadev *od, int dma_sig)
 	c->vc.desc_free = omap_dma_desc_free;
 	vchan_init(&c->vc, &od->ddev);
 	INIT_LIST_HEAD(&c->node);
-
-	od->ddev.chancnt++;
 
 	return 0;
 }
@@ -1233,7 +1232,6 @@ static struct platform_driver omap_dma_driver = {
 	.remove	= omap_dma_remove,
 	.driver = {
 		.name = "omap-dma-engine",
-		.owner = THIS_MODULE,
 		.of_match_table = of_match_ptr(omap_dma_match),
 	},
 };

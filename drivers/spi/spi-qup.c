@@ -489,7 +489,7 @@ static int spi_qup_probe(struct platform_device *pdev)
 	struct resource *res;
 	struct device *dev;
 	void __iomem *base;
-	u32 max_freq, iomode;
+	u32 max_freq, iomode, num_cs;
 	int ret, irq, size;
 
 	dev = &pdev->dev;
@@ -541,10 +541,11 @@ static int spi_qup_probe(struct platform_device *pdev)
 	}
 
 	/* use num-cs unless not present or out of range */
-	if (of_property_read_u16(dev->of_node, "num-cs",
-			&master->num_chipselect) ||
-			(master->num_chipselect > SPI_NUM_CHIPSELECTS))
+	if (of_property_read_u32(dev->of_node, "num-cs", &num_cs) ||
+	    num_cs > SPI_NUM_CHIPSELECTS)
 		master->num_chipselect = SPI_NUM_CHIPSELECTS;
+	else
+		master->num_chipselect = num_cs;
 
 	master->bus_num = pdev->id;
 	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_CS_HIGH | SPI_LOOP;
@@ -646,7 +647,7 @@ error:
 	return ret;
 }
 
-#ifdef CONFIG_PM_RUNTIME
+#ifdef CONFIG_PM
 static int spi_qup_pm_suspend_runtime(struct device *device)
 {
 	struct spi_master *master = dev_get_drvdata(device);
@@ -672,7 +673,7 @@ static int spi_qup_pm_resume_runtime(struct device *device)
 	writel_relaxed(config, controller->base + QUP_CONFIG);
 	return 0;
 }
-#endif /* CONFIG_PM_RUNTIME */
+#endif /* CONFIG_PM */
 
 #ifdef CONFIG_PM_SLEEP
 static int spi_qup_suspend(struct device *device)
@@ -756,7 +757,6 @@ static const struct dev_pm_ops spi_qup_dev_pm_ops = {
 static struct platform_driver spi_qup_driver = {
 	.driver = {
 		.name		= "spi_qup",
-		.owner		= THIS_MODULE,
 		.pm		= &spi_qup_dev_pm_ops,
 		.of_match_table = spi_qup_dt_match,
 	},

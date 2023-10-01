@@ -417,8 +417,10 @@ static int lp8788_psy_register(struct platform_device *pdev,
 	pchg->battery.num_properties = ARRAY_SIZE(lp8788_battery_prop);
 	pchg->battery.get_property = lp8788_battery_get_property;
 
-	if (power_supply_register(&pdev->dev, &pchg->battery))
+	if (power_supply_register(&pdev->dev, &pchg->battery)) {
+		power_supply_unregister(&pchg->charger);
 		return -EPERM;
+	}
 
 	return 0;
 }
@@ -740,7 +742,6 @@ static struct platform_driver lp8788_charger_driver = {
 	.remove = lp8788_charger_remove,
 	.driver = {
 		.name = LP8788_DEV_CHARGER,
-		.owner = THIS_MODULE,
 	},
 };
 module_platform_driver(lp8788_charger_driver);

@@ -78,8 +78,11 @@ struct tc_u_hnode {
 	struct tc_u_common	*tp_c;
 	int			refcnt;
 	unsigned int		divisor;
-	struct tc_u_knode __rcu	*ht[1];
 	struct rcu_head		rcu;
+	/* The 'ht' field MUST be the last field in structure to allow for
+	 * more entries allocated at end of structure.
+	 */
+	struct tc_u_knode __rcu	*ht[1];
 };
 
 struct tc_u_common {
@@ -297,10 +300,6 @@ static unsigned long u32_get(struct tcf_proto *tp, u32 handle)
 		return (unsigned long)ht;
 
 	return (unsigned long)u32_lookup_key(ht, handle);
-}
-
-static void u32_put(struct tcf_proto *tp, unsigned long f)
-{
 }
 
 static u32 gen_new_htid(struct tc_u_common *tp_c)
@@ -1021,7 +1020,6 @@ static struct tcf_proto_ops cls_u32_ops __read_mostly = {
 	.init		=	u32_init,
 	.destroy	=	u32_destroy,
 	.get		=	u32_get,
-	.put		=	u32_put,
 	.change		=	u32_change,
 	.delete		=	u32_delete,
 	.walk		=	u32_walk,

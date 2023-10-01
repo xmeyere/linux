@@ -1179,6 +1179,7 @@ static int sh_veu_probe(struct platform_device *pdev)
 	}
 
 	*vdev = sh_veu_videodev;
+	vdev->v4l2_dev = &veu->v4l2_dev;
 	spin_lock_init(&veu->lock);
 	mutex_init(&veu->fop_lock);
 	vdev->lock = &veu->fop_lock;
@@ -1235,7 +1236,6 @@ static struct platform_driver __refdata sh_veu_pdrv = {
 	.remove		= sh_veu_remove,
 	.driver		= {
 		.name	= "sh_veu",
-		.owner	= THIS_MODULE,
 	},
 };
 

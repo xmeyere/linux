@@ -344,15 +344,17 @@ static void lme2510_int_response(struct urb *lme_urb)
 
 	usb_submit_urb(lme_urb, GFP_ATOMIC);
 
-	/* interrupt urb is due every 48 msecs while streaming
-	 *	add 12msecs for system lag */
-	st->int_urb_due = jiffies + msecs_to_jiffies(60);
+	/* Interrupt urb is due every 48 msecs while streaming the buffer
+	 * stores up to 4 periods if missed. Allow 200 msec for next interrupt.
+	 */
+	st->int_urb_due = jiffies + msecs_to_jiffies(200);
 }
 
 static int lme2510_int_read(struct dvb_usb_adapter *adap)
 {
 	struct dvb_usb_device *d = adap_to_d(adap);
 	struct lme2510_state *lme_int = adap_to_priv(adap);
+	struct usb_host_endpoint *ep;
 
 	lme_int->lme_urb = usb_alloc_urb(0, GFP_ATOMIC);
 
@@ -373,6 +375,12 @@ static int lme2510_int_read(struct dvb_usb_adapter *adap)
 				lme2510_int_response,
 				adap,
 				8);
+
+	/* Quirk of pipe reporting PIPE_BULK but behaves as interrupt */
+	ep = usb_pipe_endpoint(d->udev, lme_int->lme_urb->pipe);
+
+	if (usb_endpoint_type(&ep->desc) == USB_ENDPOINT_XFER_BULK)
+		lme_int->lme_urb->pipe = usb_rcvbulkpipe(d->udev, 0xa),
 
 	lme_int->lme_urb->transfer_flags |= URB_NO_TRANSFER_DMA_MAP;
 
@@ -817,20 +825,22 @@ static const char *lme_firmware_switch(struct dvb_usb_device *d, int cold)
 	case 0x1122:
 		switch (st->dvb_usb_lme2510_firmware) {
 		default:
-			st->dvb_usb_lme2510_firmware = TUNER_S0194;
 		case TUNER_S0194:
 			fw_lme = fw_s0194;
 			ret = request_firmware(&fw, fw_lme, &udev->dev);
 			if (ret == 0) {
+				st->dvb_usb_lme2510_firmware = TUNER_S0194;
 				cold = 0;
 				break;
 			}
-			st->dvb_usb_lme2510_firmware = TUNER_LG;
+			/* fall through */
 		case TUNER_LG:
 			fw_lme = fw_lg;
 			ret = request_firmware(&fw, fw_lme, &udev->dev);
-			if (ret == 0)
+			if (ret == 0) {
+				st->dvb_usb_lme2510_firmware = TUNER_LG;
 				break;
+			}
 			st->dvb_usb_lme2510_firmware = TUNER_DEFAULT;
 			break;
 		}
@@ -838,26 +848,30 @@ static const char *lme_firmware_switch(struct dvb_usb_device *d, int cold)
 	case 0x1120:
 		switch (st->dvb_usb_lme2510_firmware) {
 		default:
-			st->dvb_usb_lme2510_firmware = TUNER_S7395;
 		case TUNER_S7395:
 			fw_lme = fw_c_s7395;
 			ret = request_firmware(&fw, fw_lme, &udev->dev);
 			if (ret == 0) {
+				st->dvb_usb_lme2510_firmware = TUNER_S7395;
 				cold = 0;
 				break;
 			}
-			st->dvb_usb_lme2510_firmware = TUNER_LG;
+			/* fall through */
 		case TUNER_LG:
 			fw_lme = fw_c_lg;
 			ret = request_firmware(&fw, fw_lme, &udev->dev);
-			if (ret == 0)
+			if (ret == 0) {
+				st->dvb_usb_lme2510_firmware = TUNER_LG;
 				break;
-			st->dvb_usb_lme2510_firmware = TUNER_S0194;
+			}
+			/* fall through */
 		case TUNER_S0194:
 			fw_lme = fw_c_s0194;
 			ret = request_firmware(&fw, fw_lme, &udev->dev);
-			if (ret == 0)
+			if (ret == 0) {
+				st->dvb_usb_lme2510_firmware = TUNER_S0194;
 				break;
+			}
 			st->dvb_usb_lme2510_firmware = TUNER_DEFAULT;
 			cold = 0;
 			break;

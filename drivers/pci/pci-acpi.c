@@ -248,6 +248,9 @@ int pci_get_hp_params(struct pci_dev *dev, struct hotplug_params *hpp)
 	acpi_handle handle, phandle;
 	struct pci_bus *pbus;
 
+	if (acpi_pci_disabled)
+		return -ENODEV;
+
 	handle = NULL;
 	for (pbus = dev->bus; pbus; pbus = pbus->parent) {
 		handle = acpi_pci_get_bridge_handle(pbus);
@@ -322,8 +325,7 @@ static void pci_acpi_wake_dev(struct work_struct *work)
 	pci_wakeup_event(pci_dev);
 	pm_runtime_resume(&pci_dev->dev);
 
-	if (pci_dev->subordinate)
-		pci_pme_wakeup_bus(pci_dev->subordinate);
+	pci_pme_wakeup_bus(pci_dev->subordinate);
 }
 
 /**

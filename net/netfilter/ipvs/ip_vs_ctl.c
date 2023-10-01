@@ -465,8 +465,7 @@ __ip_vs_bind_svc(struct ip_vs_dest *dest, struct ip_vs_service *svc)
 
 static void ip_vs_service_free(struct ip_vs_service *svc)
 {
-	if (svc->stats.cpustats)
-		free_percpu(svc->stats.cpustats);
+	free_percpu(svc->stats.cpustats);
 	kfree(svc);
 }
 
@@ -3400,7 +3399,7 @@ static int ip_vs_genl_set_cmd(struct sk_buff *skb, struct genl_info *info)
 		if (udest.af == 0)
 			udest.af = svc->af;
 
-		if (udest.af != svc->af) {
+		if (udest.af != svc->af && cmd != IPVS_CMD_DEL_DEST) {
 			/* The synchronization protocol is incompatible
 			 * with mixed family services
 			 */

@@ -514,8 +514,8 @@ static struct freq_tbl clk_tbl_gsbi_qup[] = {
 	{ 10800000, P_PXO,  1, 2,  5 },
 	{ 15060000, P_PLL8, 1, 2, 51 },
 	{ 24000000, P_PLL8, 4, 1,  4 },
+	{ 25000000, P_PXO,  1, 0,  0 },
 	{ 25600000, P_PLL8, 1, 1, 15 },
-	{ 27000000, P_PXO,  1, 0,  0 },
 	{ 48000000, P_PLL8, 4, 1,  2 },
 	{ 51200000, P_PLL8, 1, 2, 15 },
 	{ }
@@ -2431,7 +2431,6 @@ static struct platform_driver gcc_ipq806x_driver = {
 	.remove		= gcc_ipq806x_remove,
 	.driver		= {
 		.name	= "gcc-ipq806x",
-		.owner	= THIS_MODULE,
 		.of_match_table = gcc_ipq806x_match_table,
 	},
 };

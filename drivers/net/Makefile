@@ -6,6 +6,7 @@
 # Networking Core Drivers
 #
 obj-$(CONFIG_BONDING) += bonding/
+obj-$(CONFIG_IPVLAN) += ipvlan/
 obj-$(CONFIG_DUMMY) += dummy.o
 obj-$(CONFIG_EQUALIZER) += eql.o
 obj-$(CONFIG_IFB) += ifb.o
@@ -65,4 +66,3 @@ obj-$(CONFIG_USB_NET_DRIVERS) += usb/
 
 obj-$(CONFIG_HYPERV_NET) += hyperv/
 obj-$(CONFIG_NTB_NETDEV) += ntb_netdev.o
-obj-$(CONFIG_XMMAC_ETH) += xmmac/

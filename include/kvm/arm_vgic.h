@@ -113,6 +113,7 @@ struct vgic_ops {
 	void	(*sync_lr_elrsr)(struct kvm_vcpu *, int, struct vgic_lr);
 	u64	(*get_elrsr)(const struct kvm_vcpu *vcpu);
 	u64	(*get_eisr)(const struct kvm_vcpu *vcpu);
+	void	(*clear_eisr)(struct kvm_vcpu *vcpu);
 	u32	(*get_interrupt_status)(const struct kvm_vcpu *vcpu);
 	void	(*enable_underflow)(struct kvm_vcpu *vcpu);
 	void	(*disable_underflow)(struct kvm_vcpu *vcpu);
@@ -274,7 +275,7 @@ struct kvm_exit_mmio;
 #ifdef CONFIG_KVM_ARM_VGIC
 int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, bool write);
 int kvm_vgic_hyp_init(void);
-int kvm_vgic_init(struct kvm *kvm);
+int kvm_vgic_map_resources(struct kvm *kvm);
 int kvm_vgic_create(struct kvm *kvm);
 void kvm_vgic_destroy(struct kvm *kvm);
 void kvm_vgic_vcpu_destroy(struct kvm_vcpu *vcpu);
@@ -287,7 +288,8 @@ bool vgic_handle_mmio(struct kvm_vcpu *vcpu, struct kvm_run *run,
 		      struct kvm_exit_mmio *mmio);
 
 #define irqchip_in_kernel(k)	(!!((k)->arch.vgic.in_kernel))
-#define vgic_initialized(k)	((k)->arch.vgic.ready)
+#define vgic_initialized(k)	(!!((k)->arch.vgic.nr_cpus))
+#define vgic_ready(k)		((k)->arch.vgic.ready)
 
 int vgic_v2_probe(struct device_node *vgic_node,
 		  const struct vgic_ops **ops,
@@ -321,7 +323,7 @@ static inline int kvm_vgic_addr(struct kvm *kvm, unsigned long type, u64 *addr, 
 	return -ENXIO;
 }
 
-static inline int kvm_vgic_init(struct kvm *kvm)
+static inline int kvm_vgic_map_resources(struct kvm *kvm)
 {
 	return 0;
 }
@@ -370,6 +372,11 @@ static inline int irqchip_in_kernel(struct kvm *kvm)
 }
 
 static inline bool vgic_initialized(struct kvm *kvm)
+{
+	return true;
+}
+
+static inline bool vgic_ready(struct kvm *kvm)
 {
 	return true;
 }

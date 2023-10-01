@@ -133,7 +133,7 @@ out:
 static int
 nfs_closedir(struct inode *inode, struct file *filp)
 {
-	put_nfs_open_dir_context(filp->f_path.dentry->d_inode, filp->private_data);
+	put_nfs_open_dir_context(file_inode(filp), filp->private_data);
 	return 0;
 }
 
@@ -469,6 +469,8 @@ void nfs_prime_dcache(struct dentry *parent, struct nfs_entry *entry)
 	struct inode *inode;
 	int status;
 
+	if (!(entry->fattr->valid & NFS_ATTR_FATTR_FSID))
+		return;
 	if (filename.name[0] == '.') {
 		if (filename.len == 1)
 			return;
@@ -479,6 +481,10 @@ void nfs_prime_dcache(struct dentry *parent, struct nfs_entry *entry)
 
 	dentry = d_lookup(parent, &filename);
 	if (dentry != NULL) {
+		/* Is there a mountpoint here? If so, just exit */
+		if (!nfs_fsid_equal(&NFS_SB(dentry->d_sb)->fsid,
+					&entry->fattr->fsid))
+			goto out;
 		if (nfs_same_file(dentry, entry)) {
 			nfs_set_verifier(dentry, nfs_save_change_attribute(dir));
 			status = nfs_refresh_inode(dentry->d_inode, entry->fattr);
@@ -499,7 +505,7 @@ void nfs_prime_dcache(struct dentry *parent, struct nfs_entry *entry)
 	if (IS_ERR(inode))
 		goto out;
 
-	alias = d_materialise_unique(dentry, inode);
+	alias = d_splice_alias(inode, dentry);
 	if (IS_ERR(alias))
 		goto out;
 	else if (alias) {
@@ -1393,7 +1399,7 @@ struct dentry *nfs_lookup(struct inode *dir, struct dentry * dentry, unsigned in
 	nfs_advise_use_readdirplus(dir);
 
 no_entry:
-	res = d_materialise_unique(dentry, inode);
+	res = d_splice_alias(inode, dentry);
 	if (res != NULL) {
 		if (IS_ERR(res))
 			goto out_unblock_sillyrename;

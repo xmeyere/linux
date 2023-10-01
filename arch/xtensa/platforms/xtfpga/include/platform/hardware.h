@@ -17,8 +17,8 @@
 
 /* Memory configuration. */
 
-#define PLATFORM_DEFAULT_MEM_START 0x00000000
-#define PLATFORM_DEFAULT_MEM_SIZE  0x04000000
+#define PLATFORM_DEFAULT_MEM_START CONFIG_DEFAULT_MEM_START
+#define PLATFORM_DEFAULT_MEM_SIZE  CONFIG_DEFAULT_MEM_SIZE
 
 /* Interrupt configuration. */
 
@@ -40,9 +40,6 @@
 
 /* UART */
 #define DUART16552_PADDR	(XCHAL_KIO_PADDR + 0x0D050020)
-/* LCD instruction and data addresses. */
-#define LCD_INSTR_ADDR		((char *)IOADDR(0x0D040000))
-#define LCD_DATA_ADDR		((char *)IOADDR(0x0D040004))
 
 /* Misc. */
 #define XTFPGA_FPGAREGS_VADDR	IOADDR(0x0D020000)

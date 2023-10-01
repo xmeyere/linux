@@ -20,7 +20,6 @@
 
 #include "xfs_inode_buf.h"
 #include "xfs_inode_fork.h"
-#include "xfs_dinode.h"
 
 /*
  * Kernel only inode definitions
@@ -324,7 +323,6 @@ static inline int xfs_isiflocked(struct xfs_inode *ip)
 	(((pip)->i_mount->m_flags & XFS_MOUNT_GRPID) || \
 	 ((pip)->i_d.di_mode & S_ISGID))
 
-
 int		xfs_release(struct xfs_inode *ip);
 void		xfs_inactive(struct xfs_inode *ip);
 int		xfs_lookup(struct xfs_inode *dp, struct xfs_name *name,
@@ -379,8 +377,9 @@ int		xfs_droplink(struct xfs_trans *, struct xfs_inode *);
 int		xfs_bumplink(struct xfs_trans *, struct xfs_inode *);
 
 /* from xfs_file.c */
-int		xfs_zero_eof(struct xfs_inode *, xfs_off_t, xfs_fsize_t);
-int		xfs_iozero(struct xfs_inode *, loff_t, size_t);
+int	xfs_zero_eof(struct xfs_inode *ip, xfs_off_t offset,
+		     xfs_fsize_t isize, bool *did_zeroing);
+int	xfs_iozero(struct xfs_inode *ip, loff_t pos, size_t count);
 
 
 #define IHOLD(ip) \

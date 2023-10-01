@@ -87,7 +87,7 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 		if (!skb) {
 			/* nothing remains on the queue */
 			if (copied &&
-			    (msg->msg_flags & MSG_PEEK || timeo == 0))
+			    (flags & MSG_PEEK || timeo == 0))
 				goto out;
 
 			/* wait for a message to turn up */
@@ -180,7 +180,7 @@ int rxrpc_recvmsg(struct kiocb *iocb, struct socket *sock,
 		if (copy > len - copied)
 			copy = len - copied;
 
-		ret = skb_copy_datagram_iovec(skb, offset, msg->msg_iov, copy);
+		ret = skb_copy_datagram_msg(skb, offset, msg, copy);
 
 		if (ret < 0)
 			goto copy_error;

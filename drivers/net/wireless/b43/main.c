@@ -5110,7 +5110,9 @@ static void b43_op_sta_notify(struct ieee80211_hw *hw,
 	B43_WARN_ON(!vif || wl->vif != vif);
 }
 
-static void b43_op_sw_scan_start_notifier(struct ieee80211_hw *hw)
+static void b43_op_sw_scan_start_notifier(struct ieee80211_hw *hw,
+					  struct ieee80211_vif *vif,
+					  const u8 *mac_addr)
 {
 	struct b43_wl *wl = hw_to_b43_wl(hw);
 	struct b43_wldev *dev;
@@ -5124,7 +5126,8 @@ static void b43_op_sw_scan_start_notifier(struct ieee80211_hw *hw)
 	mutex_unlock(&wl->mutex);
 }
 
-static void b43_op_sw_scan_complete_notifier(struct ieee80211_hw *hw)
+static void b43_op_sw_scan_complete_notifier(struct ieee80211_hw *hw,
+					     struct ieee80211_vif *vif)
 {
 	struct b43_wl *wl = hw_to_b43_wl(hw);
 	struct b43_wldev *dev;
@@ -5319,6 +5322,7 @@ static void b43_supported_bands(struct b43_wldev *dev, bool *have_2ghz_phy,
 	case 0x432a: /* BCM4321 */
 	case 0x432d: /* BCM4322 */
 	case 0x4352: /* BCM43222 */
+	case 0x435a: /* BCM43228 */
 	case 0x4333: /* BCM4331 */
 	case 0x43a2: /* BCM4360 */
 	case 0x43b3: /* BCM4352 */

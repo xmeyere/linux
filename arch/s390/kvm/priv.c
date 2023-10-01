@@ -156,41 +156,42 @@ static int handle_store_cpu_address(struct kvm_vcpu *vcpu)
 	return 0;
 }
 
-static void __skey_check_enable(struct kvm_vcpu *vcpu)
+static int __skey_check_enable(struct kvm_vcpu *vcpu)
 {
+	int rc = 0;
 	if (!(vcpu->arch.sie_block->ictl & (ICTL_ISKE | ICTL_SSKE | ICTL_RRBE)))
-		return;
+		return rc;
 
-	s390_enable_skey();
+	rc = s390_enable_skey();
 	trace_kvm_s390_skey_related_inst(vcpu);
 	vcpu->arch.sie_block->ictl &= ~(ICTL_ISKE | ICTL_SSKE | ICTL_RRBE);
+	return rc;
 }
 
 
 static int handle_skey(struct kvm_vcpu *vcpu)
 {
-	__skey_check_enable(vcpu);
+	int rc = __skey_check_enable(vcpu);
 
+	if (rc)
+		return rc;
 	vcpu->stat.instruction_storage_key++;
 
 	if (vcpu->arch.sie_block->gpsw.mask & PSW_MASK_PSTATE)
 		return kvm_s390_inject_program_int(vcpu, PGM_PRIVILEGED_OP);
 
-	vcpu->arch.sie_block->gpsw.addr =
-		__rewind_psw(vcpu->arch.sie_block->gpsw, 4);
+	kvm_s390_rewind_psw(vcpu, 4);
 	VCPU_EVENT(vcpu, 4, "%s", "retrying storage key operation");
 	return 0;
 }
 
 static int handle_ipte_interlock(struct kvm_vcpu *vcpu)
 {
-	psw_t *psw = &vcpu->arch.sie_block->gpsw;
-
 	vcpu->stat.instruction_ipte_interlock++;
-	if (psw_bits(*psw).p)
+	if (psw_bits(vcpu->arch.sie_block->gpsw).p)
 		return kvm_s390_inject_program_int(vcpu, PGM_PRIVILEGED_OP);
 	wait_event(vcpu->kvm->arch.ipte_wq, !ipte_lock_held(vcpu));
-	psw->addr = __rewind_psw(*psw, 4);
+	kvm_s390_rewind_psw(vcpu, 4);
 	VCPU_EVENT(vcpu, 4, "%s", "retrying ipte interlock operation");
 	return 0;
 }
@@ -228,18 +229,19 @@ static int handle_tpi(struct kvm_vcpu *vcpu)
 	struct kvm_s390_interrupt_info *inti;
 	unsigned long len;
 	u32 tpi_data[3];
-	int cc, rc;
+	int rc;
 	u64 addr;
 
-	rc = 0;
 	addr = kvm_s390_get_base_disp_s(vcpu);
 	if (addr & 3)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
-	cc = 0;
+
 	inti = kvm_s390_get_io_int(vcpu->kvm, vcpu->arch.sie_block->gcr[6], 0);
-	if (!inti)
-		goto no_interrupt;
-	cc = 1;
+	if (!inti) {
+		kvm_s390_set_psw_cc(vcpu, 0);
+		return 0;
+	}
+
 	tpi_data[0] = inti->io.subchannel_id << 16 | inti->io.subchannel_nr;
 	tpi_data[1] = inti->io.io_int_parm;
 	tpi_data[2] = inti->io.io_int_word;
@@ -250,30 +252,38 @@ static int handle_tpi(struct kvm_vcpu *vcpu)
 		 */
 		len = sizeof(tpi_data) - 4;
 		rc = write_guest(vcpu, addr, &tpi_data, len);
-		if (rc)
-			return kvm_s390_inject_prog_cond(vcpu, rc);
+		if (rc) {
+			rc = kvm_s390_inject_prog_cond(vcpu, rc);
+			goto reinject_interrupt;
+		}
 	} else {
 		/*
 		 * Store the three-word I/O interruption code into
 		 * the appropriate lowcore area.
 		 */
 		len = sizeof(tpi_data);
-		if (write_guest_lc(vcpu, __LC_SUBCHANNEL_ID, &tpi_data, len))
+		if (write_guest_lc(vcpu, __LC_SUBCHANNEL_ID, &tpi_data, len)) {
+			/* failed writes to the low core are not recoverable */
 			rc = -EFAULT;
+			goto reinject_interrupt;
+		}
 	}
+
+	/* irq was successfully handed to the guest */
+	kfree(inti);
+	kvm_s390_set_psw_cc(vcpu, 1);
+	return 0;
+reinject_interrupt:
 	/*
 	 * If we encounter a problem storing the interruption code, the
 	 * instruction is suppressed from the guest's view: reinject the
 	 * interrupt.
 	 */
-	if (!rc)
+	if (kvm_s390_reinject_io_int(vcpu->kvm, inti)) {
 		kfree(inti);
-	else
-		kvm_s390_reinject_io_int(vcpu->kvm, inti);
-no_interrupt:
-	/* Set condition code and we're done. */
-	if (!rc)
-		kvm_s390_set_psw_cc(vcpu, cc);
+		rc = -EFAULT;
+	}
+	/* don't set the cc, a pgm irq was injected or we drop to user space */
 	return rc ? -EFAULT : 0;
 }
 
@@ -461,6 +471,7 @@ static void handle_stsi_3_2_2(struct kvm_vcpu *vcpu, struct sysinfo_3_2_2 *mem)
 	for (n = mem->count - 1; n > 0 ; n--)
 		memcpy(&mem->vm[n], &mem->vm[n - 1], sizeof(mem->vm[0]));
 
+	memset(&mem->vm[0], 0, sizeof(mem->vm[0]));
 	mem->vm[0].cpus_total = cpus;
 	mem->vm[0].cpus_configured = cpus;
 	mem->vm[0].cpus_standby = 0;
@@ -646,10 +657,7 @@ static int handle_pfmf(struct kvm_vcpu *vcpu)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
 
 	start = vcpu->run->s.regs.gprs[reg2] & PAGE_MASK;
-	if (vcpu->run->s.regs.gprs[reg1] & PFMF_CF) {
-		if (kvm_s390_check_low_addr_protection(vcpu, start))
-			return kvm_s390_inject_prog_irq(vcpu, &vcpu->arch.pgm);
-	}
+	start = kvm_s390_logical_to_effective(vcpu, start);
 
 	switch (vcpu->run->s.regs.gprs[reg1] & PFMF_FSC) {
 	case 0x00000000:
@@ -665,6 +673,12 @@ static int handle_pfmf(struct kvm_vcpu *vcpu)
 	default:
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
 	}
+
+	if (vcpu->run->s.regs.gprs[reg1] & PFMF_CF) {
+		if (kvm_s390_check_low_addr_protection(vcpu, start))
+			return kvm_s390_inject_prog_irq(vcpu, &vcpu->arch.pgm);
+	}
+
 	while (start < end) {
 		unsigned long useraddr, abs_addr;
 
@@ -683,7 +697,10 @@ static int handle_pfmf(struct kvm_vcpu *vcpu)
 		}
 
 		if (vcpu->run->s.regs.gprs[reg1] & PFMF_SK) {
-			__skey_check_enable(vcpu);
+			int rc = __skey_check_enable(vcpu);
+
+			if (rc)
+				return rc;
 			if (set_guest_storage_key(current->mm, useraddr,
 					vcpu->run->s.regs.gprs[reg1] & PFMF_KEY,
 					vcpu->run->s.regs.gprs[reg1] & PFMF_NQ))
@@ -718,8 +735,7 @@ static int handle_essa(struct kvm_vcpu *vcpu)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
 
 	/* Rewind PSW to repeat the ESSA instruction */
-	vcpu->arch.sie_block->gpsw.addr =
-		__rewind_psw(vcpu->arch.sie_block->gpsw, 4);
+	kvm_s390_rewind_psw(vcpu, 4);
 	vcpu->arch.sie_block->cbrlo &= PAGE_MASK;	/* reset nceo */
 	cbrlo = phys_to_virt(vcpu->arch.sie_block->cbrlo);
 	down_read(&gmap->mm->mmap_sem);
@@ -762,8 +778,8 @@ int kvm_s390_handle_lctl(struct kvm_vcpu *vcpu)
 {
 	int reg1 = (vcpu->arch.sie_block->ipa & 0x00f0) >> 4;
 	int reg3 = vcpu->arch.sie_block->ipa & 0x000f;
-	u32 val = 0;
-	int reg, rc;
+	int reg, rc, nr_regs;
+	u32 ctl_array[16];
 	u64 ga;
 
 	vcpu->stat.instruction_lctl++;
@@ -779,19 +795,20 @@ int kvm_s390_handle_lctl(struct kvm_vcpu *vcpu)
 	VCPU_EVENT(vcpu, 5, "lctl r1:%x, r3:%x, addr:%llx", reg1, reg3, ga);
 	trace_kvm_s390_handle_lctl(vcpu, 0, reg1, reg3, ga);
 
+	nr_regs = ((reg3 - reg1) & 0xf) + 1;
+	rc = read_guest(vcpu, ga, ctl_array, nr_regs * sizeof(u32));
+	if (rc)
+		return kvm_s390_inject_prog_cond(vcpu, rc);
 	reg = reg1;
+	nr_regs = 0;
 	do {
-		rc = read_guest(vcpu, ga, &val, sizeof(val));
-		if (rc)
-			return kvm_s390_inject_prog_cond(vcpu, rc);
 		vcpu->arch.sie_block->gcr[reg] &= 0xffffffff00000000ul;
-		vcpu->arch.sie_block->gcr[reg] |= val;
-		ga += 4;
+		vcpu->arch.sie_block->gcr[reg] |= ctl_array[nr_regs++];
 		if (reg == reg3)
 			break;
 		reg = (reg + 1) % 16;
 	} while (1);
-
+	kvm_make_request(KVM_REQ_TLB_FLUSH, vcpu);
 	return 0;
 }
 
@@ -799,9 +816,9 @@ int kvm_s390_handle_stctl(struct kvm_vcpu *vcpu)
 {
 	int reg1 = (vcpu->arch.sie_block->ipa & 0x00f0) >> 4;
 	int reg3 = vcpu->arch.sie_block->ipa & 0x000f;
+	int reg, rc, nr_regs;
+	u32 ctl_array[16];
 	u64 ga;
-	u32 val;
-	int reg, rc;
 
 	vcpu->stat.instruction_stctl++;
 
@@ -817,26 +834,24 @@ int kvm_s390_handle_stctl(struct kvm_vcpu *vcpu)
 	trace_kvm_s390_handle_stctl(vcpu, 0, reg1, reg3, ga);
 
 	reg = reg1;
+	nr_regs = 0;
 	do {
-		val = vcpu->arch.sie_block->gcr[reg] &  0x00000000fffffffful;
-		rc = write_guest(vcpu, ga, &val, sizeof(val));
-		if (rc)
-			return kvm_s390_inject_prog_cond(vcpu, rc);
-		ga += 4;
+		ctl_array[nr_regs++] = vcpu->arch.sie_block->gcr[reg];
 		if (reg == reg3)
 			break;
 		reg = (reg + 1) % 16;
 	} while (1);
-
-	return 0;
+	rc = write_guest(vcpu, ga, ctl_array, nr_regs * sizeof(u32));
+	return rc ? kvm_s390_inject_prog_cond(vcpu, rc) : 0;
 }
 
 static int handle_lctlg(struct kvm_vcpu *vcpu)
 {
 	int reg1 = (vcpu->arch.sie_block->ipa & 0x00f0) >> 4;
 	int reg3 = vcpu->arch.sie_block->ipa & 0x000f;
-	u64 ga, val;
-	int reg, rc;
+	int reg, rc, nr_regs;
+	u64 ctl_array[16];
+	u64 ga;
 
 	vcpu->stat.instruction_lctlg++;
 
@@ -848,22 +863,22 @@ static int handle_lctlg(struct kvm_vcpu *vcpu)
 	if (ga & 7)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
 
-	reg = reg1;
-
 	VCPU_EVENT(vcpu, 5, "lctlg r1:%x, r3:%x, addr:%llx", reg1, reg3, ga);
 	trace_kvm_s390_handle_lctl(vcpu, 1, reg1, reg3, ga);
 
+	nr_regs = ((reg3 - reg1) & 0xf) + 1;
+	rc = read_guest(vcpu, ga, ctl_array, nr_regs * sizeof(u64));
+	if (rc)
+		return kvm_s390_inject_prog_cond(vcpu, rc);
+	reg = reg1;
+	nr_regs = 0;
 	do {
-		rc = read_guest(vcpu, ga, &val, sizeof(val));
-		if (rc)
-			return kvm_s390_inject_prog_cond(vcpu, rc);
-		vcpu->arch.sie_block->gcr[reg] = val;
-		ga += 8;
+		vcpu->arch.sie_block->gcr[reg] = ctl_array[nr_regs++];
 		if (reg == reg3)
 			break;
 		reg = (reg + 1) % 16;
 	} while (1);
-
+	kvm_make_request(KVM_REQ_TLB_FLUSH, vcpu);
 	return 0;
 }
 
@@ -871,8 +886,9 @@ static int handle_stctg(struct kvm_vcpu *vcpu)
 {
 	int reg1 = (vcpu->arch.sie_block->ipa & 0x00f0) >> 4;
 	int reg3 = vcpu->arch.sie_block->ipa & 0x000f;
-	u64 ga, val;
-	int reg, rc;
+	int reg, rc, nr_regs;
+	u64 ctl_array[16];
+	u64 ga;
 
 	vcpu->stat.instruction_stctg++;
 
@@ -884,23 +900,19 @@ static int handle_stctg(struct kvm_vcpu *vcpu)
 	if (ga & 7)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
 
-	reg = reg1;
-
 	VCPU_EVENT(vcpu, 5, "stctg r1:%x, r3:%x, addr:%llx", reg1, reg3, ga);
 	trace_kvm_s390_handle_stctl(vcpu, 1, reg1, reg3, ga);
 
+	reg = reg1;
+	nr_regs = 0;
 	do {
-		val = vcpu->arch.sie_block->gcr[reg];
-		rc = write_guest(vcpu, ga, &val, sizeof(val));
-		if (rc)
-			return kvm_s390_inject_prog_cond(vcpu, rc);
-		ga += 8;
+		ctl_array[nr_regs++] = vcpu->arch.sie_block->gcr[reg];
 		if (reg == reg3)
 			break;
 		reg = (reg + 1) % 16;
 	} while (1);
-
-	return 0;
+	rc = write_guest(vcpu, ga, ctl_array, nr_regs * sizeof(u64));
+	return rc ? kvm_s390_inject_prog_cond(vcpu, rc) : 0;
 }
 
 static const intercept_handler_t eb_handlers[256] = {

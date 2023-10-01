@@ -1572,6 +1572,10 @@ static int palmas_regulators_probe(struct platform_device *pdev)
 	if (!pmic)
 		return -ENOMEM;
 
+	if (of_device_is_compatible(node, "ti,tps659038-pmic"))
+		palmas_generic_regs_info[PALMAS_REG_REGEN2].ctrl_addr =
+							TPS659038_REGEN2_CTRL;
+
 	pmic->dev = &pdev->dev;
 	pmic->palmas = palmas;
 	palmas->pmic = pmic;
@@ -1610,7 +1614,6 @@ static struct platform_driver palmas_driver = {
 	.driver = {
 		.name = "palmas-pmic",
 		.of_match_table = of_palmas_match_tbl,
-		.owner = THIS_MODULE,
 	},
 	.probe = palmas_regulators_probe,
 };
