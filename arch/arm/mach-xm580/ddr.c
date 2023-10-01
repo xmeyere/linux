@@ -27,7 +27,7 @@ static irqreturn_t timer7_interrupt(int irq, void *data)
     writel(0, (void*)0xfe0b2000);
     // TODO
     ptr = (u8*)0xfe0b2010;
-    while (ptr != 0xfe0b2030)
+    while (ptr != (u8*)0xfe0b2030)
     {
         ddr_byte[i] = readl(ptr);
         i++;

@@ -12,14 +12,18 @@ static DEFINE_MUTEX(g_i2c_lock);
 int i2c_read(int dev_index, int device,int reg_addr,int addr_byte_num,int data_byte_num)
 {
     int i2c_offset = dev_index * 0x1000;
-    int i =0;
+    int i = 0;
+    int result = 0;
+    unsigned int* weird_register = (unsigned int*)(i2c_offset - 0x2000000);
+    unsigned int weird_register_org;
+
     mutex_lock(&g_i2c_lock);
 
     writel(device, (void*)(i2c_offset - 0x1fffff4));
     writel(addr_byte_num, (void*)(i2c_offset - 0x1ffffe8));
 
-    unsigned int* weird_register = (unsigned int*)(i2c_offset - 0x2000000);
-    unsigned int weird_register_org = *weird_register;
+    
+    weird_register_org = *weird_register;
 
     *weird_register = weird_register_org | 0x40;
     *weird_register = weird_register_org & 0xffffffbf;
@@ -71,7 +75,6 @@ int i2c_read(int dev_index, int device,int reg_addr,int addr_byte_num,int data_b
     {
         on_ready:
         printk("i2c_read: bit is present\n");
-        int result = 0;
         if(data_byte_num == 0)
         {
             result = 0;
