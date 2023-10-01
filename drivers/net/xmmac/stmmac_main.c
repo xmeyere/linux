@@ -1773,26 +1773,26 @@ static int __init stmmac_cmdline_opt(char *str)
         return -EINVAL;
     while ((opt = strsep(&str, ",")) != NULL) {
         if (!strncmp(opt, "debug:", 6))
-            strict_strtoul(opt + 6, 0, (unsigned long *)&debug);
+            kstrtoul(opt + 6, 0, (unsigned long *)&debug);
         else if (!strncmp(opt, "phyaddr:", 8))
-            strict_strtoul(opt + 8, 0, (unsigned long *)&phyaddr);
+            kstrtoul(opt + 8, 0, (unsigned long *)&phyaddr);
         else if (!strncmp(opt, "dma_txsize:", 11))
-            strict_strtoul(opt + 11, 0,
+            kstrtoul(opt + 11, 0,
                     (unsigned long *)&dma_txsize);
         else if (!strncmp(opt, "dma_rxsize:", 11))
-            strict_strtoul(opt + 11, 0,
+            kstrtoul(opt + 11, 0,
                     (unsigned long *)&dma_rxsize);
         else if (!strncmp(opt, "buf_sz:", 7))
-            strict_strtoul(opt + 7, 0, (unsigned long *)&buf_sz);
+            kstrtoul(opt + 7, 0, (unsigned long *)&buf_sz);
         else if (!strncmp(opt, "tc:", 3))
-            strict_strtoul(opt + 3, 0, (unsigned long *)&tc);
+            kstrtoul(opt + 3, 0, (unsigned long *)&tc);
         else if (!strncmp(opt, "watchdog:", 9))
-            strict_strtoul(opt + 9, 0, (unsigned long *)&watchdog);
+            kstrtoul(opt + 9, 0, (unsigned long *)&watchdog);
         else if (!strncmp(opt, "flow_ctrl:", 10))
-            strict_strtoul(opt + 10, 0,
+            kstrtoul(opt + 10, 0,
                     (unsigned long *)&flow_ctrl);
         else if (!strncmp(opt, "pause:", 6))
-            strict_strtoul(opt + 6, 0, (unsigned long *)&pause);
+            kstrtoul(opt + 6, 0, (unsigned long *)&pause);
     }
     return 0;
 }

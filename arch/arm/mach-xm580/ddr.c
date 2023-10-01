@@ -21,7 +21,7 @@ static irqreturn_t timer7_interrupt(int irq, void *data)
     {
         return IRQ_NONE;
     }
-    printk("timer7 irq!\n");
+    //printk("timer7 irq!\n");
 
     writel(1, (void*)0xfe0d202c);
     writel(0, (void*)0xfe0b2000);
@@ -33,7 +33,7 @@ static irqreturn_t timer7_interrupt(int irq, void *data)
         i++;
         ptr+=4;
     }
-    printk("ddr_byte:\n[0]: %x\n[1]: %x\n", ddr_byte[0], ddr_byte[1]);
+    //printk("ddr_byte:\n[0]: %x\n[1]: %x\n", ddr_byte[0], ddr_byte[1]);
     //this reads 32 bytes (8 uints) from 0xfe0b2010 to 0xfe0b2030
     // End TODO
     writel(1, (void*)0xfe0b2000);

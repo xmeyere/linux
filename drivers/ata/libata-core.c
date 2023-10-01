@@ -3607,6 +3607,19 @@ int sata_link_resume(struct ata_link *link, const unsigned long *params,
 		scontrol = (scontrol & 0x0f0) | 0x300;
 		if ((rc = sata_scr_write(link, SCR_CONTROL, scontrol)))
 			return rc;
+
+		if(!strcmp(link->ap->host->dev->kobj.name, "ahci.0"))
+		{
+			writel(7, (void*)0xfe100150);
+		}
+		if(!strcmp(link->ap->host->dev->kobj.name, "ahci.1"))
+		{
+			writel(7, (void*)0xfe100154);
+		}
+
+		if ((rc = sata_scr_read(link, SCR_CONTROL, &scontrol)))
+			return rc;
+
 		/*
 		 * Some PHYs react badly if SStatus is pounded
 		 * immediately after resuming.  Delay 200ms before
@@ -3814,6 +3827,14 @@ int sata_link_hardreset(struct ata_link *link, const unsigned long *timing,
 		goto out;
 
 	scontrol = (scontrol & 0x0f0) | 0x301;
+	if(!strcmp(link->ap->host->dev->kobj.name, "ahci.0"))
+	{
+		writel(3, (void*)0xfe100150);
+	}
+	if(!strcmp(link->ap->host->dev->kobj.name, "ahci.1"))
+	{
+		writel(3, (void*)0xfe100154);
+	}
 
 	if ((rc = sata_scr_write_flush(link, SCR_CONTROL, scontrol)))
 		goto out;

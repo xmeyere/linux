@@ -3,6 +3,22 @@
 #include <linux/ahci_platform.h>
 #include <linux/delay.h>
 #include <linux/io.h>
+#include <linux/compiler.h>
+
+// big hack to allow to work on newer kernel versions
+struct device;
+struct ata_port_info;
+
+struct ahci_platform_data {
+	int (*init)(struct device *dev, void __iomem *addr);
+	void (*exit)(struct device *dev);
+	int (*suspend)(struct device *dev);
+	int (*resume)(struct device *dev);
+	const struct ata_port_info *ata_port_info;
+	unsigned int force_port_map;
+	unsigned int mask_port_map;
+};
+
 
 //NOTE: this file orginally was at the drivers/ata folder (I think), but it works just as well here. Note that 3 modifications are needed for SATA to work in libata-core.c
 
@@ -89,6 +105,10 @@ int __init xm580_start_sata(void)
         printk(KERN_INFO "failed to register ahci1: %d\n", hr);
     }
 
+    // Hack!
+    xm_sata0_init(NULL, (void*)0x50500000);
+    xm_sata1_init(NULL, (void*)0x50600000);
+
     return 0;
 }
 module_init(xm580_start_sata);
@@ -97,6 +117,7 @@ module_init(xm580_start_sata);
 
 static __init int xm_sata0_init(struct device *dev, void *mmio)
 {
+    mmio = ioremap(0x50500000, 0xFFFFF);
     printk("%s......\n","xm_sata0_init");
     writel(1, (void*)0xfe100000);
     writel(2, (void*)0xfe100150);
@@ -112,10 +133,12 @@ static __init int xm_sata0_init(struct device *dev, void *mmio)
     writel(0x6f36ff80, mmio);
     writel(1, mmio + 0xC); //enable the port
     msleep(1);
+    iounmap(mmio);
     return 0;
 }
 static __init int xm_sata1_init(struct device *dev, void *mmio)
 {
+    mmio = ioremap(0x50600000, 0xFFFFF);
     printk(KERN_INFO "xm_sata1_init...\n");
     writel(1, (void*)0xfe100000);
     writel(2, (void*)0xfe100154);
@@ -131,5 +154,6 @@ static __init int xm_sata1_init(struct device *dev, void *mmio)
     writel(0x6f36ff80, mmio);
     writel(1, mmio + 0xC); //enable the port
     msleep(1);
+    iounmap(mmio);
     return 0;
 }
