@@ -40,8 +40,6 @@ static struct usb_device_id ath9k_hif_usb_ids[] = {
 	{ USB_DEVICE(0x0cf3, 0xb003) }, /* Ubiquiti WifiStation Ext */
 	{ USB_DEVICE(0x0cf3, 0xb002) }, /* Ubiquiti WifiStation */
 	{ USB_DEVICE(0x057c, 0x8403) }, /* AVM FRITZ!WLAN 11N v2 USB */
-	{ USB_DEVICE(0x0471, 0x209e) }, /* Philips (or NXP) PTA01 */
-	{ USB_DEVICE(0x1eda, 0x2315) }, /* AirTies */
 
 	{ USB_DEVICE(0x0cf3, 0x7015),
 	  .driver_info = AR9287_USB },  /* Atheros */
@@ -60,8 +58,6 @@ static struct usb_device_id ath9k_hif_usb_ids[] = {
 	  .driver_info = AR9280_USB },  /* Buffalo WLI-UV-AG300P */
 	{ USB_DEVICE(0x04da, 0x3904),
 	  .driver_info = AR9280_USB },
-	{ USB_DEVICE(0x0930, 0x0a08),
-	  .driver_info = AR9280_USB },  /* Toshiba WLM-20U2 and GN-1080 */
 
 	{ USB_DEVICE(0x0cf3, 0x20ff),
 	  .driver_info = STORAGE_DEVICE },
@@ -1141,14 +1137,11 @@ err_fw:
 static int send_eject_command(struct usb_interface *interface)
 {
 	struct usb_device *udev = interface_to_usbdev(interface);
-	struct usb_host_interface *iface_desc = interface->cur_altsetting;
+	struct usb_host_interface *iface_desc = &interface->altsetting[0];
 	struct usb_endpoint_descriptor *endpoint;
 	unsigned char *cmd;
 	u8 bulk_out_ep;
 	int r;
-
-	if (iface_desc->desc.bNumEndpoints < 2)
-		return -ENODEV;
 
 	/* Find bulk out endpoint */
 	for (r = 1; r >= 0; r--) {

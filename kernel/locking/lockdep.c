@@ -384,7 +384,9 @@ static void print_lockdep_off(const char *bug_msg)
 {
 	printk(KERN_DEBUG "%s\n", bug_msg);
 	printk(KERN_DEBUG "turning off the locking correctness validator.\n");
+#ifdef CONFIG_LOCK_STAT
 	printk(KERN_DEBUG "Please attach the output of /proc/lock_stat to the bug report\n");
+#endif
 }
 
 static int save_trace(struct stack_trace *trace)
@@ -2724,8 +2726,6 @@ static void __lockdep_trace_alloc(gfp_t gfp_mask, unsigned long flags)
 	if (unlikely(!debug_locks))
 		return;
 
-	gfp_mask = memalloc_noio_flags(gfp_mask);
-
 	/* no reclaim without waiting on it */
 	if (!(gfp_mask & __GFP_WAIT))
 		return;
@@ -3646,7 +3646,7 @@ EXPORT_SYMBOL_GPL(lock_is_held);
 
 void lockdep_set_current_reclaim_state(gfp_t gfp_mask)
 {
-	current->lockdep_reclaim_gfp = memalloc_noio_flags(gfp_mask);
+	current->lockdep_reclaim_gfp = gfp_mask;
 }
 
 void lockdep_clear_current_reclaim_state(void)

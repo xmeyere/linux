@@ -679,6 +679,9 @@ static bool twl4030_power_use_poweroff(const struct twl4030_power_data *pdata,
 	if (pdata && pdata->use_poweroff)
 		return true;
 
+	if (of_property_read_bool(node, "ti,system-power-controller"))
+		return true;
+
 	if (of_property_read_bool(node, "ti,use_poweroff"))
 		return true;
 
@@ -827,9 +830,6 @@ static struct twl4030_power_data osc_off_idle = {
 };
 
 static struct of_device_id twl4030_power_of_match[] = {
-	{
-		.compatible = "ti,twl4030-power",
-	},
 	{
 		.compatible = "ti,twl4030-power-reset",
 		.data = &omap3_reset,

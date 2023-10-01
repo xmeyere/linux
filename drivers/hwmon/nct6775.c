@@ -57,7 +57,6 @@
 #include <linux/mutex.h>
 #include <linux/acpi.h>
 #include <linux/io.h>
-#include <linux/nospec.h>
 #include "lm75.h"
 
 #define USE_ALTERNATE
@@ -269,9 +268,8 @@ static const u16 NCT6775_REG_PWM_READ[] = {
 
 static const u16 NCT6775_REG_FAN[] = { 0x630, 0x632, 0x634, 0x636, 0x638 };
 static const u16 NCT6775_REG_FAN_MIN[] = { 0x3b, 0x3c, 0x3d };
-static const u16 NCT6775_REG_FAN_PULSES[NUM_FAN] = {
-	0x641, 0x642, 0x643, 0x644 };
-static const u16 NCT6775_FAN_PULSE_SHIFT[NUM_FAN] = { };
+static const u16 NCT6775_REG_FAN_PULSES[] = { 0x641, 0x642, 0x643, 0x644, 0 };
+static const u16 NCT6775_FAN_PULSE_SHIFT[] = { 0, 0, 0, 0, 0, 0 };
 
 static const u16 NCT6775_REG_TEMP[] = {
 	0x27, 0x150, 0x250, 0x62b, 0x62c, 0x62d };
@@ -352,10 +350,6 @@ static const u16 NCT6775_REG_TEMP_CRIT[ARRAY_SIZE(nct6775_temp_label) - 1]
 
 /* NCT6776 specific data */
 
-/* STEP_UP_TIME and STEP_DOWN_TIME regs are swapped for all chips but NCT6775 */
-#define NCT6776_REG_FAN_STEP_UP_TIME NCT6775_REG_FAN_STEP_DOWN_TIME
-#define NCT6776_REG_FAN_STEP_DOWN_TIME NCT6775_REG_FAN_STEP_UP_TIME
-
 static const s8 NCT6776_ALARM_BITS[] = {
 	0, 1, 2, 3, 8, 21, 20, 16,	/* in0.. in7 */
 	17, -1, -1, -1, -1, -1, -1,	/* in8..in14 */
@@ -383,8 +377,7 @@ static const u8 NCT6776_REG_PWM_MODE[] = { 0x04, 0, 0, 0, 0, 0 };
 static const u8 NCT6776_PWM_MODE_MASK[] = { 0x01, 0, 0, 0, 0, 0 };
 
 static const u16 NCT6776_REG_FAN_MIN[] = { 0x63a, 0x63c, 0x63e, 0x640, 0x642 };
-static const u16 NCT6776_REG_FAN_PULSES[NUM_FAN] = {
-	0x644, 0x645, 0x646 };
+static const u16 NCT6776_REG_FAN_PULSES[] = { 0x644, 0x645, 0x646, 0, 0 };
 
 static const u16 NCT6776_REG_WEIGHT_DUTY_BASE[] = {
 	0x13e, 0x23e, 0x33e, 0x83e, 0x93e, 0xa3e };
@@ -453,7 +446,7 @@ static const s8 NCT6779_BEEP_BITS[] = {
 
 static const u16 NCT6779_REG_FAN[] = {
 	0x4b0, 0x4b2, 0x4b4, 0x4b6, 0x4b8, 0x4ba };
-static const u16 NCT6779_REG_FAN_PULSES[NUM_FAN] = {
+static const u16 NCT6779_REG_FAN_PULSES[] = {
 	0x644, 0x645, 0x646, 0x647, 0x648, 0x649 };
 
 static const u16 NCT6779_REG_CRITICAL_PWM_ENABLE[] = {
@@ -566,8 +559,8 @@ static const u16 NCT6106_REG_TEMP_CONFIG[] = {
 
 static const u16 NCT6106_REG_FAN[] = { 0x20, 0x22, 0x24 };
 static const u16 NCT6106_REG_FAN_MIN[] = { 0xe0, 0xe2, 0xe4 };
-static const u16 NCT6106_REG_FAN_PULSES[] = { 0xf6, 0xf6, 0xf6 };
-static const u16 NCT6106_FAN_PULSE_SHIFT[] = { 0, 2, 4 };
+static const u16 NCT6106_REG_FAN_PULSES[] = { 0xf6, 0xf6, 0xf6, 0, 0 };
+static const u16 NCT6106_FAN_PULSE_SHIFT[] = { 0, 2, 4, 0, 0 };
 
 static const u8 NCT6106_REG_PWM_MODE[] = { 0xf3, 0xf3, 0xf3 };
 static const u8 NCT6106_PWM_MODE_MASK[] = { 0x01, 0x02, 0x04 };
@@ -598,7 +591,7 @@ static const u16 NCT6106_REG_TARGET[] = { 0x111, 0x121, 0x131 };
 static const u16 NCT6106_REG_WEIGHT_TEMP_SEL[] = { 0x168, 0x178, 0x188 };
 static const u16 NCT6106_REG_WEIGHT_TEMP_STEP[] = { 0x169, 0x179, 0x189 };
 static const u16 NCT6106_REG_WEIGHT_TEMP_STEP_TOL[] = { 0x16a, 0x17a, 0x18a };
-static const u16 NCT6106_REG_WEIGHT_DUTY_STEP[] = { 0x16b, 0x17b, 0x18b };
+static const u16 NCT6106_REG_WEIGHT_DUTY_STEP[] = { 0x16b, 0x17b, 0x17c };
 static const u16 NCT6106_REG_WEIGHT_TEMP_BASE[] = { 0x16c, 0x17c, 0x18c };
 static const u16 NCT6106_REG_WEIGHT_DUTY_BASE[] = { 0x16d, 0x17d, 0x18d };
 
@@ -742,7 +735,6 @@ struct nct6775_data {
 	enum kinds kind;
 	const char *name;
 
-	int num_attr_groups;
 	const struct attribute_group *groups[6];
 
 	u16 reg_temp[5][NUM_TEMP]; /* 0=temp, 1=temp_over, 2=temp_hyst,
@@ -993,7 +985,6 @@ nct6775_create_attr_group(struct device *dev, struct sensor_template_group *tg,
 				 (*t)->dev_attr.attr.name, tg->base + i);
 			if ((*t)->s2) {
 				a2 = &su->u.a2;
-				sysfs_attr_init(&a2->dev_attr.attr);
 				a2->dev_attr.attr.name = su->name;
 				a2->nr = (*t)->u.s.nr + i;
 				a2->index = (*t)->u.s.index;
@@ -1004,7 +995,6 @@ nct6775_create_attr_group(struct device *dev, struct sensor_template_group *tg,
 				*attrs = &a2->dev_attr.attr;
 			} else {
 				a = &su->u.a1;
-				sysfs_attr_init(&a->dev_attr.attr);
 				a->dev_attr.attr.name = su->name;
 				a->index = (*t)->u.index + i;
 				a->dev_attr.attr.mode =
@@ -1290,7 +1280,7 @@ static void nct6775_update_pwm(struct device *dev)
 		duty_is_dc = data->REG_PWM_MODE[i] &&
 		  (nct6775_read_value(data, data->REG_PWM_MODE[i])
 		   & data->PWM_MODE_MASK[i]);
-		data->pwm_mode[i] = !duty_is_dc;
+		data->pwm_mode[i] = duty_is_dc;
 
 		fanmodecfg = nct6775_read_value(data, data->REG_FAN_MODE[i]);
 		for (j = 0; j < ARRAY_SIZE(data->REG_PWM); j++) {
@@ -1333,7 +1323,7 @@ static void nct6775_update_pwm(struct device *dev)
 		reg = nct6775_read_value(data, data->REG_WEIGHT_TEMP_SEL[i]);
 		data->pwm_weight_temp_sel[i] = reg & 0x1f;
 		/* If weight is disabled, report weight source as 0 */
-		if (!(reg & 0x80))
+		if (j == 1 && !(reg & 0x80))
 			data->pwm_weight_temp_sel[i] = 0;
 
 		/* Weight temp data */
@@ -1453,13 +1443,9 @@ static struct nct6775_data *nct6775_update_device(struct device *dev)
 			if (data->has_fan_min & (1 << i))
 				data->fan_min[i] = nct6775_read_value(data,
 					   data->REG_FAN_MIN[i]);
-
-			if (data->REG_FAN_PULSES[i]) {
-				data->fan_pulses[i] =
-				  (nct6775_read_value(data,
-						      data->REG_FAN_PULSES[i])
-				   >> data->FAN_PULSE_SHIFT[i]) & 0x03;
-			}
+			data->fan_pulses[i] =
+			  (nct6775_read_value(data, data->REG_FAN_PULSES[i])
+				>> data->FAN_PULSE_SHIFT[i]) & 0x03;
 
 			nct6775_select_fan_div(dev, data, i, reg);
 		}
@@ -2153,7 +2139,7 @@ show_pwm_mode(struct device *dev, struct device_attribute *attr, char *buf)
 	struct nct6775_data *data = nct6775_update_device(dev);
 	struct sensor_device_attribute *sattr = to_sensor_dev_attr(attr);
 
-	return sprintf(buf, "%d\n", data->pwm_mode[sattr->index]);
+	return sprintf(buf, "%d\n", !data->pwm_mode[sattr->index]);
 }
 
 static ssize_t
@@ -2174,9 +2160,9 @@ store_pwm_mode(struct device *dev, struct device_attribute *attr,
 	if (val > 1)
 		return -EINVAL;
 
-	/* Setting DC mode (0) is not supported for all chips/channels */
+	/* Setting DC mode is not supported for all chips/channels */
 	if (data->REG_PWM_MODE[nr] == 0) {
-		if (!val)
+		if (val)
 			return -EINVAL;
 		return count;
 	}
@@ -2185,7 +2171,7 @@ store_pwm_mode(struct device *dev, struct device_attribute *attr,
 	data->pwm_mode[nr] = val;
 	reg = nct6775_read_value(data, data->REG_PWM_MODE[nr]);
 	reg &= ~data->PWM_MODE_MASK[nr];
-	if (!val)
+	if (val)
 		reg |= data->PWM_MODE_MASK[nr];
 	nct6775_write_value(data, data->REG_PWM_MODE[nr], reg);
 	mutex_unlock(&data->update_lock);
@@ -2445,7 +2431,6 @@ store_pwm_weight_temp_sel(struct device *dev, struct device_attribute *attr,
 		return err;
 	if (val > NUM_TEMP)
 		return -EINVAL;
-	val = array_index_nospec(val, NUM_TEMP + 1);
 	if (val && (!(data->have_temp & (1 << (val - 1))) ||
 		    !data->temp_src[val - 1]))
 		return -EINVAL;
@@ -3290,6 +3275,7 @@ static int nct6775_probe(struct platform_device *pdev)
 	u8 cr2a;
 	struct attribute_group *group;
 	struct device *hwmon_dev;
+	int num_attr_groups = 0;
 
 	res = platform_get_resource(pdev, IORESOURCE_IO, 0);
 	if (!devm_request_region(&pdev->dev, res->start, IOREGION_LENGTH,
@@ -3339,7 +3325,6 @@ static int nct6775_probe(struct platform_device *pdev)
 		data->REG_FAN_TIME[0] = NCT6106_REG_FAN_STOP_TIME;
 		data->REG_FAN_TIME[1] = NCT6106_REG_FAN_STEP_UP_TIME;
 		data->REG_FAN_TIME[2] = NCT6106_REG_FAN_STEP_DOWN_TIME;
-		data->REG_TOLERANCE_H = NCT6106_REG_TOLERANCE_H;
 		data->REG_PWM[0] = NCT6106_REG_PWM;
 		data->REG_PWM[1] = NCT6106_REG_FAN_START_OUTPUT;
 		data->REG_PWM[2] = NCT6106_REG_FAN_STOP_OUTPUT;
@@ -3489,8 +3474,8 @@ static int nct6775_probe(struct platform_device *pdev)
 		data->REG_FAN_PULSES = NCT6776_REG_FAN_PULSES;
 		data->FAN_PULSE_SHIFT = NCT6775_FAN_PULSE_SHIFT;
 		data->REG_FAN_TIME[0] = NCT6775_REG_FAN_STOP_TIME;
-		data->REG_FAN_TIME[1] = NCT6776_REG_FAN_STEP_UP_TIME;
-		data->REG_FAN_TIME[2] = NCT6776_REG_FAN_STEP_DOWN_TIME;
+		data->REG_FAN_TIME[1] = NCT6775_REG_FAN_STEP_UP_TIME;
+		data->REG_FAN_TIME[2] = NCT6775_REG_FAN_STEP_DOWN_TIME;
 		data->REG_TOLERANCE_H = NCT6776_REG_TOLERANCE_H;
 		data->REG_PWM[0] = NCT6775_REG_PWM;
 		data->REG_PWM[1] = NCT6775_REG_FAN_START_OUTPUT;
@@ -3561,8 +3546,8 @@ static int nct6775_probe(struct platform_device *pdev)
 		data->REG_FAN_PULSES = NCT6779_REG_FAN_PULSES;
 		data->FAN_PULSE_SHIFT = NCT6775_FAN_PULSE_SHIFT;
 		data->REG_FAN_TIME[0] = NCT6775_REG_FAN_STOP_TIME;
-		data->REG_FAN_TIME[1] = NCT6776_REG_FAN_STEP_UP_TIME;
-		data->REG_FAN_TIME[2] = NCT6776_REG_FAN_STEP_DOWN_TIME;
+		data->REG_FAN_TIME[1] = NCT6775_REG_FAN_STEP_UP_TIME;
+		data->REG_FAN_TIME[2] = NCT6775_REG_FAN_STEP_DOWN_TIME;
 		data->REG_TOLERANCE_H = NCT6776_REG_TOLERANCE_H;
 		data->REG_PWM[0] = NCT6775_REG_PWM;
 		data->REG_PWM[1] = NCT6775_REG_FAN_START_OUTPUT;
@@ -3637,8 +3622,8 @@ static int nct6775_probe(struct platform_device *pdev)
 		data->REG_FAN_PULSES = NCT6779_REG_FAN_PULSES;
 		data->FAN_PULSE_SHIFT = NCT6775_FAN_PULSE_SHIFT;
 		data->REG_FAN_TIME[0] = NCT6775_REG_FAN_STOP_TIME;
-		data->REG_FAN_TIME[1] = NCT6776_REG_FAN_STEP_UP_TIME;
-		data->REG_FAN_TIME[2] = NCT6776_REG_FAN_STEP_DOWN_TIME;
+		data->REG_FAN_TIME[1] = NCT6775_REG_FAN_STEP_UP_TIME;
+		data->REG_FAN_TIME[2] = NCT6775_REG_FAN_STEP_DOWN_TIME;
 		data->REG_TOLERANCE_H = NCT6776_REG_TOLERANCE_H;
 		data->REG_PWM[0] = NCT6775_REG_PWM;
 		data->REG_PWM[1] = NCT6775_REG_FAN_START_OUTPUT;
@@ -3922,29 +3907,29 @@ static int nct6775_probe(struct platform_device *pdev)
 	if (IS_ERR(group))
 		return PTR_ERR(group);
 
-	data->groups[data->num_attr_groups++] = group;
+	data->groups[num_attr_groups++] = group;
 
 	group = nct6775_create_attr_group(dev, &nct6775_in_template_group,
 					  fls(data->have_in));
 	if (IS_ERR(group))
 		return PTR_ERR(group);
 
-	data->groups[data->num_attr_groups++] = group;
+	data->groups[num_attr_groups++] = group;
 
 	group = nct6775_create_attr_group(dev, &nct6775_fan_template_group,
 					  fls(data->has_fan));
 	if (IS_ERR(group))
 		return PTR_ERR(group);
 
-	data->groups[data->num_attr_groups++] = group;
+	data->groups[num_attr_groups++] = group;
 
 	group = nct6775_create_attr_group(dev, &nct6775_temp_template_group,
 					  fls(data->have_temp));
 	if (IS_ERR(group))
 		return PTR_ERR(group);
 
-	data->groups[data->num_attr_groups++] = group;
-	data->groups[data->num_attr_groups++] = &nct6775_group_other;
+	data->groups[num_attr_groups++] = group;
+	data->groups[num_attr_groups++] = &nct6775_group_other;
 
 	hwmon_dev = devm_hwmon_device_register_with_groups(dev, data->name,
 							   data, data->groups);
@@ -4236,7 +4221,7 @@ static void __exit sensors_nct6775_exit(void)
 }
 
 MODULE_AUTHOR("Guenter Roeck <linux@roeck-us.net>");
-MODULE_DESCRIPTION("NCT6775F/NCT6776F/NCT6779D driver");
+MODULE_DESCRIPTION("NCT6106D/NCT6775F/NCT6776F/NCT6779D/NCT6791D driver");
 MODULE_LICENSE("GPL");
 
 module_init(sensors_nct6775_init);

@@ -22,6 +22,8 @@
 #include <linux/kobject.h>
 #include <linux/delay.h>
 #include <linux/memblock.h>
+
+#include <asm/machdep.h>
 #include <asm/opal.h>
 #include <asm/firmware.h>
 #include <asm/mce.h>
@@ -103,12 +105,12 @@ int __init early_init_dt_scan_opal(unsigned long node,
 	if (of_flat_dt_is_compatible(node, "ibm,opal-v3")) {
 		powerpc_firmware_features |= FW_FEATURE_OPALv2;
 		powerpc_firmware_features |= FW_FEATURE_OPALv3;
-		printk("OPAL V3 detected !\n");
+		pr_info("OPAL V3 detected !\n");
 	} else if (of_flat_dt_is_compatible(node, "ibm,opal-v2")) {
 		powerpc_firmware_features |= FW_FEATURE_OPALv2;
-		printk("OPAL V2 detected !\n");
+		pr_info("OPAL V2 detected !\n");
 	} else {
-		printk("OPAL V1 detected !\n");
+		pr_info("OPAL V1 detected !\n");
 	}
 
 	/* Reinit all cores with the right endian */
@@ -192,16 +194,33 @@ static int __init opal_register_exception_handlers(void)
 	 * fwnmi area at 0x7000 to provide the glue space to OPAL
 	 */
 	glue = 0x7000;
-	opal_register_exception_handler(OPAL_HYPERVISOR_MAINTENANCE_HANDLER,
-					0, glue);
-	glue += 128;
+
+	/*
+	 * Check if we are running on newer firmware that exports
+	 * OPAL_HANDLE_HMI token. If yes, then don't ask OPAL to patch
+	 * the HMI interrupt and we catch it directly in Linux.
+	 *
+	 * For older firmware (i.e currently released POWER8 System Firmware
+	 * as of today <= SV810_087), we fallback to old behavior and let OPAL
+	 * patch the HMI vector and handle it inside OPAL firmware.
+	 *
+	 * For newer firmware (in development/yet to be released) we will
+	 * start catching/handling HMI directly in Linux.
+	 */
+	if (!opal_check_token(OPAL_HANDLE_HMI)) {
+		pr_info("opal: Old firmware detected, OPAL handles HMIs.\n");
+		opal_register_exception_handler(
+				OPAL_HYPERVISOR_MAINTENANCE_HANDLER,
+				0, glue);
+		glue += 128;
+	}
+
 	opal_register_exception_handler(OPAL_SOFTPATCH_HANDLER, 0, glue);
 #endif
 
 	return 0;
 }
-
-early_initcall(opal_register_exception_handlers);
+machine_early_initcall(powernv, opal_register_exception_handlers);
 
 int opal_notifier_register(struct notifier_block *nb)
 {
@@ -286,12 +305,16 @@ void opal_notifier_disable(void)
 int opal_message_notifier_register(enum OpalMessageType msg_type,
 					struct notifier_block *nb)
 {
-	if (!nb || msg_type >= OPAL_MSG_TYPE_MAX) {
-		pr_warning("%s: Invalid arguments, msg_type:%d\n",
+	if (!nb) {
+		pr_warning("%s: Invalid argument (%p)\n",
+			   __func__, nb);
+		return -EINVAL;
+	}
+	if (msg_type > OPAL_MSG_TYPE_MAX) {
+		pr_warning("%s: Invalid message type argument (%d)\n",
 			   __func__, msg_type);
 		return -EINVAL;
 	}
-
 	return atomic_notifier_chain_register(
 				&opal_msg_notifier_head[msg_type], nb);
 }
@@ -320,7 +343,7 @@ static void opal_handle_message(void)
 
 	/* check for errors. */
 	if (ret) {
-		pr_warning("%s: Failed to retrive opal message, err=%lld\n",
+		pr_warning("%s: Failed to retrieve opal message, err=%lld\n",
 				__func__, ret);
 		return;
 	}
@@ -328,8 +351,8 @@ static void opal_handle_message(void)
 	type = be32_to_cpu(msg.msg_type);
 
 	/* Sanity check */
-	if (type >= OPAL_MSG_TYPE_MAX) {
-		pr_warn_once("%s: Unknown message type: %u\n", __func__, type);
+	if (type > OPAL_MSG_TYPE_MAX) {
+		pr_warning("%s: Unknown message type: %u\n", __func__, type);
 		return;
 	}
 	opal_message_do_notify(type, (void *)&msg);
@@ -364,7 +387,7 @@ static int __init opal_message_init(void)
 	}
 	return 0;
 }
-early_initcall(opal_message_init);
+machine_early_initcall(powernv, opal_message_init);
 
 int opal_get_chars(uint32_t vtermno, char *buf, int count)
 {
@@ -459,7 +482,6 @@ static int opal_recover_mce(struct pt_regs *regs,
 
 	if (!(regs->msr & MSR_RI)) {
 		/* If MSR_RI isn't set, we cannot recover */
-		pr_err("Machine check interrupt unrecoverable: MSR(RI=0)\n");
 		recovered = 0;
 	} else if (evt->disposition == MCE_DISPOSITION_RECOVERED) {
 		/* Platform corrected itself */
@@ -508,6 +530,46 @@ int opal_machine_check(struct pt_regs *regs)
 	if (opal_recover_mce(regs, &evt))
 		return 1;
 	return 0;
+}
+
+/* Early hmi handler called in real mode. */
+int opal_hmi_exception_early(struct pt_regs *regs)
+{
+	s64 rc;
+
+	/*
+	 * call opal hmi handler. Pass paca address as token.
+	 * The return value OPAL_SUCCESS is an indication that there is
+	 * an HMI event generated waiting to pull by Linux.
+	 */
+	rc = opal_handle_hmi();
+	if (rc == OPAL_SUCCESS) {
+		local_paca->hmi_event_available = 1;
+		return 1;
+	}
+	return 0;
+}
+
+/* HMI exception handler called in virtual mode during check_irq_replay. */
+int opal_handle_hmi_exception(struct pt_regs *regs)
+{
+	s64 rc;
+	__be64 evt = 0;
+
+	/*
+	 * Check if HMI event is available.
+	 * if Yes, then call opal_poll_events to pull opal messages and
+	 * process them.
+	 */
+	if (!local_paca->hmi_event_available)
+		return 0;
+
+	local_paca->hmi_event_available = 0;
+	rc = opal_poll_events(&evt);
+	if (rc == OPAL_SUCCESS && evt)
+		opal_do_notifier(be64_to_cpu(evt));
+
+	return 1;
 }
 
 static uint64_t find_recovery_address(uint64_t nip)
@@ -564,6 +626,24 @@ static int opal_sysfs_init(void)
 	return 0;
 }
 
+static void __init opal_dump_region_init(void)
+{
+	void *addr;
+	uint64_t size;
+	int rc;
+
+	/* Register kernel log buffer */
+	addr = log_buf_addr_get();
+	size = log_buf_len_get();
+	rc = opal_register_dump_region(OPAL_DUMP_REGION_LOG_BUF,
+				       __pa(addr), size);
+	/* Don't warn if this is just an older OPAL that doesn't
+	 * know about that call
+	 */
+	if (rc && rc != OPAL_UNSUPPORTED)
+		pr_warn("DUMP: Failed to register kernel log buffer. "
+			"rc = %d\n", rc);
+}
 static int __init opal_init(void)
 {
 	struct device_node *np, *consoles;
@@ -613,6 +693,8 @@ static int __init opal_init(void)
 	/* Create "opal" kobject under /sys/firmware */
 	rc = opal_sysfs_init();
 	if (rc == 0) {
+		/* Setup dump region interface */
+		opal_dump_region_init();
 		/* Setup error log interface */
 		rc = opal_elog_init();
 		/* Setup code update interface */
@@ -627,7 +709,7 @@ static int __init opal_init(void)
 
 	return 0;
 }
-subsys_initcall(opal_init);
+machine_subsys_initcall(powernv, opal_init);
 
 void opal_shutdown(void)
 {
@@ -653,6 +735,9 @@ void opal_shutdown(void)
 		else
 			mdelay(10);
 	}
+
+	/* Unregister memory dump region */
+	opal_unregister_dump_region(OPAL_DUMP_REGION_LOG_BUF);
 }
 
 /* Export this so that test modules can use it */

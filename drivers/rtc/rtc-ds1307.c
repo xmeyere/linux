@@ -126,9 +126,14 @@ struct chip_desc {
 	u16			nvram_offset;
 	u16			nvram_size;
 	u16			trickle_charger_reg;
+	u8			trickle_charger_setup;
+	u8			(*do_trickle_setup)(struct i2c_client *, uint32_t, bool);
 };
 
-static const struct chip_desc chips[last_ds_type] = {
+static u8 do_trickle_setup_ds1339(struct i2c_client *,
+				  uint32_t ohms, bool diode);
+
+static struct chip_desc chips[last_ds_type] = {
 	[ds_1307] = {
 		.nvram_offset	= 8,
 		.nvram_size	= 56,
@@ -143,6 +148,7 @@ static const struct chip_desc chips[last_ds_type] = {
 	[ds_1339] = {
 		.alarm		= 1,
 		.trickle_charger_reg = 0x10,
+		.do_trickle_setup = &do_trickle_setup_ds1339,
 	},
 	[ds_1340] = {
 		.trickle_charger_reg = 0x08,
@@ -611,8 +617,6 @@ static const struct rtc_class_ops ds13xx_rtc_ops = {
  * Alarm support for mcp7941x devices.
  */
 
-#define MCP794XX_REG_WEEKDAY		0x3
-#define MCP794XX_REG_WEEKDAY_WDAY_MASK	0x7
 #define MCP7941X_REG_CONTROL		0x07
 #	define MCP7941X_BIT_ALM0_EN	0x10
 #	define MCP7941X_BIT_ALM1_EN	0x20
@@ -729,9 +733,9 @@ static int mcp7941x_set_alarm(struct device *dev, struct rtc_wkalrm *t)
 	regs[3] = bin2bcd(t->time.tm_sec);
 	regs[4] = bin2bcd(t->time.tm_min);
 	regs[5] = bin2bcd(t->time.tm_hour);
-	regs[6] = bin2bcd(t->time.tm_wday + 1);
+	regs[6] = bin2bcd(t->time.tm_wday) + 1;
 	regs[7] = bin2bcd(t->time.tm_mday);
-	regs[8] = bin2bcd(t->time.tm_mon + 1);
+	regs[8] = bin2bcd(t->time.tm_mon) + 1;
 
 	/* Clear the alarm 0 interrupt flag. */
 	regs[6] &= ~MCP7941X_BIT_ALMX_IF;
@@ -835,22 +839,62 @@ ds1307_nvram_write(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
+
 /*----------------------------------------------------------------------*/
+
+static u8 do_trickle_setup_ds1339(struct i2c_client *client,
+				  uint32_t ohms, bool diode)
+{
+	u8 setup = (diode) ? DS1307_TRICKLE_CHARGER_DIODE :
+		DS1307_TRICKLE_CHARGER_NO_DIODE;
+
+	switch (ohms) {
+	case 250:
+		setup |= DS1307_TRICKLE_CHARGER_250_OHM;
+		break;
+	case 2000:
+		setup |= DS1307_TRICKLE_CHARGER_2K_OHM;
+		break;
+	case 4000:
+		setup |= DS1307_TRICKLE_CHARGER_4K_OHM;
+		break;
+	default:
+		dev_warn(&client->dev,
+			 "Unsupported ohm value %u in dt\n", ohms);
+		return 0;
+	}
+	return setup;
+}
+
+static void ds1307_trickle_of_init(struct i2c_client *client,
+				   struct chip_desc *chip)
+{
+	uint32_t ohms = 0;
+	bool diode = true;
+
+	if (!chip->do_trickle_setup)
+		goto out;
+	if (of_property_read_u32(client->dev.of_node, "trickle-resistor-ohms" , &ohms))
+		goto out;
+	if (of_property_read_bool(client->dev.of_node, "trickle-diode-disable"))
+		diode = false;
+	chip->trickle_charger_setup = chip->do_trickle_setup(client,
+							     ohms, diode);
+out:
+	return;
+}
 
 static int ds1307_probe(struct i2c_client *client,
 			const struct i2c_device_id *id)
 {
 	struct ds1307		*ds1307;
 	int			err = -ENODEV;
-	int			tmp, wday;
-	const struct chip_desc	*chip = &chips[id->driver_data];
+	int			tmp;
+	struct chip_desc	*chip = &chips[id->driver_data];
 	struct i2c_adapter	*adapter = to_i2c_adapter(client->dev.parent);
 	bool			want_irq = false;
 	unsigned char		*buf;
 	struct ds1307_platform_data *pdata = dev_get_platdata(&client->dev);
-	struct rtc_time		tm;
-	unsigned long		timestamp;
-
 	static const int	bbsqi_bitpos[] = {
 		[ds_1337] = 0,
 		[ds_1339] = DS1339_BIT_BBSQI,
@@ -871,9 +915,19 @@ static int ds1307_probe(struct i2c_client *client,
 	ds1307->client	= client;
 	ds1307->type	= id->driver_data;
 
-	if (pdata && pdata->trickle_charger_setup && chip->trickle_charger_reg)
+	if (!pdata && client->dev.of_node)
+		ds1307_trickle_of_init(client, chip);
+	else if (pdata && pdata->trickle_charger_setup)
+		chip->trickle_charger_setup = pdata->trickle_charger_setup;
+
+	if (chip->trickle_charger_setup && chip->trickle_charger_reg) {
+		dev_dbg(&client->dev, "writing trickle charger info 0x%x to 0x%x\n",
+		    DS13XX_TRICKLE_CHARGER_MAGIC | chip->trickle_charger_setup,
+		    chip->trickle_charger_reg);
 		i2c_smbus_write_byte_data(client, chip->trickle_charger_reg,
-			DS13XX_TRICKLE_CHARGER_MAGIC | pdata->trickle_charger_setup);
+		    DS13XX_TRICKLE_CHARGER_MAGIC |
+		    chip->trickle_charger_setup);
+	}
 
 	buf = ds1307->regs;
 	if (i2c_check_functionality(adapter, I2C_FUNC_SMBUS_I2C_BLOCK)) {
@@ -1118,27 +1172,6 @@ read_rtc:
 				rtc_ops, THIS_MODULE);
 	if (IS_ERR(ds1307->rtc)) {
 		return PTR_ERR(ds1307->rtc);
-	}
-
-	/*
-	 * Some IPs have weekday reset value = 0x1 which might not correct
-	 * hence compute the wday using the current date/month/year values
-	 */
-	ds1307_get_time(&client->dev, &tm);
-	wday = tm.tm_wday;
-	rtc_tm_to_time(&tm, &timestamp);
-	rtc_time_to_tm(timestamp, &tm);
-
-	/*
-	 * Check if reset wday is different from the computed wday
-	 * If different then set the wday which we computed using
-	 * timestamp
-	 */
-	if (wday != tm.tm_wday) {
-		wday = i2c_smbus_read_byte_data(client, MCP794XX_REG_WEEKDAY);
-		wday = wday & ~MCP794XX_REG_WEEKDAY_WDAY_MASK;
-		wday = wday | (tm.tm_wday + 1);
-		i2c_smbus_write_byte_data(client, MCP794XX_REG_WEEKDAY, wday);
 	}
 
 	if (want_irq) {

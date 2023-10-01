@@ -22,8 +22,11 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/clk/tegra.h>
-#include <linux/tegra-powergate.h>
+
+#include <soc/tegra/pmc.h>
+
 #include <dt-bindings/clock/tegra30-car.h>
+
 #include "clk.h"
 #include "clk-id.h"
 
@@ -1060,7 +1063,7 @@ static void __init tegra30_super_clk_init(void)
 	 * U71 divider of cclk_lp.
 	 */
 	clk = tegra_clk_register_divider("pll_p_out3_cclklp", "pll_p_out3",
-				clk_base + SUPER_CCLKLP_DIVIDER, 0,
+				clk_base + SUPER_CCLKG_DIVIDER, 0,
 				TEGRA_DIVIDER_INT, 16, 8, 1, NULL);
 	clk_register_clkdev(clk, "pll_p_out3_cclklp", NULL);
 

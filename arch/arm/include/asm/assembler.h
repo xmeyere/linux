@@ -24,6 +24,8 @@
 #include <asm/domain.h>
 #include <asm/opcodes-virt.h>
 #include <asm/asm-offsets.h>
+#include <asm/page.h>
+#include <asm/thread_info.h>
 
 #define IOMEM(x)	(x)
 
@@ -179,10 +181,10 @@
  * Get current thread_info.
  */
 	.macro	get_thread_info, rd
- ARM(	mov	\rd, sp, lsr #13	)
+ ARM(	mov	\rd, sp, lsr #THREAD_SIZE_ORDER + PAGE_SHIFT	)
  THUMB(	mov	\rd, sp			)
- THUMB(	lsr	\rd, \rd, #13		)
-	mov	\rd, \rd, lsl #13
+ THUMB(	lsr	\rd, \rd, #THREAD_SIZE_ORDER + PAGE_SHIFT	)
+	mov	\rd, \rd, lsl #THREAD_SIZE_ORDER + PAGE_SHIFT
 	.endm
 
 /*
@@ -425,14 +427,25 @@ THUMB(	orr	\reg , \reg , #PSR_T_BIT	)
 #endif
 	.endm
 
-#ifdef CONFIG_KPROBES
-#define _ASM_NOKPROBE(entry)				\
-	.pushsection "_kprobe_blacklist", "aw" ;	\
-	.balign 4 ;					\
-	.long entry;					\
-	.popsection
+	.irp	c,,eq,ne,cs,cc,mi,pl,vs,vc,hi,ls,ge,lt,gt,le,hs,lo
+	.macro	ret\c, reg
+#if __LINUX_ARM_ARCH__ < 6
+	mov\c	pc, \reg
 #else
-#define _ASM_NOKPROBE(entry)
+	.ifeqs	"\reg", "lr"
+	bx\c	\reg
+	.else
+	mov\c	pc, \reg
+	.endif
 #endif
+	.endm
+	.endr
+
+	.macro	ret.w, reg
+	ret	\reg
+#ifdef CONFIG_THUMB2_KERNEL
+	nop
+#endif
+	.endm
 
 #endif /* __ASM_ASSEMBLER_H__ */

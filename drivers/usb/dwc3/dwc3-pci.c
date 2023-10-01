@@ -31,20 +31,6 @@
 #define PCI_DEVICE_ID_INTEL_BYT		0x0f37
 #define PCI_DEVICE_ID_INTEL_MRFLD	0x119e
 #define PCI_DEVICE_ID_INTEL_BSW		0x22B7
-#define PCI_DEVICE_ID_INTEL_SPTLP	0x9d30
-#define PCI_DEVICE_ID_INTEL_SPTH	0xa130
-#define PCI_DEVICE_ID_INTEL_BXT		0x0aaa
-#define PCI_DEVICE_ID_INTEL_BXT_M	0x1aaa
-#define PCI_DEVICE_ID_INTEL_APL		0x5aaa
-#define PCI_DEVICE_ID_INTEL_KBP		0xa2b0
-#define PCI_DEVICE_ID_INTEL_CMLLP	0x02ee
-#define PCI_DEVICE_ID_INTEL_CMLH	0x06ee
-#define PCI_DEVICE_ID_INTEL_GLK		0x31aa
-#define PCI_DEVICE_ID_INTEL_CNPLP	0x9dee
-#define PCI_DEVICE_ID_INTEL_CNPH	0xa36e
-#define PCI_DEVICE_ID_INTEL_ICLLP	0x34ee
-#define PCI_DEVICE_ID_INTEL_EHLLP	0x4b7e
-#define PCI_DEVICE_ID_INTEL_TGPLP	0xa0ee
 
 struct dwc3_pci {
 	struct device		*dev;
@@ -118,10 +104,8 @@ static int dwc3_pci_probe(struct pci_dev *pci,
 	struct device		*dev = &pci->dev;
 
 	glue = devm_kzalloc(dev, sizeof(*glue), GFP_KERNEL);
-	if (!glue) {
-		dev_err(dev, "not enough memory\n");
+	if (!glue)
 		return -ENOMEM;
-	}
 
 	glue->dev = dev;
 
@@ -159,7 +143,7 @@ static int dwc3_pci_probe(struct pci_dev *pci,
 	ret = platform_device_add_resources(dwc3, res, ARRAY_SIZE(res));
 	if (ret) {
 		dev_err(dev, "couldn't add resources to dwc3 device\n");
-		goto err3;
+		return ret;
 	}
 
 	pci_set_drvdata(pci, glue);
@@ -201,20 +185,6 @@ static const struct pci_device_id dwc3_pci_id_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BSW), },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BYT), },
 	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_MRFLD), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CMLLP), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CMLH), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SPTLP), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_SPTH), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BXT), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_BXT_M), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_APL), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_KBP), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_GLK), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CNPLP), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_CNPH), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_ICLLP), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_EHLLP), },
-	{ PCI_DEVICE(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_INTEL_TGPLP), },
 	{  }	/* Terminating Entry */
 };
 MODULE_DEVICE_TABLE(pci, dwc3_pci_id_table);

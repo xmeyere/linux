@@ -63,18 +63,9 @@ static struct irq_chip mpic_pasemi_msi_chip = {
 	.name			= "PASEMI-MSI",
 };
 
-static int pasemi_msi_check_device(struct pci_dev *pdev, int nvec, int type)
-{
-	if (type == PCI_CAP_ID_MSIX)
-		pr_debug("pasemi_msi: MSI-X untested, trying anyway\n");
-
-	return 0;
-}
-
 static void pasemi_msi_teardown_msi_irqs(struct pci_dev *pdev)
 {
 	struct msi_desc *entry;
-	irq_hw_number_t hwirq;
 
 	pr_debug("pasemi_msi_teardown_msi_irqs, pdev %p\n", pdev);
 
@@ -82,11 +73,10 @@ static void pasemi_msi_teardown_msi_irqs(struct pci_dev *pdev)
 		if (entry->irq == NO_IRQ)
 			continue;
 
-		hwirq = virq_to_hw(entry->irq);
 		irq_set_msi_desc(entry->irq, NULL);
-		irq_dispose_mapping(entry->irq);
 		msi_bitmap_free_hwirqs(&msi_mpic->msi_bitmap,
-				       hwirq, ALLOC_CHUNK);
+				       virq_to_hw(entry->irq), ALLOC_CHUNK);
+		irq_dispose_mapping(entry->irq);
 	}
 
 	return;
@@ -99,6 +89,8 @@ static int pasemi_msi_setup_msi_irqs(struct pci_dev *pdev, int nvec, int type)
 	struct msi_msg msg;
 	int hwirq;
 
+	if (type == PCI_CAP_ID_MSIX)
+		pr_debug("pasemi_msi: MSI-X untested, trying anyway\n");
 	pr_debug("pasemi_msi_setup_msi_irqs, pdev %p nvec %d type %d\n",
 		 pdev, nvec, type);
 
@@ -171,7 +163,6 @@ int mpic_pasemi_msi_init(struct mpic *mpic)
 	WARN_ON(ppc_md.setup_msi_irqs);
 	ppc_md.setup_msi_irqs = pasemi_msi_setup_msi_irqs;
 	ppc_md.teardown_msi_irqs = pasemi_msi_teardown_msi_irqs;
-	ppc_md.msi_check_device = pasemi_msi_check_device;
 
 	return 0;
 }

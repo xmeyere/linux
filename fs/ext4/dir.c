@@ -77,12 +77,7 @@ int __ext4_check_dir_entry(const char *function, unsigned int line,
 	else if (unlikely(rlen < EXT4_DIR_REC_LEN(de->name_len)))
 		error_msg = "rec_len is too small for name_len";
 	else if (unlikely(((char *) de - buf) + rlen > size))
-		error_msg = "directory entry overrun";
-	else if (unlikely(((char *) de - buf) + rlen >
-			  size - EXT4_DIR_REC_LEN(1) &&
-			  ((char *) de - buf) + rlen != size)) {
-		error_msg = "directory entry too close to block end";
-	}
+		error_msg = "directory entry across range";
 	else if (unlikely(le32_to_cpu(de->inode) >
 			le32_to_cpu(EXT4_SB(dir->i_sb)->s_es->s_inodes_count)))
 		error_msg = "inode out of bounds";
@@ -91,16 +86,18 @@ int __ext4_check_dir_entry(const char *function, unsigned int line,
 
 	if (filp)
 		ext4_error_file(filp, function, line, bh->b_blocknr,
-				"bad entry in directory: %s - offset=%u, "
-				"inode=%u, rec_len=%d, name_len=%d, size=%d",
-				error_msg, offset, le32_to_cpu(de->inode),
-				rlen, de->name_len, size);
+				"bad entry in directory: %s - offset=%u(%u), "
+				"inode=%u, rec_len=%d, name_len=%d",
+				error_msg, (unsigned) (offset % size),
+				offset, le32_to_cpu(de->inode),
+				rlen, de->name_len);
 	else
 		ext4_error_inode(dir, function, line, bh->b_blocknr,
-				"bad entry in directory: %s - offset=%u, "
-				"inode=%u, rec_len=%d, name_len=%d, size=%d",
-				 error_msg, offset, le32_to_cpu(de->inode),
-				 rlen, de->name_len, size);
+				"bad entry in directory: %s - offset=%u(%u), "
+				"inode=%u, rec_len=%d, name_len=%d",
+				error_msg, (unsigned) (offset % size),
+				offset, le32_to_cpu(de->inode),
+				rlen, de->name_len);
 
 	return 1;
 }
@@ -154,13 +151,11 @@ static int ext4_readdir(struct file *file, struct dir_context *ctx)
 					&file->f_ra, file,
 					index, 1);
 			file->f_ra.prev_pos = (loff_t)index << PAGE_CACHE_SHIFT;
-			bh = ext4_bread(NULL, inode, map.m_lblk, 0, &err);
+			bh = ext4_bread(NULL, inode, map.m_lblk, 0);
+			if (IS_ERR(bh))
+				return PTR_ERR(bh);
 		}
 
-		/*
-		 * We ignore I/O errors on directories so users have a chance
-		 * of recovering data when there's a bad sector
-		 */
 		if (!bh) {
 			if (!dir_has_error) {
 				EXT4_ERROR_FILE(file, 0,
@@ -325,15 +320,13 @@ static loff_t ext4_dir_llseek(struct file *file, loff_t offset, int whence)
 {
 	struct inode *inode = file->f_mapping->host;
 	int dx_dir = is_dx_dir(inode);
-	loff_t ret, htree_max = ext4_get_htree_eof(file);
+	loff_t htree_max = ext4_get_htree_eof(file);
 
 	if (likely(dx_dir))
-		ret = generic_file_llseek_size(file, offset, whence,
+		return generic_file_llseek_size(file, offset, whence,
 						    htree_max, htree_max);
 	else
-		ret = ext4_llseek(file, offset, whence);
-	file->f_version = inode->i_version - 1;
-	return ret;
+		return ext4_llseek(file, offset, whence);
 }
 
 /*
@@ -572,6 +565,31 @@ static int ext4_release_dir(struct inode *inode, struct file *filp)
 {
 	if (filp->private_data)
 		ext4_htree_free_dir_info(filp->private_data);
+
+	return 0;
+}
+
+int ext4_check_all_de(struct inode *dir, struct buffer_head *bh, void *buf,
+		      int buf_size)
+{
+	struct ext4_dir_entry_2 *de;
+	int nlen, rlen;
+	unsigned int offset = 0;
+	char *top;
+
+	de = (struct ext4_dir_entry_2 *)buf;
+	top = buf + buf_size;
+	while ((char *) de < top) {
+		if (ext4_check_dir_entry(dir, NULL, de, bh,
+					 buf, buf_size, offset))
+			return -EIO;
+		nlen = EXT4_DIR_REC_LEN(de->name_len);
+		rlen = ext4_rec_len_from_disk(de->rec_len, buf_size);
+		de = (struct ext4_dir_entry_2 *)((char *)de + rlen);
+		offset += rlen;
+	}
+	if ((char *) de > top)
+		return -EIO;
 
 	return 0;
 }

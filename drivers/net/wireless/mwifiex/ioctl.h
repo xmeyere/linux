@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: ioctl data structures & APIs
  *
- * Copyright (C) 2011, Marvell International Ltd.
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -245,7 +245,6 @@ struct mwifiex_ds_encrypt_key {
 
 struct mwifiex_power_cfg {
 	u32 is_power_auto;
-	u32 is_power_fixed;
 	u32 power_level;
 };
 

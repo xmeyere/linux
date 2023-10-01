@@ -149,6 +149,7 @@ static int process_one_ticket(struct ceph_auth_client *ac,
 	struct ceph_crypto_key old_key;
 	void *ticket_buf = NULL;
 	void *tp, *tpend;
+	void **ptp;
 	struct ceph_timespec new_validity;
 	struct ceph_crypto_key new_session_key;
 	struct ceph_buffer *new_ticket_blob;
@@ -208,25 +209,19 @@ static int process_one_ticket(struct ceph_auth_client *ac,
 			goto out;
 		}
 		tp = ticket_buf;
-		dlen = ceph_decode_32(&tp);
+		ptp = &tp;
+		tpend = *ptp + dlen;
 	} else {
 		/* unencrypted */
-		ceph_decode_32_safe(p, end, dlen, bad);
-		ticket_buf = kmalloc(dlen, GFP_NOFS);
-		if (!ticket_buf) {
-			ret = -ENOMEM;
-			goto out;
-		}
-		tp = ticket_buf;
-		ceph_decode_need(p, end, dlen, bad);
-		ceph_decode_copy(p, ticket_buf, dlen);
+		ptp = p;
+		tpend = end;
 	}
-	tpend = tp + dlen;
+	ceph_decode_32_safe(ptp, tpend, dlen, bad);
 	dout(" ticket blob is %d bytes\n", dlen);
-	ceph_decode_need(&tp, tpend, 1 + sizeof(u64), bad);
-	blob_struct_v = ceph_decode_8(&tp);
-	new_secret_id = ceph_decode_64(&tp);
-	ret = ceph_decode_buffer(&new_ticket_blob, &tp, tpend);
+	ceph_decode_need(ptp, tpend, 1 + sizeof(u64), bad);
+	blob_struct_v = ceph_decode_8(ptp);
+	new_secret_id = ceph_decode_64(ptp);
+	ret = ceph_decode_buffer(&new_ticket_blob, ptp, tpend);
 	if (ret)
 		goto out;
 
@@ -538,14 +533,6 @@ static int ceph_x_handle_reply(struct ceph_auth_client *ac, int result,
 	return -EAGAIN;
 }
 
-static void ceph_x_destroy_authorizer(struct ceph_authorizer *a)
-{
-	struct ceph_x_authorizer *au = (void *)a;
-
-	ceph_buffer_put(au->buf);
-	kfree(au);
-}
-
 static int ceph_x_create_authorizer(
 	struct ceph_auth_client *ac, int peer_type,
 	struct ceph_auth_handshake *auth)
@@ -561,8 +548,6 @@ static int ceph_x_create_authorizer(
 	au = kzalloc(sizeof(*au), GFP_NOFS);
 	if (!au)
 		return -ENOMEM;
-
-	au->base.destroy = ceph_x_destroy_authorizer;
 
 	ret = ceph_x_build_authorizer(ac, th, au);
 	if (ret) {
@@ -628,6 +613,16 @@ static int ceph_x_verify_authorizer_reply(struct ceph_auth_client *ac,
 	return ret;
 }
 
+static void ceph_x_destroy_authorizer(struct ceph_auth_client *ac,
+				      struct ceph_authorizer *a)
+{
+	struct ceph_x_authorizer *au = (void *)a;
+
+	ceph_buffer_put(au->buf);
+	kfree(au);
+}
+
+
 static void ceph_x_reset(struct ceph_auth_client *ac)
 {
 	struct ceph_x_info *xi = ac->private;
@@ -678,6 +673,7 @@ static const struct ceph_auth_client_ops ceph_x_ops = {
 	.create_authorizer = ceph_x_create_authorizer,
 	.update_authorizer = ceph_x_update_authorizer,
 	.verify_authorizer_reply = ceph_x_verify_authorizer_reply,
+	.destroy_authorizer = ceph_x_destroy_authorizer,
 	.invalidate_authorizer = ceph_x_invalidate_authorizer,
 	.reset =  ceph_x_reset,
 	.destroy = ceph_x_destroy,

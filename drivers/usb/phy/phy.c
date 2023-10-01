@@ -78,9 +78,7 @@ static void devm_usb_phy_release(struct device *dev, void *res)
 
 static int devm_usb_phy_match(struct device *dev, void *res, void *match_data)
 {
-	struct usb_phy **phy = res;
-
-	return *phy == match_data;
+	return res == match_data;
 }
 
 /**
@@ -149,7 +147,7 @@ err0:
 }
 EXPORT_SYMBOL_GPL(usb_get_phy);
 
- /**
+/**
  * devm_usb_get_phy_by_phandle - find the USB PHY by phandle
  * @dev - device that requests this phy
  * @phandle - name of the property holding the phy phandle value

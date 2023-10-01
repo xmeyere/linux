@@ -582,6 +582,14 @@ static inline void flush_requests(struct blkfront_info *info)
 		notify_remote_via_irq(info->irq);
 }
 
+static inline bool blkif_request_flush_valid(struct request *req,
+					     struct blkfront_info *info)
+{
+	return ((req->cmd_type != REQ_TYPE_FS) ||
+		((req->cmd_flags & (REQ_FLUSH | REQ_FUA)) &&
+		!info->flush_op));
+}
+
 /*
  * do_blkif_request
  *  read a block; request is in a request queue
@@ -604,9 +612,7 @@ static void do_blkif_request(struct request_queue *rq)
 
 		blk_start_request(req);
 
-		if ((req->cmd_type != REQ_TYPE_FS) ||
-		    ((req->cmd_flags & (REQ_FLUSH | REQ_FUA)) &&
-		    !info->flush_op)) {
+		if (blkif_request_flush_valid(req, info)) {
 			__blk_end_request_all(req, -EIO);
 			continue;
 		}
@@ -1093,10 +1099,8 @@ static void blkif_completion(struct blk_shadow *s, struct blkfront_info *info,
 				 * Add the used indirect page back to the list of
 				 * available pages for indirect grefs.
 				 */
-				if (!info->feature_persistent) {
-					indirect_page = pfn_to_page(s->indirect_grants[i]->pfn);
-					list_add(&indirect_page->lru, &info->indirect_pages);
-				}
+				indirect_page = pfn_to_page(s->indirect_grants[i]->pfn);
+				list_add(&indirect_page->lru, &info->indirect_pages);
 				s->indirect_grants[i]->gref = GRANT_INVALID_REF;
 				list_add_tail(&s->indirect_grants[i]->node, &info->grants);
 			}
@@ -1905,8 +1909,7 @@ static void blkback_changed(struct xenbus_device *dev,
 			break;
 		/* Missed the backend's Closing state -- fallthrough */
 	case XenbusStateClosing:
-		if (info)
-			blkfront_closing(info);
+		blkfront_closing(info);
 		break;
 	}
 }
@@ -2058,13 +2061,14 @@ static const struct xenbus_device_id blkfront_ids[] = {
 	{ "" }
 };
 
-static DEFINE_XENBUS_DRIVER(blkfront, ,
+static struct xenbus_driver blkfront_driver = {
+	.ids  = blkfront_ids,
 	.probe = blkfront_probe,
 	.remove = blkfront_remove,
 	.resume = blkfront_resume,
 	.otherend_changed = blkback_changed,
 	.is_ready = blkfront_is_ready,
-);
+};
 
 static int __init xlblk_init(void)
 {

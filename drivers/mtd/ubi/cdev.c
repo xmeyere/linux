@@ -425,8 +425,10 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 			break;
 
 		err = ubi_start_update(ubi, vol, bytes);
-		if (bytes == 0)
+		if (bytes == 0) {
+			ubi_volume_notify(ubi, vol, UBI_VOLUME_UPDATED);
 			revoke_exclusive(desc, UBI_READWRITE);
+		}
 		break;
 	}
 
@@ -451,7 +453,7 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 		/* Validate the request */
 		err = -EINVAL;
 		if (req.lnum < 0 || req.lnum >= vol->reserved_pebs ||
-		    req.bytes < 0 || req.bytes > vol->usable_leb_size)
+		    req.bytes < 0 || req.lnum >= vol->usable_leb_size)
 			break;
 
 		err = get_exclusive(desc);
@@ -699,7 +701,7 @@ static int rename_volumes(struct ubi_device *ubi,
 		req->ents[i].name[req->ents[i].name_len] = '\0';
 		n = strlen(req->ents[i].name);
 		if (n != req->ents[i].name_len)
-			err = -EINVAL;
+			return -EINVAL;
 	}
 
 	/* Make sure volume IDs and names are unique */

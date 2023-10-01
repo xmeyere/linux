@@ -109,15 +109,9 @@ static int tps65217_bl_update_status(struct backlight_device *bl)
 	return rc;
 }
 
-static int tps65217_bl_get_brightness(struct backlight_device *bl)
-{
-	return bl->props.brightness;
-}
-
 static const struct backlight_ops tps65217_bl_ops = {
 	.options	= BL_CORE_SUSPENDRESUME,
 	.update_status	= tps65217_bl_update_status,
-	.get_brightness	= tps65217_bl_get_brightness
 };
 
 static int tps65217_bl_hw_init(struct tps65217_bl *tps65217_bl,
@@ -190,11 +184,11 @@ static struct tps65217_bl_pdata *
 tps65217_bl_parse_dt(struct platform_device *pdev)
 {
 	struct tps65217 *tps = dev_get_drvdata(pdev->dev.parent);
-	struct device_node *node;
+	struct device_node *node = of_node_get(tps->dev->of_node);
 	struct tps65217_bl_pdata *pdata, *err;
 	u32 val;
 
-	node = of_get_child_by_name(tps->dev->of_node, "backlight");
+	node = of_find_node_by_name(node, "backlight");
 	if (!node)
 		return ERR_PTR(-ENODEV);
 
@@ -329,7 +323,6 @@ static int tps65217_bl_probe(struct platform_device *pdev)
 static struct platform_driver tps65217_bl_driver = {
 	.probe		= tps65217_bl_probe,
 	.driver		= {
-		.owner	= THIS_MODULE,
 		.name	= "tps65217-bl",
 	},
 };

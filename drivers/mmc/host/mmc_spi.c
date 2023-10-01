@@ -1149,22 +1149,17 @@ static void mmc_spi_initsequence(struct mmc_spi_host *host)
 	 * SPI protocol.  Another is that when chipselect is released while
 	 * the card returns BUSY status, the clock must issue several cycles
 	 * with chipselect high before the card will stop driving its output.
-	 *
-	 * SPI_CS_HIGH means "asserted" here. In some cases like when using
-	 * GPIOs for chip select, SPI_CS_HIGH is set but this will be logically
-	 * inverted by gpiolib, so if we want to ascertain to drive it high
-	 * we should toggle the default with an XOR as we do here.
 	 */
-	host->spi->mode ^= SPI_CS_HIGH;
+	host->spi->mode |= SPI_CS_HIGH;
 	if (spi_setup(host->spi) != 0) {
 		/* Just warn; most cards work without it. */
 		dev_warn(&host->spi->dev,
 				"can't change chip-select polarity\n");
-		host->spi->mode ^= SPI_CS_HIGH;
+		host->spi->mode &= ~SPI_CS_HIGH;
 	} else {
 		mmc_spi_readbytes(host, 18);
 
-		host->spi->mode ^= SPI_CS_HIGH;
+		host->spi->mode &= ~SPI_CS_HIGH;
 		if (spi_setup(host->spi) != 0) {
 			/* Wot, we can't get the same setup we had before? */
 			dev_err(&host->spi->dev,
@@ -1443,7 +1438,6 @@ static int mmc_spi_probe(struct spi_device *spi)
 			goto fail_add_host;
 		mmc_gpiod_request_cd_irq(mmc);
 	}
-	mmc_detect_change(mmc, 0);
 
 	if (host->pdata && host->pdata->flags & MMC_SPI_USE_RO_GPIO) {
 		has_ro = true;

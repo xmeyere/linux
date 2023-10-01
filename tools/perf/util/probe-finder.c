@@ -26,7 +26,6 @@
 #include <errno.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <getopt.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdarg.h>
@@ -282,6 +281,7 @@ static int convert_variable_type(Dwarf_Die *vr_die,
 	struct probe_trace_arg_ref **ref_ptr = &tvar->ref;
 	Dwarf_Die type;
 	char buf[16];
+	char sbuf[STRERR_BUFSIZE];
 	int bsize, boffs, total;
 	int ret;
 
@@ -368,7 +368,7 @@ formatted:
 		if (ret >= 16)
 			ret = -E2BIG;
 		pr_warning("Failed to convert variable type: %s\n",
-			   strerror(-ret));
+			   strerror_r(-ret, sbuf, sizeof(sbuf)));
 		return ret;
 	}
 	tvar->type = strdup(buf);
@@ -588,27 +588,39 @@ static int convert_to_trace_point(Dwarf_Die *sp_die, Dwfl_Module *mod,
 				  Dwarf_Addr paddr, bool retprobe,
 				  struct probe_trace_point *tp)
 {
-	Dwarf_Addr eaddr;
+	Dwarf_Addr eaddr, highaddr;
 	GElf_Sym sym;
 	const char *symbol;
 
 	/* Verify the address is correct */
-	if (!dwarf_haspc(sp_die, paddr)) {
-		pr_warning("Specified offset is out of %s\n",
+	if (dwarf_entrypc(sp_die, &eaddr) != 0) {
+		pr_warning("Failed to get entry address of %s\n",
+			   dwarf_diename(sp_die));
+		return -ENOENT;
+	}
+	if (dwarf_highpc(sp_die, &highaddr) != 0) {
+		pr_warning("Failed to get end address of %s\n",
+			   dwarf_diename(sp_die));
+		return -ENOENT;
+	}
+	if (paddr > highaddr) {
+		pr_warning("Offset specified is greater than size of %s\n",
 			   dwarf_diename(sp_die));
 		return -EINVAL;
 	}
 
-	/* Try to get actual symbol name from symtab */
-	symbol = dwfl_module_addrsym(mod, paddr, &sym, NULL);
+	symbol = dwarf_diename(sp_die);
 	if (!symbol) {
-		pr_warning("Failed to find symbol at 0x%lx\n",
-			   (unsigned long)paddr);
-		return -ENOENT;
+		/* Try to get the symbol name from symtab */
+		symbol = dwfl_module_addrsym(mod, paddr, &sym, NULL);
+		if (!symbol) {
+			pr_warning("Failed to find symbol at 0x%lx\n",
+				   (unsigned long)paddr);
+			return -ENOENT;
+		}
+		eaddr = sym.st_value;
 	}
-	eaddr = sym.st_value;
-
-	tp->offset = (unsigned long)(paddr - sym.st_value);
+	tp->offset = (unsigned long)(paddr - eaddr);
 	tp->address = (unsigned long)paddr;
 	tp->symbol = strdup(symbol);
 	if (!tp->symbol)
@@ -772,10 +784,12 @@ static int find_lazy_match_lines(struct intlist *list,
 	size_t line_len;
 	ssize_t len;
 	int count = 0, linenum = 1;
+	char sbuf[STRERR_BUFSIZE];
 
 	fp = fopen(fname, "r");
 	if (!fp) {
-		pr_warning("Failed to open %s: %s\n", fname, strerror(errno));
+		pr_warning("Failed to open %s: %s\n", fname,
+			   strerror_r(errno, sbuf, sizeof(sbuf)));
 		return -errno;
 	}
 
@@ -858,14 +872,9 @@ static int probe_point_inline_cb(Dwarf_Die *in_die, void *data)
 		ret = find_probe_point_lazy(in_die, pf);
 	else {
 		/* Get probe address */
-		if (die_entrypc(in_die, &addr) != 0) {
+		if (dwarf_entrypc(in_die, &addr) != 0) {
 			pr_warning("Failed to get entry address of %s.\n",
 				   dwarf_diename(in_die));
-			return -ENOENT;
-		}
-		if (addr == 0) {
-			pr_debug("%s has no valid entry address. skipped.\n",
-				 dwarf_diename(in_die));
 			return -ENOENT;
 		}
 		pf->addr = addr;
@@ -906,18 +915,17 @@ static int probe_point_search_cb(Dwarf_Die *sp_die, void *data)
 		dwarf_decl_line(sp_die, &pf->lno);
 		pf->lno += pp->line;
 		param->retval = find_probe_point_by_line(pf);
-	} else if (die_is_func_instance(sp_die)) {
-		/* Instances always have the entry address */
-		die_entrypc(sp_die, &pf->addr);
-		/* But in some case the entry address is 0 */
-		if (pf->addr == 0) {
-			pr_debug("%s has no entry PC. Skipped\n",
-				 dwarf_diename(sp_die));
-			param->retval = 0;
+	} else if (!dwarf_func_inline(sp_die)) {
 		/* Real function */
-		} else if (pp->lazy_line)
+		if (pp->lazy_line)
 			param->retval = find_probe_point_lazy(sp_die, pf);
 		else {
+			if (dwarf_entrypc(sp_die, &pf->addr) != 0) {
+				pr_warning("Failed to get entry address of "
+					   "%s.\n", dwarf_diename(sp_die));
+				param->retval = -ENOENT;
+				return DWARF_CB_ABORT;
+			}
 			pf->addr += pp->offset;
 			/* TODO: Check the address in this function */
 			param->retval = call_probe_finder(sp_die, pf);
@@ -1230,18 +1238,6 @@ static int collect_variables_cb(Dwarf_Die *die_mem, void *data)
 		return DIE_FIND_CB_SIBLING;
 }
 
-static bool available_var_finder_overlap(struct available_var_finder *af)
-{
-	int i;
-
-	for (i = 0; i < af->nvls; i++) {
-		if (af->pf.addr == af->vls[i].point.address)
-			return true;
-	}
-	return false;
-
-}
-
 /* Add a found vars into available variables list */
 static int add_available_vars(Dwarf_Die *sc_die, struct probe_finder *pf)
 {
@@ -1250,14 +1246,6 @@ static int add_available_vars(Dwarf_Die *sc_die, struct probe_finder *pf)
 	struct variable_list *vl;
 	Dwarf_Die die_mem;
 	int ret;
-
-	/*
-	 * For some reason (e.g. different column assigned to same address),
-	 * this callback can be called with the address which already passed.
-	 * Ignore it first.
-	 */
-	if (available_var_finder_overlap(af))
-		return 0;
 
 	/* Check number of tevs */
 	if (af->nvls == af->max_vls) {
@@ -1365,7 +1353,7 @@ int debuginfo__find_probe_point(struct debuginfo *dbg, unsigned long addr,
 		/* Get function entry information */
 		func = basefunc = dwarf_diename(&spdie);
 		if (!func ||
-		    die_entrypc(&spdie, &baseaddr) != 0 ||
+		    dwarf_entrypc(&spdie, &baseaddr) != 0 ||
 		    dwarf_decl_line(&spdie, &baseline) != 0) {
 			lineno = 0;
 			goto post;
@@ -1382,7 +1370,7 @@ int debuginfo__find_probe_point(struct debuginfo *dbg, unsigned long addr,
 		while (die_find_top_inlinefunc(&spdie, (Dwarf_Addr)addr,
 						&indie)) {
 			/* There is an inline function */
-			if (die_entrypc(&indie, &_addr) == 0 &&
+			if (dwarf_entrypc(&indie, &_addr) == 0 &&
 			    _addr == addr) {
 				/*
 				 * addr is at an inline function entry.
@@ -1532,7 +1520,7 @@ static int line_range_search_cb(Dwarf_Die *sp_die, void *data)
 		pr_debug("New line range: %d to %d\n", lf->lno_s, lf->lno_e);
 		lr->start = lf->lno_s;
 		lr->end = lf->lno_e;
-		if (!die_is_func_instance(sp_die))
+		if (dwarf_func_inline(sp_die))
 			param->retval = die_walk_instances(sp_die,
 						line_range_inline_cb, lf);
 		else

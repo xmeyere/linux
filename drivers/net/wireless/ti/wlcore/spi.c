@@ -30,7 +30,6 @@
 #include <linux/spi/spi.h>
 #include <linux/wl12xx.h>
 #include <linux/platform_device.h>
-#include <linux/sizes.h>
 
 #include "wlcore.h"
 #include "wl12xx_80211.h"
@@ -72,12 +71,9 @@
  * only support SPI for 12xx - this code should be reworked when 18xx
  * support is introduced
  */
-#define SPI_AGGR_BUFFER_SIZE (4 * SZ_4K)
+#define SPI_AGGR_BUFFER_SIZE (4 * PAGE_SIZE)
 
-/* Maximum number of SPI write chunks */
-#define WSPI_MAX_NUM_OF_CHUNKS \
-	((SPI_AGGR_BUFFER_SIZE / WSPI_MAX_CHUNK_SIZE) + 1)
-
+#define WSPI_MAX_NUM_OF_CHUNKS (SPI_AGGR_BUFFER_SIZE / WSPI_MAX_CHUNK_SIZE)
 
 struct wl12xx_spi_glue {
 	struct device *dev;
@@ -272,10 +268,9 @@ static int __must_check wl12xx_spi_raw_write(struct device *child, int addr,
 					     void *buf, size_t len, bool fixed)
 {
 	struct wl12xx_spi_glue *glue = dev_get_drvdata(child->parent);
-	/* SPI write buffers - 2 for each chunk */
-	struct spi_transfer t[2 * WSPI_MAX_NUM_OF_CHUNKS];
+	struct spi_transfer t[2 * (WSPI_MAX_NUM_OF_CHUNKS + 1)];
 	struct spi_message m;
-	u32 commands[WSPI_MAX_NUM_OF_CHUNKS]; /* 1 command per chunk */
+	u32 commands[WSPI_MAX_NUM_OF_CHUNKS];
 	u32 *cmd;
 	u32 chunk_len;
 	int i;
@@ -332,23 +327,22 @@ static int wl1271_probe(struct spi_device *spi)
 	struct wl12xx_spi_glue *glue;
 	struct wlcore_platdev_data pdev_data;
 	struct resource res[1];
-	int ret = -ENOMEM;
+	int ret;
 
 	memset(&pdev_data, 0x00, sizeof(pdev_data));
 
 	pdev_data.pdata = dev_get_platdata(&spi->dev);
 	if (!pdev_data.pdata) {
 		dev_err(&spi->dev, "no platform data\n");
-		ret = -ENODEV;
-		goto out;
+		return -ENODEV;
 	}
 
 	pdev_data.if_ops = &spi_ops;
 
-	glue = kzalloc(sizeof(*glue), GFP_KERNEL);
+	glue = devm_kzalloc(&spi->dev, sizeof(*glue), GFP_KERNEL);
 	if (!glue) {
 		dev_err(&spi->dev, "can't allocate glue\n");
-		goto out;
+		return -ENOMEM;
 	}
 
 	glue->dev = &spi->dev;
@@ -362,14 +356,13 @@ static int wl1271_probe(struct spi_device *spi)
 	ret = spi_setup(spi);
 	if (ret < 0) {
 		dev_err(glue->dev, "spi_setup failed\n");
-		goto out_free_glue;
+		return ret;
 	}
 
 	glue->core = platform_device_alloc("wl12xx", PLATFORM_DEVID_AUTO);
 	if (!glue->core) {
 		dev_err(glue->dev, "can't allocate platform_device\n");
-		ret = -ENOMEM;
-		goto out_free_glue;
+		return -ENOMEM;
 	}
 
 	glue->core->dev.parent = &spi->dev;
@@ -403,11 +396,6 @@ static int wl1271_probe(struct spi_device *spi)
 
 out_dev_put:
 	platform_device_put(glue->core);
-
-out_free_glue:
-	kfree(glue);
-
-out:
 	return ret;
 }
 
@@ -416,7 +404,6 @@ static int wl1271_remove(struct spi_device *spi)
 	struct wl12xx_spi_glue *glue = spi_get_drvdata(spi);
 
 	platform_device_unregister(glue->core);
-	kfree(glue);
 
 	return 0;
 }

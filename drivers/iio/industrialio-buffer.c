@@ -39,10 +39,7 @@ static bool iio_buffer_is_active(struct iio_buffer *buf)
 
 static bool iio_buffer_data_available(struct iio_buffer *buf)
 {
-	if (buf->access->data_available)
-		return buf->access->data_available(buf);
-
-	return buf->stufftoread;
+	return buf->access->data_available(buf);
 }
 
 /**
@@ -95,8 +92,8 @@ unsigned int iio_buffer_poll(struct file *filp,
 	struct iio_dev *indio_dev = filp->private_data;
 	struct iio_buffer *rb = indio_dev->buffer;
 
-	if (!indio_dev->info || rb == NULL)
-		return 0;
+	if (!indio_dev->info)
+		return -ENODEV;
 
 	poll_wait(filp, &rb->pollq, wait);
 	if (iio_buffer_data_available(rb))
@@ -478,7 +475,7 @@ static int iio_compute_scan_bytes(struct iio_dev *indio_dev,
 {
 	const struct iio_chan_spec *ch;
 	unsigned bytes = 0;
-	int length, i, largest = 0;
+	int length, i;
 
 	/* How much space will the demuxed element take? */
 	for_each_set_bit(i, mask,
@@ -491,7 +488,6 @@ static int iio_compute_scan_bytes(struct iio_dev *indio_dev,
 			length = ch->scan_type.storagebits / 8;
 		bytes = ALIGN(bytes, length);
 		bytes += length;
-		largest = max(largest, length);
 	}
 	if (timestamp) {
 		ch = iio_find_channel_from_si(indio_dev,
@@ -503,10 +499,7 @@ static int iio_compute_scan_bytes(struct iio_dev *indio_dev,
 			length = ch->scan_type.storagebits / 8;
 		bytes = ALIGN(bytes, length);
 		bytes += length;
-		largest = max(largest, length);
 	}
-
-	bytes = ALIGN(bytes, largest);
 	return bytes;
 }
 
@@ -840,12 +833,14 @@ int iio_scan_mask_set(struct iio_dev *indio_dev,
 	const unsigned long *mask;
 	unsigned long *trialmask;
 
-	trialmask = kcalloc(BITS_TO_LONGS(indio_dev->masklength),
-			    sizeof(*trialmask), GFP_KERNEL);
+	trialmask = kmalloc(sizeof(*trialmask)*
+			    BITS_TO_LONGS(indio_dev->masklength),
+			    GFP_KERNEL);
+
 	if (trialmask == NULL)
 		return -ENOMEM;
 	if (!indio_dev->masklength) {
-		WARN(1, "Trying to set scanmask prior to registering buffer\n");
+		WARN_ON("Trying to set scanmask prior to registering buffer\n");
 		goto err_invalid_mask;
 	}
 	bitmap_copy(trialmask, buffer->scan_mask, indio_dev->masklength);
@@ -947,13 +942,34 @@ int iio_push_to_buffers(struct iio_dev *indio_dev, const void *data)
 }
 EXPORT_SYMBOL_GPL(iio_push_to_buffers);
 
+static int iio_buffer_add_demux(struct iio_buffer *buffer,
+	struct iio_demux_table **p, unsigned int in_loc, unsigned int out_loc,
+	unsigned int length)
+{
+
+	if (*p && (*p)->from + (*p)->length == in_loc &&
+		(*p)->to + (*p)->length == out_loc) {
+		(*p)->length += length;
+	} else {
+		*p = kmalloc(sizeof(**p), GFP_KERNEL);
+		if (*p == NULL)
+			return -ENOMEM;
+		(*p)->from = in_loc;
+		(*p)->to = out_loc;
+		(*p)->length = length;
+		list_add_tail(&(*p)->l, &buffer->demux_list);
+	}
+
+	return 0;
+}
+
 static int iio_buffer_update_demux(struct iio_dev *indio_dev,
 				   struct iio_buffer *buffer)
 {
 	const struct iio_chan_spec *ch;
 	int ret, in_ind = -1, out_ind, length;
 	unsigned in_loc = 0, out_loc = 0;
-	struct iio_demux_table *p;
+	struct iio_demux_table *p = NULL;
 
 	/* Clear out any old demux */
 	iio_buffer_demux_free(buffer);
@@ -984,14 +1000,7 @@ static int iio_buffer_update_demux(struct iio_dev *indio_dev,
 			else
 				length = ch->scan_type.storagebits / 8;
 			/* Make sure we are aligned */
-			in_loc += length;
-			if (in_loc % length)
-				in_loc += length - in_loc % length;
-		}
-		p = kmalloc(sizeof(*p), GFP_KERNEL);
-		if (p == NULL) {
-			ret = -ENOMEM;
-			goto error_clear_mux_table;
+			in_loc = roundup(in_loc, length) + length;
 		}
 		ch = iio_find_channel_from_si(indio_dev, in_ind);
 		if (ch->scan_type.repeat > 1)
@@ -999,24 +1008,16 @@ static int iio_buffer_update_demux(struct iio_dev *indio_dev,
 				ch->scan_type.repeat;
 		else
 			length = ch->scan_type.storagebits / 8;
-		if (out_loc % length)
-			out_loc += length - out_loc % length;
-		if (in_loc % length)
-			in_loc += length - in_loc % length;
-		p->from = in_loc;
-		p->to = out_loc;
-		p->length = length;
-		list_add_tail(&p->l, &buffer->demux_list);
+		out_loc = roundup(out_loc, length);
+		in_loc = roundup(in_loc, length);
+		ret = iio_buffer_add_demux(buffer, &p, in_loc, out_loc, length);
+		if (ret)
+			goto error_clear_mux_table;
 		out_loc += length;
 		in_loc += length;
 	}
 	/* Relies on scan_timestamp being last */
 	if (buffer->scan_timestamp) {
-		p = kmalloc(sizeof(*p), GFP_KERNEL);
-		if (p == NULL) {
-			ret = -ENOMEM;
-			goto error_clear_mux_table;
-		}
 		ch = iio_find_channel_from_si(indio_dev,
 			indio_dev->scan_index_timestamp);
 		if (ch->scan_type.repeat > 1)
@@ -1024,14 +1025,11 @@ static int iio_buffer_update_demux(struct iio_dev *indio_dev,
 				ch->scan_type.repeat;
 		else
 			length = ch->scan_type.storagebits / 8;
-		if (out_loc % length)
-			out_loc += length - out_loc % length;
-		if (in_loc % length)
-			in_loc += length - in_loc % length;
-		p->from = in_loc;
-		p->to = out_loc;
-		p->length = length;
-		list_add_tail(&p->l, &buffer->demux_list);
+		out_loc = roundup(out_loc, length);
+		in_loc = roundup(in_loc, length);
+		ret = iio_buffer_add_demux(buffer, &p, in_loc, out_loc, length);
+		if (ret)
+			goto error_clear_mux_table;
 		out_loc += length;
 		in_loc += length;
 	}

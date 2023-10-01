@@ -167,6 +167,7 @@ struct hid_item {
 #define HID_UP_MSVENDOR		0xff000000
 #define HID_UP_CUSTOM		0x00ff0000
 #define HID_UP_LOGIVENDOR	0xffbc0000
+#define HID_UP_LNVENDOR		0xffa00000
 #define HID_UP_SENSOR		0x00200000
 
 #define HID_USAGE		0x0000ffff
@@ -264,6 +265,7 @@ struct hid_item {
 #define HID_CONNECT_HIDDEV		0x08
 #define HID_CONNECT_HIDDEV_FORCE	0x10
 #define HID_CONNECT_FF			0x20
+#define HID_CONNECT_DRIVER		0x40
 #define HID_CONNECT_DEFAULT	(HID_CONNECT_HIDINPUT|HID_CONNECT_HIDRAW| \
 		HID_CONNECT_HIDDEV|HID_CONNECT_FF)
 
@@ -310,6 +312,11 @@ struct hid_item {
  * Vendor specific HID device groups
  */
 #define HID_GROUP_RMI				0x0100
+
+/*
+ * Vendor specific HID device groups
+ */
+#define HID_GROUP_WACOM				0x0101
 
 /*
  * This is the global environment of the parser. This information is
@@ -435,6 +442,7 @@ struct hid_output_fifo {
 #define HID_CLAIMED_INPUT	1
 #define HID_CLAIMED_HIDDEV	2
 #define HID_CLAIMED_HIDRAW	4
+#define HID_CLAIMED_DRIVER	8
 
 #define HID_STAT_ADDED		1
 #define HID_STAT_PARSED		2
@@ -757,7 +765,7 @@ extern int hidinput_connect(struct hid_device *hid, unsigned int force);
 extern void hidinput_disconnect(struct hid_device *);
 
 int hid_set_field(struct hid_field *, unsigned, __s32);
-int hid_input_report(struct hid_device *, int type, u8 *, u32, int);
+int hid_input_report(struct hid_device *, int type, u8 *, int, int);
 int hidinput_find_field(struct hid_device *hid, unsigned int type, unsigned int code, struct hid_field **field);
 struct hid_field *hidinput_get_led_field(struct hid_device *hid);
 unsigned int hidinput_count_leds(struct hid_device *hid);
@@ -1055,7 +1063,7 @@ static inline void hid_hw_wait(struct hid_device *hdev)
 		hdev->ll_driver->wait(hdev);
 }
 
-int hid_report_raw_event(struct hid_device *hid, int type, u8 *data, u32 size,
+int hid_report_raw_event(struct hid_device *hid, int type, u8 *data, int size,
 		int interrupt);
 
 /* HID quirks API */

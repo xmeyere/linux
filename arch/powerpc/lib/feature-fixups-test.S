@@ -167,9 +167,9 @@ globl(ftr_fixup_test6_expected)
 	blt	2b
 	b	3f
 	b	1b
-3:	or	1,1,1
+2:	or	1,1,1
 	or	2,2,2
-	or	3,3,3
+3:	or	3,3,3
 
 
 #if 0

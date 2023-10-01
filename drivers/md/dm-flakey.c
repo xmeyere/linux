@@ -69,11 +69,6 @@ static int parse_features(struct dm_arg_set *as, struct flakey_c *fc,
 		arg_name = dm_shift_arg(as);
 		argc--;
 
-		if (!arg_name) {
-			ti->error = "Insufficient feature arguments";
-			return -EINVAL;
-		}
-
 		/*
 		 * drop_writes
 		 */
@@ -188,7 +183,6 @@ static int flakey_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	devname = dm_shift_arg(&as);
 
-	r = -EINVAL;
 	if (sscanf(dm_shift_arg(&as), "%llu%c", &tmpll, &dummy) != 1) {
 		ti->error = "Invalid device sector";
 		goto bad;
@@ -205,13 +199,11 @@ static int flakey_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 	if (!(fc->up_interval + fc->down_interval)) {
 		ti->error = "Total (up + down) interval is zero";
-		r = -EINVAL;
 		goto bad;
 	}
 
 	if (fc->up_interval + fc->down_interval < fc->up_interval) {
 		ti->error = "Interval overflow";
-		r = -EINVAL;
 		goto bad;
 	}
 
@@ -219,8 +211,7 @@ static int flakey_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	if (r)
 		goto bad;
 
-	r = dm_get_device(ti, devname, dm_table_get_mode(ti->table), &fc->dev);
-	if (r) {
+	if (dm_get_device(ti, devname, dm_table_get_mode(ti->table), &fc->dev)) {
 		ti->error = "Device lookup failed";
 		goto bad;
 	}
@@ -233,7 +224,7 @@ static int flakey_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
 bad:
 	kfree(fc);
-	return r;
+	return -EINVAL;
 }
 
 static void flakey_dtr(struct dm_target *ti)
@@ -296,14 +287,10 @@ static int flakey_map(struct dm_target *ti, struct bio *bio)
 		pb->bio_submitted = true;
 
 		/*
-		 * Error reads if neither corrupt_bio_byte or drop_writes are set.
-		 * Otherwise, flakey_end_io() will decide if the reads should be modified.
+		 * Map reads as normal.
 		 */
-		if (bio_data_dir(bio) == READ) {
-			if (!fc->corrupt_bio_byte && !test_bit(DROP_WRITES, &fc->flags))
-				return -EIO;
+		if (bio_data_dir(bio) == READ)
 			goto map_bio;
-		}
 
 		/*
 		 * Drop writes?
@@ -339,22 +326,14 @@ static int flakey_end_io(struct dm_target *ti, struct bio *bio, int error)
 	struct flakey_c *fc = ti->private;
 	struct per_bio_data *pb = dm_per_bio_data(bio, sizeof(struct per_bio_data));
 
-	if (!error && pb->bio_submitted && (bio_data_dir(bio) == READ)) {
-		if (fc->corrupt_bio_byte && (fc->corrupt_bio_rw == READ) &&
-		    all_corrupt_bio_flags_match(bio, fc)) {
-			/*
-			 * Corrupt successful matching READs while in down state.
-			 */
-			corrupt_bio_data(bio, fc);
-
-		} else if (!test_bit(DROP_WRITES, &fc->flags)) {
-			/*
-			 * Error read during the down_interval if drop_writes
-			 * wasn't configured.
-			 */
-			return -EIO;
-		}
-	}
+	/*
+	 * Corrupt successful READs while in down state.
+	 * If flags were specified, only corrupt those that match.
+	 */
+	if (fc->corrupt_bio_byte && !error && pb->bio_submitted &&
+	    (bio_data_dir(bio) == READ) && (fc->corrupt_bio_rw == READ) &&
+	    all_corrupt_bio_flags_match(bio, fc))
+		corrupt_bio_data(bio, fc);
 
 	return error;
 }

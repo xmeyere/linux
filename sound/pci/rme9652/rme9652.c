@@ -35,7 +35,6 @@
 
 #include <asm/current.h>
 #include <asm/io.h>
-#include <linux/nospec.h>
 
 static int index[SNDRV_CARDS] = SNDRV_DEFAULT_IDX;	/* Index 0-MAX */
 static char *id[SNDRV_CARDS] = SNDRV_DEFAULT_STR;	/* ID for this card */
@@ -308,7 +307,7 @@ static void snd_hammerfall_free_buffer(struct snd_dma_buffer *dmab, struct pci_d
 }
 
 
-static DEFINE_PCI_DEVICE_TABLE(snd_rme9652_ids) = {
+static const struct pci_device_id snd_rme9652_ids[] = {
 	{
 		.vendor	   = 0x10ee,
 		.device	   = 0x3fc4,
@@ -2060,10 +2059,9 @@ static int snd_rme9652_channel_info(struct snd_pcm_substream *substream,
 	if (snd_BUG_ON(info->channel >= RME9652_NCHANNELS))
 		return -EINVAL;
 
-	chn = rme9652->channel_map[array_index_nospec(info->channel,
-						      RME9652_NCHANNELS)];
-	if (chn < 0)
+	if ((chn = rme9652->channel_map[info->channel]) < 0) {
 		return -EINVAL;
+	}
 
 	info->offset = chn * RME9652_CHANNEL_BUFFER_BYTES;
 	info->first = 0;

@@ -15,7 +15,7 @@
 
 #include <linux/stringify.h>
 #include <asm/nops.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 
 /* "Raw" instruction opcodes */
 #define __ASM_CLAC	.byte 0x0f,0x01,0xca
@@ -33,7 +33,7 @@
 	662: __ASM_CLAC ;						\
 	.popsection ;							\
 	.pushsection .altinstructions, "a" ;				\
-	altinstruction_entry 661b, 662b, X86_FEATURE_SMAP, 3, 3, 0 ;	\
+	altinstruction_entry 661b, 662b, X86_FEATURE_SMAP, 3, 3 ;	\
 	.popsection
 
 #define ASM_STAC							\
@@ -42,7 +42,7 @@
 	662: __ASM_STAC ;						\
 	.popsection ;							\
 	.pushsection .altinstructions, "a" ;				\
-	altinstruction_entry 661b, 662b, X86_FEATURE_SMAP, 3, 3, 0 ;	\
+	altinstruction_entry 661b, 662b, X86_FEATURE_SMAP, 3, 3 ;	\
 	.popsection
 
 #else /* CONFIG_X86_SMAP */

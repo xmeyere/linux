@@ -31,14 +31,12 @@
  * @smstpcr: module stop control register
  * @mstpsr: module stop status register (optional)
  * @lock: protects writes to SMSTPCR
- * @width_8bit: registers are 8-bit, not 32-bit
  */
 struct mstp_clock_group {
 	struct clk_onecell_data data;
 	void __iomem *smstpcr;
 	void __iomem *mstpsr;
 	spinlock_t lock;
-	bool width_8bit;
 };
 
 /**
@@ -55,18 +53,6 @@ struct mstp_clock {
 
 #define to_mstp_clock(_hw) container_of(_hw, struct mstp_clock, hw)
 
-static inline u32 cpg_mstp_read(struct mstp_clock_group *group,
-				u32 __iomem *reg)
-{
-	return group->width_8bit ? readb(reg) : clk_readl(reg);
-}
-
-static inline void cpg_mstp_write(struct mstp_clock_group *group, u32 val,
-				  u32 __iomem *reg)
-{
-	group->width_8bit ? writeb(val, reg) : clk_writel(val, reg);
-}
-
 static int cpg_mstp_clock_endisable(struct clk_hw *hw, bool enable)
 {
 	struct mstp_clock *clock = to_mstp_clock(hw);
@@ -78,18 +64,12 @@ static int cpg_mstp_clock_endisable(struct clk_hw *hw, bool enable)
 
 	spin_lock_irqsave(&group->lock, flags);
 
-	value = cpg_mstp_read(group, group->smstpcr);
+	value = clk_readl(group->smstpcr);
 	if (enable)
 		value &= ~bitmask;
 	else
 		value |= bitmask;
-	cpg_mstp_write(group, value, group->smstpcr);
-
-	if (!group->mstpsr) {
-		/* dummy read to ensure write has completed */
-		cpg_mstp_read(group, group->smstpcr);
-		barrier();
-	}
+	clk_writel(value, group->smstpcr);
 
 	spin_unlock_irqrestore(&group->lock, flags);
 
@@ -97,7 +77,7 @@ static int cpg_mstp_clock_endisable(struct clk_hw *hw, bool enable)
 		return 0;
 
 	for (i = 1000; i > 0; --i) {
-		if (!(cpg_mstp_read(group, group->mstpsr) & bitmask))
+		if (!(clk_readl(group->mstpsr) & bitmask))
 			break;
 		cpu_relax();
 	}
@@ -128,9 +108,9 @@ static int cpg_mstp_clock_is_enabled(struct clk_hw *hw)
 	u32 value;
 
 	if (group->mstpsr)
-		value = cpg_mstp_read(group, group->mstpsr);
+		value = clk_readl(group->mstpsr);
 	else
-		value = cpg_mstp_read(group, group->smstpcr);
+		value = clk_readl(group->smstpcr);
 
 	return !(value & BIT(clock->bit_index));
 }
@@ -201,9 +181,6 @@ static void __init cpg_mstp_clocks_init(struct device_node *np)
 		kfree(clks);
 		return;
 	}
-
-	if (of_device_is_compatible(np, "renesas,r7s72100-mstp-clocks"))
-		group->width_8bit = true;
 
 	for (i = 0; i < MSTP_MAX_CLOCKS; ++i)
 		clks[i] = ERR_PTR(-ENOENT);

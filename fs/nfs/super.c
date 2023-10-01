@@ -1027,8 +1027,7 @@ static bool nfs_auth_info_add(struct nfs_auth_info *auth_info,
 			      rpc_authflavor_t flavor)
 {
 	unsigned int i;
-	unsigned int max_flavor_len = (sizeof(auth_info->flavors) /
-				       sizeof(auth_info->flavors[0]));
+	unsigned int max_flavor_len = ARRAY_SIZE(auth_info->flavors);
 
 	/* make sure this flavor isn't already in the list */
 	for (i = 0; i < auth_info->flavor_len; i++) {
@@ -1319,7 +1318,7 @@ static int nfs_parse_mount_options(char *raw,
 			mnt->options |= NFS_OPTION_MIGRATION;
 			break;
 		case Opt_nomigration:
-			mnt->options &= ~NFS_OPTION_MIGRATION;
+			mnt->options &= NFS_OPTION_MIGRATION;
 			break;
 
 		/*
@@ -1893,7 +1892,7 @@ static int nfs_parse_devname(const char *dev_name,
 		/* kill possible hostname list: not supported */
 		comma = strchr(dev_name, ',');
 		if (comma != NULL && comma < end)
-			len = comma - dev_name;
+			*comma = 0;
 	}
 
 	if (len > maxnamlen)
@@ -2066,11 +2065,6 @@ static int nfs23_validate_mount_data(void *options,
 		return NFS_TEXT_DATA;
 	}
 
-#if !IS_ENABLED(CONFIG_NFS_V3)
-	if (args->version == 3)
-		goto out_v3_not_compiled;
-#endif /* !CONFIG_NFS_V3 */
-
 	return 0;
 
 out_no_data:
@@ -2085,12 +2079,6 @@ out_no_v3:
 out_no_sec:
 	dfprintk(MOUNT, "NFS: nfs_mount_data version supports only AUTH_SYS\n");
 	return -EINVAL;
-
-#if !IS_ENABLED(CONFIG_NFS_V3)
-out_v3_not_compiled:
-	dfprintk(MOUNT, "NFS: NFSv3 is not compiled into kernel\n");
-	return -EPROTONOSUPPORT;
-#endif /* !CONFIG_NFS_V3 */
 
 out_nomem:
 	dfprintk(MOUNT, "NFS: not enough memory to handle mount options\n");
@@ -2590,8 +2578,6 @@ struct dentry *nfs_fs_mount_common(struct nfs_server *server,
 		/* initial superblock/root creation */
 		mount_info->fill_super(s, mount_info);
 		nfs_get_cache_cookie(s, mount_info->parsed, mount_info->cloned);
-		if (!(server->flags & NFS_MOUNT_UNSHARED))
-			s->s_iflags |= SB_I_MULTIROOT;
 	}
 
 	mntroot = nfs_get_root(s, mount_info->mntfh, dev_name);

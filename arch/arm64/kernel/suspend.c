@@ -1,4 +1,3 @@
-#include <linux/ftrace.h>
 #include <linux/percpu.h>
 #include <linux/slab.h>
 #include <asm/cacheflush.h>
@@ -6,7 +5,6 @@
 #include <asm/debug-monitors.h>
 #include <asm/pgtable.h>
 #include <asm/memory.h>
-#include <asm/mmu_context.h>
 #include <asm/smp_plat.h>
 #include <asm/suspend.h>
 #include <asm/tlbflush.h>
@@ -93,13 +91,6 @@ int __cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	local_dbg_save(flags);
 
 	/*
-	 * Function graph tracer state gets incosistent when the kernel
-	 * calls functions that never return (aka suspend finishers) hence
-	 * disable graph tracing during their execution.
-	 */
-	pause_graph_tracing();
-
-	/*
 	 * mm context saved on the stack, it will be restored when
 	 * the cpu comes out of reset through the identity mapped
 	 * page tables, so that the thread address space is properly
@@ -107,18 +98,7 @@ int __cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	 */
 	ret = __cpu_suspend_enter(arg, fn);
 	if (ret == 0) {
-		/*
-		 * We are resuming from reset with TTBR0_EL1 set to the
-		 * idmap to enable the MMU; restore the active_mm mappings in
-		 * TTBR0_EL1 unless the active_mm == &init_mm, in which case
-		 * the thread entered __cpu_suspend with TTBR0_EL1 set to
-		 * reserved TTBR0 page tables and should be restored as such.
-		 */
-		if (mm == &init_mm)
-			cpu_set_reserved_ttbr0();
-		else
-			cpu_switch_mm(mm->pgd, mm);
-
+		cpu_switch_mm(mm->pgd, mm);
 		flush_tlb_all();
 
 		/*
@@ -136,8 +116,6 @@ int __cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 			hw_breakpoint_restore(NULL);
 	}
 
-	unpause_graph_tracing();
-
 	/*
 	 * Restore pstate flags. OS lock and mdscr have been already
 	 * restored, so from this point onwards, debugging is fully
@@ -148,8 +126,8 @@ int __cpu_suspend(unsigned long arg, int (*fn)(unsigned long))
 	return ret;
 }
 
-struct sleep_save_sp sleep_save_sp;
-phys_addr_t sleep_idmap_phys;
+extern struct sleep_save_sp sleep_save_sp;
+extern phys_addr_t sleep_idmap_phys;
 
 static int __init cpu_suspend_init(void)
 {

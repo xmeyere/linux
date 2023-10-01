@@ -56,38 +56,29 @@ static inline struct v4l2_subdev *to_sd(struct v4l2_ctrl *ctrl)
 static int tvp5150_read(struct v4l2_subdev *sd, unsigned char addr)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
-	unsigned char buffer[1];
 	int rc;
-	struct i2c_msg msg[] = {
-		{ .addr = c->addr, .flags = 0,
-		  .buf = &addr, .len = 1 },
-		{ .addr = c->addr, .flags = I2C_M_RD,
-		  .buf = buffer, .len = 1 }
-	};
 
-	rc = i2c_transfer(c->adapter, msg, 2);
-	if (rc < 0 || rc != 2) {
-		v4l2_err(sd, "i2c i/o error: rc == %d (should be 2)\n", rc);
-		return rc < 0 ? rc : -EIO;
+	rc = i2c_smbus_read_byte_data(c, addr);
+	if (rc < 0) {
+		v4l2_err(sd, "i2c i/o error: rc == %d\n", rc);
+		return rc;
 	}
 
-	v4l2_dbg(2, debug, sd, "tvp5150: read 0x%02x = 0x%02x\n", addr, buffer[0]);
+	v4l2_dbg(2, debug, sd, "tvp5150: read 0x%02x = 0x%02x\n", addr, rc);
 
-	return (buffer[0]);
+	return rc;
 }
 
 static inline void tvp5150_write(struct v4l2_subdev *sd, unsigned char addr,
 				 unsigned char value)
 {
 	struct i2c_client *c = v4l2_get_subdevdata(sd);
-	unsigned char buffer[2];
 	int rc;
 
-	buffer[0] = addr;
-	buffer[1] = value;
-	v4l2_dbg(2, debug, sd, "tvp5150: writing 0x%02x 0x%02x\n", buffer[0], buffer[1]);
-	if (2 != (rc = i2c_master_send(c, buffer, 2)))
-		v4l2_dbg(0, debug, sd, "i2c i/o error: rc == %d (should be 2)\n", rc);
+	v4l2_dbg(2, debug, sd, "tvp5150: writing 0x%02x 0x%02x\n", addr, value);
+	rc = i2c_smbus_write_byte_data(c, addr, value);
+	if (rc < 0)
+		v4l2_dbg(0, debug, sd, "i2c i/o error: rc == %d\n", rc);
 }
 
 static void dump_reg_range(struct v4l2_subdev *sd, char *s, u8 init,
@@ -873,6 +864,9 @@ static int tvp5150_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *a)
 
 	/* tvp5150 has some special limits */
 	rect.left = clamp(rect.left, 0, TVP5150_MAX_CROP_LEFT);
+	rect.width = clamp_t(unsigned int, rect.width,
+			     TVP5150_H_MAX - TVP5150_MAX_CROP_LEFT - rect.left,
+			     TVP5150_H_MAX - rect.left);
 	rect.top = clamp(rect.top, 0, TVP5150_MAX_CROP_TOP);
 
 	/* Calculate height based on current standard */
@@ -886,16 +880,9 @@ static int tvp5150_s_crop(struct v4l2_subdev *sd, const struct v4l2_crop *a)
 	else
 		hmax = TVP5150_V_MAX_OTHERS;
 
-	/*
-	 * alignments:
-	 *  - width = 2 due to UYVY colorspace
-	 *  - height, image = no special alignment
-	 */
-	v4l_bound_align_image(&rect.width,
-			      TVP5150_H_MAX - TVP5150_MAX_CROP_LEFT - rect.left,
-			      TVP5150_H_MAX - rect.left, 1, &rect.height,
+	rect.height = clamp_t(unsigned int, rect.height,
 			      hmax - TVP5150_MAX_CROP_TOP - rect.top,
-			      hmax - rect.top, 0, 0);
+			      hmax - rect.top);
 
 	tvp5150_write(sd, TVP5150_VERT_BLANKING_START, rect.top);
 	tvp5150_write(sd, TVP5150_VERT_BLANKING_STOP,
@@ -1152,10 +1139,10 @@ static int tvp5150_probe(struct i2c_client *c,
 		/* Is TVP5150A */
 		if (tvp5150_id[2] == 3 || tvp5150_id[3] == 0x21) {
 			v4l2_info(sd, "tvp%02x%02xa detected.\n",
-				  tvp5150_id[2], tvp5150_id[3]);
+				  tvp5150_id[0], tvp5150_id[1]);
 		} else {
 			v4l2_info(sd, "*** unknown tvp%02x%02x chip detected.\n",
-				  tvp5150_id[2], tvp5150_id[3]);
+				  tvp5150_id[0], tvp5150_id[1]);
 			v4l2_info(sd, "*** Rom ver is %d.%d\n",
 				  tvp5150_id[2], tvp5150_id[3]);
 		}

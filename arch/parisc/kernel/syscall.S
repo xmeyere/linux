@@ -106,6 +106,8 @@ linux_gateway_entry:
 	mtsp	%r0,%sr4			/* get kernel space into sr4 */
 	mtsp	%r0,%sr5			/* get kernel space into sr5 */
 	mtsp	%r0,%sr6			/* get kernel space into sr6 */
+	mfsp    %sr7,%r1                        /* save user sr7 */
+	mtsp    %r1,%sr3                        /* and store it in sr3 */
 
 #ifdef CONFIG_64BIT
 	/* for now we can *always* set the W bit on entry to the syscall
@@ -131,14 +133,6 @@ linux_gateway_entry:
 	depdi	0, 31, 32, %r21
 1:	
 #endif
-
-	/* We use a rsm/ssm pair to prevent sr3 from being clobbered
-	 * by external interrupts.
-	 */
-	mfsp    %sr7,%r1                        /* save user sr7 */
-	rsm	PSW_SM_I, %r0			/* disable interrupts */
-	mtsp    %r1,%sr3                        /* and store it in sr3 */
-
 	mfctl   %cr30,%r1
 	xor     %r1,%r30,%r30                   /* ye olde xor trick */
 	xor     %r1,%r30,%r1
@@ -153,7 +147,6 @@ linux_gateway_entry:
 	 */
 
 	mtsp	%r0,%sr7			/* get kernel space into sr7 */
-	ssm	PSW_SM_I, %r0			/* enable interrupts */
 	STREGM	%r1,FRAME_SIZE(%r30)		/* save r1 (usp) here for now */
 	mfctl	%cr30,%r1			/* get task ptr in %r1 */
 	LDREG	TI_TASK(%r1),%r1
@@ -349,7 +342,7 @@ tracesys_next:
 	stw     %r21, -56(%r30)                 /* 6th argument */
 #endif
 
-	comiclr,>>	__NR_Linux_syscalls, %r20, %r0
+	comiclr,>>=	__NR_Linux_syscalls, %r20, %r0
 	b,n	.Lsyscall_nosys
 
 	LDREGX  %r20(%r19), %r19
@@ -690,15 +683,15 @@ cas_action:
 	/* ELF32 Process entry path */
 lws_compare_and_swap_2:
 #ifdef CONFIG_64BIT
-	/* Clip the input registers. We don't need to clip %r23 as we
-	   only use it for word operations */
+	/* Clip the input registers */
 	depdi	0, 31, 32, %r26
 	depdi	0, 31, 32, %r25
 	depdi	0, 31, 32, %r24
+	depdi	0, 31, 32, %r23
 #endif
 
 	/* Check the validity of the size pointer */
-	subi,>>= 3, %r23, %r0
+	subi,>>= 4, %r23, %r0
 	b,n	lws_exit_nosys
 
 	/* Jump to the functions which will load the old and new values into
@@ -742,7 +735,7 @@ lws_compare_and_swap_2:
 10:	ldd	0(%sr3,%r25), %r25
 11:	ldd	0(%sr3,%r24), %r24
 #else
-	/* Load old value into r22/r23 - high/low */
+	/* Load new value into r22/r23 - high/low */
 10:	ldw	0(%sr3,%r25), %r22
 11:	ldw	4(%sr3,%r25), %r23
 	/* Load new value into fr4 for atomic store later */
@@ -828,17 +821,17 @@ cas2_action:
 	/* 64bit CAS */
 #ifdef CONFIG_64BIT
 19:	ldd,ma	0(%sr3,%r26), %r29
-	sub,*=	%r29, %r25, %r0
+	sub,=	%r29, %r25, %r0
 	b,n	cas2_end
 20:	std,ma	%r24, 0(%sr3,%r26)
 	copy	%r0, %r28
 #else
 	/* Compare first word */
-19:	ldw	0(%sr3,%r26), %r29
+19:	ldw,ma	0(%sr3,%r26), %r29
 	sub,=	%r29, %r22, %r0
 	b,n	cas2_end
 	/* Compare second word */
-20:	ldw	4(%sr3,%r26), %r29
+20:	ldw,ma	4(%sr3,%r26), %r29
 	sub,=	%r29, %r23, %r0
 	b,n	cas2_end
 	/* Perform the store */

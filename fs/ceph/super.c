@@ -483,8 +483,7 @@ static int ceph_show_options(struct seq_file *m, struct dentry *root)
 	if (fsopt->max_readdir_bytes != CEPH_MAX_READDIR_BYTES_DEFAULT)
 		seq_printf(m, ",readdir_max_bytes=%d", fsopt->max_readdir_bytes);
 	if (strcmp(fsopt->snapdir_name, CEPH_SNAPDIRNAME_DEFAULT))
-		seq_show_option(m, "snapdirname", fsopt->snapdir_name);
-
+		seq_printf(m, ",snapdirname=%s", fsopt->snapdir_name);
 	return 0;
 }
 
@@ -706,12 +705,6 @@ static void ceph_umount_begin(struct super_block *sb)
 	return;
 }
 
-static int ceph_remount(struct super_block *sb, int *flags, char *data)
-{
-	sync_filesystem(sb);
-	return 0;
-}
-
 static const struct super_operations ceph_super_ops = {
 	.alloc_inode	= ceph_alloc_inode,
 	.destroy_inode	= ceph_destroy_inode,
@@ -719,7 +712,6 @@ static const struct super_operations ceph_super_ops = {
 	.drop_inode	= ceph_drop_inode,
 	.sync_fs        = ceph_sync_fs,
 	.put_super	= ceph_put_super,
-	.remount_fs	= ceph_remount,
 	.show_options   = ceph_show_options,
 	.statfs		= ceph_statfs,
 	.umount_begin   = ceph_umount_begin,
@@ -763,7 +755,7 @@ static struct dentry *open_root_dentry(struct ceph_fs_client *fsc,
 				goto out;
 			}
 		} else {
-			root = d_obtain_alias(inode);
+			root = d_obtain_root(inode);
 		}
 		ceph_init_dentry(root);
 		dout("open_root_inode success, root dentry is %p\n", root);
@@ -1036,20 +1028,15 @@ static int __init init_ceph(void)
 
 	ceph_flock_init();
 	ceph_xattr_init();
-	ret = ceph_snap_init();
-	if (ret)
-		goto out_xattr;
 	ret = register_filesystem(&ceph_fs_type);
 	if (ret)
-		goto out_snap;
+		goto out_icache;
 
 	pr_info("loaded (mds proto %d)\n", CEPH_MDSC_PROTOCOL);
 
 	return 0;
 
-out_snap:
-	ceph_snap_exit();
-out_xattr:
+out_icache:
 	ceph_xattr_exit();
 	destroy_caches();
 out:
@@ -1060,7 +1047,6 @@ static void __exit exit_ceph(void)
 {
 	dout("exit_ceph\n");
 	unregister_filesystem(&ceph_fs_type);
-	ceph_snap_exit();
 	ceph_xattr_exit();
 	destroy_caches();
 }

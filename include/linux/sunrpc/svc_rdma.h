@@ -83,7 +83,6 @@ struct svc_rdma_op_ctxt {
 	unsigned long flags;
 	enum dma_data_direction direction;
 	int count;
-	unsigned int mapped_sges;
 	struct ib_sge sge[RPCSVC_MAXPAGES];
 	struct page *pages[RPCSVC_MAXPAGES];
 };
@@ -175,17 +174,8 @@ struct svcxprt_rdma {
  * page size of 4k, or 32k * 2 ops / 4k = 16 outstanding RDMA_READ.  */
 #define RPCRDMA_ORD             (64/4)
 #define RPCRDMA_SQ_DEPTH_MULT   8
-#define RPCRDMA_MAX_THREADS     16
-#define RPCRDMA_MAX_REQUESTS    16
+#define RPCRDMA_MAX_REQUESTS    32
 #define RPCRDMA_MAX_REQ_SIZE    4096
-
-/* Track DMA maps for this transport and context */
-static inline void svc_rdma_count_mappings(struct svcxprt_rdma *rdma,
-					   struct svc_rdma_op_ctxt *ctxt)
-{
-	ctxt->mapped_sges++;
-	atomic_inc(&rdma->sc_dma_used);
-}
 
 /* svc_rdma_marshal.c */
 extern void svc_rdma_rcl_chunk_counts(struct rpcrdma_read_chunk *,

@@ -2,7 +2,7 @@
  * Marvell Wireless LAN device driver: management IE handling- setting and
  * deleting IE.
  *
- * Copyright (C) 2012, Marvell International Ltd.
+ * Copyright (C) 2012-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -240,9 +240,6 @@ static int mwifiex_update_vs_ie(const u8 *ies, int ies_len,
 		}
 
 		vs_ie = (struct ieee_types_header *)vendor_ie;
-		if (le16_to_cpu(ie->ie_length) + vs_ie->len + 2 >
-			IEEE_MAX_IE_SIZE)
-			return -EINVAL;
 		memcpy(ie->ie_buffer + le16_to_cpu(ie->ie_length),
 		       vs_ie, vs_ie->len + 2);
 		le16_add_cpu(&ie->ie_length, vs_ie->len + 2);
@@ -331,8 +328,6 @@ int mwifiex_set_mgmt_ies(struct mwifiex_private *priv,
 	struct ieee_types_header *rsn_ie, *wpa_ie = NULL;
 	u16 rsn_idx = MWIFIEX_AUTO_IDX_MASK, ie_len = 0;
 	const u8 *vendor_ie;
-	unsigned int token_len;
-	int err = 0;
 
 	if (info->tail && info->tail_len) {
 		gen_ie = kzalloc(sizeof(struct mwifiex_ie), GFP_KERNEL);
@@ -346,13 +341,8 @@ int mwifiex_set_mgmt_ies(struct mwifiex_private *priv,
 		rsn_ie = (void *)cfg80211_find_ie(WLAN_EID_RSN,
 						  info->tail, info->tail_len);
 		if (rsn_ie) {
-			token_len = rsn_ie->len + 2;
-			if (ie_len + token_len > IEEE_MAX_IE_SIZE) {
-				err = -EINVAL;
-				goto out;
-			}
-			memcpy(gen_ie->ie_buffer + ie_len, rsn_ie, token_len);
-			ie_len += token_len;
+			memcpy(gen_ie->ie_buffer, rsn_ie, rsn_ie->len + 2);
+			ie_len = rsn_ie->len + 2;
 			gen_ie->ie_length = cpu_to_le16(ie_len);
 		}
 
@@ -362,15 +352,9 @@ int mwifiex_set_mgmt_ies(struct mwifiex_private *priv,
 						    info->tail_len);
 		if (vendor_ie) {
 			wpa_ie = (struct ieee_types_header *)vendor_ie;
-			token_len = wpa_ie->len + 2;
-			if (token_len >
-			    info->tail + info->tail_len - (u8 *)wpa_ie ||
-			    ie_len + token_len > IEEE_MAX_IE_SIZE) {
-				err = -EINVAL;
-				goto out;
-			}
-			memcpy(gen_ie->ie_buffer + ie_len, wpa_ie, token_len);
-			ie_len += token_len;
+			memcpy(gen_ie->ie_buffer + ie_len,
+			       wpa_ie, wpa_ie->len + 2);
+			ie_len += wpa_ie->len + 2;
 			gen_ie->ie_length = cpu_to_le16(ie_len);
 		}
 
@@ -378,16 +362,13 @@ int mwifiex_set_mgmt_ies(struct mwifiex_private *priv,
 			if (mwifiex_update_uap_custom_ie(priv, gen_ie, &rsn_idx,
 							 NULL, NULL,
 							 NULL, NULL)) {
-				err = -EINVAL;
-				goto out;
+				kfree(gen_ie);
+				return -1;
 			}
 			priv->rsn_idx = rsn_idx;
 		}
 
-	out:
 		kfree(gen_ie);
-		if (err)
-			return err;
 	}
 
 	return mwifiex_set_mgmt_beacon_data_ies(priv, info);

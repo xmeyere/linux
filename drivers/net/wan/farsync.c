@@ -531,7 +531,7 @@ do {								\
 /*
  *      PCI ID lookup table
  */
-static DEFINE_PCI_DEVICE_TABLE(fst_pci_dev_id) = {
+static const struct pci_device_id fst_pci_dev_id[] = {
 	{PCI_VENDOR_ID_FARSITE, PCI_DEVICE_ID_FARSITE_T2P, PCI_ANY_ID, 
 	 PCI_ANY_ID, 0, 0, FST_TYPE_T2P},
 
@@ -2516,7 +2516,7 @@ fst_add_one(struct pci_dev *pdev, const struct pci_device_id *ent)
                 dev->mem_start   = card->phys_mem
                                  + BUF_OFFSET ( txBuffer[i][0][0]);
                 dev->mem_end     = card->phys_mem
-                                 + BUF_OFFSET ( txBuffer[i][NUM_TX_BUFFER - 1][LEN_RX_BUFFER - 1]);
+                                 + BUF_OFFSET ( txBuffer[i][NUM_TX_BUFFER][0]);
                 dev->base_addr   = card->pci_conf;
                 dev->irq         = card->irq;
 

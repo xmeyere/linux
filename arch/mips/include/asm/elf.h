@@ -9,9 +9,6 @@
 #define _ASM_ELF_H
 
 
-#include <asm/cpu-info.h>
-#include <asm/current.h>
-
 /* ELF header e_flags defines. */
 /* MIPS architecture level. */
 #define EF_MIPS_ARCH_1		0x00000000	/* -mips1 code.	 */
@@ -276,8 +273,6 @@ do {									\
 		set_personality(PER_LINUX);				\
 									\
 	current->thread.abi = &mips_abi;				\
-									\
-	current->thread.fpu.fcr31 = boot_cpu_data.fpu_csr31;		\
 } while (0)
 
 #endif /* CONFIG_32BIT */
@@ -337,31 +332,12 @@ do {									\
 	else								\
 		current->thread.abi = &mips_abi;			\
 									\
-	current->thread.fpu.fcr31 = boot_cpu_data.fpu_csr31;		\
-									\
 	p = personality(current->personality);				\
 	if (p != PER_LINUX32 && p != PER_LINUX)				\
 		set_personality(PER_LINUX);				\
 } while (0)
 
 #endif /* CONFIG_64BIT */
-
-struct pt_regs;
-struct task_struct;
-
-extern void elf_dump_regs(elf_greg_t *, struct pt_regs *regs);
-extern int dump_task_regs(struct task_struct *, elf_gregset_t *);
-extern int dump_task_fpu(struct task_struct *, elf_fpregset_t *);
-
-#ifndef ELF_CORE_COPY_REGS
-#define ELF_CORE_COPY_REGS(elf_regs, regs)			\
-	elf_dump_regs((elf_greg_t *)&(elf_regs), regs);
-#endif
-#ifndef ELF_CORE_COPY_TASK_REGS
-#define ELF_CORE_COPY_TASK_REGS(tsk, elf_regs) dump_task_regs(tsk, elf_regs)
-#endif
-#define ELF_CORE_COPY_FPREGS(tsk, elf_fpregs)			\
-	dump_task_fpu(tsk, elf_fpregs)
 
 #define CORE_DUMP_USE_REGSET
 #define ELF_EXEC_PAGESIZE	PAGE_SIZE

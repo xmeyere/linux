@@ -218,7 +218,7 @@ struct fm801 {
 #endif
 };
 
-static DEFINE_PCI_DEVICE_TABLE(snd_fm801_ids) = {
+static const struct pci_device_id snd_fm801_ids[] = {
 	{ 0x1319, 0x0801, PCI_ANY_ID, PCI_ANY_ID, PCI_CLASS_MULTIMEDIA_AUDIO << 8, 0xffff00, 0, },   /* FM801 */
 	{ 0x5213, 0x0510, PCI_ANY_ID, PCI_ANY_ID, PCI_CLASS_MULTIMEDIA_AUDIO << 8, 0xffff00, 0, },   /* Gallant Odyssey Sound 4 */
 	{ 0, }
@@ -1286,8 +1286,6 @@ static int snd_fm801_create(struct snd_card *card,
 			return -ENODEV;
 		}
 	} else if ((tea575x_tuner & TUNER_TYPE_MASK) == 0) {
-		unsigned int tuner_only = tea575x_tuner & TUNER_ONLY;
-
 		/* autodetect tuner connection */
 		for (tea575x_tuner = 1; tea575x_tuner <= 3; tea575x_tuner++) {
 			chip->tea575x_tuner = tea575x_tuner;
@@ -1302,8 +1300,6 @@ static int snd_fm801_create(struct snd_card *card,
 			dev_err(card->dev, "TEA575x radio not found\n");
 			chip->tea575x_tuner = TUNER_DISABLED;
 		}
-
-		chip->tea575x_tuner |= tuner_only;
 	}
 	if (!(chip->tea575x_tuner & TUNER_DISABLED)) {
 		strlcpy(chip->tea.card, get_tea575x_gpio(chip)->name,

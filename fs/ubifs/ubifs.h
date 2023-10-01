@@ -314,7 +314,6 @@ struct ubifs_scan_node {
  * @nodes_cnt: number of nodes scanned
  * @nodes: list of struct ubifs_scan_node
  * @endpt: end point (and therefore the start of empty space)
- * @ecc: read returned -EBADMSG
  * @buf: buffer containing entire LEB scanned
  */
 struct ubifs_scan_leb {
@@ -322,7 +321,6 @@ struct ubifs_scan_leb {
 	int nodes_cnt;
 	struct list_head nodes;
 	int endpt;
-	int ecc;
 	void *buf;
 };
 
@@ -1756,7 +1754,6 @@ ssize_t ubifs_getxattr(struct dentry *dentry, const char *name, void *buf,
 		       size_t size);
 ssize_t ubifs_listxattr(struct dentry *dentry, char *buffer, size_t size);
 int ubifs_removexattr(struct dentry *dentry, const char *name);
-void ubifs_evict_xattr_inode(struct ubifs_info *c, ino_t xattr_inum);
 
 /* super.c */
 struct inode *ubifs_iget(struct super_block *sb, unsigned long inum);

@@ -37,11 +37,10 @@ static bool nft_rbtree_lookup(const struct nft_set *set,
 {
 	const struct nft_rbtree *priv = nft_set_priv(set);
 	const struct nft_rbtree_elem *rbe, *interval = NULL;
-	const struct rb_node *parent;
+	const struct rb_node *parent = priv->root.rb_node;
 	int d;
 
 	spin_lock_bh(&nft_rbtree_lock);
-	parent = priv->root.rb_node;
 	while (parent != NULL) {
 		rbe = rb_entry(parent, struct nft_rbtree_elem, node);
 
@@ -159,6 +158,7 @@ static int nft_rbtree_get(const struct nft_set *set, struct nft_set_elem *elem)
 	struct nft_rbtree_elem *rbe;
 	int d;
 
+	spin_lock_bh(&nft_rbtree_lock);
 	while (parent != NULL) {
 		rbe = rb_entry(parent, struct nft_rbtree_elem, node);
 
@@ -173,9 +173,11 @@ static int nft_rbtree_get(const struct nft_set *set, struct nft_set_elem *elem)
 			    !(rbe->flags & NFT_SET_ELEM_INTERVAL_END))
 				nft_data_copy(&elem->data, rbe->data);
 			elem->flags = rbe->flags;
+			spin_unlock_bh(&nft_rbtree_lock);
 			return 0;
 		}
 	}
+	spin_unlock_bh(&nft_rbtree_lock);
 	return -ENOENT;
 }
 
@@ -211,7 +213,7 @@ cont:
 	spin_unlock_bh(&nft_rbtree_lock);
 }
 
-static u64 nft_rbtree_privsize(const struct nlattr * const nla[])
+static unsigned int nft_rbtree_privsize(const struct nlattr * const nla[])
 {
 	return sizeof(struct nft_rbtree);
 }
@@ -232,13 +234,11 @@ static void nft_rbtree_destroy(const struct nft_set *set)
 	struct nft_rbtree_elem *rbe;
 	struct rb_node *node;
 
-	spin_lock_bh(&nft_rbtree_lock);
 	while ((node = priv->root.rb_node) != NULL) {
 		rb_erase(node, &priv->root);
 		rbe = rb_entry(node, struct nft_rbtree_elem, node);
 		nft_rbtree_elem_destroy(set, rbe);
 	}
-	spin_unlock_bh(&nft_rbtree_lock);
 }
 
 static bool nft_rbtree_estimate(const struct nft_set_desc *desc, u32 features,

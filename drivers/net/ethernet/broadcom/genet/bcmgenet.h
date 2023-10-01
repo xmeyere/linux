@@ -1,21 +1,11 @@
 /*
- * Copyright (c) 2014-2017 Broadcom
+ * Copyright (c) 2014 Broadcom Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
- *
- *
-*/
+ */
+
 #ifndef __BCMGENET_H__
 #define __BCMGENET_H__
 
@@ -206,9 +196,7 @@ struct bcmgenet_mib_counters {
 #define  MDIO_REG_SHIFT			16
 #define  MDIO_REG_MASK			0x1F
 
-#define UMAC_RBUF_OVFL_CNT_V1		0x61C
-#define RBUF_OVFL_CNT_V2		0x80
-#define RBUF_OVFL_CNT_V3PLUS		0x94
+#define UMAC_RBUF_OVFL_CNT		0x61C
 
 #define UMAC_MPD_CTRL			0x620
 #define  MPD_EN				(1 << 0)
@@ -218,9 +206,7 @@ struct bcmgenet_mib_counters {
 
 #define UMAC_MPD_PW_MS			0x624
 #define UMAC_MPD_PW_LS			0x628
-#define UMAC_RBUF_ERR_CNT_V1		0x634
-#define RBUF_ERR_CNT_V2			0x84
-#define RBUF_ERR_CNT_V3PLUS		0x98
+#define UMAC_RBUF_ERR_CNT		0x634
 #define UMAC_MDF_ERR_CNT		0x638
 #define UMAC_MDF_CTRL			0x650
 #define UMAC_MDF_ADDR			0x654
@@ -335,7 +321,6 @@ struct bcmgenet_mib_counters {
 #define  EXT_ENERGY_DET_MASK		(1 << 12)
 
 #define EXT_RGMII_OOB_CTRL		0x0C
-#define  RGMII_MODE_EN_V123		(1 << 0)
 #define  RGMII_LINK			(1 << 4)
 #define  OOB_DISABLE			(1 << 5)
 #define  RGMII_MODE_EN			(1 << 6)
@@ -416,6 +401,8 @@ struct bcmgenet_mib_counters {
 #define DMA_ARBITER_MODE_MASK		0x03
 #define DMA_RING_BUF_PRIORITY_MASK	0x1F
 #define DMA_RING_BUF_PRIORITY_SHIFT	5
+#define DMA_PRIO_REG_INDEX(q)		((q) / 6)
+#define DMA_PRIO_REG_SHIFT(q)		(((q) % 6) * DMA_RING_BUF_PRIORITY_SHIFT)
 #define DMA_RATE_ADJ_MASK		0xFF
 
 /* Tx/Rx Dma Descriptor common bits*/
@@ -461,6 +448,7 @@ struct enet_cb {
 enum bcmgenet_power_mode {
 	GENET_POWER_CABLE_SENSE = 0,
 	GENET_POWER_PASSIVE,
+	GENET_POWER_WOL_MAGIC,
 };
 
 struct bcmgenet_priv;
@@ -505,21 +493,12 @@ struct bcmgenet_hw_params {
 	u32		flags;
 };
 
-struct bcmgenet_skb_cb {
-	struct enet_cb *first_cb;	/* First control block of SKB */
-	struct enet_cb *last_cb;	/* Last control block of SKB */
-	unsigned int bytes_sent;	/* bytes on the wire (no TSB) */
-};
-
-#define GENET_CB(skb)	((struct bcmgenet_skb_cb *)((skb)->cb))
-
 struct bcmgenet_tx_ring {
 	spinlock_t	lock;		/* ring lock */
 	unsigned int	index;		/* ring index */
 	unsigned int	queue;		/* queue index */
 	struct enet_cb	*cbs;		/* tx ring buffer control block*/
 	unsigned int	size;		/* size of each tx ring */
-	unsigned int    clean_ptr;      /* Tx ring clean pointer */
 	unsigned int	c_index;	/* last consumer index of each ring*/
 	unsigned int	free_bds;	/* # of free bds for each ring */
 	unsigned int	write_ptr;	/* Tx ring write pointer SW copy */
@@ -527,9 +506,9 @@ struct bcmgenet_tx_ring {
 	unsigned int	cb_ptr;		/* Tx ring initial CB ptr */
 	unsigned int	end_ptr;	/* Tx ring end CB ptr */
 	void (*int_enable)(struct bcmgenet_priv *priv,
-				struct bcmgenet_tx_ring *);
+			   struct bcmgenet_tx_ring *);
 	void (*int_disable)(struct bcmgenet_priv *priv,
-				struct bcmgenet_tx_ring *);
+			    struct bcmgenet_tx_ring *);
 };
 
 /* device context */
@@ -568,10 +547,12 @@ struct bcmgenet_priv {
 	struct phy_device *phydev;
 	struct device_node *phy_dn;
 	struct mii_bus *mii_bus;
+	u16 gphy_rev;
 
 	/* PHY device variables */
-	int old_duplex;
 	int old_link;
+	int old_speed;
+	int old_duplex;
 	int old_pause;
 	phy_interface_t phy_interface;
 	int phy_addr;
@@ -581,10 +562,10 @@ struct bcmgenet_priv {
 	struct work_struct bcmgenet_irq_work;
 	int irq0;
 	int irq1;
-
-	/* shared status */
-	spinlock_t lock;
 	unsigned int irq0_stat;
+	unsigned int irq1_stat;
+	int wol_irq;
+	bool wol_irq_disabled;
 
 	/* HW descriptors/checksum variables */
 	bool desc_64b_en;
@@ -599,7 +580,6 @@ struct bcmgenet_priv {
 	struct platform_device *pdev;
 
 	/* WOL */
-	unsigned long wol_enabled;
 	struct clk *clk_wol;
 	u32 wolopts;
 
@@ -637,8 +617,17 @@ GENET_IO_MACRO(rbuf, GENET_RBUF_OFF);
 
 /* MDIO routines */
 int bcmgenet_mii_init(struct net_device *dev);
-int bcmgenet_mii_config(struct net_device *dev);
+int bcmgenet_mii_config(struct net_device *dev, bool init);
 void bcmgenet_mii_exit(struct net_device *dev);
 void bcmgenet_mii_reset(struct net_device *dev);
+void bcmgenet_mii_setup(struct net_device *dev);
+
+/* Wake-on-LAN routines */
+void bcmgenet_get_wol(struct net_device *dev, struct ethtool_wolinfo *wol);
+int bcmgenet_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol);
+int bcmgenet_wol_power_down_cfg(struct bcmgenet_priv *priv,
+				enum bcmgenet_power_mode mode);
+void bcmgenet_wol_power_up_cfg(struct bcmgenet_priv *priv,
+			       enum bcmgenet_power_mode mode);
 
 #endif /* __BCMGENET_H__ */

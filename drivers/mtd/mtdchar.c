@@ -190,12 +190,8 @@ static ssize_t mtdchar_read(struct file *file, char __user *buf, size_t count,
 
 	pr_debug("MTD_read\n");
 
-	if (*ppos + count > mtd->size) {
-		if (*ppos < mtd->size)
-			count = mtd->size - *ppos;
-		else
-			count = 0;
-	}
+	if (*ppos + count > mtd->size)
+		count = mtd->size - *ppos;
 
 	if (!count)
 		return 0;
@@ -280,7 +276,7 @@ static ssize_t mtdchar_write(struct file *file, const char __user *buf, size_t c
 
 	pr_debug("MTD_write\n");
 
-	if (*ppos >= mtd->size)
+	if (*ppos == mtd->size)
 		return -ENOSPC;
 
 	if (*ppos + count > mtd->size)
@@ -552,6 +548,9 @@ static int mtdchar_blkpg_ioctl(struct mtd_info *mtd,
 		/* Only master mtd device must be used to add partitions */
 		if (mtd_is_partition(mtd))
 			return -EINVAL;
+
+		/* Sanitize user input */
+		p.devname[BLKPG_DEVNAMELTH - 1] = '\0';
 
 		return mtd_add_partition(mtd, p.devname, p.start, p.length);
 

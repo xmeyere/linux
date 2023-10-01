@@ -33,10 +33,6 @@
 #include <linux/memblock.h>
 #include <linux/edd.h>
 
-#ifdef CONFIG_KEXEC
-#include <linux/kexec.h>
-#endif
-
 #include <xen/xen.h>
 #include <xen/events.h>
 #include <xen/interface/xen.h>
@@ -430,12 +426,6 @@ static void __init xen_init_cpuid_mask(void)
 		~((1 << X86_FEATURE_MTRR) |  /* disable MTRR */
 		  (1 << X86_FEATURE_ACC));   /* thermal monitoring */
 
-	/*
-	 * Xen PV would need some work to support PCID: CR3 handling as well
-	 * as xen_flush_tlb_others() would need updating.
-	 */
-	cpuid_leaf1_ecx_mask &= ~(1 << (X86_FEATURE_PCID % 32));  /* disable PCID */
-
 	if (!xen_initial_domain())
 		cpuid_leaf1_edx_mask &=
 			~((1 << X86_FEATURE_ACPI));  /* disable ACPI */
@@ -491,7 +481,6 @@ static void set_aliased_prot(void *v, pgprot_t prot)
 	pte_t pte;
 	unsigned long pfn;
 	struct page *page;
-	unsigned char dummy;
 
 	ptep = lookup_address((unsigned long)v, &level);
 	BUG_ON(ptep == NULL);
@@ -500,32 +489,6 @@ static void set_aliased_prot(void *v, pgprot_t prot)
 	page = pfn_to_page(pfn);
 
 	pte = pfn_pte(pfn, prot);
-
-	/*
-	 * Careful: update_va_mapping() will fail if the virtual address
-	 * we're poking isn't populated in the page tables.  We don't
-	 * need to worry about the direct map (that's always in the page
-	 * tables), but we need to be careful about vmap space.  In
-	 * particular, the top level page table can lazily propagate
-	 * entries between processes, so if we've switched mms since we
-	 * vmapped the target in the first place, we might not have the
-	 * top-level page table entry populated.
-	 *
-	 * We disable preemption because we want the same mm active when
-	 * we probe the target and when we issue the hypercall.  We'll
-	 * have the same nominal mm, but if we're a kernel thread, lazy
-	 * mm dropping could change our pgd.
-	 *
-	 * Out of an abundance of caution, this uses __get_user() to fault
-	 * in the target address just in case there's some obscure case
-	 * in which the target address isn't readable.
-	 */
-
-	preempt_disable();
-
-	pagefault_disable();	/* Avoid warnings due to being atomic. */
-	__get_user(dummy, (unsigned char __user __force *)v);
-	pagefault_enable();
 
 	if (HYPERVISOR_update_va_mapping((unsigned long)v, pte, 0))
 		BUG();
@@ -538,25 +501,12 @@ static void set_aliased_prot(void *v, pgprot_t prot)
 				BUG();
 	} else
 		kmap_flush_unused();
-
-	preempt_enable();
 }
 
 static void xen_alloc_ldt(struct desc_struct *ldt, unsigned entries)
 {
 	const unsigned entries_per_page = PAGE_SIZE / LDT_ENTRY_SIZE;
 	int i;
-
-	/*
-	 * We need to mark the all aliases of the LDT pages RO.  We
-	 * don't need to call vm_flush_aliases(), though, since that's
-	 * only responsible for flushing aliases out the TLBs, not the
-	 * page tables, and Xen will flush the TLB for us if needed.
-	 *
-	 * To avoid confusing future readers: none of this is necessary
-	 * to load the LDT.  The hypervisor only checks this when the
-	 * LDT is faulted in due to subsequent descriptor access.
-	 */
 
 	for(i = 0; i < entries; i += entries_per_page)
 		set_aliased_prot(ldt + i, PAGE_KERNEL_RO);
@@ -871,7 +821,7 @@ static void xen_convert_trap_info(const struct desc_ptr *desc,
 
 void xen_copy_trap_info(struct trap_info *traps)
 {
-	const struct desc_ptr *desc = &__get_cpu_var(idt_desc);
+	const struct desc_ptr *desc = this_cpu_ptr(&idt_desc);
 
 	xen_convert_trap_info(desc, traps);
 }
@@ -888,7 +838,7 @@ static void xen_load_idt(const struct desc_ptr *desc)
 
 	spin_lock(&lock);
 
-	__get_cpu_var(idt_desc) = *desc;
+	memcpy(this_cpu_ptr(&idt_desc), desc, sizeof(idt_desc));
 
 	xen_convert_trap_info(desc, traps);
 
@@ -962,7 +912,7 @@ static void xen_load_sp0(struct tss_struct *tss,
 	xen_mc_issue(PARAVIRT_LAZY_CPU);
 }
 
-void xen_set_iopl_mask(unsigned mask)
+static void xen_set_iopl_mask(unsigned mask)
 {
 	struct physdev_set_iopl set_iopl;
 
@@ -1513,6 +1463,7 @@ static void __ref xen_setup_gdt(int cpu)
 	pv_cpu_ops.load_gdt = xen_load_gdt;
 }
 
+#ifdef CONFIG_XEN_PVH
 /*
  * A PV guest starts with default flags that are not set for PVH, set them
  * here asap.
@@ -1532,10 +1483,10 @@ static void xen_pvh_set_cr_flags(int cpu)
 	 * set them here. For all, OSFXSR OSXMMEXCPT are set in fpu_init.
 	*/
 	if (cpu_has_pse)
-		cr4_set_bits_and_update_boot(X86_CR4_PSE);
+		set_in_cr4(X86_CR4_PSE);
 
 	if (cpu_has_pge)
-		cr4_set_bits_and_update_boot(X86_CR4_PGE);
+		set_in_cr4(X86_CR4_PGE);
 }
 
 /*
@@ -1558,17 +1509,21 @@ static void __init xen_pvh_early_guest_init(void)
 		return;
 
 	xen_have_vector_callback = 1;
+
+	xen_pvh_early_cpu_init(0, false);
 	xen_pvh_set_cr_flags(0);
 
 #ifdef CONFIG_X86_32
 	BUG(); /* PVH: Implement proper support. */
 #endif
 }
+#endif    /* CONFIG_XEN_PVH */
 
 /* First C function to be called on Xen boot */
 asmlinkage __visible void __init xen_start_kernel(void)
 {
 	struct physdev_set_iopl set_iopl;
+	unsigned long initrd_start = 0;
 	int rc;
 
 	if (!xen_start_info)
@@ -1577,7 +1532,9 @@ asmlinkage __visible void __init xen_start_kernel(void)
 	xen_domain_type = XEN_PV_DOMAIN;
 
 	xen_setup_features();
+#ifdef CONFIG_XEN_PVH
 	xen_pvh_early_guest_init();
+#endif
 	xen_setup_machphys_mapping();
 
 	/* Install Xen paravirt ops */
@@ -1608,8 +1565,6 @@ asmlinkage __visible void __init xen_start_kernel(void)
 	if (!xen_initial_domain())
 #endif
 		__supported_pte_mask &= ~(_PAGE_PWT | _PAGE_PCD);
-
-	__supported_pte_mask |= _PAGE_IOMAP;
 
 	/*
 	 * Prevent page tables from being allocated in highmem, even
@@ -1681,9 +1636,6 @@ asmlinkage __visible void __init xen_start_kernel(void)
 	xen_raw_console_write("mapping kernel into physical memory\n");
 	xen_setup_kernel_pagetable((pgd_t *)xen_start_info->pt_base, xen_start_info->nr_pages);
 
-	/* Allocate and initialize top and mid mfn levels for p2m structure */
-	xen_build_mfn_list_list();
-
 	/* keep using Xen gdt for now; no urgent need to change it */
 
 #ifdef CONFIG_X86_32
@@ -1717,10 +1669,16 @@ asmlinkage __visible void __init xen_start_kernel(void)
 	new_cpu_data.x86_capability[0] = cpuid_edx(1);
 #endif
 
+	if (xen_start_info->mod_start) {
+	    if (xen_start_info->flags & SIF_MOD_START_PFN)
+		initrd_start = PFN_PHYS(xen_start_info->mod_start);
+	    else
+		initrd_start = __pa(xen_start_info->mod_start);
+	}
+
 	/* Poke various useful things into boot_params */
 	boot_params.hdr.type_of_loader = (9 << 4) | 0;
-	boot_params.hdr.ramdisk_image = xen_start_info->mod_start
-		? __pa(xen_start_info->mod_start) : 0;
+	boot_params.hdr.ramdisk_image = initrd_start;
 	boot_params.hdr.ramdisk_size = xen_start_info->mod_len;
 	boot_params.hdr.cmd_line_ptr = __pa(xen_start_info->cmd_line);
 
@@ -1767,6 +1725,8 @@ asmlinkage __visible void __init xen_start_kernel(void)
 	xen_raw_console_write("about to get started...\n");
 
 	xen_setup_runstate_info(0);
+
+	xen_efi_init();
 
 	/* Start the world */
 #ifdef CONFIG_X86_32
@@ -1858,21 +1818,6 @@ static struct notifier_block xen_hvm_cpu_notifier = {
 	.notifier_call	= xen_hvm_cpu_notify,
 };
 
-#ifdef CONFIG_KEXEC
-static void xen_hvm_shutdown(void)
-{
-	native_machine_shutdown();
-	if (kexec_in_progress)
-		xen_reboot(SHUTDOWN_soft_reset);
-}
-
-static void xen_hvm_crash_shutdown(struct pt_regs *regs)
-{
-	native_machine_crash_shutdown(regs);
-	xen_reboot(SHUTDOWN_soft_reset);
-}
-#endif
-
 static void __init xen_hvm_guest_init(void)
 {
 	init_hvm_pv_info();
@@ -1889,14 +1834,21 @@ static void __init xen_hvm_guest_init(void)
 	x86_init.irqs.intr_init = xen_init_IRQ;
 	xen_hvm_init_time_ops();
 	xen_hvm_init_mmu_ops();
-#ifdef CONFIG_KEXEC
-	machine_ops.shutdown = xen_hvm_shutdown;
-	machine_ops.crash_shutdown = xen_hvm_crash_shutdown;
-#endif
 }
+
+static bool xen_nopv = false;
+static __init int xen_parse_nopv(char *arg)
+{
+       xen_nopv = true;
+       return 0;
+}
+early_param("xen_nopv", xen_parse_nopv);
 
 static uint32_t __init xen_hvm_platform(void)
 {
+	if (xen_nopv)
+		return 0;
+
 	if (xen_pv_domain())
 		return 0;
 
@@ -1905,6 +1857,8 @@ static uint32_t __init xen_hvm_platform(void)
 
 bool xen_hvm_need_lapic(void)
 {
+	if (xen_nopv)
+		return false;
 	if (xen_pv_domain())
 		return false;
 	if (!xen_hvm_domain())

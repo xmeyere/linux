@@ -54,17 +54,10 @@ struct ssm2602_priv {
  * using 2 wire for device control, so we cache them instead.
  * There is no point in caching the reset register
  */
-static const struct reg_default ssm2602_reg[SSM2602_CACHEREGNUM] = {
-	{ .reg = 0x00, .def = 0x0097 },
-	{ .reg = 0x01, .def = 0x0097 },
-	{ .reg = 0x02, .def = 0x0079 },
-	{ .reg = 0x03, .def = 0x0079 },
-	{ .reg = 0x04, .def = 0x000a },
-	{ .reg = 0x05, .def = 0x0008 },
-	{ .reg = 0x06, .def = 0x009f },
-	{ .reg = 0x07, .def = 0x000a },
-	{ .reg = 0x08, .def = 0x0000 },
-	{ .reg = 0x09, .def = 0x0000 }
+static const u16 ssm2602_reg[SSM2602_CACHEREGNUM] = {
+	0x0097, 0x0097, 0x0079, 0x0079,
+	0x000a, 0x0008, 0x009f, 0x000a,
+	0x0000, 0x0000
 };
 
 
@@ -199,7 +192,7 @@ static const struct snd_pcm_hw_constraint_list ssm2602_constraints_12288000 = {
 };
 
 static const unsigned int ssm2602_rates_11289600[] = {
-	8000, 44100, 88200,
+	8000, 11025, 22050, 44100, 88200,
 };
 
 static const struct snd_pcm_hw_constraint_list ssm2602_constraints_11289600 = {
@@ -244,6 +237,16 @@ static const struct ssm2602_coeff ssm2602_coeff_table[] = {
 	{18432000, 96000, SSM2602_COEFF_SRATE(0x7, 0x1, 0x0)},
 	{12000000, 96000, SSM2602_COEFF_SRATE(0x7, 0x0, 0x1)},
 
+	/* 11.025k */
+	{11289600, 11025, SSM2602_COEFF_SRATE(0xc, 0x0, 0x0)},
+	{16934400, 11025, SSM2602_COEFF_SRATE(0xc, 0x1, 0x0)},
+	{12000000, 11025, SSM2602_COEFF_SRATE(0xc, 0x1, 0x1)},
+
+	/* 22.05k */
+	{11289600, 22050, SSM2602_COEFF_SRATE(0xd, 0x0, 0x0)},
+	{16934400, 22050, SSM2602_COEFF_SRATE(0xd, 0x1, 0x0)},
+	{12000000, 22050, SSM2602_COEFF_SRATE(0xd, 0x1, 0x1)},
+
 	/* 44.1k */
 	{11289600, 44100, SSM2602_COEFF_SRATE(0x8, 0x0, 0x0)},
 	{16934400, 44100, SSM2602_COEFF_SRATE(0x8, 0x1, 0x0)},
@@ -282,17 +285,17 @@ static int ssm2602_hw_params(struct snd_pcm_substream *substream,
 	regmap_write(ssm2602->regmap, SSM2602_SRATE, srate);
 
 	/* bit size */
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		iface = 0x0;
 		break;
-	case SNDRV_PCM_FORMAT_S20_3LE:
+	case 20:
 		iface = 0x4;
 		break;
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		iface = 0x8;
 		break;
-	case SNDRV_PCM_FORMAT_S32_LE:
+	case 32:
 		iface = 0xc;
 		break;
 	default:
@@ -474,7 +477,8 @@ static int ssm2602_set_bias_level(struct snd_soc_codec *codec,
 	return 0;
 }
 
-#define SSM2602_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_16000 |\
+#define SSM2602_RATES (SNDRV_PCM_RATE_8000 | SNDRV_PCM_RATE_11025 |\
+		SNDRV_PCM_RATE_16000 | SNDRV_PCM_RATE_22050 |\
 		SNDRV_PCM_RATE_32000 | SNDRV_PCM_RATE_44100 |\
 		SNDRV_PCM_RATE_48000 | SNDRV_PCM_RATE_88200 |\
 		SNDRV_PCM_RATE_96000)
@@ -509,18 +513,11 @@ static struct snd_soc_dai_driver ssm2602_dai = {
 	.symmetric_samplebits = 1,
 };
 
-static int ssm2602_suspend(struct snd_soc_codec *codec)
-{
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
-}
-
 static int ssm2602_resume(struct snd_soc_codec *codec)
 {
 	struct ssm2602_priv *ssm2602 = snd_soc_codec_get_drvdata(codec);
 
 	regcache_sync(ssm2602->regmap);
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
 
 	return 0;
 }
@@ -593,27 +590,14 @@ static int ssm260x_codec_probe(struct snd_soc_codec *codec)
 		break;
 	}
 
-	if (ret)
-		return ret;
-
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_STANDBY);
-
-	return 0;
-}
-
-/* remove everything here */
-static int ssm2602_remove(struct snd_soc_codec *codec)
-{
-	ssm2602_set_bias_level(codec, SND_SOC_BIAS_OFF);
-	return 0;
+	return ret;
 }
 
 static struct snd_soc_codec_driver soc_codec_dev_ssm2602 = {
 	.probe =	ssm260x_codec_probe,
-	.remove =	ssm2602_remove,
-	.suspend =	ssm2602_suspend,
 	.resume =	ssm2602_resume,
 	.set_bias_level = ssm2602_set_bias_level,
+	.suspend_bias_off = true,
 
 	.controls = ssm260x_snd_controls,
 	.num_controls = ARRAY_SIZE(ssm260x_snd_controls),
@@ -636,8 +620,8 @@ const struct regmap_config ssm2602_regmap_config = {
 	.volatile_reg = ssm2602_register_volatile,
 
 	.cache_type = REGCACHE_RBTREE,
-	.reg_defaults = ssm2602_reg,
-	.num_reg_defaults = ARRAY_SIZE(ssm2602_reg),
+	.reg_defaults_raw = ssm2602_reg,
+	.num_reg_defaults_raw = ARRAY_SIZE(ssm2602_reg),
 };
 EXPORT_SYMBOL_GPL(ssm2602_regmap_config);
 

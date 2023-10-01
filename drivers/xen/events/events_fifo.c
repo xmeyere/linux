@@ -281,8 +281,7 @@ static void handle_irq_for_port(unsigned port)
 
 static void consume_one_event(unsigned cpu,
 			      struct evtchn_fifo_control_block *control_block,
-			      unsigned priority, unsigned long *ready,
-			      bool drop)
+			      unsigned priority, unsigned long *ready)
 {
 	struct evtchn_fifo_queue *q = &per_cpu(cpu_queue, cpu);
 	uint32_t head;
@@ -314,17 +313,13 @@ static void consume_one_event(unsigned cpu,
 	if (head == 0)
 		clear_bit(priority, ready);
 
-	if (evtchn_fifo_is_pending(port) && !evtchn_fifo_is_masked(port)) {
-		if (unlikely(drop))
-			pr_warn("Dropping pending event for port %u\n", port);
-		else
-			handle_irq_for_port(port);
-	}
+	if (evtchn_fifo_is_pending(port) && !evtchn_fifo_is_masked(port))
+		handle_irq_for_port(port);
 
 	q->head[priority] = head;
 }
 
-static void __evtchn_fifo_handle_events(unsigned cpu, bool drop)
+static void evtchn_fifo_handle_events(unsigned cpu)
 {
 	struct evtchn_fifo_control_block *control_block;
 	unsigned long ready;
@@ -335,15 +330,10 @@ static void __evtchn_fifo_handle_events(unsigned cpu, bool drop)
 	ready = xchg(&control_block->ready, 0);
 
 	while (ready) {
-		q = find_first_bit(BM(&ready), EVTCHN_FIFO_MAX_QUEUES);
-		consume_one_event(cpu, control_block, q, &ready, drop);
+		q = find_first_bit(&ready, EVTCHN_FIFO_MAX_QUEUES);
+		consume_one_event(cpu, control_block, q, &ready);
 		ready |= xchg(&control_block->ready, 0);
 	}
-}
-
-static void evtchn_fifo_handle_events(unsigned cpu)
-{
-	__evtchn_fifo_handle_events(cpu, false);
 }
 
 static void evtchn_fifo_resume(void)
@@ -430,9 +420,6 @@ static int evtchn_fifo_cpu_notification(struct notifier_block *self,
 		if (!per_cpu(cpu_control_block, cpu))
 			ret = evtchn_fifo_alloc_control_block(cpu);
 		break;
-	case CPU_DEAD:
-		__evtchn_fifo_handle_events(cpu, true);
-		break;
 	default:
 		break;
 	}
@@ -445,18 +432,19 @@ static struct notifier_block evtchn_fifo_cpu_notifier = {
 
 int __init xen_evtchn_fifo_init(void)
 {
-	int cpu = smp_processor_id();
+	int cpu = get_cpu();
 	int ret;
 
 	ret = evtchn_fifo_alloc_control_block(cpu);
 	if (ret < 0)
-		return ret;
+		goto out;
 
 	pr_info("Using FIFO-based ABI\n");
 
 	evtchn_ops = &evtchn_ops_fifo;
 
 	register_cpu_notifier(&evtchn_fifo_cpu_notifier);
-
+out:
+	put_cpu();
 	return ret;
 }

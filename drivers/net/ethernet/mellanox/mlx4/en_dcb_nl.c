@@ -162,7 +162,6 @@ static int mlx4_en_dcbnl_ieee_setpfc(struct net_device *dev,
 	struct mlx4_en_priv *priv = netdev_priv(dev);
 	struct mlx4_en_port_profile *prof = priv->prof;
 	struct mlx4_en_dev *mdev = priv->mdev;
-	u32 tx_pause, tx_ppp, rx_pause, rx_ppp;
 	int err;
 
 	en_dbg(DRV, priv, "cap: 0x%x en: 0x%x mbc: 0x%x delay: %d\n",
@@ -171,23 +170,19 @@ static int mlx4_en_dcbnl_ieee_setpfc(struct net_device *dev,
 			pfc->mbc,
 			pfc->delay);
 
-	rx_pause = prof->rx_pause && !pfc->pfc_en;
-	tx_pause = prof->tx_pause && !pfc->pfc_en;
-	rx_ppp = pfc->pfc_en;
-	tx_ppp = pfc->pfc_en;
+	prof->rx_pause = !pfc->pfc_en;
+	prof->tx_pause = !pfc->pfc_en;
+	prof->rx_ppp = pfc->pfc_en;
+	prof->tx_ppp = pfc->pfc_en;
 
 	err = mlx4_SET_PORT_general(mdev->dev, priv->port,
 				    priv->rx_skb_size + ETH_FCS_LEN,
-				    tx_pause, tx_ppp, rx_pause, rx_ppp);
-	if (err) {
+				    prof->tx_pause,
+				    prof->tx_ppp,
+				    prof->rx_pause,
+				    prof->rx_ppp);
+	if (err)
 		en_err(priv, "Failed setting pause params\n");
-		return err;
-	}
-
-	prof->tx_ppp = tx_ppp;
-	prof->rx_ppp = rx_ppp;
-	prof->rx_pause = rx_pause;
-	prof->tx_pause = tx_pause;
 
 	return err;
 }

@@ -224,8 +224,7 @@ struct se_dev_entry *core_get_se_deve_from_rtpi(
 		if (port->sep_rtpi != rtpi)
 			continue;
 
-		atomic_inc(&deve->pr_ref_count);
-		smp_mb__after_atomic();
+		atomic_inc_mb(&deve->pr_ref_count);
 		spin_unlock_irq(&nacl->device_list_lock);
 
 		return deve;
@@ -1019,6 +1018,23 @@ int se_dev_set_enforce_pr_isids(struct se_device *dev, int flag)
 	return 0;
 }
 
+int se_dev_set_force_pr_aptpl(struct se_device *dev, int flag)
+{
+	if ((flag != 0) && (flag != 1)) {
+		printk(KERN_ERR "Illegal value %d\n", flag);
+		return -EINVAL;
+	}
+	if (dev->export_count) {
+		pr_err("dev[%p]: Unable to set force_pr_aptpl while"
+		       " export_count is %d\n", dev, dev->export_count);
+		return -EINVAL;
+	}
+
+	dev->dev_attrib.force_pr_aptpl = flag;
+	pr_debug("dev[%p]: SE Device force_pr_aptpl: %d\n", dev, flag);
+	return 0;
+}
+
 int se_dev_set_is_nonrot(struct se_device *dev, int flag)
 {
 	if ((flag != 0) && (flag != 1)) {
@@ -1153,10 +1169,10 @@ int se_dev_set_optimal_sectors(struct se_device *dev, u32 optimal_sectors)
 				" changed for TCM/pSCSI\n", dev);
 		return -EINVAL;
 	}
-	if (optimal_sectors > dev->dev_attrib.hw_max_sectors) {
+	if (optimal_sectors > dev->dev_attrib.fabric_max_sectors) {
 		pr_err("dev[%p]: Passed optimal_sectors %u cannot be"
-			" greater than hw_max_sectors: %u\n", dev,
-			optimal_sectors, dev->dev_attrib.hw_max_sectors);
+			" greater than fabric_max_sectors: %u\n", dev,
+			optimal_sectors, dev->dev_attrib.fabric_max_sectors);
 		return -EINVAL;
 	}
 
@@ -1250,24 +1266,16 @@ struct se_lun *core_dev_add_lun(
  *
  *
  */
-int core_dev_del_lun(
+void core_dev_del_lun(
 	struct se_portal_group *tpg,
-	u32 unpacked_lun)
+	struct se_lun *lun)
 {
-	struct se_lun *lun;
-
-	lun = core_tpg_pre_dellun(tpg, unpacked_lun);
-	if (IS_ERR(lun))
-		return PTR_ERR(lun);
-
-	core_tpg_post_dellun(tpg, lun);
-
-	pr_debug("%s_TPG[%u]_LUN[%u] - Deactivated %s Logical Unit from"
+	pr_debug("%s_TPG[%u]_LUN[%u] - Deactivating %s Logical Unit from"
 		" device object\n", tpg->se_tpg_tfo->get_fabric_name(),
-		tpg->se_tpg_tfo->tpg_get_tag(tpg), unpacked_lun,
+		tpg->se_tpg_tfo->tpg_get_tag(tpg), lun->unpacked_lun,
 		tpg->se_tpg_tfo->get_fabric_name());
 
-	return 0;
+	core_tpg_remove_lun(tpg, lun);
 }
 
 struct se_lun *core_get_lun_from_tpg(struct se_portal_group *tpg, u32 unpacked_lun)
@@ -1396,8 +1404,7 @@ int core_dev_add_initiator_node_lun_acl(
 
 	spin_lock(&lun->lun_acl_lock);
 	list_add_tail(&lacl->lacl_list, &lun->lun_acl_list);
-	atomic_inc(&lun->lun_acl_count);
-	smp_mb__after_atomic();
+	atomic_inc_mb(&lun->lun_acl_count);
 	spin_unlock(&lun->lun_acl_lock);
 
 	pr_debug("%s_TPG[%hu]_LUN[%u->%u] - Added %s ACL for "
@@ -1431,8 +1438,7 @@ int core_dev_del_initiator_node_lun_acl(
 
 	spin_lock(&lun->lun_acl_lock);
 	list_del(&lacl->lacl_list);
-	atomic_dec(&lun->lun_acl_count);
-	smp_mb__after_atomic();
+	atomic_dec_mb(&lun->lun_acl_count);
 	spin_unlock(&lun->lun_acl_lock);
 
 	core_disable_device_list_for_node(lun, NULL, lacl->mapped_lun,
@@ -1555,6 +1561,7 @@ struct se_device *target_alloc_device(struct se_hba *hba, const char *name)
 	dev->dev_attrib.emulate_3pc = DA_EMULATE_3PC;
 	dev->dev_attrib.pi_prot_type = TARGET_DIF_TYPE0_PROT;
 	dev->dev_attrib.enforce_pr_isids = DA_ENFORCE_PR_ISIDS;
+	dev->dev_attrib.force_pr_aptpl = DA_FORCE_PR_APTPL;
 	dev->dev_attrib.is_nonrot = DA_IS_NONROT;
 	dev->dev_attrib.emulate_rest_reord = DA_EMULATE_REST_REORD;
 	dev->dev_attrib.max_unmap_lba_count = DA_MAX_UNMAP_LBA_COUNT;
@@ -1565,6 +1572,7 @@ struct se_device *target_alloc_device(struct se_hba *hba, const char *name)
 				DA_UNMAP_GRANULARITY_ALIGNMENT_DEFAULT;
 	dev->dev_attrib.max_write_same_len = DA_MAX_WRITE_SAME_LEN;
 	dev->dev_attrib.fabric_max_sectors = DA_FABRIC_MAX_SECTORS;
+	dev->dev_attrib.optimal_sectors = DA_FABRIC_MAX_SECTORS;
 
 	xcopy_lun = &dev->xcopy_lun;
 	xcopy_lun->lun_se_dev = dev;
@@ -1576,51 +1584,6 @@ struct se_device *target_alloc_device(struct se_hba *hba, const char *name)
 
 	return dev;
 }
-
-/*
- * Check if the underlying struct block_device request_queue supports
- * the QUEUE_FLAG_DISCARD bit for UNMAP/WRITE_SAME in SCSI + TRIM
- * in ATA and we need to set TPE=1
- */
-bool target_configure_unmap_from_queue(struct se_dev_attrib *attrib,
-				       struct request_queue *q)
-{
-	int block_size = queue_logical_block_size(q);
-
-	if (!blk_queue_discard(q))
-		return false;
-
-	attrib->max_unmap_lba_count =
-		q->limits.max_discard_sectors >> (ilog2(block_size) - 9);
-	/*
-	 * Currently hardcoded to 1 in Linux/SCSI code..
-	 */
-	attrib->max_unmap_block_desc_count = 1;
-	attrib->unmap_granularity = q->limits.discard_granularity / block_size;
-	attrib->unmap_granularity_alignment = q->limits.discard_alignment /
-								block_size;
-	return true;
-}
-EXPORT_SYMBOL(target_configure_unmap_from_queue);
-
-/*
- * Convert from blocksize advertised to the initiator to the 512 byte
- * units unconditionally used by the Linux block layer.
- */
-sector_t target_to_linux_sector(struct se_device *dev, sector_t lb)
-{
-	switch (dev->dev_attrib.block_size) {
-	case 4096:
-		return lb << 3;
-	case 2048:
-		return lb << 2;
-	case 1024:
-		return lb << 1;
-	default:
-		return lb;
-	}
-}
-EXPORT_SYMBOL(target_to_linux_sector);
 
 int target_configure_device(struct se_device *dev)
 {
@@ -1636,6 +1599,8 @@ int target_configure_device(struct se_device *dev)
 	ret = dev->transport->configure_device(dev);
 	if (ret)
 		goto out;
+	dev->dev_flags |= DF_CONFIGURED;
+
 	/*
 	 * XXX: there is not much point to have two different values here..
 	 */
@@ -1648,7 +1613,6 @@ int target_configure_device(struct se_device *dev)
 	dev->dev_attrib.hw_max_sectors =
 		se_dev_align_max_sectors(dev->dev_attrib.hw_max_sectors,
 					 dev->dev_attrib.hw_block_size);
-	dev->dev_attrib.optimal_sectors = dev->dev_attrib.hw_max_sectors;
 
 	dev->dev_index = scsi_get_new_index(SCSI_DEVICE_INDEX);
 	dev->creation_time = get_jiffies_64();
@@ -1696,8 +1660,6 @@ int target_configure_device(struct se_device *dev)
 	mutex_lock(&g_device_mutex);
 	list_add_tail(&dev->g_dev_node, &g_device_list);
 	mutex_unlock(&g_device_mutex);
-
-	dev->dev_flags |= DF_CONFIGURED;
 
 	return 0;
 

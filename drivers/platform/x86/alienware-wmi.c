@@ -59,25 +59,33 @@ enum WMAX_CONTROL_STATES {
 
 struct quirk_entry {
 	u8 num_zones;
+	u8 hdmi_mux;
 };
 
 static struct quirk_entry *quirks;
 
 static struct quirk_entry quirk_unknown = {
 	.num_zones = 2,
+	.hdmi_mux = 0,
 };
 
 static struct quirk_entry quirk_x51_family = {
 	.num_zones = 3,
+	.hdmi_mux = 0.
 };
 
-static int dmi_matched(const struct dmi_system_id *dmi)
+static struct quirk_entry quirk_asm100 = {
+	.num_zones = 2,
+	.hdmi_mux = 1,
+};
+
+static int __init dmi_matched(const struct dmi_system_id *dmi)
 {
 	quirks = dmi->driver_data;
 	return 1;
 }
 
-static struct dmi_system_id alienware_quirks[] = {
+static const struct dmi_system_id alienware_quirks[] __initconst = {
 	{
 	 .callback = dmi_matched,
 	 .ident = "Alienware X51 R1",
@@ -96,6 +104,15 @@ static struct dmi_system_id alienware_quirks[] = {
 		     },
 	 .driver_data = &quirk_x51_family,
 	 },
+	{
+		.callback = dmi_matched,
+		.ident = "Alienware ASM100",
+		.matches = {
+			DMI_MATCH(DMI_SYS_VENDOR, "Alienware"),
+			DMI_MATCH(DMI_PRODUCT_NAME, "ASM100"),
+		},
+		.driver_data = &quirk_asm100,
+	},
 	{}
 };
 
@@ -433,22 +450,22 @@ static acpi_status alienware_hdmi_command(struct hdmi_args *in_args,
 
 	input.length = (acpi_size) sizeof(*in_args);
 	input.pointer = in_args;
-	if (out_data) {
+	if (out_data != NULL) {
 		output.length = ACPI_ALLOCATE_BUFFER;
 		output.pointer = NULL;
 		status = wmi_evaluate_method(WMAX_CONTROL_GUID, 1,
 					     command, &input, &output);
-		if (ACPI_SUCCESS(status)) {
-			obj = (union acpi_object *)output.pointer;
-			if (obj && obj->type == ACPI_TYPE_INTEGER)
-				*out_data = (u32)obj->integer.value;
-		}
-		kfree(output.pointer);
-	} else {
+	} else
 		status = wmi_evaluate_method(WMAX_CONTROL_GUID, 1,
 					     command, &input, NULL);
+
+	if (ACPI_SUCCESS(status) && out_data != NULL) {
+		obj = (union acpi_object *)output.pointer;
+		if (obj && obj->type == ACPI_TYPE_INTEGER)
+			*out_data = (u32) obj->integer.value;
 	}
 	return status;
+
 }
 
 static ssize_t show_hdmi_cable(struct device *dev,
@@ -494,7 +511,7 @@ static ssize_t show_hdmi_source(struct device *dev,
 			return scnprintf(buf, PAGE_SIZE,
 					 "input [gpu] unknown\n");
 	}
-	pr_err("alienware-wmi: unknown HDMI source status: %u\n", status);
+	pr_err("alienware-wmi: unknown HDMI source status: %d\n", out_data);
 	return scnprintf(buf, PAGE_SIZE, "input gpu [unknown]\n");
 }
 
@@ -537,7 +554,8 @@ static struct attribute_group hdmi_attribute_group = {
 
 static void remove_hdmi(struct platform_device *dev)
 {
-	sysfs_remove_group(&dev->dev.kobj, &hdmi_attribute_group);
+	if (quirks->hdmi_mux > 0)
+		sysfs_remove_group(&dev->dev.kobj, &hdmi_attribute_group);
 }
 
 static int create_hdmi(struct platform_device *dev)
@@ -583,7 +601,7 @@ static int __init alienware_wmi_init(void)
 	if (ret)
 		goto fail_platform_device2;
 
-	if (interface == WMAX) {
+	if (quirks->hdmi_mux > 0) {
 		ret = create_hdmi(platform_device);
 		if (ret)
 			goto fail_prep_hdmi;

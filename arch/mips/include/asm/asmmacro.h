@@ -209,31 +209,9 @@
 	.endm
 
 #ifdef TOOLCHAIN_SUPPORTS_MSA
-/* preprocessor replaces the fp in ".set fp=64" with $30 otherwise */
-#undef fp
-
-	.macro	_cfcmsa	rd, cs
-	.set	push
-	.set	mips32r2
-	.set	fp=64
-	.set	msa
-	cfcmsa	\rd, $\cs
-	.set	pop
-	.endm
-
-	.macro	_ctcmsa	cd, rs
-	.set	push
-	.set	mips32r2
-	.set	fp=64
-	.set	msa
-	ctcmsa	$\cd, \rs
-	.set	pop
-	.endm
-
 	.macro	ld_d	wd, off, base
 	.set	push
 	.set	mips32r2
-	.set	fp=64
 	.set	msa
 	ld.d	$w\wd, \off(\base)
 	.set	pop
@@ -242,45 +220,40 @@
 	.macro	st_d	wd, off, base
 	.set	push
 	.set	mips32r2
-	.set	fp=64
 	.set	msa
 	st.d	$w\wd, \off(\base)
 	.set	pop
 	.endm
 
-	.macro	copy_u_w	ws, n
+	.macro	copy_u_w	rd, ws, n
 	.set	push
 	.set	mips32r2
-	.set	fp=64
 	.set	msa
-	copy_u.w $1, $w\ws[\n]
+	copy_u.w \rd, $w\ws[\n]
 	.set	pop
 	.endm
 
-	.macro	copy_u_d	ws, n
+	.macro	copy_u_d	rd, ws, n
 	.set	push
 	.set	mips64r2
-	.set	fp=64
 	.set	msa
-	copy_u.d $1, $w\ws[\n]
+	copy_u.d \rd, $w\ws[\n]
 	.set	pop
 	.endm
 
-	.macro	insert_w	wd, n
+	.macro	insert_w	wd, n, rs
 	.set	push
 	.set	mips32r2
-	.set	fp=64
 	.set	msa
-	insert.w $w\wd[\n], $1
+	insert.w $w\wd[\n], \rs
 	.set	pop
 	.endm
 
-	.macro	insert_d	wd, n
+	.macro	insert_d	wd, n, rs
 	.set	push
 	.set	mips64r2
-	.set	fp=64
 	.set	msa
-	insert.d $w\wd[\n], $1
+	insert.d $w\wd[\n], \rs
 	.set	pop
 	.endm
 #else
@@ -308,7 +281,7 @@
 	/*
 	 * Temporary until all toolchains in use include MSA support.
 	 */
-	.macro	_cfcmsa	rd, cs
+	.macro	cfcmsa	rd, cs
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
@@ -318,7 +291,7 @@
 	.set	pop
 	.endm
 
-	.macro	_ctcmsa	cd, rs
+	.macro	ctcmsa	cd, rs
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
@@ -331,7 +304,7 @@
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
-	addu	$1, \base, \off
+	add	$1, \base, \off
 	.word	LDD_MSA_INSN | (\wd << 6)
 	.set	pop
 	.endm
@@ -340,41 +313,49 @@
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
-	addu	$1, \base, \off
+	add	$1, \base, \off
 	.word	STD_MSA_INSN | (\wd << 6)
 	.set	pop
 	.endm
 
-	.macro	copy_u_w	ws, n
+	.macro	copy_u_w	rd, ws, n
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
 	.insn
 	.word	COPY_UW_MSA_INSN | (\n << 16) | (\ws << 11)
+	/* move triggers an assembler bug... */
+	or	\rd, $1, zero
 	.set	pop
 	.endm
 
-	.macro	copy_u_d	ws, n
+	.macro	copy_u_d	rd, ws, n
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
 	.insn
 	.word	COPY_UD_MSA_INSN | (\n << 16) | (\ws << 11)
+	/* move triggers an assembler bug... */
+	or	\rd, $1, zero
 	.set	pop
 	.endm
 
-	.macro	insert_w	wd, n
+	.macro	insert_w	wd, n, rs
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
+	/* move triggers an assembler bug... */
+	or	$1, \rs, zero
 	.word	INSERT_W_MSA_INSN | (\n << 16) | (\wd << 6)
 	.set	pop
 	.endm
 
-	.macro	insert_d	wd, n
+	.macro	insert_d	wd, n, rs
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
+	/* move triggers an assembler bug... */
+	or	$1, \rs, zero
 	.word	INSERT_D_MSA_INSN | (\n << 16) | (\wd << 6)
 	.set	pop
 	.endm
@@ -416,7 +397,7 @@
 	.set	push
 	.set	noat
 	SET_HARDFLOAT
-	_cfcmsa	$1, MSA_CSR
+	cfcmsa	$1, MSA_CSR
 	sw	$1, THREAD_MSA_CSR(\thread)
 	.set	pop
 	.endm
@@ -426,7 +407,7 @@
 	.set	noat
 	SET_HARDFLOAT
 	lw	$1, THREAD_MSA_CSR(\thread)
-	_ctcmsa	MSA_CSR, $1
+	ctcmsa	MSA_CSR, $1
 	.set	pop
 	ld_d	0, THREAD_FPR0, \thread
 	ld_d	1, THREAD_FPR1, \thread
@@ -469,6 +450,9 @@
 	insert_w \wd, 2
 	insert_w \wd, 3
 #endif
+	.if	31-\wd
+	msa_init_upper	(\wd+1)
+	.endif
 	.endm
 
 	.macro	msa_init_all_upper
@@ -477,37 +461,6 @@
 	SET_HARDFLOAT
 	not	$1, zero
 	msa_init_upper	0
-	msa_init_upper	1
-	msa_init_upper	2
-	msa_init_upper	3
-	msa_init_upper	4
-	msa_init_upper	5
-	msa_init_upper	6
-	msa_init_upper	7
-	msa_init_upper	8
-	msa_init_upper	9
-	msa_init_upper	10
-	msa_init_upper	11
-	msa_init_upper	12
-	msa_init_upper	13
-	msa_init_upper	14
-	msa_init_upper	15
-	msa_init_upper	16
-	msa_init_upper	17
-	msa_init_upper	18
-	msa_init_upper	19
-	msa_init_upper	20
-	msa_init_upper	21
-	msa_init_upper	22
-	msa_init_upper	23
-	msa_init_upper	24
-	msa_init_upper	25
-	msa_init_upper	26
-	msa_init_upper	27
-	msa_init_upper	28
-	msa_init_upper	29
-	msa_init_upper	30
-	msa_init_upper	31
 	.set	pop
 	.endm
 

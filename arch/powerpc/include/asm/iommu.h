@@ -113,7 +113,6 @@ extern void iommu_register_group(struct iommu_table *tbl,
 				 int pci_domain_number, unsigned long pe_num);
 extern int iommu_add_device(struct device *dev);
 extern void iommu_del_device(struct device *dev);
-extern int __init tce_iommu_bus_notifier_init(void);
 #else
 static inline void iommu_register_group(struct iommu_table *tbl,
 					int pci_domain_number,
@@ -128,11 +127,6 @@ static inline int iommu_add_device(struct device *dev)
 
 static inline void iommu_del_device(struct device *dev)
 {
-}
-
-static inline int __init tce_iommu_bus_notifier_init(void)
-{
-        return 0;
 }
 #endif /* !CONFIG_IOMMU_API */
 

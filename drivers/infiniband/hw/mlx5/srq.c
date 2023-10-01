@@ -156,8 +156,10 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
 	int err;
 	int i;
 	struct mlx5_wqe_srq_next_seg *next;
+	int page_shift;
+	int npages;
 
-	err = mlx5_db_alloc(&dev->mdev, &srq->db);
+	err = mlx5_db_alloc(dev->mdev, &srq->db);
 	if (err) {
 		mlx5_ib_warn(dev, "alloc dbell rec failed\n");
 		return err;
@@ -165,11 +167,12 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
 
 	*srq->db.db = 0;
 
-	if (mlx5_buf_alloc(&dev->mdev, buf_size, PAGE_SIZE * 2, &srq->buf)) {
+	if (mlx5_buf_alloc(dev->mdev, buf_size, PAGE_SIZE * 2, &srq->buf)) {
 		mlx5_ib_dbg(dev, "buf alloc failed\n");
 		err = -ENOMEM;
 		goto err_db;
 	}
+	page_shift = srq->buf.page_shift;
 
 	srq->head    = 0;
 	srq->tail    = srq->msrq.max - 1;
@@ -181,8 +184,10 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
 			cpu_to_be16((i + 1) & (srq->msrq.max - 1));
 	}
 
-	mlx5_ib_dbg(dev, "srq->buf.page_shift = %d\n", srq->buf.page_shift);
-	*inlen = sizeof(**in) + sizeof(*(*in)->pas) * srq->buf.npages;
+	npages = DIV_ROUND_UP(srq->buf.npages, 1 << (page_shift - PAGE_SHIFT));
+	mlx5_ib_dbg(dev, "buf_size %d, page_shift %d, npages %d, calc npages %d\n",
+		    buf_size, page_shift, srq->buf.npages, npages);
+	*inlen = sizeof(**in) + sizeof(*(*in)->pas) * npages;
 	*in = mlx5_vzalloc(*inlen);
 	if (!*in) {
 		err = -ENOMEM;
@@ -199,7 +204,7 @@ static int create_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq,
 	}
 	srq->wq_sig = !!srq_signature;
 
-	(*in)->ctx.log_pg_sz = srq->buf.page_shift - MLX5_ADAPTER_PAGE_SHIFT;
+	(*in)->ctx.log_pg_sz = page_shift - MLX5_ADAPTER_PAGE_SHIFT;
 
 	return 0;
 
@@ -207,10 +212,10 @@ err_in:
 	mlx5_vfree(*in);
 
 err_buf:
-	mlx5_buf_free(&dev->mdev, &srq->buf);
+	mlx5_buf_free(dev->mdev, &srq->buf);
 
 err_db:
-	mlx5_db_free(&dev->mdev, &srq->db);
+	mlx5_db_free(dev->mdev, &srq->db);
 	return err;
 }
 
@@ -224,8 +229,8 @@ static void destroy_srq_user(struct ib_pd *pd, struct mlx5_ib_srq *srq)
 static void destroy_srq_kernel(struct mlx5_ib_dev *dev, struct mlx5_ib_srq *srq)
 {
 	kfree(srq->wrid);
-	mlx5_buf_free(&dev->mdev, &srq->buf);
-	mlx5_db_free(&dev->mdev, &srq->db);
+	mlx5_buf_free(dev->mdev, &srq->buf);
+	mlx5_db_free(dev->mdev, &srq->db);
 }
 
 struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
@@ -233,20 +238,22 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 				  struct ib_udata *udata)
 {
 	struct mlx5_ib_dev *dev = to_mdev(pd->device);
+	struct mlx5_general_caps *gen;
 	struct mlx5_ib_srq *srq;
-	size_t desc_size;
-	size_t buf_size;
+	int desc_size;
+	int buf_size;
 	int err;
 	struct mlx5_create_srq_mbox_in *uninitialized_var(in);
 	int uninitialized_var(inlen);
 	int is_xrc;
 	u32 flgs, xrcdn;
 
+	gen = &dev->mdev->caps.gen;
 	/* Sanity check SRQ size before proceeding */
-	if (init_attr->attr.max_wr >= dev->mdev.caps.max_srq_wqes) {
+	if (init_attr->attr.max_wr >= gen->max_srq_wqes) {
 		mlx5_ib_dbg(dev, "max_wr %d, cap %d\n",
 			    init_attr->attr.max_wr,
-			    dev->mdev.caps.max_srq_wqes);
+			    gen->max_srq_wqes);
 		return ERR_PTR(-EINVAL);
 	}
 
@@ -261,24 +268,15 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 
 	desc_size = sizeof(struct mlx5_wqe_srq_next_seg) +
 		    srq->msrq.max_gs * sizeof(struct mlx5_wqe_data_seg);
-	if (desc_size == 0 || srq->msrq.max_gs > desc_size) {
-		err = -EINVAL;
-		goto err_srq;
-	}
 	desc_size = roundup_pow_of_two(desc_size);
-	desc_size = max_t(size_t, 32, desc_size);
-	if (desc_size < sizeof(struct mlx5_wqe_srq_next_seg)) {
-		err = -EINVAL;
-		goto err_srq;
-	}
+	desc_size = max_t(int, 32, desc_size);
 	srq->msrq.max_avail_gather = (desc_size - sizeof(struct mlx5_wqe_srq_next_seg)) /
 		sizeof(struct mlx5_wqe_data_seg);
 	srq->msrq.wqe_shift = ilog2(desc_size);
 	buf_size = srq->msrq.max * desc_size;
-	if (buf_size < desc_size) {
-		err = -EINVAL;
-		goto err_srq;
-	}
+	mlx5_ib_dbg(dev, "desc_size 0x%x, req wr 0x%x, srq size 0x%x, max_gs 0x%x, max_avail_gather 0x%x\n",
+		    desc_size, init_attr->attr.max_wr, srq->msrq.max, srq->msrq.max_gs,
+		    srq->msrq.max_avail_gather);
 
 	if (pd->uobject)
 		err = create_srq_user(pd, srq, &in, udata, buf_size, &inlen);
@@ -307,7 +305,7 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 
 	in->ctx.pd = cpu_to_be32(to_mpd(pd)->pdn);
 	in->ctx.db_record = cpu_to_be64(srq->db.dma);
-	err = mlx5_core_create_srq(&dev->mdev, &srq->msrq, in, inlen);
+	err = mlx5_core_create_srq(dev->mdev, &srq->msrq, in, inlen);
 	mlx5_vfree(in);
 	if (err) {
 		mlx5_ib_dbg(dev, "create SRQ failed, err %d\n", err);
@@ -331,7 +329,7 @@ struct ib_srq *mlx5_ib_create_srq(struct ib_pd *pd,
 	return &srq->ibsrq;
 
 err_core:
-	mlx5_core_destroy_srq(&dev->mdev, &srq->msrq);
+	mlx5_core_destroy_srq(dev->mdev, &srq->msrq);
 
 err_usr_kern_srq:
 	if (pd->uobject)
@@ -361,7 +359,7 @@ int mlx5_ib_modify_srq(struct ib_srq *ibsrq, struct ib_srq_attr *attr,
 			return -EINVAL;
 
 		mutex_lock(&srq->mutex);
-		ret = mlx5_core_arm_srq(&dev->mdev, &srq->msrq, attr->srq_limit, 1);
+		ret = mlx5_core_arm_srq(dev->mdev, &srq->msrq, attr->srq_limit, 1);
 		mutex_unlock(&srq->mutex);
 
 		if (ret)
@@ -382,7 +380,7 @@ int mlx5_ib_query_srq(struct ib_srq *ibsrq, struct ib_srq_attr *srq_attr)
 	if (!out)
 		return -ENOMEM;
 
-	ret = mlx5_core_query_srq(&dev->mdev, &srq->msrq, out);
+	ret = mlx5_core_query_srq(dev->mdev, &srq->msrq, out);
 	if (ret)
 		goto out_box;
 
@@ -400,7 +398,7 @@ int mlx5_ib_destroy_srq(struct ib_srq *srq)
 	struct mlx5_ib_dev *dev = to_mdev(srq->device);
 	struct mlx5_ib_srq *msrq = to_msrq(srq);
 
-	mlx5_core_destroy_srq(&dev->mdev, &msrq->msrq);
+	mlx5_core_destroy_srq(dev->mdev, &msrq->msrq);
 
 	if (srq->uobject) {
 		mlx5_ib_db_unmap_user(to_mucontext(srq->uobject->context), &msrq->db);

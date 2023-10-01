@@ -202,10 +202,9 @@ static int s5m8767_get_register(struct s5m8767_info *s5m8767, int reg_id,
 		}
 	}
 
-	if (i >= s5m8767->num_regulators)
-		return -EINVAL;
-
-	*enable_ctrl = s5m8767_opmode_reg[reg_id][mode] << S5M8767_ENCTRL_SHIFT;
+	if (i < s5m8767->num_regulators)
+		*enable_ctrl =
+		s5m8767_opmode_reg[reg_id][mode] << S5M8767_ENCTRL_SHIFT;
 
 	return 0;
 }
@@ -687,7 +686,7 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 	struct sec_platform_data *pdata = iodev->pdata;
 	struct regulator_config config = { };
 	struct s5m8767_info *s5m8767;
-	int i, ret, size, buck_init;
+	int i, ret, buck_init;
 
 	if (!pdata) {
 		dev_err(pdev->dev.parent, "Platform data not supplied\n");
@@ -725,8 +724,6 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 				GFP_KERNEL);
 	if (!s5m8767)
 		return -ENOMEM;
-
-	size = sizeof(struct regulator_dev *) * (S5M8767_REG_MAX - 2);
 
 	s5m8767->dev = &pdev->dev;
 	s5m8767->iodev = iodev;
@@ -939,12 +936,8 @@ static int s5m8767_pmic_probe(struct platform_device *pdev)
 			else
 				regulators[id].vsel_mask = 0xff;
 
-			ret = s5m8767_get_register(s5m8767, id, &enable_reg,
+			s5m8767_get_register(s5m8767, id, &enable_reg,
 					     &enable_val);
-			if (ret) {
-				dev_err(s5m8767->dev, "error reading registers\n");
-				return ret;
-			}
 			regulators[id].enable_reg = enable_reg;
 			regulators[id].enable_mask = S5M8767_ENCTRL_MASK;
 			regulators[id].enable_val = enable_val;

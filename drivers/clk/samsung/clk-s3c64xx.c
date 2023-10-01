@@ -122,7 +122,7 @@ static struct syscore_ops s3c64xx_clk_syscore_ops = {
 	.resume = s3c64xx_clk_resume,
 };
 
-static void __init s3c64xx_clk_sleep_init(void)
+static void s3c64xx_clk_sleep_init(void)
 {
 	s3c64xx_save_common = samsung_clk_alloc_reg_dump(s3c64xx_clk_regs,
 						ARRAY_SIZE(s3c64xx_clk_regs));
@@ -146,7 +146,7 @@ err_warn:
 		__func__);
 }
 #else
-static void __init s3c64xx_clk_sleep_init(void) {}
+static void s3c64xx_clk_sleep_init(void) {}
 #endif
 
 /* List of parent clocks common for all S3C64xx SoCs. */
@@ -517,6 +517,8 @@ void __init s3c64xx_clk_init(struct device_node *np, unsigned long xtal_f,
 	samsung_clk_register_alias(ctx, s3c64xx_clock_aliases,
 					ARRAY_SIZE(s3c64xx_clock_aliases));
 	s3c64xx_clk_sleep_init();
+
+	samsung_clk_of_add_provider(np, ctx);
 
 	pr_info("%s clocks: apll = %lu, mpll = %lu\n"
 		"\tepll = %lu, arm_clk = %lu\n",

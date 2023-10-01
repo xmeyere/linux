@@ -124,13 +124,17 @@ static void mincore_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 	ptep = pte_offset_map_lock(vma->vm_mm, pmd, addr, &ptl);
 	do {
 		pte_t pte = *ptep;
+		pgoff_t pgoff;
 
 		next = addr + PAGE_SIZE;
 		if (pte_none(pte))
 			mincore_unmapped_range(vma, addr, next, vec);
 		else if (pte_present(pte))
 			*vec = 1;
-		else { /* pte is a swap entry */
+		else if (pte_file(pte)) {
+			pgoff = pte_to_pgoff(pte);
+			*vec = mincore_page(vma->vm_file->f_mapping, pgoff);
+		} else { /* pte is a swap entry */
 			swp_entry_t entry = pte_to_swp_entry(pte);
 
 			if (is_migration_entry(entry)) {
@@ -138,8 +142,9 @@ static void mincore_pte_range(struct vm_area_struct *vma, pmd_t *pmd,
 				*vec = 1;
 			} else {
 #ifdef CONFIG_SWAP
+				pgoff = entry.val;
 				*vec = mincore_page(swap_address_space(entry),
-					entry.val);
+					pgoff);
 #else
 				WARN_ON(1);
 				*vec = 1;
@@ -212,22 +217,6 @@ static void mincore_page_range(struct vm_area_struct *vma,
 	} while (pgd++, addr = next, addr != end);
 }
 
-static inline bool can_do_mincore(struct vm_area_struct *vma)
-{
-	if (vma_is_anonymous(vma))
-		return true;
-	if (!vma->vm_file)
-		return false;
-	/*
-	 * Reveal pagecache information only for non-anonymous mappings that
-	 * correspond to the files the calling process could (if tried) open
-	 * for writing; otherwise we'd be including shared non-exclusive
-	 * mappings, which opens a side channel.
-	 */
-	return inode_owner_or_capable(file_inode(vma->vm_file)) ||
-		inode_permission(file_inode(vma->vm_file), MAY_WRITE) == 0;
-}
-
 /*
  * Do a chunk of "sys_mincore()". We've already checked
  * all the arguments, we hold the mmap semaphore: we should
@@ -243,11 +232,6 @@ static long do_mincore(unsigned long addr, unsigned long pages, unsigned char *v
 		return -ENOMEM;
 
 	end = min(vma->vm_end, addr + (pages << PAGE_SHIFT));
-	if (!can_do_mincore(vma)) {
-		unsigned long pages = DIV_ROUND_UP(end - addr, PAGE_SIZE);
-		memset(vec, 1, pages);
-		return pages;
-	}
 
 	if (is_vm_hugetlb_page(vma))
 		mincore_hugetlb_page_range(vma, addr, end, vec);

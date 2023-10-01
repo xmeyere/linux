@@ -1062,8 +1062,6 @@ static int ace_setup(struct ace_device *ace)
 	return 0;
 
 err_read:
-	/* prevent double queue cleanup */
-	ace->gd->queue = NULL;
 	put_disk(ace->gd);
 err_alloc_disk:
 	blk_cleanup_queue(ace->queue);
@@ -1205,7 +1203,6 @@ static struct platform_driver ace_platform_driver = {
 	.probe = ace_probe,
 	.remove = ace_remove,
 	.driver = {
-		.owner = THIS_MODULE,
 		.name = "xsysace",
 		.of_match_table = ace_of_match,
 	},

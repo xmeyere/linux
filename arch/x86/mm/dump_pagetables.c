@@ -16,7 +16,6 @@
 #include <linux/mm.h>
 #include <linux/module.h>
 #include <linux/seq_file.h>
-#include <linux/highmem.h>
 
 #include <asm/pgtable.h>
 
@@ -49,7 +48,9 @@ enum address_markers_idx {
 	LOW_KERNEL_NR,
 	VMALLOC_START_NR,
 	VMEMMAP_START_NR,
+# ifdef CONFIG_X86_ESPFIX64
 	ESPFIX_START_NR,
+# endif
 	HIGH_KERNEL_NR,
 	MODULES_VADDR_NR,
 	MODULES_END_NR,
@@ -72,7 +73,9 @@ static struct addr_marker address_markers[] = {
 	{ PAGE_OFFSET,		"Low Kernel Mapping" },
 	{ VMALLOC_START,        "vmalloc() Area" },
 	{ VMEMMAP_START,        "Vmemmap" },
+# ifdef CONFIG_X86_ESPFIX64
 	{ ESPFIX_BASE_ADDR,	"ESPfix Area", 16 },
+# endif
 	{ __START_KERNEL_map,   "High Kernel Mapping" },
 	{ MODULES_VADDR,        "Modules" },
 	{ MODULES_END,          "End Modules" },
@@ -264,16 +267,15 @@ static void walk_pte_level(struct seq_file *m, struct pg_state *st, pmd_t addr,
 							unsigned long P)
 {
 	int i;
-	pte_t *pte;
+	pte_t *start;
 
+	start = (pte_t *) pmd_page_vaddr(addr);
 	for (i = 0; i < PTRS_PER_PTE; i++) {
-		pgprot_t prot;
+		pgprot_t prot = pte_pgprot(*start);
 
 		st->current_address = normalize_addr(P + i * PTE_LEVEL_MULT);
-		pte = pte_offset_map(&addr, st->current_address);
-		prot = pte_pgprot(*pte);
 		note_page(m, st, prot, 4);
-		pte_unmap(pte);
+		start++;
 	}
 }
 

@@ -24,9 +24,9 @@
 #include "../../include/linux/export.h"
 
 /* Are we using CONFIG_MODVERSIONS? */
-int modversions = 0;
+static int modversions = 0;
 /* Warn about undefined symbols? (do so if we have vmlinux) */
-int have_vmlinux = 0;
+static int have_vmlinux = 0;
 /* Is CONFIG_MODULE_SRCVERSION_ALL set? */
 static int all_versions = 0;
 /* If we are modposting external module set to 1 */
@@ -229,7 +229,7 @@ static struct symbol *find_symbol(const char *name)
 	return NULL;
 }
 
-static struct {
+static const struct {
 	const char *str;
 	enum export export;
 } export_list[] = {
@@ -772,33 +772,10 @@ static const char *sech_name(struct elf_info *elf, Elf_Shdr *sechdr)
 		sechdr->sh_name;
 }
 
-/* if sym is empty or point to a string
- * like ".[0-9]+" then return 1.
- * This is the optional prefix added by ld to some sections
- */
-static int number_prefix(const char *sym)
-{
-	if (*sym++ == '\0')
-		return 1;
-	if (*sym != '.')
-		return 0;
-	do {
-		char c = *sym++;
-		if (c < '0' || c > '9')
-			return 0;
-	} while (*sym);
-	return 1;
-}
-
 /* The pattern is an array of simple patterns.
  * "foo" will match an exact string equal to "foo"
  * "*foo" will match a string that ends with "foo"
  * "foo*" will match a string that begins with "foo"
- * "foo$" will match a string equal to "foo" or "foo.1"
- *   where the '1' can be any number including several digits.
- *   The $ syntax is for sections where ld append a dot number
- *   to make section name unique.
- * "*foo*" will match a string that contains "foo"
  */
 static int match(const char *sym, const char * const pat[])
 {
@@ -807,17 +784,8 @@ static int match(const char *sym, const char * const pat[])
 		p = *pat++;
 		const char *endp = p + strlen(p) - 1;
 
-		/* "*foo*" */
-		if (*p == '*' && *endp == '*') {
-			char *here, *bare = strndup(p + 1, strlen(p) - 2);
-
-			here = strstr(sym, bare);
-			free(bare);
-			if (here != NULL)
-				return 1;
-		}
 		/* "*foo" */
-		else if (*p == '*') {
+		if (*p == '*') {
 			if (strrcmp(sym, p + 1) == 0)
 				return 1;
 		}
@@ -825,13 +793,6 @@ static int match(const char *sym, const char * const pat[])
 		else if (*endp == '*') {
 			if (strncmp(sym, p, strlen(p) - 1) == 0)
 				return 1;
-		}
-		/* "foo$" */
-		else if (*endp == '$') {
-			if (strncmp(sym, p, strlen(p) - 1) == 0) {
-				if (number_prefix(sym + strlen(p) - 1))
-					return 1;
-			}
 		}
 		/* no wildcards */
 		else {
@@ -844,7 +805,7 @@ static int match(const char *sym, const char * const pat[])
 }
 
 /* sections that we do not want to do full section mismatch check on */
-static const char *section_white_list[] =
+static const char *const section_white_list[] =
 {
 	".comment*",
 	".debug*",
@@ -890,20 +851,20 @@ static void check_section(const char *modname, struct elf_info *elf,
 
 
 #define ALL_INIT_DATA_SECTIONS \
-	".init.setup$", ".init.rodata$", ".meminit.rodata$", \
-	".init.data$", ".meminit.data$"
+	".init.setup", ".init.rodata", ".meminit.rodata", \
+	".init.data", ".meminit.data"
 #define ALL_EXIT_DATA_SECTIONS \
-	".exit.data$", ".memexit.data$"
+	".exit.data", ".memexit.data"
 
 #define ALL_INIT_TEXT_SECTIONS \
-	".init.text$", ".meminit.text$"
+	".init.text", ".meminit.text"
 #define ALL_EXIT_TEXT_SECTIONS \
-	".exit.text$", ".memexit.text$"
+	".exit.text", ".memexit.text"
 
 #define ALL_PCI_INIT_SECTIONS	\
-	".pci_fixup_early$", ".pci_fixup_header$", ".pci_fixup_final$", \
-	".pci_fixup_enable$", ".pci_fixup_resume$", \
-	".pci_fixup_resume_early$", ".pci_fixup_suspend$"
+	".pci_fixup_early", ".pci_fixup_header", ".pci_fixup_final", \
+	".pci_fixup_enable", ".pci_fixup_resume", \
+	".pci_fixup_resume_early", ".pci_fixup_suspend"
 
 #define ALL_XXXINIT_SECTIONS MEM_INIT_SECTIONS
 #define ALL_XXXEXIT_SECTIONS MEM_EXIT_SECTIONS
@@ -911,8 +872,8 @@ static void check_section(const char *modname, struct elf_info *elf,
 #define ALL_INIT_SECTIONS INIT_SECTIONS, ALL_XXXINIT_SECTIONS
 #define ALL_EXIT_SECTIONS EXIT_SECTIONS, ALL_XXXEXIT_SECTIONS
 
-#define DATA_SECTIONS ".data$", ".data.rel$"
-#define TEXT_SECTIONS ".text$", ".text.unlikely$"
+#define DATA_SECTIONS ".data", ".data.rel"
+#define TEXT_SECTIONS ".text", ".text.unlikely"
 
 #define INIT_SECTIONS      ".init.*"
 #define MEM_INIT_SECTIONS  ".meminit.*"
@@ -921,21 +882,18 @@ static void check_section(const char *modname, struct elf_info *elf,
 #define MEM_EXIT_SECTIONS  ".memexit.*"
 
 /* init data sections */
-static const char *init_data_sections[] = { ALL_INIT_DATA_SECTIONS, NULL };
+static const char *const init_data_sections[] =
+	{ ALL_INIT_DATA_SECTIONS, NULL };
 
 /* all init sections */
-static const char *init_sections[] = { ALL_INIT_SECTIONS, NULL };
+static const char *const init_sections[] = { ALL_INIT_SECTIONS, NULL };
 
 /* All init and exit sections (code + data) */
-static const char *init_exit_sections[] =
+static const char *const init_exit_sections[] =
 	{ALL_INIT_SECTIONS, ALL_EXIT_SECTIONS, NULL };
 
-/* all text sections */
-static const char *const text_sections[] = { ALL_INIT_TEXT_SECTIONS,
-				ALL_EXIT_TEXT_SECTIONS, TEXT_SECTIONS, NULL };
-
 /* data section */
-static const char *data_sections[] = { DATA_SECTIONS, NULL };
+static const char *const data_sections[] = { DATA_SECTIONS, NULL };
 
 
 /* symbols in .data that may refer to init/exit sections */
@@ -949,10 +907,9 @@ static const char *data_sections[] = { DATA_SECTIONS, NULL };
 	"*_probe_one",							\
 	"*_console"
 
-static const char *head_sections[] = { ".head.text*", NULL };
-static const char *linker_symbols[] =
+static const char *const head_sections[] = { ".head.text*", NULL };
+static const char *const linker_symbols[] =
 	{ "__init_begin", "_sinittext", "_einittext", NULL };
-static const char *const optim_symbols[] = { "*.constprop.*", NULL };
 
 enum mismatch {
 	TEXT_TO_ANY_INIT,
@@ -973,7 +930,7 @@ struct sectioncheck {
 	const char *symbol_white_list[20];
 };
 
-const struct sectioncheck sectioncheck[] = {
+static const struct sectioncheck sectioncheck[] = {
 /* Do not reference init/exit code/data from
  * normal code and data
  */
@@ -1110,17 +1067,6 @@ static const struct sectioncheck *section_mismatch(
  *   This pattern is identified by
  *   refsymname = __init_begin, _sinittext, _einittext
  *
- * Pattern 5:
- *   GCC may optimize static inlines when fed constant arg(s) resulting
- *   in functions like cpumask_empty() -- generating an associated symbol
- *   cpumask_empty.constprop.3 that appears in the audit.  If the const that
- *   is passed in comes from __init, like say nmi_ipi_mask, we get a
- *   meaningless section warning.  May need to add isra symbols too...
- *   This pattern is identified by
- *   tosec   = init section
- *   fromsec = text section
- *   refsymname = *.constprop.*
- *
  **/
 static int secref_whitelist(const struct sectioncheck *mismatch,
 			    const char *fromsec, const char *fromsym,
@@ -1151,12 +1097,6 @@ static int secref_whitelist(const struct sectioncheck *mismatch,
 
 	/* Check for pattern 4 */
 	if (match(tosym, linker_symbols))
-		return 0;
-
-	/* Check for pattern 5 */
-	if (match(fromsec, text_sections) &&
-	    match(tosec, init_sections) &&
-	    match(fromsym, optim_symbols))
 		return 0;
 
 	return 1;
@@ -1207,7 +1147,7 @@ static Elf_Sym *find_elf_symbol(struct elf_info *elf, Elf64_Sword addr,
 
 static inline int is_arm_mapping_symbol(const char *str)
 {
-	return str[0] == '$' && strchr("atd", str[1])
+	return str[0] == '$' && strchr("axtd", str[1])
 	       && (str[2] == '\0' || str[2] == '.');
 }
 
@@ -1735,12 +1675,11 @@ static void check_sec_ref(struct module *mod, const char *modname,
 
 static char *remove_dot(char *s)
 {
-	char *end;
-	int n = strcspn(s, ".");
+	size_t n = strcspn(s, ".");
 
-	if (n > 0 && s[n] != 0) {
-		strtoul(s + n + 1, &end, 10);
-		if  (end > s + n + 1 && (*end == '.' || *end == 0))
+	if (n && s[n]) {
+		size_t m = strspn(s + n + 1, "0123456789");
+		if (m && (s[n + m] == '.' || s[n + m] == 0))
 			s[n] = 0;
 	}
 	return s;
@@ -1950,14 +1889,6 @@ static void add_intree_flag(struct buffer *b, int is_intree)
 {
 	if (is_intree)
 		buf_printf(b, "\nMODULE_INFO(intree, \"Y\");\n");
-}
-
-/* Cannot check for assembler */
-static void add_retpoline(struct buffer *b)
-{
-	buf_printf(b, "\n#ifdef RETPOLINE\n");
-	buf_printf(b, "MODULE_INFO(retpoline, \"Y\");\n");
-	buf_printf(b, "#endif\n");
 }
 
 static void add_staging_flag(struct buffer *b, const char *name)
@@ -2281,7 +2212,7 @@ int main(int argc, char **argv)
 	err = 0;
 
 	for (mod = modules; mod; mod = mod->next) {
-		char fname[strlen(mod->name) + 10];
+		char fname[PATH_MAX];
 
 		if (mod->skip)
 			continue;
@@ -2290,7 +2221,6 @@ int main(int argc, char **argv)
 
 		add_header(&buf, mod);
 		add_intree_flag(&buf, !external_module);
-		add_retpoline(&buf);
 		add_staging_flag(&buf, mod->name);
 		err |= add_versions(&buf, mod);
 		add_depends(&buf, mod, modules);

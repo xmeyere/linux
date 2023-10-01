@@ -117,7 +117,6 @@ static int tc_ctl_tfilter(struct sk_buff *skb, struct nlmsghdr *n)
 {
 	struct net *net = sock_net(skb->sk);
 	struct nlattr *tca[TCA_MAX + 1];
-	spinlock_t *root_lock;
 	struct tcmsg *t;
 	u32 protocol;
 	u32 prio;
@@ -125,22 +124,21 @@ static int tc_ctl_tfilter(struct sk_buff *skb, struct nlmsghdr *n)
 	u32 parent;
 	struct net_device *dev;
 	struct Qdisc  *q;
-	struct tcf_proto **back, **chain;
+	struct tcf_proto __rcu **back;
+	struct tcf_proto __rcu **chain;
 	struct tcf_proto *tp;
 	const struct tcf_proto_ops *tp_ops;
 	const struct Qdisc_class_ops *cops;
 	unsigned long cl;
 	unsigned long fh;
 	int err;
-	int tp_created;
+	int tp_created = 0;
 
 	if ((n->nlmsg_type != RTM_GETTFILTER) &&
 	    !netlink_ns_capable(skb, net->user_ns, CAP_NET_ADMIN))
 		return -EPERM;
 
 replay:
-	tp_created = 0;
-
 	err = nlmsg_parse(n, sizeof(*t), tca, TCA_MAX, NULL);
 	if (err < 0)
 		return err;
@@ -199,7 +197,9 @@ replay:
 		goto errout;
 
 	/* Check the chain for existence of proto-tcf with this priority */
-	for (back = chain; (tp = *back) != NULL; back = &tp->next) {
+	for (back = chain;
+	     (tp = rtnl_dereference(*back)) != NULL;
+	     back = &tp->next) {
 		if (tp->prio >= prio) {
 			if (tp->prio == prio) {
 				if (!nprio ||
@@ -210,8 +210,6 @@ replay:
 			break;
 		}
 	}
-
-	root_lock = qdisc_root_sleeping_lock(q);
 
 	if (tp == NULL) {
 		/* Proto-tcf does not exist, create new one */
@@ -261,7 +259,8 @@ replay:
 		}
 		tp->ops = tp_ops;
 		tp->protocol = protocol;
-		tp->prio = nprio ? : TC_H_MAJ(tcf_auto_prio(*back));
+		tp->prio = nprio ? :
+			       TC_H_MAJ(tcf_auto_prio(rtnl_dereference(*back)));
 		tp->q = q;
 		tp->classify = tp_ops->classify;
 		tp->classid = parent;
@@ -282,9 +281,9 @@ replay:
 
 	if (fh == 0) {
 		if (n->nlmsg_type == RTM_DELTFILTER && t->tcm_handle == 0) {
-			spin_lock_bh(root_lock);
-			*back = tp->next;
-			spin_unlock_bh(root_lock);
+			struct tcf_proto *next = rtnl_dereference(tp->next);
+
+			RCU_INIT_POINTER(*back, next);
 
 			tfilter_notify(net, skb, n, tp, fh, RTM_DELTFILTER);
 			tcf_destroy(tp);
@@ -309,8 +308,7 @@ replay:
 		case RTM_DELTFILTER:
 			err = tp->ops->delete(tp, fh);
 			if (err == 0)
-				tfilter_notify(net, skb, n, tp,
-					       t->tcm_handle, RTM_DELTFILTER);
+				tfilter_notify(net, skb, n, tp, fh, RTM_DELTFILTER);
 			goto errout;
 		case RTM_GETTFILTER:
 			err = tfilter_notify(net, skb, n, tp, fh, RTM_NEWTFILTER);
@@ -325,10 +323,8 @@ replay:
 			      n->nlmsg_flags & NLM_F_CREATE ? TCA_ACT_NOREPLACE : TCA_ACT_REPLACE);
 	if (err == 0) {
 		if (tp_created) {
-			spin_lock_bh(root_lock);
-			tp->next = *back;
-			*back = tp;
-			spin_unlock_bh(root_lock);
+			RCU_INIT_POINTER(tp->next, rtnl_dereference(*back));
+			rcu_assign_pointer(*back, tp);
 		}
 		tfilter_notify(net, skb, n, tp, fh, RTM_NEWTFILTER);
 	} else {
@@ -423,7 +419,7 @@ static int tc_dump_tfilter(struct sk_buff *skb, struct netlink_callback *cb)
 	int s_t;
 	struct net_device *dev;
 	struct Qdisc *q;
-	struct tcf_proto *tp, **chain;
+	struct tcf_proto *tp, __rcu **chain;
 	struct tcmsg *tcm = nlmsg_data(cb->nlh);
 	unsigned long cl = 0;
 	const struct Qdisc_class_ops *cops;
@@ -457,7 +453,8 @@ static int tc_dump_tfilter(struct sk_buff *skb, struct netlink_callback *cb)
 
 	s_t = cb->args[0];
 
-	for (tp = *chain, t = 0; tp; tp = tp->next, t++) {
+	for (tp = rtnl_dereference(*chain), t = 0;
+	     tp; tp = rtnl_dereference(tp->next), t++) {
 		if (t < s_t)
 			continue;
 		if (TC_H_MAJ(tcm->tcm_info) &&
@@ -499,7 +496,7 @@ out:
 	return skb->len;
 }
 
-void tcf_exts_destroy(struct tcf_proto *tp, struct tcf_exts *exts)
+void tcf_exts_destroy(struct tcf_exts *exts)
 {
 #ifdef CONFIG_NET_CLS_ACT
 	tcf_action_destroy(&exts->actions, TCA_ACT_UNBIND);
@@ -565,13 +562,14 @@ EXPORT_SYMBOL(tcf_exts_change);
 int tcf_exts_dump(struct sk_buff *skb, struct tcf_exts *exts)
 {
 #ifdef CONFIG_NET_CLS_ACT
+	struct nlattr *nest;
+
 	if (exts->action && !list_empty(&exts->actions)) {
 		/*
 		 * again for backward compatible mode - we want
 		 * to work with both old and new modes of entering
 		 * tc data even if iproute2  was newer - jhs
 		 */
-		struct nlattr *nest;
 		if (exts->type != TCA_OLD_COMPAT) {
 			nest = nla_nest_start(skb, exts->action);
 			if (nest == NULL)
@@ -589,10 +587,14 @@ int tcf_exts_dump(struct sk_buff *skb, struct tcf_exts *exts)
 			nla_nest_end(skb, nest);
 		}
 	}
-#endif
 	return 0;
-nla_put_failure: __attribute__ ((unused))
+
+nla_put_failure:
+	nla_nest_cancel(skb, nest);
 	return -1;
+#else
+	return 0;
+#endif
 }
 EXPORT_SYMBOL(tcf_exts_dump);
 

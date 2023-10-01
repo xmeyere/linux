@@ -81,7 +81,7 @@ static void *tpm_bios_measurements_start(struct seq_file *m, loff_t *pos)
 	for (i = 0; i < *pos; i++) {
 		event = addr;
 
-		if ((addr + sizeof(struct tcpa_event)) <= limit) {
+		if ((addr + sizeof(struct tcpa_event)) < limit) {
 			if (event->event_type == 0 && event->event_size == 0)
 				return NULL;
 			addr += sizeof(struct tcpa_event) + event->event_size;
@@ -89,13 +89,13 @@ static void *tpm_bios_measurements_start(struct seq_file *m, loff_t *pos)
 	}
 
 	/* now check if current entry is valid */
-	if ((addr + sizeof(struct tcpa_event)) > limit)
+	if ((addr + sizeof(struct tcpa_event)) >= limit)
 		return NULL;
 
 	event = addr;
 
 	if ((event->event_type == 0 && event->event_size == 0) ||
-	    ((addr + sizeof(struct tcpa_event) + event->event_size) > limit))
+	    ((addr + sizeof(struct tcpa_event) + event->event_size) >= limit))
 		return NULL;
 
 	return addr;
@@ -111,7 +111,7 @@ static void *tpm_bios_measurements_next(struct seq_file *m, void *v,
 	v += sizeof(struct tcpa_event) + event->event_size;
 
 	/* now check if current entry is valid */
-	if ((v + sizeof(struct tcpa_event)) > limit)
+	if ((v + sizeof(struct tcpa_event)) >= limit)
 		return NULL;
 
 	event = v;
@@ -120,7 +120,7 @@ static void *tpm_bios_measurements_next(struct seq_file *m, void *v,
 		return NULL;
 
 	if ((event->event_type == 0 && event->event_size == 0) ||
-	    ((v + sizeof(struct tcpa_event) + event->event_size) > limit))
+	    ((v + sizeof(struct tcpa_event) + event->event_size) >= limit))
 		return NULL;
 
 	(*pos)++;
@@ -235,7 +235,6 @@ static int tpm_bios_measurements_release(struct inode *inode,
 static int tpm_ascii_bios_measurements_show(struct seq_file *m, void *v)
 {
 	int len = 0;
-	int i;
 	char *eventname;
 	struct tcpa_event *event = v;
 	unsigned char *event_entry =
@@ -251,8 +250,7 @@ static int tpm_ascii_bios_measurements_show(struct seq_file *m, void *v)
 	seq_printf(m, "%2d ", event->pcr_index);
 
 	/* 2nd: SHA1 */
-	for (i = 0; i < 20; i++)
-		seq_printf(m, "%02x", event->pcr_value[i]);
+	seq_printf(m, "%20phN", event->pcr_value);
 
 	/* 3rd: event type identifier */
 	seq_printf(m, " %02x", event->event_type);

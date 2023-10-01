@@ -644,6 +644,7 @@ static inline unsigned int muldiv32(unsigned int a, unsigned int b,
 {
 	u_int64_t n = (u_int64_t) a * b;
 	if (c == 0) {
+		snd_BUG_ON(!n);
 		*r = 0;
 		return UINT_MAX;
 	}
@@ -1112,18 +1113,20 @@ int snd_interval_list(struct snd_interval *i, unsigned int count,
 
 EXPORT_SYMBOL(snd_interval_list);
 
-static int snd_interval_step(struct snd_interval *i, unsigned int min, unsigned int step)
+static int snd_interval_step(struct snd_interval *i, unsigned int step)
 {
 	unsigned int n;
 	int changed = 0;
-	n = (i->min - min) % step;
+	n = i->min % step;
 	if (n != 0 || i->openmin) {
 		i->min += step - n;
+		i->openmin = 0;
 		changed = 1;
 	}
-	n = (i->max - min) % step;
+	n = i->max % step;
 	if (n != 0 || i->openmax) {
 		i->max -= n;
+		i->openmax = 0;
 		changed = 1;
 	}
 	if (snd_interval_checkempty(i)) {
@@ -1426,7 +1429,7 @@ static int snd_pcm_hw_rule_step(struct snd_pcm_hw_params *params,
 				struct snd_pcm_hw_rule *rule)
 {
 	unsigned long step = (unsigned long) rule->private;
-	return snd_interval_step(hw_param_interval(params, rule->var), 0, step);
+	return snd_interval_step(hw_param_interval(params, rule->var), step);
 }
 
 /**
@@ -1630,7 +1633,7 @@ int snd_pcm_hw_param_first(struct snd_pcm_substream *pcm,
 		return changed;
 	if (params->rmask) {
 		int err = snd_pcm_hw_refine(pcm, params);
-		if (err < 0)
+		if (snd_BUG_ON(err < 0))
 			return err;
 	}
 	return snd_pcm_hw_param_value(params, var, dir);
@@ -1677,7 +1680,7 @@ int snd_pcm_hw_param_last(struct snd_pcm_substream *pcm,
 		return changed;
 	if (params->rmask) {
 		int err = snd_pcm_hw_refine(pcm, params);
-		if (err < 0)
+		if (snd_BUG_ON(err < 0))
 			return err;
 	}
 	return snd_pcm_hw_param_value(params, var, dir);
@@ -1855,10 +1858,10 @@ void snd_pcm_period_elapsed(struct snd_pcm_substream *substream)
 	if (substream->timer_running)
 		snd_timer_interrupt(substream->timer, 1);
  _end:
+	snd_pcm_stream_unlock_irqrestore(substream, flags);
 	if (runtime->transfer_ack_end)
 		runtime->transfer_ack_end(substream);
 	kill_fasync(&runtime->fasync, SIGIO, POLL_IN);
-	snd_pcm_stream_unlock_irqrestore(substream, flags);
 }
 
 EXPORT_SYMBOL(snd_pcm_period_elapsed);

@@ -18,7 +18,6 @@
 #include <linux/i2c.h>
 #include <linux/platform_data/pca953x.h>
 #include <linux/slab.h>
-#include <asm/unaligned.h>
 #ifdef CONFIG_OF_GPIO
 #include <linux/of_platform.h>
 #endif
@@ -76,7 +75,7 @@ MODULE_DEVICE_TABLE(i2c, pca953x_id);
 #define MAX_BANK 5
 #define BANK_SZ 8
 
-#define NBANK(chip) DIV_ROUND_UP(chip->gpio_chip.ngpio, BANK_SZ)
+#define NBANK(chip) (chip->gpio_chip.ngpio / BANK_SZ)
 
 struct pca953x_chip {
 	unsigned gpio_start;
@@ -155,7 +154,7 @@ static int pca953x_write_regs(struct pca953x_chip *chip, int reg, u8 *val)
 		switch (chip->chip_type) {
 		case PCA953X_TYPE:
 			ret = i2c_smbus_write_word_data(chip->client,
-			    reg << 1, cpu_to_le16(get_unaligned((u16 *)val)));
+							reg << 1, (u16) *val);
 			break;
 		case PCA957X_TYPE:
 			ret = i2c_smbus_write_byte_data(chip->client, reg << 1,
@@ -521,7 +520,7 @@ static int pca953x_irq_setup(struct pca953x_chip *chip,
 	struct i2c_client *client = chip->client;
 	int ret, i, offset = 0;
 
-	if (irq_base != -1
+	if (client->irq && irq_base != -1
 			&& (id->driver_data & PCA_INT)) {
 
 		switch (chip->chip_type) {
@@ -584,50 +583,6 @@ static int pca953x_irq_setup(struct pca953x_chip *chip,
 		dev_warn(&client->dev, "interrupt support not compiled in\n");
 
 	return 0;
-}
-#endif
-
-/*
- * Handlers for alternative sources of platform_data
- */
-#ifdef CONFIG_OF_GPIO
-/*
- * Translate OpenFirmware node properties into platform_data
- * WARNING: This is DEPRECATED and will be removed eventually!
- */
-static void
-pca953x_get_alt_pdata(struct i2c_client *client, int *gpio_base, u32 *invert)
-{
-	struct device_node *node;
-	const __be32 *val;
-	int size;
-
-	*gpio_base = -1;
-
-	node = client->dev.of_node;
-	if (node == NULL)
-		return;
-
-	val = of_get_property(node, "linux,gpio-base", &size);
-	WARN(val, "%s: device-tree property 'linux,gpio-base' is deprecated!", __func__);
-	if (val) {
-		if (size != sizeof(*val))
-			dev_warn(&client->dev, "%s: wrong linux,gpio-base\n",
-				 node->full_name);
-		else
-			*gpio_base = be32_to_cpup(val);
-	}
-
-	val = of_get_property(node, "polarity", NULL);
-	WARN(val, "%s: device-tree property 'polarity' is deprecated!", __func__);
-	if (val)
-		*invert = *val;
-}
-#else
-static void
-pca953x_get_alt_pdata(struct i2c_client *client, int *gpio_base, u32 *invert)
-{
-	*gpio_base = -1;
 }
 #endif
 
@@ -705,12 +660,8 @@ static int pca953x_probe(struct i2c_client *client,
 		invert = pdata->invert;
 		chip->names = pdata->names;
 	} else {
-		pca953x_get_alt_pdata(client, &chip->gpio_start, &invert);
-#ifdef CONFIG_OF_GPIO
-		/* If I2C node has no interrupts property, disable GPIO interrupts */
-		if (of_find_property(client->dev.of_node, "interrupts", NULL) == NULL)
-			irq_base = -1;
-#endif
+		chip->gpio_start = -1;
+		irq_base = 0;
 	}
 
 	chip->client = client;
@@ -766,12 +717,7 @@ static int pca953x_remove(struct i2c_client *client)
 		}
 	}
 
-	ret = gpiochip_remove(&chip->gpio_chip);
-	if (ret) {
-		dev_err(&client->dev, "%s failed, %d\n",
-				"gpiochip_remove()", ret);
-		return ret;
-	}
+	gpiochip_remove(&chip->gpio_chip);
 
 	return 0;
 }

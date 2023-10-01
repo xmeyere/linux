@@ -14,10 +14,7 @@
 #include <linux/mm.h>
 #include <asm/uaccess.h>
 #include <asm/ftrace.h>
-#include <asm/fpu.h>
-#include <asm/msa.h>
 
-extern void *__bzero_kernel(void *__s, size_t __count);
 extern void *__bzero(void *__s, size_t __count);
 extern long __strncpy_from_kernel_nocheck_asm(char *__to,
 					      const char *__from, long __len);
@@ -35,14 +32,6 @@ extern long __strnlen_kernel_nocheck_asm(const char *s);
 extern long __strnlen_kernel_asm(const char *s);
 extern long __strnlen_user_nocheck_asm(const char *s);
 extern long __strnlen_user_asm(const char *s);
-
-/*
- * Core architecture code
- */
-EXPORT_SYMBOL_GPL(_save_fp);
-#ifdef CONFIG_CPU_HAS_MSA
-EXPORT_SYMBOL_GPL(_save_msa);
-#endif
 
 /*
  * String functions
@@ -67,7 +56,6 @@ EXPORT_SYMBOL(__copy_from_user_eva);
 EXPORT_SYMBOL(__copy_in_user_eva);
 EXPORT_SYMBOL(__copy_to_user_eva);
 EXPORT_SYMBOL(__copy_user_inatomic_eva);
-EXPORT_SYMBOL(__bzero_kernel);
 #endif
 EXPORT_SYMBOL(__bzero);
 EXPORT_SYMBOL(__strncpy_from_kernel_nocheck_asm);

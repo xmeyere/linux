@@ -35,7 +35,6 @@
 #include <asm/apicdef.h>
 #include <linux/atomic.h>
 #include <linux/jump_label.h>
-#include <linux/nospec.h>
 #include "kvm_cache_regs.h"
 #include "irq.h"
 #include "trace.h"
@@ -112,17 +111,6 @@ static inline int __apic_test_and_clear_vector(int vec, void *bitmap)
 
 struct static_key_deferred apic_hw_disabled __read_mostly;
 struct static_key_deferred apic_sw_disabled __read_mostly;
-
-static inline void apic_set_spiv(struct kvm_lapic *apic, u32 val)
-{
-	if ((kvm_apic_get_reg(apic, APIC_SPIV) ^ val) & APIC_SPIV_APIC_ENABLED) {
-		if (val & APIC_SPIV_APIC_ENABLED)
-			static_key_slow_dec_deferred(&apic_sw_disabled);
-		else
-			static_key_slow_inc(&apic_sw_disabled.key);
-	}
-	apic_set_reg(apic, APIC_SPIV, val);
-}
 
 static inline int apic_enabled(struct kvm_lapic *apic)
 {
@@ -209,6 +197,20 @@ out:
 		kfree_rcu(old, rcu);
 
 	kvm_vcpu_request_scan_ioapic(kvm);
+}
+
+static inline void apic_set_spiv(struct kvm_lapic *apic, u32 val)
+{
+	u32 prev = kvm_apic_get_reg(apic, APIC_SPIV);
+
+	apic_set_reg(apic, APIC_SPIV, val);
+	if ((prev ^ val) & APIC_SPIV_APIC_ENABLED) {
+		if (val & APIC_SPIV_APIC_ENABLED) {
+			static_key_slow_dec_deferred(&apic_sw_disabled);
+			recalculate_apic_map(apic->vcpu->kvm);
+		} else
+			static_key_slow_inc(&apic_sw_disabled.key);
+	}
 }
 
 static inline void kvm_apic_set_id(struct kvm_lapic *apic, u8 id)
@@ -324,12 +326,8 @@ EXPORT_SYMBOL_GPL(kvm_apic_update_irr);
 
 static inline void apic_set_irr(int vec, struct kvm_lapic *apic)
 {
-	apic_set_vector(vec, apic->regs + APIC_IRR);
-	/*
-	 * irr_pending must be true if any interrupt is pending; set it after
-	 * APIC_IRR to avoid race with apic_clear_irr
-	 */
 	apic->irr_pending = true;
+	apic_set_vector(vec, apic->regs + APIC_IRR);
 }
 
 static inline int apic_search_irr(struct kvm_lapic *apic)
@@ -361,15 +359,13 @@ static inline void apic_clear_irr(int vec, struct kvm_lapic *apic)
 
 	vcpu = apic->vcpu;
 
-	if (unlikely(kvm_apic_vid_enabled(vcpu->kvm))) {
+	apic_clear_vector(vec, apic->regs + APIC_IRR);
+	if (unlikely(kvm_apic_vid_enabled(vcpu->kvm)))
 		/* try to update RVI */
-		apic_clear_vector(vec, apic->regs + APIC_IRR);
 		kvm_make_request(KVM_REQ_EVENT, vcpu);
-	} else {
-		apic->irr_pending = false;
-		apic_clear_vector(vec, apic->regs + APIC_IRR);
-		if (apic_search_irr(apic) != -1)
-			apic->irr_pending = true;
+	else {
+		vec = apic_search_irr(apic);
+		apic->irr_pending = (vec != -1);
 	}
 }
 
@@ -713,6 +709,8 @@ static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
 	int result = 0;
 	struct kvm_vcpu *vcpu = apic->vcpu;
 
+	trace_kvm_apic_accept_irq(vcpu->vcpu_id, delivery_mode,
+				  trig_mode, vector);
 	switch (delivery_mode) {
 	case APIC_DM_LOWEST:
 		vcpu->arch.apic_arb_prio++;
@@ -734,8 +732,6 @@ static int __apic_accept_irq(struct kvm_lapic *apic, int delivery_mode,
 			kvm_make_request(KVM_REQ_EVENT, vcpu);
 			kvm_vcpu_kick(vcpu);
 		}
-		trace_kvm_apic_accept_irq(vcpu->vcpu_id, delivery_mode,
-					  trig_mode, vector, false);
 		break;
 
 	case APIC_DM_REMRD:
@@ -1116,10 +1112,10 @@ static void apic_manage_nmi_watchdog(struct kvm_lapic *apic, u32 lvt0_val)
 		if (!nmi_wd_enabled) {
 			apic_debug("Receive NMI setting on APIC_LVT0 "
 				   "for cpu %d\n", apic->vcpu->vcpu_id);
-			atomic_inc(&apic->vcpu->kvm->arch.vapics_in_nmi_mode);
+			apic->vcpu->kvm->arch.vapics_in_nmi_mode++;
 		}
 	} else if (nmi_wd_enabled)
-		atomic_dec(&apic->vcpu->kvm->arch.vapics_in_nmi_mode);
+		apic->vcpu->kvm->arch.vapics_in_nmi_mode--;
 }
 
 static int apic_reg_write(struct kvm_lapic *apic, u32 reg, u32 val)
@@ -1197,20 +1193,15 @@ static int apic_reg_write(struct kvm_lapic *apic, u32 reg, u32 val)
 	case APIC_LVTTHMR:
 	case APIC_LVTPC:
 	case APIC_LVT1:
-	case APIC_LVTERR: {
+	case APIC_LVTERR:
 		/* TODO: Check vector */
-		size_t size;
-		u32 index;
-
 		if (!kvm_apic_sw_enabled(apic))
 			val |= APIC_LVT_MASKED;
-		size = ARRAY_SIZE(apic_lvt_mask);
-		index = array_index_nospec(
-				(reg - APIC_LVTT) >> 4, size);
-		val &= apic_lvt_mask[index];
+
+		val &= apic_lvt_mask[(reg - APIC_LVTT) >> 4];
 		apic_set_reg(apic, reg, val);
+
 		break;
-	}
 
 	case APIC_LVTT:
 		if ((kvm_apic_get_reg(apic, APIC_LVTT) &
@@ -1364,6 +1355,9 @@ void kvm_set_lapic_tscdeadline_msr(struct kvm_vcpu *vcpu, u64 data)
 		return;
 
 	hrtimer_cancel(&apic->lapic_timer.timer);
+	/* Inject here so clearing tscdeadline won't override new value */
+	if (apic_has_pending_timer(vcpu))
+		kvm_inject_apic_timer_irqs(vcpu);
 	apic->lapic_timer.tscdeadline = data;
 	start_apic_timer(apic);
 }
@@ -1484,7 +1478,7 @@ void kvm_lapic_reset(struct kvm_vcpu *vcpu)
 	vcpu->arch.apic_arb_prio = 0;
 	vcpu->arch.apic_attention = 0;
 
-	apic_debug(KERN_INFO "%s: vcpu=%p, id=%d, base_msr="
+	apic_debug("%s: vcpu=%p, id=%d, base_msr="
 		   "0x%016" PRIx64 ", base_address=0x%0lx.\n", __func__,
 		   vcpu, kvm_apic_id(apic),
 		   vcpu->arch.apic_base, apic->base_address);
@@ -1651,6 +1645,8 @@ void kvm_inject_apic_timer_irqs(struct kvm_vcpu *vcpu)
 
 	if (atomic_read(&apic->lapic_timer.pending) > 0) {
 		kvm_apic_local_deliver(apic, APIC_LVTT);
+		if (apic_lvtt_tscdeadline(apic))
+			apic->lapic_timer.tscdeadline = 0;
 		atomic_set(&apic->lapic_timer.pending, 0);
 	}
 }
@@ -1691,7 +1687,6 @@ void kvm_apic_post_state_restore(struct kvm_vcpu *vcpu,
 
 	apic_update_ppr(apic);
 	hrtimer_cancel(&apic->lapic_timer.timer);
-	apic_manage_nmi_watchdog(apic, kvm_apic_get_reg(apic, APIC_LVT0));
 	update_divide_count(apic);
 	start_apic_timer(apic);
 	apic->irr_pending = true;
@@ -1934,7 +1929,7 @@ void kvm_apic_accept_events(struct kvm_vcpu *vcpu)
 		/* evaluate pending_events before reading the vector */
 		smp_rmb();
 		sipi_vector = apic->sipi_vector;
-		pr_debug("vcpu %d received sipi with vector # %x\n",
+		apic_debug("vcpu %d received sipi with vector # %x\n",
 			 vcpu->vcpu_id, sipi_vector);
 		kvm_vcpu_deliver_sipi_vector(vcpu, sipi_vector);
 		vcpu->arch.mp_state = KVM_MP_STATE_RUNNABLE;
@@ -1946,10 +1941,4 @@ void kvm_lapic_init(void)
 	/* do not patch jump label more than once per second */
 	jump_label_rate_limit(&apic_hw_disabled, HZ);
 	jump_label_rate_limit(&apic_sw_disabled, HZ);
-}
-
-void kvm_lapic_exit(void)
-{
-	static_key_deferred_flush(&apic_hw_disabled);
-	static_key_deferred_flush(&apic_sw_disabled);
 }

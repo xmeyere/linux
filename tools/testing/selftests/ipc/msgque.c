@@ -1,9 +1,8 @@
-#define _GNU_SOURCE
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
-#include <sys/msg.h>
+#include <linux/msg.h>
 #include <fcntl.h>
 
 #define MAX_MSG_SIZE		32
@@ -71,7 +70,7 @@ int restore_queue(struct msgque_data *msgque)
 	return 0;
 
 destroy:
-	if (msgctl(id, IPC_RMID, NULL))
+	if (msgctl(id, IPC_RMID, 0))
 		printf("Failed to destroy queue: %d\n", -errno);
 	return ret;
 }
@@ -118,7 +117,7 @@ int check_and_destroy_queue(struct msgque_data *msgque)
 
 	ret = 0;
 err:
-	if (msgctl(msgque->msq_id, IPC_RMID, NULL)) {
+	if (msgctl(msgque->msq_id, IPC_RMID, 0)) {
 		printf("Failed to destroy queue: %d\n", -errno);
 		return -errno;
 	}
@@ -127,7 +126,7 @@ err:
 
 int dump_queue(struct msgque_data *msgque)
 {
-	struct msqid_ds ds;
+	struct msqid64_ds ds;
 	int kern_id;
 	int i, ret;
 
@@ -244,7 +243,7 @@ int main(int argc, char **argv)
 	return 0;
 
 err_destroy:
-	if (msgctl(msgque.msq_id, IPC_RMID, NULL)) {
+	if (msgctl(msgque.msq_id, IPC_RMID, 0)) {
 		printf("Failed to destroy queue: %d\n", -errno);
 		return -errno;
 	}

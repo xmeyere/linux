@@ -555,7 +555,6 @@ static int rs600_gart_enable(struct radeon_device *rdev)
 	r = radeon_gart_table_vram_pin(rdev);
 	if (r)
 		return r;
-	radeon_gart_restore(rdev);
 	/* Enable bus master */
 	tmp = RREG32(RADEON_BUS_CNTL) & ~RS600_BUS_MASTER_DIS;
 	WREG32(RADEON_BUS_CNTL, tmp);
@@ -626,15 +625,21 @@ static void rs600_gart_fini(struct radeon_device *rdev)
 	radeon_gart_table_vram_free(rdev);
 }
 
-void rs600_gart_set_page(struct radeon_device *rdev, unsigned i, uint64_t addr)
+void rs600_gart_set_page(struct radeon_device *rdev, unsigned i,
+			 uint64_t addr, uint32_t flags)
 {
 	void __iomem *ptr = (void *)rdev->gart.ptr;
 
 	addr = addr & 0xFFFFFFFFFFFFF000ULL;
-	if (addr == rdev->dummy_page.addr)
-		addr |= R600_PTE_SYSTEM | R600_PTE_SNOOPED;
-	else
-		addr |= R600_PTE_GART;
+	addr |= R600_PTE_SYSTEM;
+	if (flags & RADEON_GART_PAGE_VALID)
+		addr |= R600_PTE_VALID;
+	if (flags & RADEON_GART_PAGE_READ)
+		addr |= R600_PTE_READABLE;
+	if (flags & RADEON_GART_PAGE_WRITE)
+		addr |= R600_PTE_WRITEABLE;
+	if (flags & RADEON_GART_PAGE_SNOOP)
+		addr |= R600_PTE_SNOOPED;
 	writeq(addr, ptr + (i * 8));
 }
 
@@ -684,10 +689,6 @@ int rs600_irq_set(struct radeon_device *rdev)
 	WREG32(R_007D18_DC_HOT_PLUG_DETECT2_INT_CONTROL, hpd2);
 	if (ASIC_IS_DCE2(rdev))
 		WREG32(R_007408_HDMI0_AUDIO_PACKET_CONTROL, hdmi0);
-
-	/* posting read */
-	RREG32(R_000040_GEN_INT_CNTL);
-
 	return 0;
 }
 

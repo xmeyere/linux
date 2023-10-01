@@ -206,7 +206,6 @@ struct atmel_spi_caps {
 	bool	is_spi2;
 	bool	has_wdrbt;
 	bool	has_dma_support;
-	bool	has_pdc_support;
 };
 
 /*
@@ -242,6 +241,7 @@ struct atmel_spi {
 	struct atmel_spi_dma	dma;
 
 	bool			keep_cs;
+	bool			cs_active;
 };
 
 /* Controller-specific per-slave state */
@@ -593,26 +593,19 @@ static int atmel_spi_next_xfer_dma_submit(struct spi_master *master,
 
 	*plen = len;
 
-	if (atmel_spi_dma_slave_config(as, &slave_config,
-				       xfer->bits_per_word))
+	if (atmel_spi_dma_slave_config(as, &slave_config, 8))
 		goto err_exit;
 
 	/* Send both scatterlists */
-	rxdesc = rxchan->device->device_prep_slave_sg(rxchan,
-					&as->dma.sgrx,
-					1,
-					DMA_FROM_DEVICE,
-					DMA_PREP_INTERRUPT | DMA_CTRL_ACK,
-					NULL);
+	rxdesc = dmaengine_prep_slave_sg(rxchan, &as->dma.sgrx, 1,
+					 DMA_FROM_DEVICE,
+					 DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 	if (!rxdesc)
 		goto err_dma;
 
-	txdesc = txchan->device->device_prep_slave_sg(txchan,
-					&as->dma.sgtx,
-					1,
-					DMA_TO_DEVICE,
-					DMA_PREP_INTERRUPT | DMA_CTRL_ACK,
-					NULL);
+	txdesc = dmaengine_prep_slave_sg(txchan, &as->dma.sgtx, 1,
+					 DMA_TO_DEVICE,
+					 DMA_PREP_INTERRUPT | DMA_CTRL_ACK);
 	if (!txdesc)
 		goto err_dma;
 
@@ -782,17 +775,17 @@ static void atmel_spi_pdc_next_xfer(struct spi_master *master,
 			(unsigned long long)xfer->rx_dma);
 	}
 
-	/* REVISIT: We're waiting for RXBUFF before we start the next
+	/* REVISIT: We're waiting for ENDRX before we start the next
 	 * transfer because we need to handle some difficult timing
-	 * issues otherwise. If we wait for TXBUFE in one transfer and
-	 * then starts waiting for RXBUFF in the next, it's difficult
-	 * to tell the difference between the RXBUFF interrupt we're
-	 * actually waiting for and the RXBUFF interrupt of the
+	 * issues otherwise. If we wait for ENDTX in one transfer and
+	 * then starts waiting for ENDRX in the next, it's difficult
+	 * to tell the difference between the ENDRX interrupt we're
+	 * actually waiting for and the ENDRX interrupt of the
 	 * previous transfer.
 	 *
 	 * It should be doable, though. Just not now...
 	 */
-	spi_writel(as, IER, SPI_BIT(RXBUFF) | SPI_BIT(OVRES));
+	spi_writel(as, IER, SPI_BIT(ENDRX) | SPI_BIT(OVRES));
 	spi_writel(as, PTCR, SPI_BIT(TXTEN) | SPI_BIT(RXTEN));
 }
 
@@ -1189,9 +1182,11 @@ static int atmel_spi_one_transfer(struct spi_master *master,
 				 &msg->transfers)) {
 			as->keep_cs = true;
 		} else {
-			cs_deactivate(as, msg->spi);
-			udelay(10);
-			cs_activate(as, msg->spi);
+			as->cs_active = !as->cs_active;
+			if (as->cs_active)
+				cs_activate(as, msg->spi);
+			else
+				cs_deactivate(as, msg->spi);
 		}
 	}
 
@@ -1214,6 +1209,7 @@ static int atmel_spi_transfer_one_message(struct spi_master *master,
 	atmel_spi_lock(as);
 	cs_activate(as, spi);
 
+	as->cs_active = true;
 	as->keep_cs = false;
 
 	msg->status = 0;
@@ -1275,28 +1271,7 @@ static void atmel_get_caps(struct atmel_spi *as)
 
 	as->caps.is_spi2 = version > 0x121;
 	as->caps.has_wdrbt = version >= 0x210;
-#ifdef CONFIG_SOC_SAM_V4_V5
-	/*
-	 * Atmel SoCs based on ARM9 (SAM9x) cores should not use spi_map_buf()
-	 * since this later function tries to map buffers with dma_map_sg()
-	 * even if they have not been allocated inside DMA-safe areas.
-	 * On SoCs based on Cortex A5 (SAMA5Dx), it works anyway because for
-	 * those ARM cores, the data cache follows the PIPT model.
-	 * Also the L2 cache controller of SAMA5D2 uses the PIPT model too.
-	 * In case of PIPT caches, there cannot be cache aliases.
-	 * However on ARM9 cores, the data cache follows the VIVT model, hence
-	 * the cache aliases issue can occur when buffers are allocated from
-	 * DMA-unsafe areas, by vmalloc() for instance, where cache coherency is
-	 * not taken into account or at least not handled completely (cache
-	 * lines of aliases are not invalidated).
-	 * This is not a theorical issue: it was reproduced when trying to mount
-	 * a UBI file-system on a at91sam9g35ek board.
-	 */
-	as->caps.has_dma_support = false;
-#else
 	as->caps.has_dma_support = version >= 0x212;
-#endif
-	as->caps.has_pdc_support = version < 0x212;
 }
 
 /*-------------------------------------------------------------------------*/
@@ -1374,7 +1349,7 @@ static int atmel_spi_probe(struct platform_device *pdev)
 	if (as->caps.has_dma_support) {
 		if (atmel_spi_configure_dma(as) == 0)
 			as->use_dma = true;
-	} else if (as->caps.has_pdc_support) {
+	} else {
 		as->use_pdc = true;
 	}
 

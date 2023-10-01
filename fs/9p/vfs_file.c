@@ -301,8 +301,8 @@ static int v9fs_file_lock_dotl(struct file *filp, int cmd, struct file_lock *fl)
 	struct inode *inode = file_inode(filp);
 	int ret = -ENOLCK;
 
-	p9_debug(P9_DEBUG_VFS, "filp: %p cmd:%d lock: %p name: %s\n",
-		 filp, cmd, fl, filp->f_path.dentry->d_name.name);
+	p9_debug(P9_DEBUG_VFS, "filp: %p cmd:%d lock: %p name: %pD\n",
+		 filp, cmd, fl, filp);
 
 	/* No mandatory locks */
 	if (__mandatory_lock(inode) && fl->fl_type != F_UNLCK)
@@ -337,8 +337,8 @@ static int v9fs_file_flock_dotl(struct file *filp, int cmd,
 	struct inode *inode = file_inode(filp);
 	int ret = -ENOLCK;
 
-	p9_debug(P9_DEBUG_VFS, "filp: %p cmd:%d lock: %p name: %s\n",
-		 filp, cmd, fl, filp->f_path.dentry->d_name.name);
+	p9_debug(P9_DEBUG_VFS, "filp: %p cmd:%d lock: %p name: %pD\n",
+		 filp, cmd, fl, filp);
 
 	/* No mandatory locks */
 	if (__mandatory_lock(inode) && fl->fl_type != F_UNLCK)
@@ -484,11 +484,7 @@ v9fs_file_write_internal(struct inode *inode, struct p9_fid *fid,
 		i_size = i_size_read(inode);
 		if (*offset > i_size) {
 			inode_add_bytes(inode, *offset - i_size);
-			/*
-			 * Need to serialize against i_size_write() in
-			 * v9fs_stat2inode()
-			 */
-			v9fs_i_size_write(inode, *offset);
+			i_size_write(inode, *offset);
 		}
 	}
 	if (n < 0)
@@ -835,6 +831,7 @@ static const struct vm_operations_struct v9fs_file_vm_ops = {
 	.fault = filemap_fault,
 	.map_pages = filemap_map_pages,
 	.page_mkwrite = v9fs_vm_page_mkwrite,
+	.remap_pages = generic_file_remap_pages,
 };
 
 static const struct vm_operations_struct v9fs_mmap_file_vm_ops = {
@@ -842,6 +839,7 @@ static const struct vm_operations_struct v9fs_mmap_file_vm_ops = {
 	.fault = filemap_fault,
 	.map_pages = filemap_map_pages,
 	.page_mkwrite = v9fs_vm_page_mkwrite,
+	.remap_pages = generic_file_remap_pages,
 };
 
 

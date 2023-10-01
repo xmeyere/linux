@@ -41,7 +41,7 @@ smb2_open_file(const unsigned int xid, struct cifs_open_parms *oparms,
 	int rc;
 	__le16 *smb2_path;
 	struct smb2_file_all_info *smb2_data = NULL;
-	__u8 smb2_oplock;
+	__u8 smb2_oplock[17];
 	struct cifs_fid *fid = oparms->fid;
 
 	smb2_path = cifs_convert_path_to_utf16(oparms->path, oparms->cifs_sb);
@@ -58,9 +58,12 @@ smb2_open_file(const unsigned int xid, struct cifs_open_parms *oparms,
 	}
 
 	oparms->desired_access |= FILE_READ_ATTRIBUTES;
-	smb2_oplock = SMB2_OPLOCK_LEVEL_BATCH;
+	*smb2_oplock = SMB2_OPLOCK_LEVEL_BATCH;
 
-	rc = SMB2_open(xid, oparms, smb2_path, &smb2_oplock, smb2_data, NULL);
+	if (oparms->tcon->ses->server->capabilities & SMB2_GLOBAL_CAP_LEASING)
+		memcpy(smb2_oplock + 1, fid->lease_key, SMB2_LEASE_KEY_SIZE);
+
+	rc = SMB2_open(xid, oparms, smb2_path, smb2_oplock, smb2_data, NULL);
 	if (rc)
 		goto out;
 
@@ -77,7 +80,7 @@ smb2_open_file(const unsigned int xid, struct cifs_open_parms *oparms,
 		move_smb2_info_to_cifs(buf, smb2_data);
 	}
 
-	*oplock = smb2_oplock;
+	*oplock = *smb2_oplock;
 out:
 	kfree(smb2_data);
 	kfree(smb2_path);
@@ -101,10 +104,10 @@ smb2_unlock_range(struct cifsFileInfo *cfile, struct file_lock *flock,
 
 	/*
 	 * Accessing maxBuf is racy with cifs_reconnect - need to store value
-	 * and check it before using.
+	 * and check it for zero before using.
 	 */
 	max_buf = tcon->ses->server->maxBuf;
-	if (max_buf < sizeof(struct smb2_lock_element))
+	if (!max_buf)
 		return -EINVAL;
 
 	max_num = max_buf / sizeof(struct smb2_lock_element);
@@ -114,7 +117,7 @@ smb2_unlock_range(struct cifsFileInfo *cfile, struct file_lock *flock,
 
 	cur = buf;
 
-	cifs_down_write(&cinode->lock_sem);
+	down_write(&cinode->lock_sem);
 	list_for_each_entry_safe(li, tmp, &cfile->llist->locks, llist) {
 		if (flock->fl_start > li->offset ||
 		    (flock->fl_start + length) <
@@ -238,7 +241,7 @@ smb2_push_mandatory_locks(struct cifsFileInfo *cfile)
 	 * and check it for zero before using.
 	 */
 	max_buf = tlink_tcon(cfile->tlink)->ses->server->maxBuf;
-	if (max_buf < sizeof(struct smb2_lock_element)) {
+	if (!max_buf) {
 		free_xid(xid);
 		return -EINVAL;
 	}

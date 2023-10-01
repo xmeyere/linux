@@ -23,7 +23,6 @@
 #include <linux/slab.h>
 #include <linux/random.h>
 #include <linux/jhash.h>
-#include <linux/siphash.h>
 #include <linux/err.h>
 #include <linux/percpu.h>
 #include <linux/moduleparam.h>
@@ -53,7 +52,6 @@
 #include <net/netfilter/nf_nat.h>
 #include <net/netfilter/nf_nat_core.h>
 #include <net/netfilter/nf_nat_helper.h>
-#include <net/netns/hash.h>
 
 #define NF_CONNTRACK_VERSION	"0.5.0"
 
@@ -144,7 +142,7 @@ static u32 hash_conntrack_raw(const struct nf_conntrack_tuple *tuple, u16 zone)
 
 static u32 __hash_bucket(u32 hash, unsigned int size)
 {
-	return ((u64)hash * size) >> 32;
+	return reciprocal_scale(hash, size);
 }
 
 static u32 hash_bucket(u32 hash, const struct net *net)
@@ -233,40 +231,6 @@ nf_ct_invert_tuple(struct nf_conntrack_tuple *inverse,
 	return l4proto->invert_tuple(inverse, orig);
 }
 EXPORT_SYMBOL_GPL(nf_ct_invert_tuple);
-
-/* Generate a almost-unique pseudo-id for a given conntrack.
- *
- * intentionally doesn't re-use any of the seeds used for hash
- * table location, we assume id gets exposed to userspace.
- *
- * Following nf_conn items do not change throughout lifetime
- * of the nf_conn:
- *
- * 1. nf_conn address
- * 2. nf_conn->master address (normally NULL)
- * 3. the associated net namespace
- * 4. the original direction tuple
- */
-u32 nf_ct_get_id(const struct nf_conn *ct)
-{
-	static __read_mostly siphash_key_t ct_id_seed;
-	unsigned long a, b, c, d;
-
-	net_get_random_once(&ct_id_seed, sizeof(ct_id_seed));
-
-	a = (unsigned long)ct;
-	b = (unsigned long)ct->master;
-	c = (unsigned long)nf_ct_net(ct);
-	d = (unsigned long)siphash(&ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple,
-				   sizeof(ct->tuplehash[IP_CT_DIR_ORIGINAL].tuple),
-				   &ct_id_seed);
-#ifdef CONFIG_64BIT
-	return siphash_4u64((u64)a, (u64)b, (u64)c, (u64)d, &ct_id_seed);
-#else
-	return siphash_4u32((u32)a, (u32)b, (u32)c, (u32)d, &ct_id_seed);
-#endif
-}
-EXPORT_SYMBOL_GPL(nf_ct_get_id);
 
 static void
 clean_from_lists(struct nf_conn *ct)
@@ -388,57 +352,28 @@ static void nf_ct_delete_from_lists(struct nf_conn *ct)
 	local_bh_enable();
 }
 
-static void death_by_event(unsigned long ul_conntrack)
-{
-	struct nf_conn *ct = (void *)ul_conntrack;
-	struct net *net = nf_ct_net(ct);
-	struct nf_conntrack_ecache *ecache = nf_ct_ecache_find(ct);
-
-	BUG_ON(ecache == NULL);
-
-	if (nf_conntrack_event(IPCT_DESTROY, ct) < 0) {
-		/* bad luck, let's retry again */
-		ecache->timeout.expires = jiffies +
-			(prandom_u32() % net->ct.sysctl_events_retry_timeout);
-		add_timer(&ecache->timeout);
-		return;
-	}
-	/* we've got the event delivered, now it's dying */
-	set_bit(IPS_DYING_BIT, &ct->status);
-	nf_ct_put(ct);
-}
-
-static void nf_ct_dying_timeout(struct nf_conn *ct)
-{
-	struct net *net = nf_ct_net(ct);
-	struct nf_conntrack_ecache *ecache = nf_ct_ecache_find(ct);
-
-	BUG_ON(ecache == NULL);
-
-	/* set a new timer to retry event delivery */
-	setup_timer(&ecache->timeout, death_by_event, (unsigned long)ct);
-	ecache->timeout.expires = jiffies +
-		(prandom_u32() % net->ct.sysctl_events_retry_timeout);
-	add_timer(&ecache->timeout);
-}
-
 bool nf_ct_delete(struct nf_conn *ct, u32 portid, int report)
 {
 	struct nf_conn_tstamp *tstamp;
 
 	tstamp = nf_conn_tstamp_find(ct);
 	if (tstamp && tstamp->stop == 0)
-		tstamp->stop = ktime_to_ns(ktime_get_real());
+		tstamp->stop = ktime_get_real_ns();
 
-	if (!nf_ct_is_dying(ct) &&
-	    unlikely(nf_conntrack_event_report(IPCT_DESTROY, ct,
-	    portid, report) < 0)) {
+	if (nf_ct_is_dying(ct))
+		goto delete;
+
+	if (nf_conntrack_event_report(IPCT_DESTROY, ct,
+				    portid, report) < 0) {
 		/* destroy event was not delivered */
 		nf_ct_delete_from_lists(ct);
-		nf_ct_dying_timeout(ct);
+		nf_conntrack_ecache_delayed_work(nf_ct_net(ct));
 		return false;
 	}
+
+	nf_conntrack_ecache_work(nf_ct_net(ct));
 	set_bit(IPS_DYING_BIT, &ct->status);
+ delete:
 	nf_ct_delete_from_lists(ct);
 	nf_ct_put(ct);
 	return true;
@@ -762,7 +697,6 @@ nf_conntrack_tuple_taken(const struct nf_conntrack_tuple *tuple,
 	 * least once for the stats anyway.
 	 */
 	rcu_read_lock_bh();
- begin:
 	hlist_nulls_for_each_entry_rcu(h, n, &net->ct.hash[hash], hnnode) {
 		ct = nf_ct_tuplehash_to_ctrack(h);
 		if (ct != ignored_conntrack &&
@@ -774,12 +708,6 @@ nf_conntrack_tuple_taken(const struct nf_conntrack_tuple *tuple,
 		}
 		NF_CT_STAT_INC(net, searched);
 	}
-
-	if (get_nulls_value(n) != hash) {
-		NF_CT_STAT_INC(net, search_restart);
-		goto begin;
-	}
-
 	rcu_read_unlock_bh();
 
 	return 0;
@@ -1507,26 +1435,6 @@ void nf_conntrack_flush_report(struct net *net, u32 portid, int report)
 }
 EXPORT_SYMBOL_GPL(nf_conntrack_flush_report);
 
-static void nf_ct_release_dying_list(struct net *net)
-{
-	struct nf_conntrack_tuple_hash *h;
-	struct nf_conn *ct;
-	struct hlist_nulls_node *n;
-	int cpu;
-
-	for_each_possible_cpu(cpu) {
-		struct ct_pcpu *pcpu = per_cpu_ptr(net->ct.pcpu_lists, cpu);
-
-		spin_lock_bh(&pcpu->lock);
-		hlist_nulls_for_each_entry(h, n, &pcpu->dying, hnnode) {
-			ct = nf_ct_tuplehash_to_ctrack(h);
-			/* never fails to remove them, no listeners at this point */
-			nf_ct_kill(ct);
-		}
-		spin_unlock_bh(&pcpu->lock);
-	}
-}
-
 static int untrack_refs(void)
 {
 	int cnt = 0, cpu;
@@ -1591,7 +1499,6 @@ i_see_dead_people:
 	busy = 0;
 	list_for_each_entry(net, net_exit_list, exit_list) {
 		nf_ct_iterate_cleanup(net, kill_all, NULL, 0, 0);
-		nf_ct_release_dying_list(net);
 		if (atomic_read(&net->ct.count) != 0)
 			busy = 1;
 	}
@@ -1834,7 +1741,6 @@ void nf_conntrack_init_end(void)
 
 int nf_conntrack_init_net(struct net *net)
 {
-	static atomic64_t unique_id;
 	int ret = -ENOMEM;
 	int cpu;
 
@@ -1858,8 +1764,7 @@ int nf_conntrack_init_net(struct net *net)
 	if (!net->ct.stat)
 		goto err_pcpu_lists;
 
-	net->ct.slabname = kasprintf(GFP_KERNEL, "nf_conntrack_%llu",
-				(u64)atomic64_inc_return(&unique_id));
+	net->ct.slabname = kasprintf(GFP_KERNEL, "nf_conntrack_%p", net);
 	if (!net->ct.slabname)
 		goto err_slabname;
 

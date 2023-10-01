@@ -86,7 +86,6 @@ static ssize_t mcp4725_store_eeprom(struct device *dev,
 		return 0;
 
 	inoutbuf[0] = 0x60; /* write EEPROM */
-	inoutbuf[0] |= data->powerdown ? ((data->powerdown_mode + 1) << 1) : 0;
 	inoutbuf[1] = data->dac_value >> 4;
 	inoutbuf[2] = (data->dac_value & 0xf) << 4;
 
@@ -301,7 +300,6 @@ static int mcp4725_probe(struct i2c_client *client,
 	data->client = client;
 
 	indio_dev->dev.parent = &client->dev;
-	indio_dev->name = id->name;
 	indio_dev->info = &mcp4725_info;
 	indio_dev->channels = &mcp4725_channel;
 	indio_dev->num_channels = 1;

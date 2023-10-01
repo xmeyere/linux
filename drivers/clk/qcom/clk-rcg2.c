@@ -24,6 +24,7 @@
 #include <asm/div64.h>
 
 #include "clk-rcg.h"
+#include "common.h"
 
 #define CMD_REG			0x0
 #define CMD_UPDATE		BIT(0)
@@ -172,34 +173,19 @@ clk_rcg2_recalc_rate(struct clk_hw *hw, unsigned long parent_rate)
 	return calc_rate(parent_rate, m, n, mode, hid_div);
 }
 
-static const
-struct freq_tbl *find_freq(const struct freq_tbl *f, unsigned long rate)
-{
-	if (!f)
-		return NULL;
-
-	for (; f->freq; f++)
-		if (rate <= f->freq)
-			return f;
-
-	/* Default to our fastest rate */
-	return f - 1;
-}
-
 static long _freq_tbl_determine_rate(struct clk_hw *hw,
 		const struct freq_tbl *f, unsigned long rate,
 		unsigned long *p_rate, struct clk **p)
 {
 	unsigned long clk_flags;
 
-	f = find_freq(f, rate);
+	f = qcom_find_freq(f, rate);
 	if (!f)
 		return -EINVAL;
 
 	clk_flags = __clk_get_flags(hw->clk);
 	*p = clk_get_parent_by_index(hw->clk, f->src);
 	if (clk_flags & CLK_SET_RATE_PARENT) {
-		rate = f->freq;
 		if (f->pre_div) {
 			rate /= 2;
 			rate *= f->pre_div + 1;
@@ -254,7 +240,7 @@ static int clk_rcg2_configure(struct clk_rcg2 *rcg, const struct freq_tbl *f)
 	mask |= CFG_SRC_SEL_MASK | CFG_MODE_MASK;
 	cfg = f->pre_div << CFG_SRC_DIV_SHIFT;
 	cfg |= rcg->parent_map[f->src] << CFG_SRC_SEL_SHIFT;
-	if (rcg->mnd_width && f->n && (f->m != f->n))
+	if (rcg->mnd_width && f->n)
 		cfg |= CFG_MODE_DUAL_EDGE;
 	ret = regmap_update_bits(rcg->clkr.regmap,
 			rcg->cmd_rcgr + CFG_REG, mask, cfg);
@@ -269,7 +255,7 @@ static int __clk_rcg2_set_rate(struct clk_hw *hw, unsigned long rate)
 	struct clk_rcg2 *rcg = to_clk_rcg2(hw);
 	const struct freq_tbl *f;
 
-	f = find_freq(rcg->freq_tbl, rate);
+	f = qcom_find_freq(rcg->freq_tbl, rate);
 	if (!f)
 		return -EINVAL;
 

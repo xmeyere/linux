@@ -35,19 +35,22 @@ setup-y		+= video-vesa.o
 setup-y		+= video-bios.o
 
 targets		+= $(setup-y)
-hostprogs-y	:= mkcpustr tools/build
+hostprogs-y	:= tools/build
+hostprogs-$(CONFIG_X86_FEATURE_NAMES) += mkcpustr
 
 HOST_EXTRACFLAGS += -I$(srctree)/tools/include \
 		    -include include/generated/autoconf.h \
 	            -D__EXPORTED_HEADERS__
 
+ifdef CONFIG_X86_FEATURE_NAMES
 $(obj)/cpu.o: $(obj)/cpustr.h
 
 quiet_cmd_cpustr = CPUSTR  $@
       cmd_cpustr = $(obj)/mkcpustr > $@
-targets		+= cpustr.h
+targets += cpustr.h
 $(obj)/cpustr.h: $(obj)/mkcpustr FORCE
 	$(call if_changed,cpustr)
+endif
 
 # ---------------------------------------------------------------------------
 
@@ -156,9 +159,6 @@ isoimage: $(obj)/bzImage
 	for i in lib lib64 share end ; do \
 		if [ -f /usr/$$i/syslinux/isolinux.bin ] ; then \
 			cp /usr/$$i/syslinux/isolinux.bin $(obj)/isoimage ; \
-			if [ -f /usr/$$i/syslinux/ldlinux.c32 ]; then \
-				cp /usr/$$i/syslinux/ldlinux.c32 $(obj)/isoimage ; \
-			fi ; \
 			break ; \
 		fi ; \
 		if [ $$i = end ] ; then exit 1 ; fi ; \

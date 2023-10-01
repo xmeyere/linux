@@ -49,6 +49,9 @@ struct imx6_pcie {
 
 /* PCIe Port Logic registers (memory-mapped) */
 #define PL_OFFSET 0x700
+#define PCIE_PL_PFLR (PL_OFFSET + 0x08)
+#define PCIE_PL_PFLR_LINK_STATE_MASK		(0x3f << 16)
+#define PCIE_PL_PFLR_FORCE_LINK			(1 << 15)
 #define PCIE_PHY_DEBUG_R0 (PL_OFFSET + 0x28)
 #define PCIE_PHY_DEBUG_R1 (PL_OFFSET + 0x2c)
 #define PCIE_PHY_DEBUG_R1_XMLH_LINK_IN_TRAINING	(1 << 29)
@@ -204,23 +207,6 @@ static int pcie_phy_write(void __iomem *dbi_base, int addr, int data)
 	return 0;
 }
 
-static void imx6_pcie_reset_phy(struct pcie_port *pp)
-{
-	u32 tmp;
-
-	pcie_phy_read(pp->dbi_base, PHY_RX_OVRD_IN_LO, &tmp);
-	tmp |= (PHY_RX_OVRD_IN_LO_RX_DATA_EN |
-		PHY_RX_OVRD_IN_LO_RX_PLL_EN);
-	pcie_phy_write(pp->dbi_base, PHY_RX_OVRD_IN_LO, tmp);
-
-	usleep_range(2000, 3000);
-
-	pcie_phy_read(pp->dbi_base, PHY_RX_OVRD_IN_LO, &tmp);
-	tmp &= ~(PHY_RX_OVRD_IN_LO_RX_DATA_EN |
-		  PHY_RX_OVRD_IN_LO_RX_PLL_EN);
-	pcie_phy_write(pp->dbi_base, PHY_RX_OVRD_IN_LO, tmp);
-}
-
 /*  Added for PCI abort handling */
 static int imx6q_pcie_abort_handler(unsigned long addr,
 		unsigned int fsr, struct pt_regs *regs)
@@ -231,6 +217,32 @@ static int imx6q_pcie_abort_handler(unsigned long addr,
 static int imx6_pcie_assert_core_reset(struct pcie_port *pp)
 {
 	struct imx6_pcie *imx6_pcie = to_imx6_pcie(pp);
+	u32 val, gpr1, gpr12;
+
+	/*
+	 * If the bootloader already enabled the link we need some special
+	 * handling to get the core back into a state where it is safe to
+	 * touch it for configuration.  As there is no dedicated reset signal
+	 * wired up for MX6QDL, we need to manually force LTSSM into "detect"
+	 * state before completely disabling LTSSM, which is a prerequisite
+	 * for core configuration.
+	 *
+	 * If both LTSSM_ENABLE and REF_SSP_ENABLE are active we have a strong
+	 * indication that the bootloader activated the link.
+	 */
+	regmap_read(imx6_pcie->iomuxc_gpr, IOMUXC_GPR1, &gpr1);
+	regmap_read(imx6_pcie->iomuxc_gpr, IOMUXC_GPR12, &gpr12);
+
+	if ((gpr1 & IMX6Q_GPR1_PCIE_REF_CLK_EN) &&
+	    (gpr12 & IMX6Q_GPR12_PCIE_CTL_2)) {
+		val = readl(pp->dbi_base + PCIE_PL_PFLR);
+		val &= ~PCIE_PL_PFLR_LINK_STATE_MASK;
+		val |= PCIE_PL_PFLR_FORCE_LINK;
+		writel(val, pp->dbi_base + PCIE_PL_PFLR);
+
+		regmap_update_bits(imx6_pcie->iomuxc_gpr, IOMUXC_GPR12,
+				IMX6Q_GPR12_PCIE_CTL_2, 0 << 10);
+	}
 
 	regmap_update_bits(imx6_pcie->iomuxc_gpr, IOMUXC_GPR1,
 			IMX6Q_GPR1_PCIE_TEST_PD, 1 << 18);
@@ -244,11 +256,6 @@ static int imx6_pcie_deassert_core_reset(struct pcie_port *pp)
 {
 	struct imx6_pcie *imx6_pcie = to_imx6_pcie(pp);
 	int ret;
-
-	regmap_update_bits(imx6_pcie->iomuxc_gpr, IOMUXC_GPR1,
-			IMX6Q_GPR1_PCIE_TEST_PD, 0 << 18);
-	regmap_update_bits(imx6_pcie->iomuxc_gpr, IOMUXC_GPR1,
-			IMX6Q_GPR1_PCIE_REF_CLK_EN, 1 << 16);
 
 	ret = clk_prepare_enable(imx6_pcie->pcie_phy);
 	if (ret) {
@@ -267,6 +274,19 @@ static int imx6_pcie_deassert_core_reset(struct pcie_port *pp)
 		dev_err(pp->dev, "unable to enable pcie clock\n");
 		goto err_pcie;
 	}
+
+	/* power up core phy and enable ref clock */
+	regmap_update_bits(imx6_pcie->iomuxc_gpr, IOMUXC_GPR1,
+			IMX6Q_GPR1_PCIE_TEST_PD, 0 << 18);
+	/*
+	 * the async reset input need ref clock to sync internally,
+	 * when the ref clock comes after reset, internal synced
+	 * reset time is too short, cannot meet the requirement.
+	 * add one ~10us delay here.
+	 */
+	udelay(10);
+	regmap_update_bits(imx6_pcie->iomuxc_gpr, IOMUXC_GPR1,
+			IMX6Q_GPR1_PCIE_REF_CLK_EN, 1 << 16);
 
 	/* allow the clocks to stabilize */
 	usleep_range(200, 500);
@@ -315,33 +335,21 @@ static void imx6_pcie_init_phy(struct pcie_port *pp)
 
 static int imx6_pcie_wait_for_link(struct pcie_port *pp)
 {
-	unsigned int retries;
+	int count = 200;
 
-	/*
-	 * Test if the PHY reports that the link is up and also that the LTSSM
-	 * training finished. There are three possible states of the link when
-	 * this code is called:
-	 * 1) The link is DOWN (unlikely)
-	 *    The link didn't come up yet for some reason. This usually means
-	 *    we have a real problem somewhere, if it happens with a peripheral
-	 *    connected. This state calls for inspection of the DEBUG registers.
-	 * 2) The link is UP, but still in LTSSM training
-	 *    Wait for the training to finish, which should take a very short
-	 *    time. If the training does not finish, we have a problem and we
-	 *    need to inspect the DEBUG registers. If the training does finish,
-	 *    the link is up and operating correctly.
-	 * 3) The link is UP and no longer in LTSSM training
-	 *    The link is up and operating correctly.
-	 */
-	for (retries = 0; retries < 200; retries++) {
-		u32 reg = readl(pp->dbi_base + PCIE_PHY_DEBUG_R1);
-		if ((reg & PCIE_PHY_DEBUG_R1_XMLH_LINK_UP) &&
-		    !(reg & PCIE_PHY_DEBUG_R1_XMLH_LINK_IN_TRAINING))
-			return 0;
-		usleep_range(1000, 2000);
+	while (!dw_pcie_link_up(pp)) {
+		usleep_range(100, 1000);
+		if (--count)
+			continue;
+
+		dev_err(pp->dev, "phy link never came up\n");
+		dev_dbg(pp->dev, "DEBUG_R0: 0x%08x, DEBUG_R1: 0x%08x\n",
+			readl(pp->dbi_base + PCIE_PHY_DEBUG_R0),
+			readl(pp->dbi_base + PCIE_PHY_DEBUG_R1));
+		return -EINVAL;
 	}
 
-	return -EINVAL;
+	return 0;
 }
 
 static irqreturn_t imx6_pcie_msi_handler(int irq, void *arg)
@@ -372,10 +380,8 @@ static int imx6_pcie_start_link(struct pcie_port *pp)
 			IMX6Q_GPR12_PCIE_CTL_2, 1 << 10);
 
 	ret = imx6_pcie_wait_for_link(pp);
-	if (ret) {
-		dev_info(pp->dev, "Link never came up\n");
-		goto err_reset_phy;
-	}
+	if (ret)
+		return ret;
 
 	/* Allow Gen2 mode after the link is up. */
 	tmp = readl(pp->dbi_base + PCIE_RC_LCR);
@@ -408,19 +414,10 @@ static int imx6_pcie_start_link(struct pcie_port *pp)
 
 	if (ret) {
 		dev_err(pp->dev, "Failed to bring link up!\n");
-		goto err_reset_phy;
 	} else {
 		tmp = readl(pp->dbi_base + 0x80);
 		dev_dbg(pp->dev, "Link up, Gen=%i\n", (tmp >> 16) & 0xf);
 	}
-
-	return ret;
-
-err_reset_phy:
-	dev_dbg(pp->dev, "PHY DEBUG_R0=0x%08x DEBUG_R1=0x%08x\n",
-		readl(pp->dbi_base + PCIE_PHY_DEBUG_R0),
-		readl(pp->dbi_base + PCIE_PHY_DEBUG_R1));
-	imx6_pcie_reset_phy(pp);
 
 	return ret;
 }
@@ -441,9 +438,26 @@ static void imx6_pcie_host_init(struct pcie_port *pp)
 		dw_pcie_msi_init(pp);
 }
 
+static void imx6_pcie_reset_phy(struct pcie_port *pp)
+{
+	uint32_t temp;
+
+	pcie_phy_read(pp->dbi_base, PHY_RX_OVRD_IN_LO, &temp);
+	temp |= (PHY_RX_OVRD_IN_LO_RX_DATA_EN |
+		 PHY_RX_OVRD_IN_LO_RX_PLL_EN);
+	pcie_phy_write(pp->dbi_base, PHY_RX_OVRD_IN_LO, temp);
+
+	usleep_range(2000, 3000);
+
+	pcie_phy_read(pp->dbi_base, PHY_RX_OVRD_IN_LO, &temp);
+	temp &= ~(PHY_RX_OVRD_IN_LO_RX_DATA_EN |
+		  PHY_RX_OVRD_IN_LO_RX_PLL_EN);
+	pcie_phy_write(pp->dbi_base, PHY_RX_OVRD_IN_LO, temp);
+}
+
 static int imx6_pcie_link_up(struct pcie_port *pp)
 {
-	u32 rc;
+	u32 rc, debug_r0, rx_valid;
 	int count = 5;
 
 	/*
@@ -477,6 +491,26 @@ static int imx6_pcie_link_up(struct pcie_port *pp)
 		 */
 		usleep_range(1000, 2000);
 	}
+	/*
+	 * From L0, initiate MAC entry to gen2 if EP/RC supports gen2.
+	 * Wait 2ms (LTSSM timeout is 24ms, PHY lock is ~5us in gen2).
+	 * If (MAC/LTSSM.state == Recovery.RcvrLock)
+	 * && (PHY/rx_valid==0) then pulse PHY/rx_reset. Transition
+	 * to gen2 is stuck
+	 */
+	pcie_phy_read(pp->dbi_base, PCIE_PHY_RX_ASIC_OUT, &rx_valid);
+	debug_r0 = readl(pp->dbi_base + PCIE_PHY_DEBUG_R0);
+
+	if (rx_valid & 0x01)
+		return 0;
+
+	if ((debug_r0 & 0x3f) != 0x0d)
+		return 0;
+
+	dev_err(pp->dev, "transition to gen2 is stuck, reset PHY!\n");
+	dev_dbg(pp->dev, "debug_r0=%08x debug_r1=%08x\n", debug_r0, rc);
+
+	imx6_pcie_reset_phy(pp);
 
 	return 0;
 }
@@ -500,8 +534,7 @@ static int __init imx6_add_pcie_port(struct pcie_port *pp,
 
 		ret = devm_request_irq(&pdev->dev, pp->msi_irq,
 		                       imx6_pcie_msi_handler,
-				       IRQF_SHARED | IRQF_NO_THREAD,
-				       "mx6-pcie-msi", pp);
+		                       IRQF_SHARED, "mx6-pcie-msi", pp);
 		if (ret) {
 			dev_err(&pdev->dev, "failed to request MSI irq\n");
 			return -ENODEV;
@@ -593,6 +626,14 @@ static int __init imx6_pcie_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static void imx6_pcie_shutdown(struct platform_device *pdev)
+{
+	struct imx6_pcie *imx6_pcie = platform_get_drvdata(pdev);
+
+	/* bring down link, so bootloader gets clean state in case of reboot */
+	imx6_pcie_assert_core_reset(&imx6_pcie->pp);
+}
+
 static const struct of_device_id imx6_pcie_of_match[] = {
 	{ .compatible = "fsl,imx6q-pcie", },
 	{},
@@ -605,6 +646,7 @@ static struct platform_driver imx6_pcie_driver = {
 		.owner	= THIS_MODULE,
 		.of_match_table = imx6_pcie_of_match,
 	},
+	.shutdown = imx6_pcie_shutdown,
 };
 
 /* Freescale PCIe driver does not allow module unload */
@@ -613,7 +655,7 @@ static int __init imx6_pcie_init(void)
 {
 	return platform_driver_probe(&imx6_pcie_driver, imx6_pcie_probe);
 }
-fs_initcall(imx6_pcie_init);
+module_init(imx6_pcie_init);
 
 MODULE_AUTHOR("Sean Cross <xobs@kosagi.com>");
 MODULE_DESCRIPTION("Freescale i.MX6 PCIe host controller driver");

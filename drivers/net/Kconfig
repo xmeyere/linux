@@ -148,7 +148,7 @@ config MACVTAP
 config VXLAN
        tristate "Virtual eXtensible Local Area Network (VXLAN)"
        depends on INET
-       select NET_IP_TUNNEL
+       select NET_UDP_TUNNEL
        ---help---
 	  This allows one to create vxlan virtual interfaces that provide
 	  Layer 2 Networks over Layer 3 Networks. VXLAN is often used
@@ -331,9 +331,6 @@ config XEN_NETDEV_FRONTEND
 config XEN_NETDEV_BACKEND
 	tristate "Xen backend network device"
 	depends on XEN_BACKEND
-	depends on !(PAGE_SIZE_64KB || ARM64_64K_PAGES || \
-		     IA64_PAGE_SIZE_64KB || MICROBLAZE_64K_PAGES || \
-		     PARISC_PAGE_SIZE_64KB || PPC_64K_PAGES)
 	help
 	  This driver allows the kernel to act as a Xen network driver
 	  domain which exports paravirtual network devices to other
@@ -362,28 +359,5 @@ config VMXNET3
 	  module will be called vmxnet3.
 
 source "drivers/net/hyperv/Kconfig"
-
-menuconfig NETDEV_1000
-	bool "Ethernet (1000 Mbit)"
-	depends on !UML
-	default y
-	---help---
-	  Ethernet (also called IEEE 802.3 or ISO 8802-2) is the most common
-	  type of Local Area Network (LAN) in universities and companies.
-
-	  Say Y here to get to see options for Gigabit Ethernet drivers.
-	  This option alone does not add any kernel code.
-	  Note that drivers supporting both 100 and 1000 MBit may be listed
-	  under "Ethernet (10 or 100MBit)" instead.
-
-	  If you say N, all options in this submenu will be skipped and disabled.
-
-if NETDEV_1000
-
-	source "drivers/net/xmmac/Kconfig"
-
-endif
-
-#------------------------------------
 
 endif # NETDEVICES

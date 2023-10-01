@@ -151,7 +151,6 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 	struct ip_tunnel_parm *parms = &tunnel->parms;
 	struct dst_entry *dst = skb_dst(skb);
 	struct net_device *tdev;	/* Device to other host */
-	int pkt_len = skb->len;
 	int err;
 
 	if (!dst) {
@@ -195,7 +194,7 @@ static netdev_tx_t vti_xmit(struct sk_buff *skb, struct net_device *dev,
 
 	err = dst_output(skb);
 	if (net_xmit_eval(err) == 0)
-		err = pkt_len;
+		err = skb->len;
 	iptunnel_xmit_stats(err, &dev->stats, dev->tstats);
 	return NETDEV_TX_OK;
 
@@ -359,12 +358,13 @@ static int vti_tunnel_init(struct net_device *dev)
 	memcpy(dev->dev_addr, &iph->saddr, 4);
 	memcpy(dev->broadcast, &iph->daddr, 4);
 
+	dev->hard_header_len	= LL_MAX_HEADER + sizeof(struct iphdr);
 	dev->mtu		= ETH_DATA_LEN;
 	dev->flags		= IFF_NOARP;
 	dev->iflink		= 0;
 	dev->addr_len		= 4;
 	dev->features		|= NETIF_F_LLTX;
-	dev->priv_flags		&= ~IFF_XMIT_DST_RELEASE;
+	netif_keep_dst(dev);
 
 	return ip_tunnel_init(dev);
 }
@@ -535,40 +535,28 @@ static struct rtnl_link_ops vti_link_ops __read_mostly = {
 
 static int __init vti_init(void)
 {
+	const char *msg;
 	int err;
 
-	pr_info("IPv4 over IPSec tunneling driver\n");
+	pr_info("IPv4 over IPsec tunneling driver\n");
 
+	msg = "tunnel device";
 	err = register_pernet_device(&vti_net_ops);
 	if (err < 0)
-		return err;
+		goto pernet_dev_failed;
+
+	msg = "tunnel protocols";
 	err = xfrm4_protocol_register(&vti_esp4_protocol, IPPROTO_ESP);
-	if (err < 0) {
-		unregister_pernet_device(&vti_net_ops);
-		pr_info("vti init: can't register tunnel\n");
-
-		return err;
-	}
-
+	if (err < 0)
+		goto xfrm_proto_esp_failed;
 	err = xfrm4_protocol_register(&vti_ah4_protocol, IPPROTO_AH);
-	if (err < 0) {
-		xfrm4_protocol_deregister(&vti_esp4_protocol, IPPROTO_ESP);
-		unregister_pernet_device(&vti_net_ops);
-		pr_info("vti init: can't register tunnel\n");
-
-		return err;
-	}
-
+	if (err < 0)
+		goto xfrm_proto_ah_failed;
 	err = xfrm4_protocol_register(&vti_ipcomp4_protocol, IPPROTO_COMP);
-	if (err < 0) {
-		xfrm4_protocol_deregister(&vti_ah4_protocol, IPPROTO_AH);
-		xfrm4_protocol_deregister(&vti_esp4_protocol, IPPROTO_ESP);
-		unregister_pernet_device(&vti_net_ops);
-		pr_info("vti init: can't register tunnel\n");
+	if (err < 0)
+		goto xfrm_proto_comp_failed;
 
-		return err;
-	}
-
+	msg = "netlink interface";
 	err = rtnl_link_register(&vti_link_ops);
 	if (err < 0)
 		goto rtnl_link_failed;
@@ -577,23 +565,23 @@ static int __init vti_init(void)
 
 rtnl_link_failed:
 	xfrm4_protocol_deregister(&vti_ipcomp4_protocol, IPPROTO_COMP);
+xfrm_proto_comp_failed:
 	xfrm4_protocol_deregister(&vti_ah4_protocol, IPPROTO_AH);
+xfrm_proto_ah_failed:
 	xfrm4_protocol_deregister(&vti_esp4_protocol, IPPROTO_ESP);
+xfrm_proto_esp_failed:
 	unregister_pernet_device(&vti_net_ops);
+pernet_dev_failed:
+	pr_err("vti init: failed to register %s\n", msg);
 	return err;
 }
 
 static void __exit vti_fini(void)
 {
 	rtnl_link_unregister(&vti_link_ops);
-	if (xfrm4_protocol_deregister(&vti_ipcomp4_protocol, IPPROTO_COMP))
-		pr_info("vti close: can't deregister tunnel\n");
-	if (xfrm4_protocol_deregister(&vti_ah4_protocol, IPPROTO_AH))
-		pr_info("vti close: can't deregister tunnel\n");
-	if (xfrm4_protocol_deregister(&vti_esp4_protocol, IPPROTO_ESP))
-		pr_info("vti close: can't deregister tunnel\n");
-
-
+	xfrm4_protocol_deregister(&vti_ipcomp4_protocol, IPPROTO_COMP);
+	xfrm4_protocol_deregister(&vti_ah4_protocol, IPPROTO_AH);
+	xfrm4_protocol_deregister(&vti_esp4_protocol, IPPROTO_ESP);
 	unregister_pernet_device(&vti_net_ops);
 }
 

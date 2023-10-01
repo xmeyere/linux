@@ -205,7 +205,6 @@ static void ring_buffer_consumer(void)
 			break;
 
 		schedule();
-		__set_current_state(TASK_RUNNING);
 	}
 	reader_finish = 0;
 	complete(&read_done);
@@ -379,7 +378,6 @@ static int ring_buffer_consumer_thread(void *arg)
 			break;
 
 		schedule();
-		__set_current_state(TASK_RUNNING);
 	}
 	__set_current_state(TASK_RUNNING);
 
@@ -407,7 +405,6 @@ static int ring_buffer_producer_thread(void *arg)
 		trace_printk("Sleeping for 10 secs\n");
 		set_current_state(TASK_INTERRUPTIBLE);
 		schedule_timeout(HZ * SLEEP_TIME);
-		__set_current_state(TASK_RUNNING);
 	}
 
 	if (kill_test)
@@ -455,7 +452,7 @@ static int __init ring_buffer_benchmark_init(void)
 
 	if (producer_fifo >= 0) {
 		struct sched_param param = {
-			.sched_priority = producer_fifo
+			.sched_priority = consumer_fifo
 		};
 		sched_setscheduler(producer, SCHED_FIFO, &param);
 	} else

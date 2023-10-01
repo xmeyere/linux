@@ -32,7 +32,6 @@
 
 struct tiadc_device {
 	struct ti_tscadc_dev *mfd_tscadc;
-	struct mutex fifo1_lock; /* to protect fifo access */
 	int channels;
 	u8 channel_line[8];
 	u8 channel_step[8];
@@ -123,9 +122,7 @@ static irqreturn_t tiadc_irq_h(int irq, void *private)
 {
 	struct iio_dev *indio_dev = private;
 	struct tiadc_device *adc_dev = iio_priv(indio_dev);
-	unsigned int status, config, adc_fsm;
-	unsigned short count = 0;
-
+	unsigned int status, config;
 	status = tiadc_readl(adc_dev, REG_IRQSTATUS);
 
 	/*
@@ -139,15 +136,6 @@ static irqreturn_t tiadc_irq_h(int irq, void *private)
 		tiadc_writel(adc_dev, REG_CTRL, config);
 		tiadc_writel(adc_dev, REG_IRQSTATUS, IRQENB_FIFO1OVRRUN
 				| IRQENB_FIFO1UNDRFLW | IRQENB_FIFO1THRES);
-
-		/* wait for idle state.
-		 * ADC needs to finish the current conversion
-		 * before disabling the module
-		 */
-		do {
-			adc_fsm = tiadc_readl(adc_dev, REG_ADCFSM);
-		} while (adc_fsm != 0x10 && count++ < 100);
-
 		tiadc_writel(adc_dev, REG_CTRL, (config | CNTRLREG_TSCSSENB));
 		return IRQ_HANDLED;
 	} else if (status & IRQENB_FIFO1THRES) {
@@ -201,11 +189,12 @@ static int tiadc_buffer_preenable(struct iio_dev *indio_dev)
 static int tiadc_buffer_postenable(struct iio_dev *indio_dev)
 {
 	struct tiadc_device *adc_dev = iio_priv(indio_dev);
+	struct iio_buffer *buffer = indio_dev->buffer;
 	unsigned int enb = 0;
 	u8 bit;
 
 	tiadc_step_config(indio_dev);
-	for_each_set_bit(bit, indio_dev->active_scan_mask, adc_dev->channels)
+	for_each_set_bit(bit, buffer->scan_mask, adc_dev->channels)
 		enb |= (get_adc_step_bit(adc_dev, bit) << 1);
 	adc_dev->buffer_en_ch_steps = enb;
 
@@ -353,7 +342,6 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 		int *val, int *val2, long mask)
 {
 	struct tiadc_device *adc_dev = iio_priv(indio_dev);
-	int ret = IIO_VAL_INT;
 	int i, map_val;
 	unsigned int fifo1count, read, stepid;
 	bool found = false;
@@ -367,7 +355,6 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 	if (!step_en)
 		return -EINVAL;
 
-	mutex_lock(&adc_dev->fifo1_lock);
 	fifo1count = tiadc_readl(adc_dev, REG_FIFO1CNT);
 	while (fifo1count--)
 		tiadc_readl(adc_dev, REG_FIFO1);
@@ -384,8 +371,7 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 
 		if (time_after(jiffies, timeout)) {
 			am335x_tsc_se_adc_done(adc_dev->mfd_tscadc);
-			ret = -EAGAIN;
-			goto err_unlock;
+			return -EAGAIN;
 		}
 	}
 	map_val = adc_dev->channel_step[chan->scan_index];
@@ -411,11 +397,8 @@ static int tiadc_read_raw(struct iio_dev *indio_dev,
 	am335x_tsc_se_adc_done(adc_dev->mfd_tscadc);
 
 	if (found == false)
-		ret =  -EBUSY;
-
-err_unlock:
-	mutex_unlock(&adc_dev->fifo1_lock);
-	return ret;
+		return -EBUSY;
+	return IIO_VAL_INT;
 }
 
 static const struct iio_info tiadc_info = {
@@ -462,7 +445,6 @@ static int tiadc_probe(struct platform_device *pdev)
 
 	tiadc_step_config(indio_dev);
 	tiadc_writel(adc_dev, REG_FIFO1THR, FIFO1_THRESHOLD);
-	mutex_init(&adc_dev->fifo1_lock);
 
 	err = tiadc_channel_init(indio_dev, adc_dev->channels);
 	if (err < 0)
@@ -563,7 +545,6 @@ MODULE_DEVICE_TABLE(of, ti_adc_dt_ids);
 static struct platform_driver tiadc_driver = {
 	.driver = {
 		.name   = "TI-am335x-adc",
-		.owner	= THIS_MODULE,
 		.pm	= TIADC_PM_OPS,
 		.of_match_table = ti_adc_dt_ids,
 	},

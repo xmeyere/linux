@@ -94,22 +94,16 @@ static struct ip6_flowlabel *fl_lookup(struct net *net, __be32 label)
 	return fl;
 }
 
-static void fl_free_rcu(struct rcu_head *head)
-{
-	struct ip6_flowlabel *fl = container_of(head, struct ip6_flowlabel, rcu);
-
-	if (fl->share == IPV6_FL_S_PROCESS)
-		put_pid(fl->owner.pid);
-	release_net(fl->fl_net);
-	kfree(fl->opt);
-	kfree(fl);
-}
-
 
 static void fl_free(struct ip6_flowlabel *fl)
 {
-	if (fl)
-		call_rcu(&fl->rcu, fl_free_rcu);
+	if (fl) {
+		if (fl->share == IPV6_FL_S_PROCESS)
+			put_pid(fl->owner.pid);
+		release_net(fl->fl_net);
+		kfree(fl->opt);
+		kfree_rcu(fl, rcu);
+	}
 }
 
 static void fl_release(struct ip6_flowlabel *fl)
@@ -142,7 +136,7 @@ static void ip6_fl_gc(unsigned long dummy)
 
 	spin_lock(&ip6_fl_lock);
 
-	for (i=0; i<=FL_HASH_MASK; i++) {
+	for (i = 0; i <= FL_HASH_MASK; i++) {
 		struct ip6_flowlabel *fl;
 		struct ip6_flowlabel __rcu **flp;
 
@@ -245,7 +239,7 @@ static struct ip6_flowlabel *fl_intern(struct net *net,
 
 /* Socket flowlabel lists */
 
-struct ip6_flowlabel * fl6_sock_lookup(struct sock *sk, __be32 label)
+struct ip6_flowlabel *fl6_sock_lookup(struct sock *sk, __be32 label)
 {
 	struct ipv6_fl_socklist *sfl;
 	struct ipv6_pinfo *np = inet6_sk(sk);
@@ -255,9 +249,9 @@ struct ip6_flowlabel * fl6_sock_lookup(struct sock *sk, __be32 label)
 	rcu_read_lock_bh();
 	for_each_sk_fl_rcu(np, sfl) {
 		struct ip6_flowlabel *fl = sfl->fl;
-
-		if (fl->label == label && atomic_inc_not_zero(&fl->users)) {
+		if (fl->label == label) {
 			fl->lastuse = jiffies;
+			atomic_inc(&fl->users);
 			rcu_read_unlock_bh();
 			return fl;
 		}
@@ -265,7 +259,6 @@ struct ip6_flowlabel * fl6_sock_lookup(struct sock *sk, __be32 label)
 	rcu_read_unlock_bh();
 	return NULL;
 }
-
 EXPORT_SYMBOL_GPL(fl6_sock_lookup);
 
 void fl6_free_socklist(struct sock *sk)
@@ -299,11 +292,11 @@ void fl6_free_socklist(struct sock *sk)
    following rthdr.
  */
 
-struct ipv6_txoptions *fl6_merge_options(struct ipv6_txoptions * opt_space,
-					 struct ip6_flowlabel * fl,
-					 struct ipv6_txoptions * fopt)
+struct ipv6_txoptions *fl6_merge_options(struct ipv6_txoptions *opt_space,
+					 struct ip6_flowlabel *fl,
+					 struct ipv6_txoptions *fopt)
 {
-	struct ipv6_txoptions * fl_opt = fl->opt;
+	struct ipv6_txoptions *fl_opt = fl->opt;
 
 	if (fopt == NULL || fopt->opt_flen == 0)
 		return fl_opt;
@@ -394,7 +387,7 @@ fl_create(struct net *net, struct sock *sk, struct in6_flowlabel_req *freq,
 			goto done;
 
 		msg.msg_controllen = olen;
-		msg.msg_control = (void*)(fl->opt+1);
+		msg.msg_control = (void *)(fl->opt+1);
 		memset(&flowi6, 0, sizeof(flowi6));
 
 		err = ip6_datagram_send_ctl(net, sk, &msg, &flowi6, fl->opt,
@@ -523,7 +516,7 @@ int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen)
 	struct net *net = sock_net(sk);
 	struct ipv6_pinfo *np = inet6_sk(sk);
 	struct in6_flowlabel_req freq;
-	struct ipv6_fl_socklist *sfl1=NULL;
+	struct ipv6_fl_socklist *sfl1 = NULL;
 	struct ipv6_fl_socklist *sfl;
 	struct ipv6_fl_socklist __rcu **sflp;
 	struct ip6_flowlabel *fl, *fl1 = NULL;
@@ -548,13 +541,12 @@ int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen)
 		}
 		spin_lock_bh(&ip6_sk_fl_lock);
 		for (sflp = &np->ipv6_fl_list;
-		     (sfl = rcu_dereference_protected(*sflp,
-						      lockdep_is_held(&ip6_sk_fl_lock))) != NULL;
+		     (sfl = rcu_dereference(*sflp)) != NULL;
 		     sflp = &sfl->next) {
 			if (sfl->fl->label == freq.flr_label) {
 				if (freq.flr_label == (np->flow_label&IPV6_FLOWLABEL_MASK))
 					np->flow_label &= ~IPV6_FLOWLABEL_MASK;
-				*sflp = sfl->next;
+				*sflp = rcu_dereference(sfl->next);
 				spin_unlock_bh(&ip6_sk_fl_lock);
 				fl_release(sfl->fl);
 				kfree_rcu(sfl, rcu);
@@ -619,8 +611,7 @@ int ipv6_flowlabel_opt(struct sock *sk, char __user *optval, int optlen)
 						goto done;
 					}
 					fl1 = sfl->fl;
-					if (!atomic_inc_not_zero(&fl1->users))
-						fl1 = NULL;
+					atomic_inc(&fl1->users);
 					break;
 				}
 			}
@@ -637,9 +628,9 @@ recheck:
 				if (fl1->share == IPV6_FL_S_EXCL ||
 				    fl1->share != fl->share ||
 				    ((fl1->share == IPV6_FL_S_PROCESS) &&
-				     (fl1->owner.pid != fl->owner.pid)) ||
+				     (fl1->owner.pid == fl->owner.pid)) ||
 				    ((fl1->share == IPV6_FL_S_USER) &&
-				     !uid_eq(fl1->owner.uid, fl->owner.uid)))
+				     uid_eq(fl1->owner.uid, fl->owner.uid)))
 					goto release;
 
 				err = -ENOMEM;

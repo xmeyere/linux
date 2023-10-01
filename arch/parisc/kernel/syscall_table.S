@@ -361,7 +361,7 @@
 	ENTRY_SAME(ni_syscall)	/* 263: reserved for vserver */
 	ENTRY_SAME(add_key)
 	ENTRY_SAME(request_key)		/* 265 */
-	ENTRY_COMP(keyctl)
+	ENTRY_SAME(keyctl)
 	ENTRY_SAME(ioprio_set)
 	ENTRY_SAME(ioprio_get)
 	ENTRY_SAME(inotify_init)
@@ -433,6 +433,10 @@
 	ENTRY_SAME(sched_getattr)	/* 335 */
 	ENTRY_COMP(utimes)
 	ENTRY_SAME(renameat2)
+	ENTRY_SAME(seccomp)
+	ENTRY_SAME(getrandom)
+	ENTRY_SAME(memfd_create)	/* 340 */
+	ENTRY_SAME(bpf)
 
 	/* Nothing yet */
 

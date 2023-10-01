@@ -105,7 +105,6 @@ void bch_generic_make_request(struct bio *bio, struct bio_split_pool *p)
 	} while (n != bio);
 
 	continue_at(&s->cl, bch_bio_submit_split_done, NULL);
-	return;
 submit:
 	generic_make_request(bio);
 }

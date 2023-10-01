@@ -26,7 +26,7 @@
 #include <linux/phy.h>
 #include <linux/micrel_phy.h>
 #include <linux/of.h>
-#include <linux/mdio.h>
+#include <linux/clk.h>
 
 /* Operation Mode Strap Override */
 #define MII_KSZPHY_OMSO				0x16
@@ -73,9 +73,12 @@ static int ksz_config_flags(struct phy_device *phydev)
 {
 	int regval;
 
-	if (phydev->dev_flags & MICREL_PHY_50MHZ_CLK) {
+	if (phydev->dev_flags & (MICREL_PHY_50MHZ_CLK | MICREL_PHY_25MHZ_CLK)) {
 		regval = phy_read(phydev, MII_KSZPHY_CTRL);
-		regval |= KSZ8051_RMII_50MHZ_CLK;
+		if (phydev->dev_flags & MICREL_PHY_50MHZ_CLK)
+			regval |= KSZ8051_RMII_50MHZ_CLK;
+		else
+			regval &= ~KSZ8051_RMII_50MHZ_CLK;
 		return phy_write(phydev, MII_KSZPHY_CTRL, regval);
 	}
 	return 0;
@@ -195,8 +198,10 @@ static int ksz8021_config_init(struct phy_device *phydev)
 	if (rc)
 		dev_err(&phydev->dev, "failed to set led mode\n");
 
-	phy_write(phydev, MII_KSZPHY_OMSO, val);
 	rc = ksz_config_flags(phydev);
+	if (rc < 0)
+		return rc;
+	rc = phy_write(phydev, MII_KSZPHY_OMSO, val);
 	return rc < 0 ? rc : 0;
 }
 
@@ -210,17 +215,6 @@ static int ks8051_config_init(struct phy_device *phydev)
 
 	rc = ksz_config_flags(phydev);
 	return rc < 0 ? rc : 0;
-}
-
-static int ksz8061_config_init(struct phy_device *phydev)
-{
-	int ret;
-
-	ret = phy_write_mmd(phydev, MDIO_MMD_PMAPMD, MDIO_DEVID1, 0xB61A);
-	if (ret)
-		return ret;
-
-	return kszphy_config_init(phydev);
 }
 
 static int ksz9021_load_values_from_of(struct phy_device *phydev,
@@ -427,32 +421,49 @@ static int ksz8873mll_read_status(struct phy_device *phydev)
 	return 0;
 }
 
-static int ksz9031_read_status(struct phy_device *phydev)
+static int ksz8873mll_config_aneg(struct phy_device *phydev)
 {
-	int err;
-	int regval;
-
-	err = genphy_read_status(phydev);
-	if (err)
-		return err;
-
-	/* Make sure the PHY is not broken. Read idle error count,
-	 * and reset the PHY if it is maxed out.
-	 */
-	regval = phy_read(phydev, MII_STAT1000);
-	if ((regval & 0xFF) == 0xFF) {
-		phy_init_hw(phydev);
-		phydev->link = 0;
-		if (phydev->drv->config_intr && phy_interrupt_is_valid(phydev))
-			phydev->drv->config_intr(phydev);
-		return genphy_config_aneg(phydev);
-	}
-
 	return 0;
 }
 
-static int ksz8873mll_config_aneg(struct phy_device *phydev)
+/* This routine returns -1 as an indication to the caller that the
+ * Micrel ksz9021 10/100/1000 PHY does not support standard IEEE
+ * MMD extended PHY registers.
+ */
+static int
+ksz9021_rd_mmd_phyreg(struct phy_device *phydev, int ptrad, int devnum,
+		      int regnum)
 {
+	return -1;
+}
+
+/* This routine does nothing since the Micrel ksz9021 does not support
+ * standard IEEE MMD extended PHY registers.
+ */
+static void
+ksz9021_wr_mmd_phyreg(struct phy_device *phydev, int ptrad, int devnum,
+		      int regnum, u32 val)
+{
+}
+
+static int ksz8021_probe(struct phy_device *phydev)
+{
+	struct clk *clk;
+
+	clk = devm_clk_get(&phydev->dev, "rmii-ref");
+	if (!IS_ERR(clk)) {
+		unsigned long rate = clk_get_rate(clk);
+
+		if (rate > 24500000 && rate < 25500000) {
+			phydev->dev_flags |= MICREL_PHY_25MHZ_CLK;
+		} else if (rate > 49500000 && rate < 50500000) {
+			phydev->dev_flags |= MICREL_PHY_50MHZ_CLK;
+		} else {
+			dev_err(&phydev->dev, "Clock rate out of range: %ld\n", rate);
+			return -EINVAL;
+		}
+	}
+
 	return 0;
 }
 
@@ -478,6 +489,7 @@ static struct phy_driver ksphy_driver[] = {
 	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause |
 			   SUPPORTED_Asym_Pause),
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.probe		= ksz8021_probe,
 	.config_init	= ksz8021_config_init,
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
@@ -493,6 +505,7 @@ static struct phy_driver ksphy_driver[] = {
 	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause |
 			   SUPPORTED_Asym_Pause),
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
+	.probe		= ksz8021_probe,
 	.config_init	= ksz8021_config_init,
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
@@ -580,7 +593,7 @@ static struct phy_driver ksphy_driver[] = {
 	.phy_id_mask	= 0x00fffff0,
 	.features	= (PHY_BASIC_FEATURES | SUPPORTED_Pause),
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
-	.config_init	= ksz8061_config_init,
+	.config_init	= kszphy_config_init,
 	.config_aneg	= genphy_config_aneg,
 	.read_status	= genphy_read_status,
 	.ack_interrupt	= kszphy_ack_interrupt,
@@ -601,18 +614,18 @@ static struct phy_driver ksphy_driver[] = {
 	.config_intr	= ksz9021_config_intr,
 	.suspend	= genphy_suspend,
 	.resume		= genphy_resume,
+	.read_mmd_indirect = ksz9021_rd_mmd_phyreg,
+	.write_mmd_indirect = ksz9021_wr_mmd_phyreg,
 	.driver		= { .owner = THIS_MODULE, },
 }, {
 	.phy_id		= PHY_ID_KSZ9031,
 	.phy_id_mask	= 0x00fffff0,
 	.name		= "Micrel KSZ9031 Gigabit PHY",
-	.features	= (PHY_GBIT_FEATURES | SUPPORTED_Pause
-				| SUPPORTED_Asym_Pause),
+	.features	= (PHY_GBIT_FEATURES | SUPPORTED_Pause),
 	.flags		= PHY_HAS_MAGICANEG | PHY_HAS_INTERRUPT,
 	.config_init	= ksz9031_config_init,
 	.config_aneg	= genphy_config_aneg,
-	.soft_reset	= genphy_soft_reset,
-	.read_status	= ksz9031_read_status,
+	.read_status	= genphy_read_status,
 	.ack_interrupt	= kszphy_ack_interrupt,
 	.config_intr	= ksz9021_config_intr,
 	.suspend	= genphy_suspend,

@@ -43,6 +43,8 @@ struct prox_state {
 static const struct iio_chan_spec prox_channels[] = {
 	{
 		.type = IIO_PROXIMITY,
+		.modified = 1,
+		.channel2 = IIO_NO_MOD,
 		.info_mask_separate = BIT(IIO_CHAN_INFO_RAW),
 		.info_mask_shared_by_type = BIT(IIO_CHAN_INFO_OFFSET) |
 		BIT(IIO_CHAN_INFO_SCALE) |
@@ -74,7 +76,6 @@ static int prox_read_raw(struct iio_dev *indio_dev,
 	u32 address;
 	int ret_type;
 	s32 poll_value;
-	s32 min;
 
 	*val = 0;
 	*val2 = 0;
@@ -83,8 +84,8 @@ static int prox_read_raw(struct iio_dev *indio_dev,
 		switch (chan->scan_index) {
 		case  CHANNEL_SCAN_INDEX_PRESENCE:
 			report_id = prox_state->prox_attr.report_id;
-			min = prox_state->prox_attr.logical_minimum;
-			address = HID_USAGE_SENSOR_HUMAN_PRESENCE;
+			address =
+			HID_USAGE_SENSOR_HUMAN_PRESENCE;
 			break;
 		default:
 			report_id = -1;
@@ -104,8 +105,7 @@ static int prox_read_raw(struct iio_dev *indio_dev,
 			*val = sensor_hub_input_attr_get_raw_value(
 				prox_state->common_attributes.hsdev,
 				HID_USAGE_SENSOR_PROX, address,
-				report_id,
-				min < 0);
+				report_id);
 			hid_sensor_power_state(&prox_state->common_attributes,
 						false);
 		} else {
@@ -373,7 +373,6 @@ static struct platform_driver hid_prox_platform_driver = {
 	.id_table = hid_prox_ids,
 	.driver = {
 		.name	= KBUILD_MODNAME,
-		.owner	= THIS_MODULE,
 	},
 	.probe		= hid_prox_probe,
 	.remove		= hid_prox_remove,

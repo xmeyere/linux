@@ -154,7 +154,7 @@ static int hidp_input_event(struct input_dev *dev, unsigned int type,
 		  (!!test_bit(LED_COMPOSE, dev->led) << 3) |
 		  (!!test_bit(LED_SCROLLL, dev->led) << 2) |
 		  (!!test_bit(LED_CAPSL,   dev->led) << 1) |
-		  (!!test_bit(LED_NUML,    dev->led));
+		  (!!test_bit(LED_NUML,    dev->led) << 0);
 
 	if (session->leds == newleds)
 		return 0;
@@ -400,20 +400,6 @@ static void hidp_idle_timeout(unsigned long arg)
 {
 	struct hidp_session *session = (struct hidp_session *) arg;
 
-	/* The HIDP user-space API only contains calls to add and remove
-	 * devices. There is no way to forward events of any kind. Therefore,
-	 * we have to forcefully disconnect a device on idle-timeouts. This is
-	 * unfortunate and weird API design, but it is spec-compliant and
-	 * required for backwards-compatibility. Hence, on idle-timeout, we
-	 * signal driver-detach events, so poll() will be woken up with an
-	 * error-condition on both sockets.
-	 */
-
-	session->intr_sock->sk->sk_err = EUNATCH;
-	session->ctrl_sock->sk->sk_err = EUNATCH;
-	wake_up_interruptible(sk_sleep(session->intr_sock->sk));
-	wake_up_interruptible(sk_sleep(session->ctrl_sock->sk));
-
 	hidp_session_terminate(session);
 }
 
@@ -429,8 +415,8 @@ static void hidp_del_timer(struct hidp_session *session)
 		del_timer(&session->timer);
 }
 
-static void hidp_process_report(struct hidp_session *session, int type,
-				const u8 *data, unsigned int len, int intr)
+static void hidp_process_report(struct hidp_session *session,
+				int type, const u8 *data, int len, int intr)
 {
 	if (len > HID_MAX_BUFFER_SIZE)
 		len = HID_MAX_BUFFER_SIZE;
@@ -929,7 +915,7 @@ static int hidp_session_new(struct hidp_session **out, const bdaddr_t *bdaddr,
 
 	/* connection management */
 	bacpy(&session->bdaddr, bdaddr);
-	session->conn = conn;
+	session->conn = l2cap_conn_get(conn);
 	session->user.probe = hidp_session_probe;
 	session->user.remove = hidp_session_remove;
 	session->ctrl_sock = ctrl_sock;
@@ -955,13 +941,13 @@ static int hidp_session_new(struct hidp_session **out, const bdaddr_t *bdaddr,
 	if (ret)
 		goto err_free;
 
-	l2cap_conn_get(session->conn);
 	get_file(session->intr_sock->file);
 	get_file(session->ctrl_sock->file);
 	*out = session;
 	return 0;
 
 err_free:
+	l2cap_conn_put(session->conn);
 	kfree(session);
 	return ret;
 }
@@ -1332,20 +1318,17 @@ int hidp_connection_add(struct hidp_connadd_req *req,
 {
 	struct hidp_session *session;
 	struct l2cap_conn *conn;
-	struct l2cap_chan *chan;
+	struct l2cap_chan *chan = l2cap_pi(ctrl_sock->sk)->chan;
 	int ret;
 
 	ret = hidp_verify_sockets(ctrl_sock, intr_sock);
 	if (ret)
 		return ret;
 
-	chan = l2cap_pi(ctrl_sock->sk)->chan;
 	conn = NULL;
 	l2cap_chan_lock(chan);
-	if (chan->conn) {
-		l2cap_conn_get(chan->conn);
-		conn = chan->conn;
-	}
+	if (chan->conn)
+		conn = l2cap_conn_get(chan->conn);
 	l2cap_chan_unlock(chan);
 
 	if (!conn)

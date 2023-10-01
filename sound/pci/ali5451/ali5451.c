@@ -263,7 +263,7 @@ struct snd_ali {
 #endif
 };
 
-static DEFINE_PCI_DEVICE_TABLE(snd_ali_ids) = {
+static const struct pci_device_id snd_ali_ids[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_AL, PCI_DEVICE_ID_AL_M5451), 0, 0, 0},
 	{0, }
 };
@@ -1408,7 +1408,6 @@ snd_ali_playback_pointer(struct snd_pcm_substream *substream)
 	spin_unlock(&codec->reg_lock);
 	dev_dbg(codec->card->dev, "playback pointer returned cso=%xh.\n", cso);
 
-	cso %= runtime->buffer_size;
 	return cso;
 }
 
@@ -1429,7 +1428,6 @@ static snd_pcm_uframes_t snd_ali_pointer(struct snd_pcm_substream *substream)
 	cso = inw(ALI_REG(codec, ALI_CSO_ALPHA_FMS + 2));
 	spin_unlock(&codec->reg_lock);
 
-	cso %= runtime->buffer_size;
 	return cso;
 }
 

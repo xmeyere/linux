@@ -21,6 +21,7 @@
 #include <linux/init.h>
 #include <linux/smp.h>
 #include <linux/spinlock.h>
+#include <linux/log2.h>
 #include <linux/io.h>
 #include <linux/of.h>
 #include <linux/of_address.h>
@@ -133,6 +134,73 @@ static void l2c_disable(void)
 	outer_cache.flush_all();
 	l2c_write_sec(0, base, L2X0_CTRL);
 	dsb(st);
+}
+
+#ifdef CONFIG_CACHE_PL310
+static inline void cache_wait(void __iomem *reg, unsigned long mask)
+{
+	/* cache operations by line are atomic on PL310 */
+}
+#else
+#define cache_wait	l2c_wait_mask
+#endif
+
+static inline void cache_sync(void)
+{
+	void __iomem *base = l2x0_base;
+
+	writel_relaxed(0, base + sync_reg_offset);
+	cache_wait(base + L2X0_CACHE_SYNC, 1);
+}
+
+#if defined(CONFIG_PL310_ERRATA_588369) || defined(CONFIG_PL310_ERRATA_727915)
+static inline void debug_writel(unsigned long val)
+{
+	l2c_set_debug(l2x0_base, val);
+}
+#else
+/* Optimised out for non-errata case */
+static inline void debug_writel(unsigned long val)
+{
+}
+#endif
+
+static void l2x0_cache_sync(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&l2x0_lock, flags);
+	cache_sync();
+	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
+}
+
+static void __l2x0_flush_all(void)
+{
+	debug_writel(0x03);
+	__l2c_op_way(l2x0_base + L2X0_CLEAN_INV_WAY);
+	cache_sync();
+	debug_writel(0x00);
+}
+
+static void l2x0_flush_all(void)
+{
+	unsigned long flags;
+
+	/* clean all ways */
+	raw_spin_lock_irqsave(&l2x0_lock, flags);
+	__l2x0_flush_all();
+	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
+}
+
+static void l2x0_disable(void)
+{
+	unsigned long flags;
+
+	raw_spin_lock_irqsave(&l2x0_lock, flags);
+	__l2x0_flush_all();
+	l2c_write_sec(0, l2x0_base, L2X0_CTRL);
+	dsb(st);
+	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
 }
 
 static void l2c_save(void __iomem *base)
@@ -598,7 +666,7 @@ static int l2c310_cpu_enable_flz(struct notifier_block *nb, unsigned long act, v
 static void __init l2c310_enable(void __iomem *base, u32 aux, unsigned num_lock)
 {
 	unsigned rev = readl_relaxed(base + L2X0_CACHE_ID) & L2X0_CACHE_ID_RTL_MASK;
-	bool cortex_a9 = read_cpuid_part_number() == ARM_CPU_PART_CORTEX_A9;
+	bool cortex_a9 = read_cpuid_part() == ARM_CPU_PART_CORTEX_A9;
 
 	if (rev >= L310_CACHE_ID_RTL_R2P0) {
 		if (cortex_a9) {
@@ -878,6 +946,100 @@ static int l2_wt_override;
  * pass it though the device tree */
 static u32 cache_id_part_number_from_dt;
 
+/**
+ * l2x0_cache_size_of_parse() - read cache size parameters from DT
+ * @np: the device tree node for the l2 cache
+ * @aux_val: pointer to machine-supplied auxilary register value, to
+ * be augmented by the call (bits to be set to 1)
+ * @aux_mask: pointer to machine-supplied auxilary register mask, to
+ * be augmented by the call (bits to be set to 0)
+ * @associativity: variable to return the calculated associativity in
+ * @max_way_size: the maximum size in bytes for the cache ways
+ */
+static int __init l2x0_cache_size_of_parse(const struct device_node *np,
+					    u32 *aux_val, u32 *aux_mask,
+					    u32 *associativity,
+					    u32 max_way_size)
+{
+	u32 mask = 0, val = 0;
+	u32 cache_size = 0, sets = 0;
+	u32 way_size_bits = 1;
+	u32 way_size = 0;
+	u32 block_size = 0;
+	u32 line_size = 0;
+
+	of_property_read_u32(np, "cache-size", &cache_size);
+	of_property_read_u32(np, "cache-sets", &sets);
+	of_property_read_u32(np, "cache-block-size", &block_size);
+	of_property_read_u32(np, "cache-line-size", &line_size);
+
+	if (!cache_size || !sets)
+		return -ENODEV;
+
+	/* All these l2 caches have the same line = block size actually */
+	if (!line_size) {
+		if (block_size) {
+			/* If linesize if not given, it is equal to blocksize */
+			line_size = block_size;
+		} else {
+			/* Fall back to known size */
+			pr_warn("L2C OF: no cache block/line size given: "
+				"falling back to default size %d bytes\n",
+				CACHE_LINE_SIZE);
+			line_size = CACHE_LINE_SIZE;
+		}
+	}
+
+	if (line_size != CACHE_LINE_SIZE)
+		pr_warn("L2C OF: DT supplied line size %d bytes does "
+			"not match hardware line size of %d bytes\n",
+			line_size,
+			CACHE_LINE_SIZE);
+
+	/*
+	 * Since:
+	 * set size = cache size / sets
+	 * ways = cache size / (sets * line size)
+	 * way size = cache size / (cache size / (sets * line size))
+	 * way size = sets * line size
+	 * associativity = ways = cache size / way size
+	 */
+	way_size = sets * line_size;
+	*associativity = cache_size / way_size;
+
+	if (way_size > max_way_size) {
+		pr_err("L2C OF: set size %dKB is too large\n", way_size);
+		return -EINVAL;
+	}
+
+	pr_info("L2C OF: override cache size: %d bytes (%dKB)\n",
+		cache_size, cache_size >> 10);
+	pr_info("L2C OF: override line size: %d bytes\n", line_size);
+	pr_info("L2C OF: override way size: %d bytes (%dKB)\n",
+		way_size, way_size >> 10);
+	pr_info("L2C OF: override associativity: %d\n", *associativity);
+
+	/*
+	 * Calculates the bits 17:19 to set for way size:
+	 * 512KB -> 6, 256KB -> 5, ... 16KB -> 1
+	 */
+	way_size_bits = ilog2(way_size >> 10) - 3;
+	if (way_size_bits < 1 || way_size_bits > 6) {
+		pr_err("L2C OF: cache way size illegal: %dKB is not mapped\n",
+		       way_size);
+		return -EINVAL;
+	}
+
+	mask |= L2C_AUX_CTRL_WAY_SIZE_MASK;
+	val |= (way_size_bits << L2C_AUX_CTRL_WAY_SIZE_SHIFT);
+
+	*aux_val &= ~mask;
+	*aux_val |= val;
+	*aux_mask &= ~mask;
+
+	return 0;
+}
+
 static void __init l2x0_of_parse(const struct device_node *np,
 				 u32 *aux_val, u32 *aux_mask)
 {
@@ -885,6 +1047,8 @@ static void __init l2x0_of_parse(const struct device_node *np,
 	u32 tag = 0;
 	u32 dirty = 0;
 	u32 val = 0, mask = 0;
+	u32 assoc;
+	int ret;
 
 	of_property_read_u32(np, "arm,tag-latency", &tag);
 	if (tag) {
@@ -905,6 +1069,18 @@ static void __init l2x0_of_parse(const struct device_node *np,
 	if (dirty) {
 		mask |= L2X0_AUX_CTRL_DIRTY_LATENCY_MASK;
 		val |= (dirty - 1) << L2X0_AUX_CTRL_DIRTY_LATENCY_SHIFT;
+	}
+
+	ret = l2x0_cache_size_of_parse(np, aux_val, aux_mask, &assoc, SZ_256K);
+	if (ret)
+		return;
+
+	if (assoc > 8) {
+		pr_err("l2x0 of: cache setting yield too high associativity\n");
+		pr_err("l2x0 of: %d calculated, max 8\n", assoc);
+	} else {
+		mask |= L2X0_AUX_CTRL_ASSOC_MASK;
+		val |= (assoc << L2X0_AUX_CTRL_ASSOC_SHIFT);
 	}
 
 	*aux_val &= ~mask;
@@ -954,6 +1130,8 @@ static void __init l2c310_of_parse(const struct device_node *np,
 	u32 data[3] = { 0, 0, 0 };
 	u32 tag[3] = { 0, 0, 0 };
 	u32 filter[2] = { 0, 0 };
+	u32 assoc;
+	int ret;
 
 	of_property_read_u32_array(np, "arm,tag-latency", tag, ARRAY_SIZE(tag));
 	if (tag[0] && tag[1] && tag[2])
@@ -979,6 +1157,26 @@ static void __init l2c310_of_parse(const struct device_node *np,
 			       l2x0_base + L310_ADDR_FILTER_END);
 		writel_relaxed((filter[0] & ~(SZ_1M - 1)) | L310_ADDR_FILTER_EN,
 			       l2x0_base + L310_ADDR_FILTER_START);
+	}
+
+	ret = l2x0_cache_size_of_parse(np, aux_val, aux_mask, &assoc, SZ_512K);
+	if (ret)
+		return;
+
+	switch (assoc) {
+	case 16:
+		*aux_val &= ~L2X0_AUX_CTRL_ASSOC_MASK;
+		*aux_val |= L310_AUX_CTRL_ASSOCIATIVITY_16;
+		*aux_mask &= ~L2X0_AUX_CTRL_ASSOC_MASK;
+		break;
+	case 8:
+		*aux_val &= ~L2X0_AUX_CTRL_ASSOC_MASK;
+		*aux_mask &= ~L2X0_AUX_CTRL_ASSOC_MASK;
+		break;
+	default:
+		pr_err("L2C-310 OF cache associativity %d invalid, only 8 or 16 permitted\n",
+		       assoc);
+		break;
 	}
 }
 
@@ -1059,15 +1257,14 @@ static unsigned long calc_range_end(unsigned long start, unsigned long end)
 static void aurora_pa_range(unsigned long start, unsigned long end,
 			unsigned long offset)
 {
-	void __iomem *base = l2x0_base;
 	unsigned long flags;
 
 	raw_spin_lock_irqsave(&l2x0_lock, flags);
-	writel_relaxed(start, base + AURORA_RANGE_BASE_ADDR_REG);
-	writel_relaxed(end, base + offset);
+	writel_relaxed(start, l2x0_base + AURORA_RANGE_BASE_ADDR_REG);
+	writel_relaxed(end, l2x0_base + offset);
 	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
 
-	writel_relaxed(0, base + AURORA_SYNC_REG);
+	cache_sync();
 }
 
 static void aurora_inv_range(unsigned long start, unsigned long end)
@@ -1125,37 +1322,6 @@ static void aurora_flush_range(unsigned long start, unsigned long end)
 							AURORA_FLUSH_RANGE_REG);
 		start = range_end;
 	}
-}
-
-static void aurora_flush_all(void)
-{
-	void __iomem *base = l2x0_base;
-	unsigned long flags;
-
-	/* clean all ways */
-	raw_spin_lock_irqsave(&l2x0_lock, flags);
-	__l2c_op_way(base + L2X0_CLEAN_INV_WAY);
-	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
-
-	writel_relaxed(0, base + AURORA_SYNC_REG);
-}
-
-static void aurora_cache_sync(void)
-{
-	writel_relaxed(0, l2x0_base + AURORA_SYNC_REG);
-}
-
-static void aurora_disable(void)
-{
-	void __iomem *base = l2x0_base;
-	unsigned long flags;
-
-	raw_spin_lock_irqsave(&l2x0_lock, flags);
-	__l2c_op_way(base + L2X0_CLEAN_INV_WAY);
-	writel_relaxed(0, base + AURORA_SYNC_REG);
-	l2c_write_sec(0, base, L2X0_CTRL);
-	dsb(st);
-	raw_spin_unlock_irqrestore(&l2x0_lock, flags);
 }
 
 static void aurora_save(void __iomem *base)
@@ -1232,9 +1398,9 @@ static const struct l2c_init_data of_aurora_with_outer_data __initconst = {
 		.inv_range   = aurora_inv_range,
 		.clean_range = aurora_clean_range,
 		.flush_range = aurora_flush_range,
-		.flush_all   = aurora_flush_all,
-		.disable     = aurora_disable,
-		.sync	     = aurora_cache_sync,
+		.flush_all   = l2x0_flush_all,
+		.disable     = l2x0_disable,
+		.sync        = l2x0_cache_sync,
 		.resume      = aurora_resume,
 	},
 };

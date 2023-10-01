@@ -75,15 +75,13 @@ static int get_stripe(struct dm_target *ti, struct stripe_c *sc,
 {
 	unsigned long long start;
 	char dummy;
-	int ret;
 
 	if (sscanf(argv[1], "%llu%c", &start, &dummy) != 1)
 		return -EINVAL;
 
-	ret = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table),
-			    &sc->stripe[stripe].dev);
-	if (ret)
-		return ret;
+	if (dm_get_device(ti, argv[0], dm_table_get_mode(ti->table),
+			  &sc->stripe[stripe].dev))
+		return -ENXIO;
 
 	sc->stripe[stripe].physical_start = start;
 
@@ -161,8 +159,10 @@ static int stripe_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		sc->stripes_shift = __ffs(stripes);
 
 	r = dm_set_target_max_io_len(ti, chunk_size);
-	if (r)
+	if (r) {
+		kfree(sc);
 		return r;
+	}
 
 	ti->num_flush_bios = stripes;
 	ti->num_discard_bios = stripes;

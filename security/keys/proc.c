@@ -187,16 +187,17 @@ static int proc_keys_show(struct seq_file *m, void *v)
 	struct timespec now;
 	unsigned long timo;
 	key_ref_t key_ref, skey_ref;
-	char xbuf[16];
+	char xbuf[12];
 	int rc;
 
 	struct keyring_search_context ctx = {
-		.index_key		= key->index_key,
-		.cred			= m->file->f_cred,
-		.match			= lookup_user_key_possessed,
-		.match_data		= key,
-		.flags			= (KEYRING_SEARCH_NO_STATE_CHECK |
-					   KEYRING_SEARCH_LOOKUP_DIRECT),
+		.index_key.type		= key->type,
+		.index_key.description	= key->description,
+		.cred			= current_cred(),
+		.match_data.cmp		= lookup_user_key_possessed,
+		.match_data.raw_data	= key,
+		.match_data.lookup_type	= KEYRING_SEARCH_LOOKUP_DIRECT,
+		.flags			= KEYRING_SEARCH_NO_STATE_CHECK,
 	};
 
 	key_ref = make_key_ref(key, 0);
@@ -212,7 +213,11 @@ static int proc_keys_show(struct seq_file *m, void *v)
 		}
 	}
 
-	/* check whether the current task is allowed to view the key */
+	/* check whether the current task is allowed to view the key (assuming
+	 * non-possession)
+	 * - the caller holds a spinlock, and thus the RCU read lock, making our
+	 *   access to __current_cred() safe
+	 */
 	rc = key_task_permission(key_ref, ctx.cred, KEY_NEED_VIEW);
 	if (rc < 0)
 		return 0;

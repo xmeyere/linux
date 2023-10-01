@@ -1593,7 +1593,7 @@ static int adv7604_query_dv_timings(struct v4l2_subdev *sd,
 			bt->height += hdmi_read16(sd, 0x0b, 0xfff);
 			bt->il_vfrontporch = hdmi_read16(sd, 0x2c, 0x1fff) / 2;
 			bt->il_vsync = hdmi_read16(sd, 0x30, 0x1fff) / 2;
-			bt->vbackporch = hdmi_read16(sd, 0x34, 0x1fff) / 2;
+			bt->il_vbackporch = hdmi_read16(sd, 0x34, 0x1fff) / 2;
 		}
 		adv7604_fill_optional_dv_timings_fields(sd, timings);
 	} else {
@@ -1981,9 +1981,10 @@ static int adv7604_isr(struct v4l2_subdev *sd, u32 status, bool *handled)
 	}
 
 	/* tx 5v detect */
-	tx_5v = irq_reg_0x70 & info->cable_det_mask;
+	tx_5v = io_read(sd, 0x70) & info->cable_det_mask;
 	if (tx_5v) {
 		v4l2_dbg(1, debug, sd, "%s: tx_5v: 0x%x\n", __func__, tx_5v);
+		io_write(sd, 0x71, tx_5v);
 		adv7604_s_detect_tx_5v_ctrl(sd);
 		if (handled)
 			*handled = true;
@@ -2587,8 +2588,11 @@ static const struct adv7604_reg_seq adv7604_recommended_settings_hdmi[] = {
 };
 
 static const struct adv7604_reg_seq adv7611_recommended_settings_hdmi[] = {
+	/* ADV7611 Register Settings Recommendations Rev 1.5, May 2014 */
 	{ ADV7604_REG(ADV7604_PAGE_CP, 0x6c), 0x00 },
-	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x6f), 0x0c },
+	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x9b), 0x03 },
+	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x6f), 0x08 },
+	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x85), 0x1f },
 	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x87), 0x70 },
 	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x57), 0xda },
 	{ ADV7604_REG(ADV7604_PAGE_HDMI, 0x58), 0x01 },
@@ -2735,9 +2739,6 @@ static int adv7604_parse_dt(struct adv7604_state *state)
 	state->pdata.alt_data_sat = 1;
 	state->pdata.op_format_mode_sel = ADV7604_OP_FORMAT_MODE0;
 	state->pdata.bus_order = ADV7604_BUS_ORDER_RGB;
-	state->pdata.dr_str_data = ADV7604_DR_STR_MEDIUM_HIGH;
-	state->pdata.dr_str_clk = ADV7604_DR_STR_MEDIUM_HIGH;
-	state->pdata.dr_str_sync = ADV7604_DR_STR_MEDIUM_HIGH;
 
 	return 0;
 }

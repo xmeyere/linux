@@ -217,9 +217,8 @@ static inline int srcu_read_lock_held(struct srcu_struct *sp)
  */
 static inline int srcu_read_lock(struct srcu_struct *sp) __acquires(sp)
 {
-	int retval;
+	int retval = __srcu_read_lock(sp);
 
-	retval = __srcu_read_lock(sp);
 	rcu_lock_acquire(&(sp)->dep_map);
 	return retval;
 }

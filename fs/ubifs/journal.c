@@ -546,15 +546,14 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	int aligned_dlen, aligned_ilen, sync = IS_DIRSYNC(dir);
 	int last_reference = !!(deletion && inode->i_nlink == 0);
 	struct ubifs_inode *ui = ubifs_inode(inode);
-	struct ubifs_inode *dir_ui = ubifs_inode(dir);
+	struct ubifs_inode *host_ui = ubifs_inode(dir);
 	struct ubifs_dent_node *dent;
 	struct ubifs_ino_node *ino;
 	union ubifs_key dent_key, ino_key;
 
 	dbg_jnl("ino %lu, dent '%.*s', data len %d in dir ino %lu",
 		inode->i_ino, nm->len, nm->name, ui->data_len, dir->i_ino);
-	ubifs_assert(dir_ui->data_len == 0);
-	ubifs_assert(mutex_is_locked(&dir_ui->ui_mutex));
+	ubifs_assert(mutex_is_locked(&host_ui->ui_mutex));
 
 	dlen = UBIFS_DENT_NODE_SZ + nm->len + 1;
 	ilen = UBIFS_INO_NODE_SZ;
@@ -573,7 +572,7 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	aligned_dlen = ALIGN(dlen, 8);
 	aligned_ilen = ALIGN(ilen, 8);
 	len = aligned_dlen + aligned_ilen + UBIFS_INO_NODE_SZ;
-	dent = kzalloc(len, GFP_NOFS);
+	dent = kmalloc(len, GFP_NOFS);
 	if (!dent)
 		return -ENOMEM;
 
@@ -657,13 +656,8 @@ int ubifs_jnl_update(struct ubifs_info *c, const struct inode *dir,
 	spin_lock(&ui->ui_lock);
 	ui->synced_i_size = ui->ui_size;
 	spin_unlock(&ui->ui_lock);
-	if (xent) {
-		spin_lock(&dir_ui->ui_lock);
-		dir_ui->synced_i_size = dir_ui->ui_size;
-		spin_unlock(&dir_ui->ui_lock);
-	}
 	mark_inode_clean(c, ui);
-	mark_inode_clean(c, dir_ui);
+	mark_inode_clean(c, host_ui);
 	return 0;
 
 out_finish:
@@ -961,7 +955,7 @@ int ubifs_jnl_rename(struct ubifs_info *c, const struct inode *old_dir,
 	len = aligned_dlen1 + aligned_dlen2 + ALIGN(ilen, 8) + ALIGN(plen, 8);
 	if (old_dir != new_dir)
 		len += plen;
-	dent = kzalloc(len, GFP_NOFS);
+	dent = kmalloc(len, GFP_NOFS);
 	if (!dent)
 		return -ENOMEM;
 
@@ -1186,16 +1180,7 @@ int ubifs_jnl_truncate(struct ubifs_info *c, const struct inode *inode,
 		else if (err)
 			goto out_free;
 		else {
-			int dn_len = le32_to_cpu(dn->size);
-
-			if (dn_len <= 0 || dn_len > UBIFS_BLOCK_SIZE) {
-				ubifs_err("bad data node (block %u, inode %lu)",
-					  blk, inode->i_ino);
-				ubifs_dump_node(c, dn);
-				goto out_free;
-			}
-
-			if (dn_len <= dlen)
+			if (le32_to_cpu(dn->size) <= dlen)
 				dlen = 0; /* Nothing to do */
 			else {
 				int compr_type = le16_to_cpu(dn->compr_type);
@@ -1317,7 +1302,7 @@ int ubifs_jnl_delete_xattr(struct ubifs_info *c, const struct inode *host,
 	hlen = host_ui->data_len + UBIFS_INO_NODE_SZ;
 	len = aligned_xlen + UBIFS_INO_NODE_SZ + ALIGN(hlen, 8);
 
-	xent = kzalloc(len, GFP_NOFS);
+	xent = kmalloc(len, GFP_NOFS);
 	if (!xent)
 		return -ENOMEM;
 
@@ -1424,7 +1409,7 @@ int ubifs_jnl_change_xattr(struct ubifs_info *c, const struct inode *inode,
 	aligned_len1 = ALIGN(len1, 8);
 	aligned_len = aligned_len1 + ALIGN(len2, 8);
 
-	ino = kzalloc(aligned_len, GFP_NOFS);
+	ino = kmalloc(aligned_len, GFP_NOFS);
 	if (!ino)
 		return -ENOMEM;
 

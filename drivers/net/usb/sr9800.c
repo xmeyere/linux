@@ -144,7 +144,6 @@ static struct sk_buff *sr_tx_fixup(struct usbnet *dev, struct sk_buff *skb,
 		skb_put(skb, sizeof(padbytes));
 	}
 
-	usbnet_set_skb_tx_stats(skb, 1, 0);
 	return skb;
 }
 
@@ -420,9 +419,6 @@ sr_set_wol(struct net_device *net, struct ethtool_wolinfo *wolinfo)
 {
 	struct usbnet *dev = netdev_priv(net);
 	u8 opt = 0;
-
-	if (wolinfo->wolopts & ~(WAKE_PHY | WAKE_MAGIC))
-		return -EINVAL;
 
 	if (wolinfo->wolopts & WAKE_PHY)
 		opt |= SR_MONITOR_LINK;

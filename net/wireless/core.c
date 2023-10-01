@@ -2,6 +2,7 @@
  * This is the linux wireless configuration interface.
  *
  * Copyright 2006-2010		Johannes Berg <johannes@sipsolutions.net>
+ * Copyright 2013-2014  Intel Mobile Communications GmbH
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -25,7 +26,6 @@
 #include "sysfs.h"
 #include "debugfs.h"
 #include "wext-compat.h"
-#include "ethtool.h"
 #include "rdev-ops.h"
 
 /* name for sysfs, %d is appended */
@@ -315,7 +315,6 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 
 	struct cfg80211_registered_device *rdev;
 	int alloc_size;
-	int rv;
 
 	WARN_ON(ops->add_key && (!ops->del_key || !ops->set_default_key));
 	WARN_ON(ops->auth && (!ops->assoc || !ops->deauth || !ops->disassoc));
@@ -347,11 +346,7 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 	rdev->wiphy_idx--;
 
 	/* give it a proper name */
-	rv = dev_set_name(&rdev->wiphy.dev, PHY_NAME "%d", rdev->wiphy_idx);
-	if (rv < 0) {
-		kfree(rdev);
-		return NULL;
-	}
+	dev_set_name(&rdev->wiphy.dev, PHY_NAME "%d", rdev->wiphy_idx);
 
 	INIT_LIST_HEAD(&rdev->wdev_list);
 	INIT_LIST_HEAD(&rdev->beacon_registrations);
@@ -386,7 +381,7 @@ struct wiphy *wiphy_new(const struct cfg80211_ops *ops, int sizeof_priv)
 				   &rdev->rfkill_ops, rdev);
 
 	if (!rdev->rfkill) {
-		wiphy_free(&rdev->wiphy);
+		kfree(rdev);
 		return NULL;
 	}
 
@@ -497,12 +492,6 @@ int wiphy_register(struct wiphy *wiphy)
 	bool have_band = false;
 	int i;
 	u16 ifmodes = wiphy->interface_modes;
-
-	/*
-	 * There are major locking problems in nl80211/mac80211 for CSA,
-	 * disable for all drivers until this has been reworked.
-	 */
-	wiphy->flags &= ~WIPHY_FLAG_HAS_CHANNEL_SWITCH;
 
 #ifdef CONFIG_PM
 	if (WARN_ON(wiphy->wowlan &&
@@ -641,6 +630,9 @@ int wiphy_register(struct wiphy *wiphy)
 	if (IS_ERR(rdev->wiphy.debugfsdir))
 		rdev->wiphy.debugfsdir = NULL;
 
+	cfg80211_debugfs_rdev_add(rdev);
+	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
+
 	if (wiphy->regulatory_flags & REGULATORY_CUSTOM_REG) {
 		struct regulatory_request request;
 
@@ -652,8 +644,6 @@ int wiphy_register(struct wiphy *wiphy)
 		nl80211_send_reg_change_event(&request);
 	}
 
-	cfg80211_debugfs_rdev_add(rdev);
-
 	rdev->wiphy.registered = true;
 	rtnl_unlock();
 
@@ -664,8 +654,6 @@ int wiphy_register(struct wiphy *wiphy)
 		wiphy_unregister(&rdev->wiphy);
 		return res;
 	}
-
-	nl80211_notify_wiphy(rdev, NL80211_CMD_NEW_WIPHY);
 
 	return 0;
 }
@@ -932,8 +920,6 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 		/* allow mac80211 to determine the timeout */
 		wdev->ps_timeout = -1;
 
-		netdev_set_default_ethtool_ops(dev, &cfg80211_ethtool_ops);
-
 		if ((wdev->iftype == NL80211_IFTYPE_STATION ||
 		     wdev->iftype == NL80211_IFTYPE_P2P_CLIENT ||
 		     wdev->iftype == NL80211_IFTYPE_ADHOC) && !wdev->use_4addr)
@@ -1020,7 +1006,7 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 			rdev->devlist_generation++;
 			cfg80211_mlme_purge_registrations(wdev);
 #ifdef CONFIG_CFG80211_WEXT
-			kfree(wdev->wext.keys);
+			kzfree(wdev->wext.keys);
 #endif
 		}
 		/*
@@ -1052,8 +1038,6 @@ static int cfg80211_netdev_notifier_call(struct notifier_block *nb,
 	default:
 		return NOTIFY_DONE;
 	}
-
-	wireless_nlevent_flush();
 
 	return NOTIFY_OK;
 }

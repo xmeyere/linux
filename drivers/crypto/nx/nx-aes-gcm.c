@@ -415,7 +415,7 @@ mac:
 		scatterwalk_map_and_copy(itag, req->src, nbytes,
 				 crypto_aead_authsize(crypto_aead_reqtfm(req)),
 				 SCATTERWALK_FROM_SG);
-		rc = crypto_memneq(itag, otag,
+		rc = memcmp(itag, otag,
 			    crypto_aead_authsize(crypto_aead_reqtfm(req))) ?
 		     -EBADMSG : 0;
 	}

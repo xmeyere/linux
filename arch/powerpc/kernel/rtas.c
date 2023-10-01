@@ -584,23 +584,6 @@ int rtas_get_sensor(int sensor, int index, int *state)
 }
 EXPORT_SYMBOL(rtas_get_sensor);
 
-int rtas_get_sensor_fast(int sensor, int index, int *state)
-{
-	int token = rtas_token("get-sensor-state");
-	int rc;
-
-	if (token == RTAS_UNKNOWN_SERVICE)
-		return -ENOENT;
-
-	rc = rtas_call(token, 2, 2, state, sensor, index);
-	WARN_ON(rc == RTAS_BUSY || (rc >= RTAS_EXTENDED_DELAY_MIN &&
-				    rc <= RTAS_EXTENDED_DELAY_MAX));
-
-	if (rc < 0)
-		return rtas_error_rc(rc);
-	return rc;
-}
-
 bool rtas_indicator_present(int token, int *maxindex)
 {
 	int proplen, count, i;
@@ -855,17 +838,15 @@ static int rtas_cpu_state_change_mask(enum rtas_cpu_state state,
 		return 0;
 
 	for_each_cpu(cpu, cpus) {
-		struct device *dev = get_cpu_device(cpu);
-
 		switch (state) {
 		case DOWN:
-			cpuret = device_offline(dev);
+			cpuret = cpu_down(cpu);
 			break;
 		case UP:
-			cpuret = device_online(dev);
+			cpuret = cpu_up(cpu);
 			break;
 		}
-		if (cpuret < 0) {
+		if (cpuret) {
 			pr_debug("%s: cpu_%s for cpu#%d returned %d.\n",
 					__func__,
 					((state == UP) ? "up" : "down"),
@@ -957,8 +938,6 @@ int rtas_ibm_suspend_me(struct rtas_args *args)
 	data.token = rtas_token("ibm,suspend-me");
 	data.complete = &done;
 
-	lock_device_hotplug();
-
 	/* All present CPUs must be online */
 	cpumask_andnot(offline_mask, cpu_present_mask, cpu_online_mask);
 	cpuret = rtas_online_cpus_mask(offline_mask);
@@ -990,7 +969,6 @@ int rtas_ibm_suspend_me(struct rtas_args *args)
 				__func__);
 
 out:
-	unlock_device_hotplug();
 	free_cpumask_var(offline_mask);
 	return atomic_read(&data.error);
 }
@@ -1049,9 +1027,6 @@ asmlinkage int ppc_rtas(struct rtas_args __user *uargs)
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
-
-	if (!rtas.entry)
-		return -EINVAL;
 
 	if (copy_from_user(&args, uargs, 3 * sizeof(u32)) != 0)
 		return -EFAULT;

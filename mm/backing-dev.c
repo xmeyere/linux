@@ -40,7 +40,7 @@ LIST_HEAD(bdi_list);
 /* bdi_wq serves all asynchronous writeback tasks */
 struct workqueue_struct *bdi_wq;
 
-void bdi_lock_two(struct bdi_writeback *wb1, struct bdi_writeback *wb2)
+static void bdi_lock_two(struct bdi_writeback *wb1, struct bdi_writeback *wb2)
 {
 	if (wb1 < wb2) {
 		spin_lock(&wb1->list_lock);
@@ -350,20 +350,6 @@ int bdi_register_dev(struct backing_dev_info *bdi, dev_t dev)
 }
 EXPORT_SYMBOL(bdi_register_dev);
 
-int bdi_register_owner(struct backing_dev_info *bdi, struct device *owner)
-{
-	int rc;
-
-	rc = bdi_register(bdi, NULL, "%u:%u", MAJOR(owner->devt),
-			MINOR(owner->devt));
-	if (rc)
-		return rc;
-	bdi->owner = owner;
-	get_device(owner);
-	return 0;
-}
-EXPORT_SYMBOL(bdi_register_owner);
-
 /*
  * Remove bdi from the global list and shutdown any threads we have running
  */
@@ -390,13 +376,7 @@ static void bdi_wb_shutdown(struct backing_dev_info *bdi)
 	mod_delayed_work(bdi_wq, &bdi->wb.dwork, 0);
 	flush_delayed_work(&bdi->wb.dwork);
 	WARN_ON(!list_empty(&bdi->work_list));
-
-	/*
-	 * This shouldn't be necessary unless @bdi for some reason has
-	 * unflushed dirty IO after work_list is drained.  Do it anyway
-	 * just in case.
-	 */
-	cancel_delayed_work_sync(&bdi->wb.dwork);
+	WARN_ON(delayed_work_pending(&bdi->wb.dwork));
 }
 
 /*
@@ -416,26 +396,15 @@ static void bdi_prune_sb(struct backing_dev_info *bdi)
 
 void bdi_unregister(struct backing_dev_info *bdi)
 {
-	struct device *dev = bdi->dev;
-
-	if (dev) {
+	if (bdi->dev) {
 		bdi_set_min_ratio(bdi, 0);
 		trace_writeback_bdi_unregister(bdi);
 		bdi_prune_sb(bdi);
 
 		bdi_wb_shutdown(bdi);
 		bdi_debug_unregister(bdi);
-
-		spin_lock_bh(&bdi->wb_lock);
+		device_unregister(bdi->dev);
 		bdi->dev = NULL;
-		spin_unlock_bh(&bdi->wb_lock);
-
-		device_unregister(dev);
-	}
-
-	if (bdi->owner) {
-		put_device(bdi->owner);
-		bdi->owner = NULL;
 	}
 }
 EXPORT_SYMBOL(bdi_unregister);
@@ -474,7 +443,7 @@ int bdi_init(struct backing_dev_info *bdi)
 	bdi_wb_init(&bdi->wb, bdi);
 
 	for (i = 0; i < NR_BDI_STAT_ITEMS; i++) {
-		err = percpu_counter_init(&bdi->bdi_stat[i], 0);
+		err = percpu_counter_init(&bdi->bdi_stat[i], 0, GFP_KERNEL);
 		if (err)
 			goto err;
 	}
@@ -489,7 +458,7 @@ int bdi_init(struct backing_dev_info *bdi)
 	bdi->write_bandwidth = INIT_BW;
 	bdi->avg_write_bandwidth = INIT_BW;
 
-	err = fprop_local_init_percpu(&bdi->completions);
+	err = fprop_local_init_percpu(&bdi->completions, GFP_KERNEL);
 
 	if (err) {
 err:
@@ -506,8 +475,17 @@ void bdi_destroy(struct backing_dev_info *bdi)
 	int i;
 
 	/*
-	 * Splice our entries to the default_backing_dev_info, if this
-	 * bdi disappears
+	 * Splice our entries to the default_backing_dev_info.  This
+	 * condition shouldn't happen.  @wb must be empty at this point and
+	 * dirty inodes on it might cause other issues.  This workaround is
+	 * added by ce5f8e779519 ("writeback: splice dirty inode entries to
+	 * default bdi on bdi_destroy()") without root-causing the issue.
+	 *
+	 * http://lkml.kernel.org/g/1253038617-30204-11-git-send-email-jens.axboe@oracle.com
+	 * http://thread.gmane.org/gmane.linux.file-systems/35341/focus=35350
+	 *
+	 * We should probably add WARN_ON() to find out whether it still
+	 * happens and track it down if so.
 	 */
 	if (bdi_has_dirty_io(bdi)) {
 		struct bdi_writeback *dst = &default_backing_dev_info.wb;
@@ -522,12 +500,7 @@ void bdi_destroy(struct backing_dev_info *bdi)
 
 	bdi_unregister(bdi);
 
-	/*
-	 * If bdi_unregister() had already been called earlier, the dwork
-	 * could still be pending because bdi_prune_sb() can race with the
-	 * bdi_wakeup_thread_delayed() calls from __mark_inode_dirty().
-	 */
-	cancel_delayed_work_sync(&bdi->wb.dwork);
+	WARN_ON(delayed_work_pending(&bdi->wb.dwork));
 
 	for (i = 0; i < NR_BDI_STAT_ITEMS; i++)
 		percpu_counter_destroy(&bdi->bdi_stat[i]);
@@ -630,9 +603,8 @@ EXPORT_SYMBOL(congestion_wait);
  * jiffies for either a BDI to exit congestion of the given @sync queue
  * or a write to complete.
  *
- * In the absence of zone congestion, a short sleep or a cond_resched is
- * performed to yield the processor and to allow other subsystems to make
- * a forward progress.
+ * In the absence of zone congestion, cond_resched() is called to yield
+ * the processor if necessary but otherwise does not sleep.
  *
  * The return value is 0 if the sleep is for the full timeout. Otherwise,
  * it is the number of jiffies that were still remaining when the function
@@ -651,20 +623,8 @@ long wait_iff_congested(struct zone *zone, int sync, long timeout)
 	 * of sleeping on the congestion queue
 	 */
 	if (atomic_read(&nr_bdi_congested[sync]) == 0 ||
-			!zone_is_reclaim_congested(zone)) {
-
-		/*
-		 * Memory allocation/reclaim might be called from a WQ
-		 * context and the current implementation of the WQ
-		 * concurrency control doesn't recognize that a particular
-		 * WQ is congested if the worker thread is looping without
-		 * ever sleeping. Therefore we have to do a short sleep
-		 * here rather than calling cond_resched().
-		 */
-		if (current->flags & PF_WQ_WORKER)
-			schedule_timeout_uninterruptible(1);
-		else
-			cond_resched();
+	    !test_bit(ZONE_CONGESTED, &zone->flags)) {
+		cond_resched();
 
 		/* In case we scheduled, work out time remaining */
 		ret = timeout - (jiffies - start);

@@ -609,14 +609,12 @@ char *arc_mmu_mumbojumbo(int cpu_id, char *buf, int len)
 	int n = 0;
 	struct cpuinfo_arc_mmu *p_mmu = &cpuinfo_arc700[cpu_id].mmu;
 
-	n += scnprintf(buf + n, len - n, "ARC700 MMU [v%x]\t: %dk PAGE, ",
-		       p_mmu->ver, TO_KB(p_mmu->pg_sz));
-
 	n += scnprintf(buf + n, len - n,
-		       "J-TLB %d (%dx%d), uDTLB %d, uITLB %d, %s\n",
+		      "MMU [v%x]\t: %dk PAGE, JTLB %d (%dx%d), uDTLB %d, uITLB %d %s\n",
+		       p_mmu->ver, TO_KB(p_mmu->pg_sz),
 		       p_mmu->num_tlb, p_mmu->sets, p_mmu->ways,
 		       p_mmu->u_dtlb, p_mmu->u_itlb,
-		       IS_ENABLED(CONFIG_ARC_MMU_SASID) ? "SASID" : "");
+		       IS_ENABLED(CONFIG_ARC_MMU_SASID) ? ",SASID" : "");
 
 	return buf;
 }
@@ -690,6 +688,9 @@ void do_tlb_overlap_fault(unsigned long cause, unsigned long address,
 	unsigned int pd0[mmu->ways], pd1[mmu->ways];
 
 	local_irq_save(flags);
+
+	/* re-enable the MMU */
+	write_aux_reg(ARC_REG_PID, MMU_ENABLE | read_aux_reg(ARC_REG_PID));
 
 	/* loop thru all sets of TLB */
 	for (set = 0; set < mmu->sets; set++) {

@@ -1177,7 +1177,7 @@ static int i7core_create_sysfs_devices(struct mem_ctl_info *mci)
 
 	pvt->addrmatch_dev = kzalloc(sizeof(*pvt->addrmatch_dev), GFP_KERNEL);
 	if (!pvt->addrmatch_dev)
-		return -ENOMEM;
+		return rc;
 
 	pvt->addrmatch_dev->type = &addrmatch_type;
 	pvt->addrmatch_dev->bus = mci->dev.bus;
@@ -1190,14 +1190,15 @@ static int i7core_create_sysfs_devices(struct mem_ctl_info *mci)
 
 	rc = device_add(pvt->addrmatch_dev);
 	if (rc < 0)
-		goto err_put_addrmatch;
+		return rc;
 
 	if (!pvt->is_registered) {
 		pvt->chancounts_dev = kzalloc(sizeof(*pvt->chancounts_dev),
 					      GFP_KERNEL);
 		if (!pvt->chancounts_dev) {
-			rc = -ENOMEM;
-			goto err_del_addrmatch;
+			put_device(pvt->addrmatch_dev);
+			device_del(pvt->addrmatch_dev);
+			return rc;
 		}
 
 		pvt->chancounts_dev->type = &all_channel_counts_type;
@@ -1211,18 +1212,9 @@ static int i7core_create_sysfs_devices(struct mem_ctl_info *mci)
 
 		rc = device_add(pvt->chancounts_dev);
 		if (rc < 0)
-			goto err_put_chancounts;
+			return rc;
 	}
 	return 0;
-
-err_put_chancounts:
-	put_device(pvt->chancounts_dev);
-err_del_addrmatch:
-	device_del(pvt->addrmatch_dev);
-err_put_addrmatch:
-	put_device(pvt->addrmatch_dev);
-
-	return rc;
 }
 
 static void i7core_delete_sysfs_devices(struct mem_ctl_info *mci)
@@ -1237,11 +1229,11 @@ static void i7core_delete_sysfs_devices(struct mem_ctl_info *mci)
 	device_remove_file(&mci->dev, &dev_attr_inject_enable);
 
 	if (!pvt->is_registered) {
-		device_del(pvt->chancounts_dev);
 		put_device(pvt->chancounts_dev);
+		device_del(pvt->chancounts_dev);
 	}
-	device_del(pvt->addrmatch_dev);
 	put_device(pvt->addrmatch_dev);
+	device_del(pvt->addrmatch_dev);
 }
 
 /****************************************************************************
@@ -1729,7 +1721,6 @@ static void i7core_mce_output_error(struct mem_ctl_info *mci,
 	u32 errnum = find_first_bit(&error, 32);
 
 	if (uncorrected_error) {
-		core_err_cnt = 1;
 		if (ripv)
 			tp_event = HW_EVENT_ERR_FATAL;
 		else
@@ -1883,7 +1874,7 @@ static int i7core_mce_check_error(struct notifier_block *nb, unsigned long val,
 
 	i7_dev = get_i7core_dev(mce->socketid);
 	if (!i7_dev)
-		return NOTIFY_DONE;
+		return NOTIFY_BAD;
 
 	mci = i7_dev->mci;
 	pvt = mci->pvt_info;

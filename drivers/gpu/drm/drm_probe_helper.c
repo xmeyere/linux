@@ -82,6 +82,22 @@ static void drm_mode_validate_flag(struct drm_connector *connector,
 	return;
 }
 
+static int drm_helper_probe_add_cmdline_mode(struct drm_connector *connector)
+{
+	struct drm_display_mode *mode;
+
+	if (!connector->cmdline_mode.specified)
+		return 0;
+
+	mode = drm_mode_create_from_cmdline_mode(connector->dev,
+						 &connector->cmdline_mode);
+	if (mode == NULL)
+		return 0;
+
+	drm_mode_probed_add(connector, mode);
+	return 1;
+}
+
 static int drm_helper_probe_single_connector_modes_merge_bits(struct drm_connector *connector,
 							      uint32_t maxX, uint32_t maxY, bool merge_type_bits)
 {
@@ -130,10 +146,18 @@ static int drm_helper_probe_single_connector_modes_merge_bits(struct drm_connect
 	count = drm_load_edid_firmware(connector);
 	if (count == 0)
 #endif
-		count = (*connector_funcs->get_modes)(connector);
+	{
+		if (connector->override_edid) {
+			struct edid *edid = (struct edid *) connector->edid_blob_ptr->data;
+
+			count = drm_add_edid_modes(connector, edid);
+		} else
+			count = (*connector_funcs->get_modes)(connector);
+	}
 
 	if (count == 0 && connector->status == connector_status_connected)
 		count = drm_add_modes_noedid(connector, 1024, 768);
+	count += drm_helper_probe_add_cmdline_mode(connector);
 	if (count == 0)
 		goto prune;
 
@@ -301,26 +325,6 @@ static void output_poll_execute(struct work_struct *work)
 	if (repoll)
 		schedule_delayed_work(delayed_work, DRM_OUTPUT_POLL_PERIOD);
 }
-
-/**
- * drm_kms_helper_is_poll_worker - is %current task an output poll worker?
- *
- * Determine if %current task is an output poll worker.  This can be used
- * to select distinct code paths for output polling versus other contexts.
- *
- * One use case is to avoid a deadlock between the output poll worker and
- * the autosuspend worker wherein the latter waits for polling to finish
- * upon calling drm_kms_helper_poll_disable(), while the former waits for
- * runtime suspend to finish upon calling pm_runtime_get_sync() in a
- * connector ->detect hook.
- */
-bool drm_kms_helper_is_poll_worker(void)
-{
-	struct work_struct *work = current_work();
-
-	return work && work->func == output_poll_execute;
-}
-EXPORT_SYMBOL(drm_kms_helper_is_poll_worker);
 
 /**
  * drm_kms_helper_poll_disable - disable output polling

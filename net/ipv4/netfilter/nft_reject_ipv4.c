@@ -16,7 +16,6 @@
 #include <linux/netfilter.h>
 #include <linux/netfilter/nf_tables.h>
 #include <net/netfilter/nf_tables.h>
-#include <net/icmp.h>
 #include <net/netfilter/ipv4/nf_reject.h>
 #include <net/netfilter/nft_reject.h>
 
@@ -32,8 +31,6 @@ void nft_reject_ipv4_eval(const struct nft_expr *expr,
 		break;
 	case NFT_REJECT_TCP_RST:
 		nf_send_reset(pkt->skb, pkt->ops->hooknum);
-		break;
-	default:
 		break;
 	}
 

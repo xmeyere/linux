@@ -223,13 +223,13 @@ early_param("ecc", early_ecc);
 
 static int __init early_cachepolicy(char *p)
 {
-	pr_warning("cachepolicy kernel parameter not supported without cp15\n");
+	pr_warn("cachepolicy kernel parameter not supported without cp15\n");
 }
 early_param("cachepolicy", early_cachepolicy);
 
 static int __init noalign_setup(char *__unused)
 {
-	pr_warning("noalign kernel parameter not supported without cp15\n");
+	pr_warn("noalign kernel parameter not supported without cp15\n");
 }
 __setup("noalign", noalign_setup);
 
@@ -1118,22 +1118,22 @@ void __init sanity_check_meminfo(void)
 			}
 
 			/*
-			 * Find the first non-pmd-aligned page, and point
+			 * Find the first non-section-aligned page, and point
 			 * memblock_limit at it. This relies on rounding the
-			 * limit down to be pmd-aligned, which happens at the
-			 * end of this function.
+			 * limit down to be section-aligned, which happens at
+			 * the end of this function.
 			 *
 			 * With this algorithm, the start or end of almost any
-			 * bank can be non-pmd-aligned. The only exception is
-			 * that the start of the bank 0 must be section-
+			 * bank can be non-section-aligned. The only exception
+			 * is that the start of the bank 0 must be section-
 			 * aligned, since otherwise memory would need to be
 			 * allocated when mapping the start of bank 0, which
 			 * occurs before any free memory is mapped.
 			 */
 			if (!memblock_limit) {
-				if (!IS_ALIGNED(block_start, PMD_SIZE))
+				if (!IS_ALIGNED(block_start, SECTION_SIZE))
 					memblock_limit = block_start;
-				else if (!IS_ALIGNED(block_end, PMD_SIZE))
+				else if (!IS_ALIGNED(block_end, SECTION_SIZE))
 					memblock_limit = arm_lowmem_limit;
 			}
 
@@ -1142,15 +1142,15 @@ void __init sanity_check_meminfo(void)
 
 	high_memory = __va(arm_lowmem_limit - 1) + 1;
 
+	/*
+	 * Round the memblock limit down to a section size.  This
+	 * helps to ensure that we will allocate memory from the
+	 * last full section, which should be mapped.
+	 */
+	if (memblock_limit)
+		memblock_limit = round_down(memblock_limit, SECTION_SIZE);
 	if (!memblock_limit)
 		memblock_limit = arm_lowmem_limit;
-
-	/*
-	 * Round the memblock limit down to a pmd size.  This
-	 * helps to ensure that we will allocate memory from the
-	 * last full pmd, which should be mapped.
-	 */
-	memblock_limit = round_down(memblock_limit, PMD_SIZE);
 
 	memblock_set_current_limit(memblock_limit);
 }
@@ -1434,23 +1434,64 @@ void __init early_paging_init(const struct machine_desc *mdesc,
 	dsb(ishst);
 	isb();
 
-	/* remap level 1 table */
+	/*
+	 * FIXME: This code is not architecturally compliant: we modify
+	 * the mappings in-place, indeed while they are in use by this
+	 * very same code.  This may lead to unpredictable behaviour of
+	 * the CPU.
+	 *
+	 * Even modifying the mappings in a separate page table does
+	 * not resolve this.
+	 *
+	 * The architecture strongly recommends that when a mapping is
+	 * changed, that it is changed by first going via an invalid
+	 * mapping and back to the new mapping.  This is to ensure that
+	 * no TLB conflicts (caused by the TLB having more than one TLB
+	 * entry match a translation) can occur.  However, doing that
+	 * here will result in unmapping the code we are running.
+	 */
+	pr_warn("WARNING: unsafe modification of in-place page tables - tainting kernel\n");
+	add_taint(TAINT_CPU_OUT_OF_SPEC, LOCKDEP_STILL_OK);
+
+	/*
+	 * Remap level 1 table.  This changes the physical addresses
+	 * used to refer to the level 2 page tables to the high
+	 * physical address alias, leaving everything else the same.
+	 */
 	for (i = 0; i < PTRS_PER_PGD; pud0++, i++) {
 		set_pud(pud0,
 			__pud(__pa(pmd0) | PMD_TYPE_TABLE | L_PGD_SWAPPER));
 		pmd0 += PTRS_PER_PMD;
 	}
 
-	/* remap pmds for kernel mapping */
+	/*
+	 * Remap the level 2 table, pointing the mappings at the high
+	 * physical address alias of these pages.
+	 */
 	phys = __pa(map_start);
 	do {
 		*pmdk++ = __pmd(phys | pmdprot);
 		phys += PMD_SIZE;
 	} while (phys < map_end);
 
+	/*
+	 * Ensure that the above updates are flushed out of the cache.
+	 * This is not strictly correct; on a system where the caches
+	 * are coherent with each other, but the MMU page table walks
+	 * may not be coherent, flush_cache_all() may be a no-op, and
+	 * this will fail.
+	 */
 	flush_cache_all();
+
+	/*
+	 * Re-write the TTBR values to point them at the high physical
+	 * alias of the page tables.  We expect __va() will work on
+	 * cpu_get_pgd(), which returns the value of TTBR0.
+	 */
 	cpu_switch_mm(pgd0, &init_mm);
 	cpu_set_ttbr(1, __pa(pgd0) + TTBR1_OFFSET);
+
+	/* Finally flush any stale TLB values. */
 	local_flush_bp_all();
 	local_flush_tlb_all();
 }

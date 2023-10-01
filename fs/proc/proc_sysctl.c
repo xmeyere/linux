@@ -19,28 +19,6 @@ static const struct inode_operations proc_sys_inode_operations;
 static const struct file_operations proc_sys_dir_file_operations;
 static const struct inode_operations proc_sys_dir_operations;
 
-/* Support for permanently empty directories */
-
-struct ctl_table sysctl_mount_point[] = {
-	{ }
-};
-
-static bool is_empty_dir(struct ctl_table_header *head)
-{
-	return head->ctl_table[0].child == sysctl_mount_point;
-}
-
-static void set_empty_dir(struct ctl_dir *dir)
-{
-	dir->header.ctl_table[0].child = sysctl_mount_point;
-}
-
-static void clear_empty_dir(struct ctl_dir *dir)
-
-{
-	dir->header.ctl_table[0].child = NULL;
-}
-
 void proc_sys_poll_notify(struct ctl_table_poll *poll)
 {
 	if (!poll)
@@ -209,17 +187,6 @@ static int insert_header(struct ctl_dir *dir, struct ctl_table_header *header)
 	struct ctl_table *entry;
 	int err;
 
-	/* Is this a permanently empty directory? */
-	if (is_empty_dir(&dir->header))
-		return -EROFS;
-
-	/* Am I creating a permanently empty directory? */
-	if (header->ctl_table == sysctl_mount_point) {
-		if (!RB_EMPTY_ROOT(&dir->root))
-			return -EINVAL;
-		set_empty_dir(dir);
-	}
-
 	dir->header.nreg++;
 	header->parent = dir;
 	err = insert_links(header);
@@ -235,8 +202,6 @@ fail:
 	erase_header(header);
 	put_links(header);
 fail_links:
-	if (header->ctl_table == sysctl_mount_point)
-		clear_empty_dir(dir);
 	header->parent = NULL;
 	drop_sysctl_table(&dir->header);
 	return err;
@@ -454,8 +419,6 @@ static struct inode *proc_sys_make_inode(struct super_block *sb,
 		inode->i_mode |= S_IFDIR;
 		inode->i_op = &proc_sys_dir_operations;
 		inode->i_fop = &proc_sys_dir_file_operations;
-		if (is_empty_dir(head))
-			make_empty_dir_inode(inode);
 	}
 out:
 	return inode;
@@ -654,10 +617,7 @@ static bool proc_sys_link_fill_cache(struct file *file,
 				    struct ctl_table *table)
 {
 	bool ret = true;
-
 	head = sysctl_head_grab(head);
-	if (IS_ERR(head))
-		return false;
 
 	if (S_ISLNK(table->mode)) {
 		/* It is not an error if we can not follow the link ignore it */
@@ -672,7 +632,7 @@ out:
 	return ret;
 }
 
-static int scan(struct ctl_table_header *head, ctl_table *table,
+static int scan(struct ctl_table_header *head, struct ctl_table *table,
 		unsigned long *pos, struct file *file,
 		struct dir_context *ctx)
 {
@@ -706,7 +666,7 @@ static int proc_sys_readdir(struct file *file, struct dir_context *ctx)
 	ctl_dir = container_of(head, struct ctl_dir, header);
 
 	if (!dir_emit_dots(file, ctx))
-		goto out;
+		return 0;
 
 	pos = 2;
 
@@ -716,7 +676,6 @@ static int proc_sys_readdir(struct file *file, struct dir_context *ctx)
 			break;
 		}
 	}
-out:
 	sysctl_head_finish(head);
 	return 0;
 }
@@ -757,7 +716,7 @@ static int proc_sys_setattr(struct dentry *dentry, struct iattr *attr)
 	if (attr->ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID))
 		return -EPERM;
 
-	error = setattr_prepare(dentry, attr);
+	error = inode_change_ok(inode, attr);
 	if (error)
 		return error;
 
@@ -1033,7 +992,7 @@ static int sysctl_check_table(const char *path, struct ctl_table *table)
 	int err = 0;
 	for (; table->procname; table++) {
 		if (table->child)
-			err |= sysctl_err(path, table, "Not a file");
+			err = sysctl_err(path, table, "Not a file");
 
 		if ((table->proc_handler == proc_dostring) ||
 		    (table->proc_handler == proc_dointvec) ||
@@ -1044,15 +1003,15 @@ static int sysctl_check_table(const char *path, struct ctl_table *table)
 		    (table->proc_handler == proc_doulongvec_minmax) ||
 		    (table->proc_handler == proc_doulongvec_ms_jiffies_minmax)) {
 			if (!table->data)
-				err |= sysctl_err(path, table, "No data");
+				err = sysctl_err(path, table, "No data");
 			if (!table->maxlen)
-				err |= sysctl_err(path, table, "No maxlen");
+				err = sysctl_err(path, table, "No maxlen");
 		}
 		if (!table->proc_handler)
-			err |= sysctl_err(path, table, "No proc_handler");
+			err = sysctl_err(path, table, "No proc_handler");
 
 		if ((table->mode & (S_IRUGO|S_IWUGO)) != table->mode)
-			err |= sysctl_err(path, table, "bogus .mode 0%o",
+			err = sysctl_err(path, table, "bogus .mode 0%o",
 				table->mode);
 	}
 	return err;
@@ -1550,11 +1509,8 @@ static void drop_sysctl_table(struct ctl_table_header *header)
 	if (--header->nreg)
 		return;
 
-	if (parent) {
-		put_links(header);
-		start_unregistering(header);
-	}
-
+	put_links(header);
+	start_unregistering(header);
 	if (!--header->count)
 		kfree_rcu(header, rcu);
 

@@ -127,7 +127,7 @@ int mlx4_en_DUMP_ETH_STATS(struct mlx4_en_dev *mdev, u8 port, u8 reset)
 		return PTR_ERR(mailbox);
 	err = mlx4_cmd_box(mdev->dev, 0, mailbox->dma, in_mod, 0,
 			   MLX4_CMD_DUMP_ETH_STATS, MLX4_CMD_TIME_CLASS_B,
-			   MLX4_CMD_NATIVE);
+			   MLX4_CMD_WRAPPED);
 	if (err)
 		goto out;
 
@@ -150,14 +150,19 @@ int mlx4_en_DUMP_ETH_STATS(struct mlx4_en_dev *mdev, u8 port, u8 reset)
 	priv->port_stats.tx_chksum_offload = 0;
 	priv->port_stats.queue_stopped = 0;
 	priv->port_stats.wake_queue = 0;
+	priv->port_stats.tso_packets = 0;
+	priv->port_stats.xmit_more = 0;
 
 	for (i = 0; i < priv->tx_ring_num; i++) {
-		stats->tx_packets += priv->tx_ring[i]->packets;
-		stats->tx_bytes += priv->tx_ring[i]->bytes;
-		priv->port_stats.tx_chksum_offload += priv->tx_ring[i]->tx_csum;
-		priv->port_stats.queue_stopped +=
-			priv->tx_ring[i]->queue_stopped;
-		priv->port_stats.wake_queue += priv->tx_ring[i]->wake_queue;
+		const struct mlx4_en_tx_ring *ring = priv->tx_ring[i];
+
+		stats->tx_packets += ring->packets;
+		stats->tx_bytes += ring->bytes;
+		priv->port_stats.tx_chksum_offload += ring->tx_csum;
+		priv->port_stats.queue_stopped     += ring->queue_stopped;
+		priv->port_stats.wake_queue        += ring->wake_queue;
+		priv->port_stats.tso_packets       += ring->tso_packets;
+		priv->port_stats.xmit_more         += ring->xmit_more;
 	}
 
 	stats->rx_errors = be64_to_cpu(mlx4_en_stats->PCS) +
@@ -177,11 +182,11 @@ int mlx4_en_DUMP_ETH_STATS(struct mlx4_en_dev *mdev, u8 port, u8 reset)
 			   be64_to_cpu(mlx4_en_stats->MCAST_novlan);
 	stats->collisions = 0;
 	stats->rx_length_errors = be32_to_cpu(mlx4_en_stats->RdropLength);
-	stats->rx_over_errors = 0;
+	stats->rx_over_errors = be32_to_cpu(mlx4_en_stats->RdropOvflw);
 	stats->rx_crc_errors = be32_to_cpu(mlx4_en_stats->RCRC);
 	stats->rx_frame_errors = 0;
 	stats->rx_fifo_errors = be32_to_cpu(mlx4_en_stats->RdropOvflw);
-	stats->rx_missed_errors = 0;
+	stats->rx_missed_errors = be32_to_cpu(mlx4_en_stats->RdropOvflw);
 	stats->tx_aborted_errors = 0;
 	stats->tx_carrier_errors = 0;
 	stats->tx_fifo_errors = 0;

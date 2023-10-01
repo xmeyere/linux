@@ -139,7 +139,7 @@ static int __init setup_maxnodemem(char *str)
 {
 	char *endp;
 	unsigned long long maxnodemem;
-	unsigned long node;
+	long node;
 
 	node = str ? simple_strtoul(str, &endp, 0) : INT_MAX;
 	if (node >= MAX_NUMNODES || *endp != ':')
@@ -1144,7 +1144,7 @@ static void __init load_hv_initrd(void)
 
 void __init free_initrd_mem(unsigned long begin, unsigned long end)
 {
-	free_bootmem_late(__pa(begin), end - begin);
+	free_bootmem(__pa(begin), end - begin);
 }
 
 static int __init setup_initrd(char *str)
@@ -1218,7 +1218,8 @@ static void __init validate_hv(void)
 	 * various asid variables to their appropriate initial states.
 	 */
 	asid_range = hv_inquire_asid(0);
-	__get_cpu_var(current_asid) = min_asid = asid_range.start;
+	min_asid = asid_range.start;
+	__this_cpu_write(current_asid, min_asid);
 	max_asid = asid_range.start + asid_range.size - 1;
 
 	if (hv_confstr(HV_CONFSTR_CHIP_MODEL, (HV_VirtAddr)chip_model,

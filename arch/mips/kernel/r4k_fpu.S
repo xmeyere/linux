@@ -34,6 +34,7 @@
 	.endm
 
 	.set	noreorder
+	.set	arch=r4000
 
 LEAF(_save_fp_context)
 	.set	push
@@ -101,7 +102,6 @@ LEAF(_save_fp_context)
 	/* Save 32-bit process floating point context */
 LEAF(_save_fp_context32)
 	.set push
-	.set arch=r4000
 	SET_HARDFLOAT
 	cfc1	t1, fcr31
 

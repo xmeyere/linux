@@ -65,7 +65,7 @@ static pte_t __ref *vmem_pte_alloc(unsigned long address)
 	pte_t *pte;
 
 	if (slab_is_available())
-		pte = (pte_t *) page_table_alloc(&init_mm, address);
+		pte = (pte_t *) page_table_alloc(&init_mm);
 	else
 		pte = alloc_bootmem_align(PTRS_PER_PTE * sizeof(pte_t),
 					  PTRS_PER_PTE * sizeof(pte_t));
@@ -236,8 +236,7 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 				if (!new_page)
 					goto out;
 				pmd_val(*pm_dir) = __pa(new_page) |
-					_SEGMENT_ENTRY | _SEGMENT_ENTRY_LARGE |
-					_SEGMENT_ENTRY_CO;
+					_SEGMENT_ENTRY | _SEGMENT_ENTRY_LARGE;
 				address = (address + PMD_SIZE) & PMD_MASK;
 				continue;
 			}
@@ -253,9 +252,9 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 
 		pt_dir = pte_offset_kernel(pm_dir, address);
 		if (pte_none(*pt_dir)) {
-			unsigned long new_page;
+			void *new_page;
 
-			new_page =__pa(vmem_alloc_pages(0));
+			new_page = vmemmap_alloc_block(PAGE_SIZE, node);
 			if (!new_page)
 				goto out;
 			pte_val(*pt_dir) =
@@ -263,7 +262,6 @@ int __meminit vmemmap_populate(unsigned long start, unsigned long end, int node)
 		}
 		address += PAGE_SIZE;
 	}
-	memset((void *)start, 0, end - start);
 	ret = 0;
 out:
 	return ret;
@@ -380,7 +378,7 @@ void __init vmem_map_init(void)
 	ro_end = (unsigned long)&_eshared & PAGE_MASK;
 	for_each_memblock(memory, reg) {
 		start = reg->base;
-		end = reg->base + reg->size;
+		end = reg->base + reg->size - 1;
 		if (start >= ro_end || end <= ro_start)
 			vmem_add_mem(start, end - start, 0);
 		else if (start >= ro_start && end <= ro_end)

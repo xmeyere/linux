@@ -204,7 +204,6 @@ static void rt_fibinfo_free_cpus(struct rtable __rcu * __percpu *rtp)
 static void free_fib_info_rcu(struct rcu_head *head)
 {
 	struct fib_info *fi = container_of(head, struct fib_info, rcu);
-	struct dst_metrics *m;
 
 	change_nexthops(fi) {
 		if (nexthop_nh->nh_dev)
@@ -215,9 +214,8 @@ static void free_fib_info_rcu(struct rcu_head *head)
 	} endfor_nexthops(fi);
 
 	release_net(fi->fib_net);
-	m = fi->fib_metrics;
-	if (m != &dst_default_metrics && atomic_dec_and_test(&m->refcnt))
-		dst_free_metrics(m);
+	if (fi->fib_metrics != (u32 *) dst_default_metrics)
+		kfree(fi->fib_metrics);
 	kfree(fi);
 }
 
@@ -825,17 +823,14 @@ struct fib_info *fib_create_info(struct fib_config *cfg)
 	fi = kzalloc(sizeof(*fi)+nhs*sizeof(struct fib_nh), GFP_KERNEL);
 	if (fi == NULL)
 		goto failure;
-	if (cfg->fc_mx) {
-		fi->fib_metrics = dst_alloc_metrics(GFP_KERNEL | __GFP_ZERO);
-		if (unlikely(!fi->fib_metrics)) {
-			kfree(fi);
-			return ERR_PTR(err);
-		}
-		atomic_set(&fi->fib_metrics->refcnt, 1);
-	} else {
-		fi->fib_metrics = (struct dst_metrics *)&dst_default_metrics;
-	}
 	fib_info_cnt++;
+	if (cfg->fc_mx) {
+		fi->fib_metrics = kzalloc(sizeof(u32) * RTAX_MAX, GFP_KERNEL);
+		if (!fi->fib_metrics)
+			goto failure;
+	} else
+		fi->fib_metrics = (u32 *) dst_default_metrics;
+
 	fi->fib_net = hold_net(net);
 	fi->fib_protocol = cfg->fc_protocol;
 	fi->fib_scope = cfg->fc_scope;
@@ -864,16 +859,12 @@ struct fib_info *fib_create_info(struct fib_config *cfg)
 
 				if (type > RTAX_MAX)
 					goto err_inval;
-				if (nla_len(nla) != sizeof(u32))
-					goto err_inval;
 				val = nla_get_u32(nla);
 				if (type == RTAX_ADVMSS && val > 65535 - 40)
 					val = 65535 - 40;
 				if (type == RTAX_MTU && val > 65535 - 15)
 					val = 65535 - 15;
-				if (type == RTAX_HOPLIMIT && val > 255)
-					val = 255;
-				fi->fib_metrics->metrics[type - 1] = val;
+				fi->fib_metrics[type - 1] = val;
 			}
 		}
 	}
@@ -1038,7 +1029,7 @@ int fib_dump_info(struct sk_buff *skb, u32 portid, u32 seq, int event,
 	if (fi->fib_priority &&
 	    nla_put_u32(skb, RTA_PRIORITY, fi->fib_priority))
 		goto nla_put_failure;
-	if (rtnetlink_put_metrics(skb, fi->fib_metrics->metrics) < 0)
+	if (rtnetlink_put_metrics(skb, fi->fib_metrics) < 0)
 		goto nla_put_failure;
 
 	if (fi->fib_prefsrc &&
@@ -1122,56 +1113,6 @@ int fib_sync_down_addr(struct net *net, __be32 local)
 		}
 	}
 	return ret;
-}
-
-/* Update the PMTU of exceptions when:
- * - the new MTU of the first hop becomes smaller than the PMTU
- * - the old MTU was the same as the PMTU, and it limited discovery of
- *   larger MTUs on the path. With that limit raised, we can now
- *   discover larger MTUs
- * A special case is locked exceptions, for which the PMTU is smaller
- * than the minimal accepted PMTU:
- * - if the new MTU is greater than the PMTU, don't make any change
- * - otherwise, unlock and set PMTU
- */
-static void nh_update_mtu(struct fib_nh *nh, u32 new, u32 orig)
-{
-	struct fnhe_hash_bucket *bucket;
-	int i;
-
-	bucket = rcu_dereference_protected(nh->nh_exceptions, 1);
-	if (!bucket)
-		return;
-
-	for (i = 0; i < FNHE_HASH_SIZE; i++) {
-		struct fib_nh_exception *fnhe;
-
-		for (fnhe = rcu_dereference_protected(bucket[i].chain, 1);
-		     fnhe;
-		     fnhe = rcu_dereference_protected(fnhe->fnhe_next, 1)) {
-			if (fnhe->fnhe_mtu_locked) {
-				if (new <= fnhe->fnhe_pmtu) {
-					fnhe->fnhe_pmtu = new;
-					fnhe->fnhe_mtu_locked = false;
-				}
-			} else if (new < fnhe->fnhe_pmtu ||
-				   orig == fnhe->fnhe_pmtu) {
-				fnhe->fnhe_pmtu = new;
-			}
-		}
-	}
-}
-
-void fib_sync_mtu(struct net_device *dev, u32 orig_mtu)
-{
-	unsigned int hash = fib_devindex_hashfn(dev->ifindex);
-	struct hlist_head *head = &fib_info_devhash[hash];
-	struct fib_nh *nh;
-
-	hlist_for_each_entry(nh, head, nh_hash) {
-		if (nh->nh_dev == dev)
-			nh_update_mtu(nh, dev->mtu, orig_mtu);
-	}
 }
 
 int fib_sync_down_dev(struct net_device *dev, int force)

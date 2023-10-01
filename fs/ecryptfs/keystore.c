@@ -26,7 +26,6 @@
  */
 
 #include <linux/string.h>
-#include <linux/syscalls.h>
 #include <linux/pagemap.h>
 #include <linux/key.h>
 #include <linux/random.h>
@@ -459,8 +458,7 @@ out:
  * @auth_tok_key: key containing the authentication token
  * @auth_tok: authentication token
  *
- * Returns zero on valid auth tok; -EINVAL if the payload is invalid; or
- * -EKEYREVOKED if the key was revoked before we acquired its semaphore.
+ * Returns zero on valid auth tok; -EINVAL otherwise
  */
 static int
 ecryptfs_verify_auth_tok_from_key(struct key *auth_tok_key,
@@ -469,12 +467,6 @@ ecryptfs_verify_auth_tok_from_key(struct key *auth_tok_key,
 	int rc = 0;
 
 	(*auth_tok) = ecryptfs_get_key_payload_data(auth_tok_key);
-	if (IS_ERR(*auth_tok)) {
-		rc = PTR_ERR(*auth_tok);
-		*auth_tok = NULL;
-		goto out;
-	}
-
 	if (ecryptfs_verify_version((*auth_tok)->version)) {
 		printk(KERN_ERR "Data structure version mismatch. Userspace "
 		       "tools must match eCryptfs kernel module with major "
@@ -1853,7 +1845,6 @@ int ecryptfs_parse_packet_set(struct ecryptfs_crypt_stat *crypt_stat,
 					"(Tag 11 not allowed by itself)\n");
 			rc = -EIO;
 			goto out_wipe_list;
-			break;
 		default:
 			ecryptfs_printk(KERN_DEBUG, "No packet at offset [%zd] "
 					"of the file header; hex value of "

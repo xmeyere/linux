@@ -1708,7 +1708,14 @@ static void complete_scsi_command(struct CommandList *cp)
 
 	cmd->result |= ei->ScsiStatus;
 
-	/* copy the sense data whether we need to or not. */
+	scsi_set_resid(cmd, ei->ResidualCnt);
+	if (ei->CommandStatus == 0) {
+		cmd_free(h, cp);
+		cmd->scsi_done(cmd);
+		return;
+	}
+
+	/* copy the sense data */
 	if (SCSI_SENSE_BUFFERSIZE < sizeof(ei->SenseInfo))
 		sense_data_size = SCSI_SENSE_BUFFERSIZE;
 	else
@@ -1717,13 +1724,6 @@ static void complete_scsi_command(struct CommandList *cp)
 		sense_data_size = ei->SenseLen;
 
 	memcpy(cmd->sense_buffer, ei->SenseInfo, sense_data_size);
-	scsi_set_resid(cmd, ei->ResidualCnt);
-
-	if (ei->CommandStatus == 0) {
-		cmd_free(h, cp);
-		cmd->scsi_done(cmd);
-		return;
-	}
 
 	/* For I/O accelerator commands, copy over some fields to the normal
 	 * CISS header used below for error handling.
@@ -3686,6 +3686,8 @@ static int hpsa_scsi_ioaccel_raid_map(struct ctlr_info *h,
 			(((u64) cmd->cmnd[2]) << 8) |
 			cmd->cmnd[3];
 		block_cnt = cmd->cmnd[4];
+		if (block_cnt == 0)
+			block_cnt = 256;
 		break;
 	case WRITE_10:
 		is_write = 1;
@@ -3734,7 +3736,6 @@ static int hpsa_scsi_ioaccel_raid_map(struct ctlr_info *h,
 	default:
 		return IO_ACCEL_INELIGIBLE; /* process via normal I/O path */
 	}
-	BUG_ON(block_cnt == 0);
 	last_block = first_block + block_cnt - 1;
 
 	/* check for write to non-RAID-0 */
@@ -4590,7 +4591,7 @@ static int hpsa_eh_abort_handler(struct scsi_cmnd *sc)
 		return FAILED;
 
 	memset(msg, 0, sizeof(msg));
-	ml += sprintf(msg+ml, "ABORT REQUEST on C%d:B%d:T%d:L%d ",
+	ml += sprintf(msg+ml, "ABORT REQUEST on C%d:B%d:T%d:L%llu ",
 		h->scsi_host->host_no, sc->device->channel,
 		sc->device->id, sc->device->lun);
 
@@ -4731,23 +4732,21 @@ static struct CommandList *cmd_special_alloc(struct ctlr_info *h)
 	union u64bit temp64;
 	dma_addr_t cmd_dma_handle, err_dma_handle;
 
-	c = pci_alloc_consistent(h->pdev, sizeof(*c), &cmd_dma_handle);
+	c = pci_zalloc_consistent(h->pdev, sizeof(*c), &cmd_dma_handle);
 	if (c == NULL)
 		return NULL;
-	memset(c, 0, sizeof(*c));
 
 	c->cmd_type = CMD_SCSI;
 	c->cmdindex = -1;
 
-	c->err_info = pci_alloc_consistent(h->pdev, sizeof(*c->err_info),
-		    &err_dma_handle);
+	c->err_info = pci_zalloc_consistent(h->pdev, sizeof(*c->err_info),
+					    &err_dma_handle);
 
 	if (c->err_info == NULL) {
 		pci_free_consistent(h->pdev,
 			sizeof(*c), c, cmd_dma_handle);
 		return NULL;
 	}
-	memset(c->err_info, 0, sizeof(*c->err_info));
 
 	INIT_LIST_HEAD(&c->list);
 	c->busaddr = (u32) cmd_dma_handle;
@@ -5995,7 +5994,7 @@ static int hpsa_kdump_hard_reset_controller(struct pci_dev *pdev)
 	}
 	rc = write_driver_ver_to_cfgtable(cfgtable);
 	if (rc)
-		goto unmap_cfgtable;
+		goto unmap_vaddr;
 
 	/* If reset via doorbell register is supported, use that.
 	 * There are two such methods.  Favor the newest method.
@@ -6151,26 +6150,22 @@ static void hpsa_interrupt_mode(struct ctlr_info *h)
 		h->msix_vector = MAX_REPLY_QUEUES;
 		if (h->msix_vector > num_online_cpus())
 			h->msix_vector = num_online_cpus();
-		err = pci_enable_msix(h->pdev, hpsa_msix_entries,
-				      h->msix_vector);
-		if (err > 0) {
+		err = pci_enable_msix_range(h->pdev, hpsa_msix_entries,
+					    1, h->msix_vector);
+		if (err < 0) {
+			dev_warn(&h->pdev->dev, "MSI-X init failed %d\n", err);
+			h->msix_vector = 0;
+			goto single_msi_mode;
+		} else if (err < h->msix_vector) {
 			dev_warn(&h->pdev->dev, "only %d MSI-X vectors "
 			       "available\n", err);
-			h->msix_vector = err;
-			err = pci_enable_msix(h->pdev, hpsa_msix_entries,
-					      h->msix_vector);
 		}
-		if (!err) {
-			for (i = 0; i < h->msix_vector; i++)
-				h->intr[i] = hpsa_msix_entries[i].vector;
-			return;
-		} else {
-			dev_warn(&h->pdev->dev, "MSI-X init failed %d\n",
-			       err);
-			h->msix_vector = 0;
-			goto default_int_mode;
-		}
+		h->msix_vector = err;
+		for (i = 0; i < h->msix_vector; i++)
+			h->intr[i] = hpsa_msix_entries[i].vector;
+		return;
 	}
+single_msi_mode:
 	if (pci_find_capability(h->pdev, PCI_CAP_ID_MSI)) {
 		dev_info(&h->pdev->dev, "MSI\n");
 		if (!pci_enable_msi(h->pdev))
@@ -6529,7 +6524,6 @@ static void hpsa_hba_inquiry(struct ctlr_info *h)
 static int hpsa_init_reset_devices(struct pci_dev *pdev)
 {
 	int rc, i;
-	void __iomem *vaddr;
 
 	if (!reset_devices)
 		return 0;
@@ -6551,15 +6545,6 @@ static int hpsa_init_reset_devices(struct pci_dev *pdev)
 		return -ENODEV;
 	}
 	pci_set_master(pdev);
-
-	vaddr = pci_ioremap_bar(pdev, 0);
-	if (vaddr == NULL) {
-		rc = -ENOMEM;
-		goto out_disable;
-	}
-	writel(SA5_INTR_OFF, vaddr + SA5_REPLY_INTR_MASK_OFFSET);
-	iounmap(vaddr);
-
 	/* Reset the controller with a PCI power-cycle or via doorbell */
 	rc = hpsa_kdump_hard_reset_controller(pdev);
 
@@ -6937,8 +6922,12 @@ static int hpsa_offline_devices_ready(struct ctlr_info *h)
 		d = list_entry(this, struct offline_device_entry,
 				offline_list);
 		spin_unlock_irqrestore(&h->offline_device_lock, flags);
-		if (!hpsa_volume_offline(h, d->scsi3addr))
+		if (!hpsa_volume_offline(h, d->scsi3addr)) {
+			spin_lock_irqsave(&h->offline_device_lock, flags);
+			list_del(&d->offline_list);
+			spin_unlock_irqrestore(&h->offline_device_lock, flags);
 			return 1;
+		}
 		spin_lock_irqsave(&h->offline_device_lock, flags);
 	}
 	spin_unlock_irqrestore(&h->offline_device_lock, flags);
@@ -7019,8 +7008,10 @@ reinit_after_soft_reset:
 
 	/* Allocate and clear per-cpu variable lockup_detected */
 	h->lockup_detected = alloc_percpu(u32);
-	if (!h->lockup_detected)
+	if (!h->lockup_detected) {
+		rc = -ENOMEM;
 		goto clean1;
+	}
 	set_lockup_detected_for_all_cpus(h, 0);
 
 	rc = hpsa_pci_init(h);

@@ -22,7 +22,6 @@
 #include <linux/err.h>
 #include <linux/slab.h>
 #include <linux/of.h>
-#include <linux/idr.h>
 
 #define MII_REGS_NUM 29
 
@@ -125,6 +124,17 @@ static int fixed_mdio_read(struct mii_bus *bus, int phy_addr, int reg_num)
 	if (reg_num >= MII_REGS_NUM)
 		return -1;
 
+	/* We do not support emulating Clause 45 over Clause 22 register reads
+	 * return an error instead of bogus data.
+	 */
+	switch (reg_num) {
+	case MII_MMD_CTRL:
+	case MII_MMD_DATA:
+		return -1;
+	default:
+		break;
+	}
+
 	list_for_each_entry(fp, &fmb->phys, node) {
 		if (fp->addr == phy_addr) {
 			/* Issue callback if user registered it. */
@@ -205,8 +215,6 @@ err_regs:
 }
 EXPORT_SYMBOL_GPL(fixed_phy_add);
 
-static DEFINE_IDA(phy_fixed_ida);
-
 void fixed_phy_del(int phy_addr)
 {
 	struct fixed_mdio_bus *fmb = &platform_fmb;
@@ -216,16 +224,18 @@ void fixed_phy_del(int phy_addr)
 		if (fp->addr == phy_addr) {
 			list_del(&fp->node);
 			kfree(fp);
-			ida_simple_remove(&phy_fixed_ida, phy_addr);
 			return;
 		}
 	}
 }
 EXPORT_SYMBOL_GPL(fixed_phy_del);
 
-int fixed_phy_register(unsigned int irq,
-		       struct fixed_phy_status *status,
-		       struct device_node *np)
+static int phy_fixed_addr;
+static DEFINE_SPINLOCK(phy_fixed_addr_lock);
+
+struct phy_device *fixed_phy_register(unsigned int irq,
+				      struct fixed_phy_status *status,
+				      struct device_node *np)
 {
 	struct fixed_mdio_bus *fmb = &platform_fmb;
 	struct phy_device *phy;
@@ -233,20 +243,22 @@ int fixed_phy_register(unsigned int irq,
 	int ret;
 
 	/* Get the next available PHY address, up to PHY_MAX_ADDR */
-	phy_addr = ida_simple_get(&phy_fixed_ida, 0, PHY_MAX_ADDR, GFP_KERNEL);
-	if (phy_addr < 0)
-		return phy_addr;
-
-	ret = fixed_phy_add(irq, phy_addr, status);
-	if (ret < 0) {
-		ida_simple_remove(&phy_fixed_ida, phy_addr);
-		return ret;
+	spin_lock(&phy_fixed_addr_lock);
+	if (phy_fixed_addr == PHY_MAX_ADDR) {
+		spin_unlock(&phy_fixed_addr_lock);
+		return ERR_PTR(-ENOSPC);
 	}
+	phy_addr = phy_fixed_addr++;
+	spin_unlock(&phy_fixed_addr_lock);
+
+	ret = fixed_phy_add(PHY_POLL, phy_addr, status);
+	if (ret < 0)
+		return ERR_PTR(ret);
 
 	phy = get_phy_device(fmb->mii_bus, phy_addr, false);
 	if (!phy || IS_ERR(phy)) {
 		fixed_phy_del(phy_addr);
-		return -EINVAL;
+		return ERR_PTR(-EINVAL);
 	}
 
 	of_node_get(np);
@@ -257,10 +269,10 @@ int fixed_phy_register(unsigned int irq,
 		phy_device_free(phy);
 		of_node_put(np);
 		fixed_phy_del(phy_addr);
-		return ret;
+		return ERR_PTR(ret);
 	}
 
-	return 0;
+	return phy;
 }
 
 static int __init fixed_mdio_bus_init(void)
@@ -316,7 +328,6 @@ static void __exit fixed_mdio_bus_exit(void)
 		list_del(&fp->node);
 		kfree(fp);
 	}
-	ida_destroy(&phy_fixed_ida);
 }
 module_exit(fixed_mdio_bus_exit);
 

@@ -31,23 +31,38 @@ static unsigned long bigsmp_check_apicid_used(physid_mask_t *map, int apicid)
 	return 0;
 }
 
-static unsigned long bigsmp_check_apicid_present(int bit)
-{
-	return 1;
-}
-
 static int bigsmp_early_logical_apicid(int cpu)
 {
 	/* on bigsmp, logical apicid is the same as physical */
 	return early_per_cpu(x86_cpu_to_apicid, cpu);
 }
 
+static inline unsigned long calculate_ldr(int cpu)
+{
+	unsigned long val, id;
+
+	val = apic_read(APIC_LDR) & ~APIC_LDR_MASK;
+	id = per_cpu(x86_bios_cpu_apicid, cpu);
+	val |= SET_APIC_LOGICAL_ID(id);
+
+	return val;
+}
+
 /*
- * bigsmp enables physical destination mode
- * and doesn't use LDR and DFR
+ * Set up the logical destination ID.
+ *
+ * Intel recommends to set DFR, LDR and TPR before enabling
+ * an APIC.  See e.g. "AP-388 82489DX User's Manual" (Intel
+ * document number 292116).  So here it goes...
  */
 static void bigsmp_init_apic_ldr(void)
 {
+	unsigned long val;
+	int cpu = smp_processor_id();
+
+	apic_write(APIC_DFR, APIC_DFR_FLAT);
+	val = calculate_ldr(cpu);
+	apic_write(APIC_LDR, val);
 }
 
 static void bigsmp_setup_apic_routing(void)
@@ -148,21 +163,16 @@ static struct apic apic_bigsmp = {
 	.disable_esr			= 1,
 	.dest_logical			= 0,
 	.check_apicid_used		= bigsmp_check_apicid_used,
-	.check_apicid_present		= bigsmp_check_apicid_present,
 
 	.vector_allocation_domain	= default_vector_allocation_domain,
 	.init_apic_ldr			= bigsmp_init_apic_ldr,
 
 	.ioapic_phys_id_map		= bigsmp_ioapic_phys_id_map,
 	.setup_apic_routing		= bigsmp_setup_apic_routing,
-	.multi_timer_check		= NULL,
 	.cpu_present_to_apicid		= bigsmp_cpu_present_to_apicid,
 	.apicid_to_cpu_present		= physid_set_mask_of_physid,
-	.setup_portio_remap		= NULL,
 	.check_phys_apicid_present	= bigsmp_check_phys_apicid_present,
-	.enable_apic_mode		= NULL,
 	.phys_pkg_id			= bigsmp_phys_pkg_id,
-	.mps_oem_check			= NULL,
 
 	.get_apic_id			= bigsmp_get_apic_id,
 	.set_apic_id			= NULL,
@@ -176,11 +186,7 @@ static struct apic apic_bigsmp = {
 	.send_IPI_all			= bigsmp_send_IPI_all,
 	.send_IPI_self			= default_send_IPI_self,
 
-	.trampoline_phys_low		= DEFAULT_TRAMPOLINE_PHYS_LOW,
-	.trampoline_phys_high		= DEFAULT_TRAMPOLINE_PHYS_HIGH,
-
 	.wait_for_init_deassert		= true,
-	.smp_callin_clear_local_apic	= NULL,
 	.inquire_remote_apic		= default_inquire_remote_apic,
 
 	.read				= native_apic_mem_read,

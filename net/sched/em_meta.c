@@ -176,12 +176,11 @@ META_COLLECTOR(int_vlan_tag)
 {
 	unsigned short tag;
 
-	if (vlan_tx_tag_present(skb))
-		dst->value = vlan_tx_tag_get(skb);
-	else if (!__vlan_get_tag(skb, &tag))
-		dst->value = tag;
-	else
+	tag = vlan_tx_tag_get(skb);
+	if (!tag && __vlan_get_tag(skb, &tag))
 		*err = -1;
+	else
+		dst->value = tag;
 }
 
 
@@ -857,7 +856,7 @@ static const struct nla_policy meta_policy[TCA_EM_META_MAX + 1] = {
 	[TCA_EM_META_HDR]	= { .len = sizeof(struct tcf_meta_hdr) },
 };
 
-static int em_meta_change(struct tcf_proto *tp, void *data, int len,
+static int em_meta_change(struct net *net, void *data, int len,
 			  struct tcf_ematch *m)
 {
 	int err;
@@ -909,7 +908,7 @@ errout:
 	return err;
 }
 
-static void em_meta_destroy(struct tcf_proto *tp, struct tcf_ematch *m)
+static void em_meta_destroy(struct tcf_ematch *m)
 {
 	if (m)
 		meta_delete((struct meta_match *) m->data);

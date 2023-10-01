@@ -800,7 +800,6 @@ static const struct sunxi_desc_pin sun4i_a10_pins[] = {
 		  SUNXI_FUNCTION(0x2, "lcd1"),		/* D16 */
 		  SUNXI_FUNCTION(0x3, "pata"),		/* ATAD12 */
 		  SUNXI_FUNCTION(0x4, "keypad"),	/* IN6 */
-		  SUNXI_FUNCTION(0x5, "sim"),		/* DET */
 		  SUNXI_FUNCTION_IRQ(0x6, 16),		/* EINT16 */
 		  SUNXI_FUNCTION(0x7, "csi1")),		/* D16 */
 	SUNXI_PIN(SUNXI_PINCTRL_PIN(H, 17),
@@ -1011,6 +1010,7 @@ static const struct sunxi_desc_pin sun4i_a10_pins[] = {
 static const struct sunxi_pinctrl_desc sun4i_a10_pinctrl_data = {
 	.pins = sun4i_a10_pins,
 	.npins = ARRAY_SIZE(sun4i_a10_pins),
+	.irq_banks = 1,
 };
 
 static int sun4i_a10_pinctrl_probe(struct platform_device *pdev)

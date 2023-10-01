@@ -52,10 +52,9 @@
  * Compared to the generic __my_cpu_offset version, the following
  * saves one instruction and avoids clobbering a temp register.
  */
-#define raw_cpu_ptr(ptr)				\
+#define arch_raw_cpu_ptr(ptr)				\
 ({							\
 	unsigned long tcp_ptr__;			\
-	__verify_pcpu_ptr(ptr);				\
 	asm volatile("add " __percpu_arg(1) ", %0"	\
 		     : "=r" (tcp_ptr__)			\
 		     : "m" (this_cpu_off), "0" (ptr));	\
@@ -185,22 +184,22 @@ do {									\
 	typeof(var) pfo_ret__;				\
 	switch (sizeof(var)) {				\
 	case 1:						\
-		asm volatile(op "b "__percpu_arg(1)",%0"\
+		asm(op "b "__percpu_arg(1)",%0"		\
 		    : "=q" (pfo_ret__)			\
 		    : constraint);			\
 		break;					\
 	case 2:						\
-		asm volatile(op "w "__percpu_arg(1)",%0"\
+		asm(op "w "__percpu_arg(1)",%0"		\
 		    : "=r" (pfo_ret__)			\
 		    : constraint);			\
 		break;					\
 	case 4:						\
-		asm volatile(op "l "__percpu_arg(1)",%0"\
+		asm(op "l "__percpu_arg(1)",%0"		\
 		    : "=r" (pfo_ret__)			\
 		    : constraint);			\
 		break;					\
 	case 8:						\
-		asm volatile(op "q "__percpu_arg(1)",%0"\
+		asm(op "q "__percpu_arg(1)",%0"		\
 		    : "=r" (pfo_ret__)			\
 		    : constraint);			\
 		break;					\

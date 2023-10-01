@@ -35,6 +35,7 @@
 #include <linux/slab.h>
 #include <linux/kprobes.h>
 #include <linux/debugfs.h>
+#include <linux/nmi.h>
 #include <asm/timer.h>
 #include <asm/cpu.h>
 #include <asm/traps.h>
@@ -116,11 +117,7 @@ static struct kvm_task_sleep_node *_find_apf_task(struct kvm_task_sleep_head *b,
 	return NULL;
 }
 
-/*
- * @interrupt_kernel: Is this called from a routine which interrupts the kernel
- * 		      (other than user space)?
- */
-void kvm_async_pf_task_wait(u32 token, int interrupt_kernel)
+void kvm_async_pf_task_wait(u32 token)
 {
 	u32 key = hash_32(token, KVM_TASK_SLEEP_HASHBITS);
 	struct kvm_task_sleep_head *b = &async_pf_sleepers[key];
@@ -143,10 +140,7 @@ void kvm_async_pf_task_wait(u32 token, int interrupt_kernel)
 
 	n.token = token;
 	n.cpu = smp_processor_id();
-	n.halted = is_idle_task(current) ||
-		   (IS_ENABLED(CONFIG_PREEMPT_COUNT)
-		    ? preempt_count() > 1 || rcu_preempt_depth()
-		    : interrupt_kernel);
+	n.halted = is_idle_task(current) || preempt_count() > 1;
 	init_waitqueue_head(&n.wq);
 	hlist_add_head(&n.link, &b->list);
 	spin_unlock(&b->lock);
@@ -157,8 +151,6 @@ void kvm_async_pf_task_wait(u32 token, int interrupt_kernel)
 		if (hlist_unhashed(&n.link))
 			break;
 
-		rcu_irq_exit();
-
 		if (!n.halted) {
 			local_irq_enable();
 			schedule();
@@ -167,11 +159,11 @@ void kvm_async_pf_task_wait(u32 token, int interrupt_kernel)
 			/*
 			 * We cannot reschedule. So halt.
 			 */
+			rcu_irq_exit();
 			native_safe_halt();
+			rcu_irq_enter();
 			local_irq_disable();
 		}
-
-		rcu_irq_enter();
 	}
 	if (!n.halted)
 		finish_wait(&n.wq, &wait);
@@ -252,9 +244,9 @@ u32 kvm_read_and_reset_pf_reason(void)
 {
 	u32 reason = 0;
 
-	if (__get_cpu_var(apf_reason).enabled) {
-		reason = __get_cpu_var(apf_reason).reason;
-		__get_cpu_var(apf_reason).reason = 0;
+	if (__this_cpu_read(apf_reason.enabled)) {
+		reason = __this_cpu_read(apf_reason.reason);
+		__this_cpu_write(apf_reason.reason, 0);
 	}
 
 	return reason;
@@ -275,7 +267,7 @@ do_async_page_fault(struct pt_regs *regs, unsigned long error_code)
 		/* page is swapped out by the host. */
 		prev_state = exception_enter();
 		exit_idle();
-		kvm_async_pf_task_wait((u32)read_cr2(), !user_mode_vm(regs));
+		kvm_async_pf_task_wait((u32)read_cr2());
 		exception_exit(prev_state);
 		break;
 	case KVM_PV_REASON_PAGE_READY:
@@ -291,14 +283,7 @@ NOKPROBE_SYMBOL(do_async_page_fault);
 static void __init paravirt_ops_setup(void)
 {
 	pv_info.name = "KVM";
-
-	/*
-	 * KVM isn't paravirt in the sense of paravirt_enabled.  A KVM
-	 * guest kernel works like a bare metal kernel with additional
-	 * features, and paravirt_enabled is about features that are
-	 * missing.
-	 */
-	pv_info.paravirt_enabled = 0;
+	pv_info.paravirt_enabled = 1;
 
 	if (kvm_para_has_feature(KVM_FEATURE_NOP_IO_DELAY))
 		pv_cpu_ops.io_delay = kvm_io_delay;
@@ -334,7 +319,7 @@ static void kvm_guest_apic_eoi_write(u32 reg, u32 val)
 	 * there's no need for lock or memory barriers.
 	 * An optimization barrier is implied in apic write.
 	 */
-	if (__test_and_clear_bit(KVM_PV_EOI_BIT, &__get_cpu_var(kvm_apic_eoi)))
+	if (__test_and_clear_bit(KVM_PV_EOI_BIT, this_cpu_ptr(&kvm_apic_eoi)))
 		return;
 	apic_write(APIC_EOI, APIC_EOI_ACK);
 }
@@ -345,13 +330,13 @@ void kvm_guest_cpu_init(void)
 		return;
 
 	if (kvm_para_has_feature(KVM_FEATURE_ASYNC_PF) && kvmapf) {
-		u64 pa = slow_virt_to_phys(&__get_cpu_var(apf_reason));
+		u64 pa = slow_virt_to_phys(this_cpu_ptr(&apf_reason));
 
 #ifdef CONFIG_PREEMPT
 		pa |= KVM_ASYNC_PF_SEND_ALWAYS;
 #endif
 		wrmsrl(MSR_KVM_ASYNC_PF_EN, pa | KVM_ASYNC_PF_ENABLED);
-		__get_cpu_var(apf_reason).enabled = 1;
+		__this_cpu_write(apf_reason.enabled, 1);
 		printk(KERN_INFO"KVM setup async PF for cpu %d\n",
 		       smp_processor_id());
 	}
@@ -360,8 +345,8 @@ void kvm_guest_cpu_init(void)
 		unsigned long pa;
 		/* Size alignment is implied but just to make it explicit. */
 		BUILD_BUG_ON(__alignof__(kvm_apic_eoi) < 4);
-		__get_cpu_var(kvm_apic_eoi) = 0;
-		pa = slow_virt_to_phys(&__get_cpu_var(kvm_apic_eoi))
+		__this_cpu_write(kvm_apic_eoi, 0);
+		pa = slow_virt_to_phys(this_cpu_ptr(&kvm_apic_eoi))
 			| KVM_MSR_ENABLED;
 		wrmsrl(MSR_KVM_PV_EOI_EN, pa);
 	}
@@ -372,11 +357,11 @@ void kvm_guest_cpu_init(void)
 
 static void kvm_pv_disable_apf(void)
 {
-	if (!__get_cpu_var(apf_reason).enabled)
+	if (!__this_cpu_read(apf_reason.enabled))
 		return;
 
 	wrmsrl(MSR_KVM_ASYNC_PF_EN, 0);
-	__get_cpu_var(apf_reason).enabled = 0;
+	__this_cpu_write(apf_reason.enabled, 0);
 
 	printk(KERN_INFO"Unregister pv shared memory for cpu %d\n",
 	       smp_processor_id());
@@ -515,6 +500,13 @@ void __init kvm_guest_init(void)
 #else
 	kvm_guest_cpu_init();
 #endif
+
+	/*
+	 * Hard lockup detection is enabled by default. Disable it, as guests
+	 * can get false positives too easily, for example if the host is
+	 * overcommitted.
+	 */
+	watchdog_enable_hardlockup_detector(false);
 }
 
 static noinline uint32_t __kvm_cpuid_base(void)
@@ -732,7 +724,7 @@ __visible void kvm_lock_spinning(struct arch_spinlock *lock, __ticket_t want)
 	if (in_nmi())
 		return;
 
-	w = &__get_cpu_var(klock_waiting);
+	w = this_cpu_ptr(&klock_waiting);
 	cpu = smp_processor_id();
 	start = spin_time_start();
 

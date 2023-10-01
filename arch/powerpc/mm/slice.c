@@ -30,10 +30,11 @@
 #include <linux/err.h>
 #include <linux/spinlock.h>
 #include <linux/export.h>
-#include <linux/security.h>
+#include <linux/hugetlb.h>
 #include <asm/mman.h>
 #include <asm/mmu.h>
-#include <asm/spu.h>
+#include <asm/copro.h>
+#include <asm/hugetlb.h>
 
 /* some sanity checks */
 #if (PGTABLE_RANGE >> 43) > SLICE_MASK_SIZE
@@ -104,7 +105,7 @@ static int slice_area_is_free(struct mm_struct *mm, unsigned long addr,
 	if ((mm->task_size - len) < addr)
 		return 0;
 	vma = find_vma(mm, addr);
-	return (!vma || (addr + len) <= vm_start_gap(vma));
+	return (!vma || (addr + len) <= vma->vm_start);
 }
 
 static int slice_low_has_vma(struct mm_struct *mm, unsigned long slice)
@@ -233,9 +234,7 @@ static void slice_convert(struct mm_struct *mm, struct slice_mask mask, int psiz
 
 	spin_unlock_irqrestore(&slice_convert_lock, flags);
 
-#ifdef CONFIG_SPU_BASE
-	spu_flush_all_slbs(mm);
-#endif
+	copro_flush_all_slbs(mm);
 }
 
 /*
@@ -314,7 +313,6 @@ static unsigned long slice_find_area_topdown(struct mm_struct *mm,
 	int pshift = max_t(int, mmu_psize_defs[psize].shift, PAGE_SHIFT);
 	unsigned long addr, found, prev;
 	struct vm_unmapped_area_info info;
-	unsigned long min_addr = max(PAGE_SIZE, mmap_min_addr);
 
 	info.flags = VM_UNMAPPED_AREA_TOPDOWN;
 	info.length = len;
@@ -322,7 +320,7 @@ static unsigned long slice_find_area_topdown(struct mm_struct *mm,
 	info.align_offset = 0;
 
 	addr = mm->mmap_base;
-	while (addr > min_addr) {
+	while (addr > PAGE_SIZE) {
 		info.high_limit = addr;
 		if (!slice_scan_available(addr - 1, available, 0, &addr))
 			continue;
@@ -334,8 +332,8 @@ static unsigned long slice_find_area_topdown(struct mm_struct *mm,
 		 * Check if we need to reduce the range, or if we can
 		 * extend it to cover the previous available slice.
 		 */
-		if (addr < min_addr)
-			addr = min_addr;
+		if (addr < PAGE_SIZE)
+			addr = PAGE_SIZE;
 		else if (slice_scan_available(addr - 1, available, 0, &prev)) {
 			addr = prev;
 			goto prev_slice;
@@ -417,7 +415,7 @@ unsigned long slice_get_unmapped_area(unsigned long addr, unsigned long len,
 		addr = _ALIGN_UP(addr, 1ul << pshift);
 		slice_dbg(" aligned addr=%lx\n", addr);
 		/* Ignore hint if it's too large or overlaps a VMA */
-		if (addr > mm->task_size - len || addr < mmap_min_addr ||
+		if (addr > mm->task_size - len ||
 		    !slice_area_is_free(mm, addr, len))
 			addr = 0;
 	}
@@ -673,9 +671,7 @@ void slice_set_psize(struct mm_struct *mm, unsigned long address,
 
 	spin_unlock_irqrestore(&slice_convert_lock, flags);
 
-#ifdef CONFIG_SPU_BASE
-	spu_flush_all_slbs(mm);
-#endif
+	copro_flush_all_slbs(mm);
 }
 
 void slice_set_range_psize(struct mm_struct *mm, unsigned long start,
@@ -686,6 +682,7 @@ void slice_set_range_psize(struct mm_struct *mm, unsigned long start,
 	slice_convert(mm, mask, psize);
 }
 
+#ifdef CONFIG_HUGETLB_PAGE
 /*
  * is_hugepage_only_range() is used by generic code to verify whether
  * a normal mmap mapping (non hugetlbfs) is valid on a given area.
@@ -730,4 +727,4 @@ int is_hugepage_only_range(struct mm_struct *mm, unsigned long addr,
 #endif
 	return !slice_check_fit(mask, available);
 }
-
+#endif

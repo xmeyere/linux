@@ -112,6 +112,9 @@ static struct dentry *proc_mount(struct file_system_type *fs_type,
 		ns = task_active_pid_ns(current);
 		options = data;
 
+		if (!capable(CAP_SYS_ADMIN) && !fs_fully_visible(fs_type))
+			return ERR_PTR(-EPERM);
+
 		/* Does the mounter have privilege over the pid namespace? */
 		if (!ns_capable(ns->user_ns, CAP_SYS_ADMIN))
 			return ERR_PTR(-EPERM);
@@ -120,13 +123,6 @@ static struct dentry *proc_mount(struct file_system_type *fs_type,
 	sb = sget(fs_type, proc_test_super, proc_set_super, flags, ns);
 	if (IS_ERR(sb))
 		return ERR_CAST(sb);
-
-	/*
-	 * procfs isn't actually a stacking filesystem; however, there is
-	 * too much magic going on inside it to permit stacking things on
-	 * top of it
-	 */
-	sb->s_stack_depth = FILESYSTEM_MAX_STACK_DEPTH;
 
 	if (!proc_parse_options(options, ns)) {
 		deactivate_locked_super(sb);
@@ -153,6 +149,8 @@ static void proc_kill_sb(struct super_block *sb)
 	ns = (struct pid_namespace *)sb->s_fs_info;
 	if (ns->proc_self)
 		dput(ns->proc_self);
+	if (ns->proc_thread_self)
+		dput(ns->proc_thread_self);
 	kill_anon_super(sb);
 	put_pid_ns(ns);
 }
@@ -161,7 +159,7 @@ static struct file_system_type proc_fs_type = {
 	.name		= "proc",
 	.mount		= proc_mount,
 	.kill_sb	= proc_kill_sb,
-	.fs_flags	= FS_USERNS_VISIBLE | FS_USERNS_MOUNT | FS_NOEXEC,
+	.fs_flags	= FS_USERNS_MOUNT,
 };
 
 void __init proc_root_init(void)
@@ -174,6 +172,7 @@ void __init proc_root_init(void)
 		return;
 
 	proc_self_init();
+	proc_thread_self_init();
 	proc_symlink("mounts", NULL, "self/mounts");
 
 	proc_net_init();
@@ -183,10 +182,10 @@ void __init proc_root_init(void)
 #endif
 	proc_mkdir("fs", NULL);
 	proc_mkdir("driver", NULL);
-	proc_create_mount_point("fs/nfsd"); /* somewhere for the nfsd filesystem to be mounted */
+	proc_mkdir("fs/nfsd", NULL); /* somewhere for the nfsd filesystem to be mounted */
 #if defined(CONFIG_SUN_OPENPROMFS) || defined(CONFIG_SUN_OPENPROMFS_MODULE)
 	/* just give it a mountpoint */
-	proc_create_mount_point("openprom");
+	proc_mkdir("openprom", NULL);
 #endif
 	proc_tty_init();
 	proc_mkdir("bus", NULL);
@@ -203,10 +202,10 @@ static int proc_root_getattr(struct vfsmount *mnt, struct dentry *dentry, struct
 
 static struct dentry *proc_root_lookup(struct inode * dir, struct dentry * dentry, unsigned int flags)
 {
-	if (!proc_lookup(dir, dentry, flags))
+	if (!proc_pid_lookup(dir, dentry, flags))
 		return NULL;
 	
-	return proc_pid_lookup(dir, dentry, flags);
+	return proc_lookup(dir, dentry, flags);
 }
 
 static int proc_root_readdir(struct file *file, struct dir_context *ctx)

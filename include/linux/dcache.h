@@ -11,7 +11,6 @@
 #include <linux/rcupdate.h>
 #include <linux/lockref.h>
 
-struct nameidata;
 struct path;
 struct vfsmount;
 
@@ -55,6 +54,7 @@ struct qstr {
 #define QSTR_INIT(n,l) { { { .len = l } }, .name = n }
 #define hashlen_hash(hashlen) ((u32) (hashlen))
 #define hashlen_len(hashlen)  ((u32)((hashlen) >> 32))
+#define hashlen_create(hash,len) (((u64)(len)<<32)|(u32)(hash))
 
 struct dentry_stat_t {
 	long nr_dentry;
@@ -124,15 +124,15 @@ struct dentry {
 	void *d_fsdata;			/* fs-specific data */
 
 	struct list_head d_lru;		/* LRU list */
-	struct list_head d_child;	/* child of parent list */
-	struct list_head d_subdirs;	/* our children */
 	/*
-	 * d_alias and d_rcu can share memory
+	 * d_child and d_rcu can share memory
 	 */
 	union {
-		struct hlist_node d_alias;	/* inode alias list */
+		struct list_head d_child;	/* child of parent list */
 	 	struct rcu_head d_rcu;
 	} d_u;
+	struct list_head d_subdirs;	/* our children */
+	struct hlist_node d_alias;	/* inode alias list */
 };
 
 /*
@@ -225,16 +225,10 @@ struct dentry_operations {
 
 extern seqlock_t rename_lock;
 
-static inline int dname_external(const struct dentry *dentry)
-{
-	return dentry->d_name.name != dentry->d_iname;
-}
-
 /*
  * These are the low-level FS interfaces to the dcache..
  */
 extern void d_instantiate(struct dentry *, struct inode *);
-extern void d_instantiate_new(struct dentry *, struct inode *);
 extern struct dentry * d_instantiate_unique(struct dentry *, struct inode *);
 extern struct dentry * d_materialise_unique(struct dentry *, struct inode *);
 extern int d_instantiate_no_diralias(struct dentry *, struct inode *);
@@ -250,10 +244,11 @@ extern struct dentry * d_splice_alias(struct inode *, struct dentry *);
 extern struct dentry * d_add_ci(struct dentry *, struct inode *, struct qstr *);
 extern struct dentry *d_find_any_alias(struct inode *inode);
 extern struct dentry * d_obtain_alias(struct inode *);
+extern struct dentry * d_obtain_root(struct inode *);
 extern void shrink_dcache_sb(struct super_block *);
 extern void shrink_dcache_parent(struct dentry *);
 extern void shrink_dcache_for_umount(struct super_block *);
-extern int d_invalidate(struct dentry *);
+extern void d_invalidate(struct dentry *);
 
 /* only used at mount-time */
 extern struct dentry * d_make_root(struct inode *);
@@ -268,7 +263,6 @@ extern void d_prune_aliases(struct inode *);
 
 /* test whether we have any submounts in a subdir tree */
 extern int have_submounts(struct dentry *);
-extern int check_submounts_and_drop(struct dentry *);
 
 /*
  * This adds the entry to the hash queues.
@@ -411,6 +405,23 @@ static inline bool d_mountpoint(const struct dentry *dentry)
 /*
  * Directory cache entry type accessor functions.
  */
+static inline void __d_set_type(struct dentry *dentry, unsigned type)
+{
+	dentry->d_flags = (dentry->d_flags & ~DCACHE_ENTRY_TYPE) | type;
+}
+
+static inline void __d_clear_type(struct dentry *dentry)
+{
+	__d_set_type(dentry, DCACHE_MISS_TYPE);
+}
+
+static inline void d_set_type(struct dentry *dentry, unsigned type)
+{
+	spin_lock(&dentry->d_lock);
+	__d_set_type(dentry, type);
+	spin_unlock(&dentry->d_lock);
+}
+
 static inline unsigned __d_entry_type(const struct dentry *dentry)
 {
 	return dentry->d_flags & DCACHE_ENTRY_TYPE;
@@ -457,68 +468,4 @@ static inline unsigned long vfs_pressure_ratio(unsigned long val)
 {
 	return mult_frac(val, sysctl_vfs_cache_pressure, 100);
 }
-
-/**
- * d_inode - Get the actual inode of this dentry
- * @dentry: The dentry to query
- *
- * This is the helper normal filesystems should use to get at their own inodes
- * in their own dentries and ignore the layering superimposed upon them.
- */
-static inline struct inode *d_inode(const struct dentry *dentry)
-{
-	return dentry->d_inode;
-}
-
-/**
- * d_inode_rcu - Get the actual inode of this dentry with ACCESS_ONCE()
- * @dentry: The dentry to query
- *
- * This is the helper normal filesystems should use to get at their own inodes
- * in their own dentries and ignore the layering superimposed upon them.
- */
-static inline struct inode *d_inode_rcu(const struct dentry *dentry)
-{
-	return ACCESS_ONCE(dentry->d_inode);
-}
-
-/**
- * d_backing_inode - Get upper or lower inode we should be using
- * @upper: The upper layer
- *
- * This is the helper that should be used to get at the inode that will be used
- * if this dentry were to be opened as a file.  The inode may be on the upper
- * dentry or it may be on a lower dentry pinned by the upper.
- *
- * Normal filesystems should not use this to access their own inodes.
- */
-static inline struct inode *d_backing_inode(const struct dentry *upper)
-{
-	struct inode *inode = upper->d_inode;
-
-	return inode;
-}
-
-/**
- * d_backing_dentry - Get upper or lower dentry we should be using
- * @upper: The upper layer
- *
- * This is the helper that should be used to get the dentry of the inode that
- * will be used if this dentry were opened as a file.  It may be the upper
- * dentry or it may be a lower dentry pinned by the upper.
- *
- * Normal filesystems should not use this to access their own dentries.
- */
-static inline struct dentry *d_backing_dentry(struct dentry *upper)
-{
-	return upper;
-}
-
-struct name_snapshot {
-	const char *name;
-	char inline_name[DNAME_INLINE_LEN];
-};
-void take_dentry_name_snapshot(struct name_snapshot *, struct dentry *);
-void release_dentry_name_snapshot(struct name_snapshot *);
-
 #endif	/* __LINUX_DCACHE_H */

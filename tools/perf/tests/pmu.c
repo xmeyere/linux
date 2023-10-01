@@ -95,7 +95,7 @@ static char *test_format_dir_get(void)
 		struct test_format *format = &test_formats[i];
 		FILE *file;
 
-		scnprintf(name, PATH_MAX, "%s/%s", dir, format->name);
+		snprintf(name, PATH_MAX, "%s/%s", dir, format->name);
 
 		file = fopen(name, "w");
 		if (!file)
@@ -152,7 +152,7 @@ int test__pmu(void)
 		if (ret)
 			break;
 
-		ret = perf_pmu__config_terms(&formats, &attr, terms);
+		ret = perf_pmu__config_terms(&formats, &attr, terms, false);
 		if (ret)
 			break;
 

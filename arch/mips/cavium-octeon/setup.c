@@ -247,17 +247,6 @@ static void octeon_crash_shutdown(struct pt_regs *regs)
 	default_machine_crash_shutdown(regs);
 }
 
-#ifdef CONFIG_SMP
-void octeon_crash_smp_send_stop(void)
-{
-	int cpu;
-
-	/* disable watchdogs */
-	for_each_online_cpu(cpu)
-		cvmx_write_csr(CVMX_CIU_WDOGX(cpu_logical_map(cpu)), 0);
-}
-#endif
-
 #endif /* CONFIG_KEXEC */
 
 #ifdef CONFIG_CAVIUM_RESERVE32
@@ -274,7 +263,6 @@ static uint64_t crashk_size, crashk_base;
 static int octeon_uart;
 
 extern asmlinkage void handle_int(void);
-extern asmlinkage void plat_irq_dispatch(void);
 
 /**
  * Return non zero if we are currently running in the Octeon simulator
@@ -818,15 +806,6 @@ void __init prom_init(void)
 #endif
 	}
 
-	if (octeon_is_simulation()) {
-		/*
-		 * The simulator uses a mtdram device pre filled with
-		 * the filesystem. Also specify the calibration delay
-		 * to avoid calculating it every time.
-		 */
-		strcat(arcs_cmdline, " rw root=1f00 slram=root,0x40000000,+1073741824");
-	}
-
 	mips_hpt_frequency = octeon_get_clock_rate();
 
 	octeon_init_cvmcount();
@@ -838,9 +817,6 @@ void __init prom_init(void)
 	_machine_kexec_shutdown = octeon_shutdown;
 	_machine_crash_shutdown = octeon_crash_shutdown;
 	_machine_kexec_prepare = octeon_kexec_prepare;
-#ifdef CONFIG_SMP
-	_crash_smp_send_stop = octeon_crash_smp_send_stop;
-#endif
 #endif
 
 	octeon_user_io_init();

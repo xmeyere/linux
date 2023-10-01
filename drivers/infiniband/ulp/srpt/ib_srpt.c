@@ -198,6 +198,7 @@ static void srpt_event_handler(struct ib_event_handler *handler,
 	case IB_EVENT_PKEY_CHANGE:
 	case IB_EVENT_SM_CHANGE:
 	case IB_EVENT_CLIENT_REREGISTER:
+	case IB_EVENT_GID_CHANGE:
 		/* Refresh port data asynchronously. */
 		if (event->element.port_num <= sdev->device->phys_port_cnt) {
 			sport = &sdev->port[event->element.port_num - 1];
@@ -563,7 +564,7 @@ static int srpt_refresh_port(struct srpt_port *sport)
 							 &reg_req, 0,
 							 srpt_mad_send_handler,
 							 srpt_mad_recv_handler,
-							 sport);
+							 sport, 0);
 		if (IS_ERR(sport->mad_agent)) {
 			ret = PTR_ERR(sport->mad_agent);
 			sport->mad_agent = NULL;
@@ -958,7 +959,8 @@ static int srpt_init_ch_qp(struct srpt_rdma_ch *ch, struct ib_qp *qp)
 		return -ENOMEM;
 
 	attr->qp_state = IB_QPS_INIT;
-	attr->qp_access_flags = IB_ACCESS_LOCAL_WRITE;
+	attr->qp_access_flags = IB_ACCESS_LOCAL_WRITE | IB_ACCESS_REMOTE_READ |
+	    IB_ACCESS_REMOTE_WRITE;
 	attr->port_num = ch->sport->port;
 	attr->pkey_index = 0;
 
@@ -1519,11 +1521,9 @@ static int srpt_build_cmd_rsp(struct srpt_rdma_ch *ch,
 			      struct srpt_send_ioctx *ioctx, u64 tag,
 			      int status)
 {
-	struct se_cmd *cmd = &ioctx->cmd;
 	struct srp_rsp *srp_rsp;
 	const u8 *sense_data;
 	int sense_data_len, max_sense_len;
-	u32 resid = cmd->residual_count;
 
 	/*
 	 * The lowest bit of all SAM-3 status codes is zero (see also
@@ -1544,28 +1544,6 @@ static int srpt_build_cmd_rsp(struct srpt_rdma_ch *ch,
 		__constant_cpu_to_be32(1 + atomic_xchg(&ch->req_lim_delta, 0));
 	srp_rsp->tag = tag;
 	srp_rsp->status = status;
-
-	if (cmd->se_cmd_flags & SCF_UNDERFLOW_BIT) {
-		if (cmd->data_direction == DMA_TO_DEVICE) {
-			/* residual data from an underflow write */
-			srp_rsp->flags = SRP_RSP_FLAG_DOUNDER;
-			srp_rsp->data_out_res_cnt = cpu_to_be32(resid);
-		} else if (cmd->data_direction == DMA_FROM_DEVICE) {
-			/* residual data from an underflow read */
-			srp_rsp->flags = SRP_RSP_FLAG_DIUNDER;
-			srp_rsp->data_in_res_cnt = cpu_to_be32(resid);
-		}
-	} else if (cmd->se_cmd_flags & SCF_OVERFLOW_BIT) {
-		if (cmd->data_direction == DMA_TO_DEVICE) {
-			/* residual data from an overflow write */
-			srp_rsp->flags = SRP_RSP_FLAG_DOOVER;
-			srp_rsp->data_out_res_cnt = cpu_to_be32(resid);
-		} else if (cmd->data_direction == DMA_FROM_DEVICE) {
-			/* residual data from an overflow read */
-			srp_rsp->flags = SRP_RSP_FLAG_DIOVER;
-			srp_rsp->data_in_res_cnt = cpu_to_be32(resid);
-		}
-	}
 
 	if (sense_data_len) {
 		BUILD_BUG_ON(MIN_MAX_RSP_SIZE <= sizeof(*srp_rsp));
@@ -1767,6 +1745,47 @@ send_sense:
 	return -1;
 }
 
+/**
+ * srpt_rx_mgmt_fn_tag() - Process a task management function by tag.
+ * @ch: RDMA channel of the task management request.
+ * @fn: Task management function to perform.
+ * @req_tag: Tag of the SRP task management request.
+ * @mgmt_ioctx: I/O context of the task management request.
+ *
+ * Returns zero if the target core will process the task management
+ * request asynchronously.
+ *
+ * Note: It is assumed that the initiator serializes tag-based task management
+ * requests.
+ */
+static int srpt_rx_mgmt_fn_tag(struct srpt_send_ioctx *ioctx, u64 tag)
+{
+	struct srpt_device *sdev;
+	struct srpt_rdma_ch *ch;
+	struct srpt_send_ioctx *target;
+	int ret, i;
+
+	ret = -EINVAL;
+	ch = ioctx->ch;
+	BUG_ON(!ch);
+	BUG_ON(!ch->sport);
+	sdev = ch->sport->sdev;
+	BUG_ON(!sdev);
+	spin_lock_irq(&sdev->spinlock);
+	for (i = 0; i < ch->rq_size; ++i) {
+		target = ch->ioctx_ring[i];
+		if (target->cmd.se_lun == ioctx->cmd.se_lun &&
+		    target->tag == tag &&
+		    srpt_get_cmd_state(target) != SRPT_STATE_DONE) {
+			ret = 0;
+			/* now let the target core abort &target->cmd; */
+			break;
+		}
+	}
+	spin_unlock_irq(&sdev->spinlock);
+	return ret;
+}
+
 static int srp_tmr_to_tcm(int fn)
 {
 	switch (fn) {
@@ -1801,6 +1820,7 @@ static void srpt_handle_tsk_mgmt(struct srpt_rdma_ch *ch,
 	struct se_cmd *cmd;
 	struct se_session *sess = ch->sess;
 	uint64_t unpacked_lun;
+	uint32_t tag = 0;
 	int tcm_tmr;
 	int rc;
 
@@ -1816,10 +1836,25 @@ static void srpt_handle_tsk_mgmt(struct srpt_rdma_ch *ch,
 	srpt_set_cmd_state(send_ioctx, SRPT_STATE_MGMT);
 	send_ioctx->tag = srp_tsk->tag;
 	tcm_tmr = srp_tmr_to_tcm(srp_tsk->tsk_mgmt_func);
+	if (tcm_tmr < 0) {
+		send_ioctx->cmd.se_tmr_req->response =
+			TMR_TASK_MGMT_FUNCTION_NOT_SUPPORTED;
+		goto fail;
+	}
 	unpacked_lun = srpt_unpack_lun((uint8_t *)&srp_tsk->lun,
 				       sizeof(srp_tsk->lun));
+
+	if (srp_tsk->tsk_mgmt_func == SRP_TSK_ABORT_TASK) {
+		rc = srpt_rx_mgmt_fn_tag(send_ioctx, srp_tsk->task_tag);
+		if (rc < 0) {
+			send_ioctx->cmd.se_tmr_req->response =
+					TMR_TASK_DOES_NOT_EXIST;
+			goto fail;
+		}
+		tag = srp_tsk->task_tag;
+	}
 	rc = target_submit_tmr(&send_ioctx->cmd, sess, NULL, unpacked_lun,
-				srp_tsk, tcm_tmr, GFP_KERNEL, srp_tsk->task_tag,
+				srp_tsk, tcm_tmr, GFP_KERNEL, tag,
 				TARGET_SCF_ACK_KREF);
 	if (rc != 0) {
 		send_ioctx->cmd.se_tmr_req->response = TMR_FUNCTION_REJECTED;
@@ -3171,9 +3206,7 @@ static void srpt_add_one(struct ib_device *device)
 	pr_debug("device = %p, device->dma_ops = %p\n", device,
 		 device->dma_ops);
 
-	sdev = kzalloc(sizeof(*sdev) +
-		       device->phys_port_cnt * sizeof(*sdev->port),
-		       GFP_KERNEL);
+	sdev = kzalloc(sizeof *sdev, GFP_KERNEL);
 	if (!sdev)
 		goto err;
 
@@ -3245,6 +3278,8 @@ static void srpt_add_one(struct ib_device *device)
 
 	for (i = 0; i < sdev->srq_size; ++i)
 		srpt_post_recv(sdev, sdev->ioctx_ring[i]);
+
+	WARN_ON(sdev->device->phys_port_cnt > ARRAY_SIZE(sdev->port));
 
 	for (i = 1; i <= sdev->device->phys_port_cnt; i++) {
 		sport = &sdev->port[i - 1];
@@ -3544,10 +3579,10 @@ static int srpt_parse_i_port_id(u8 i_port_id[16], const char *name)
 {
 	const char *p;
 	unsigned len, count, leading_zero_bytes;
-	int ret;
+	int ret, rc;
 
 	p = name;
-	if (strnicmp(p, "0x", 2) == 0)
+	if (strncasecmp(p, "0x", 2) == 0)
 		p += 2;
 	ret = -EINVAL;
 	len = strlen(p);
@@ -3556,9 +3591,10 @@ static int srpt_parse_i_port_id(u8 i_port_id[16], const char *name)
 	count = min(len / 2, 16U);
 	leading_zero_bytes = 16 - count;
 	memset(i_port_id, 0, leading_zero_bytes);
-	ret = hex2bin(i_port_id + leading_zero_bytes, p, count);
-	if (ret < 0)
-		pr_debug("hex2bin failed for srpt_parse_i_port_id: %d\n", ret);
+	rc = hex2bin(i_port_id + leading_zero_bytes, p, count);
+	if (rc < 0)
+		pr_debug("hex2bin failed for srpt_parse_i_port_id: %d\n", rc);
+	ret = 0;
 out:
 	return ret;
 }

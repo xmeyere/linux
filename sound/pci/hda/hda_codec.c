@@ -338,10 +338,8 @@ int snd_hda_get_sub_nodes(struct hda_codec *codec, hda_nid_t nid,
 	unsigned int parm;
 
 	parm = snd_hda_param_read(codec, nid, AC_PAR_NODE_COUNT);
-	if (parm == -1) {
-		*start_id = 0;
+	if (parm == -1)
 		return 0;
-	}
 	*start_id = (parm >> 16) & 0x7fff;
 	return (int)(parm & 0x7fff);
 }
@@ -1478,6 +1476,7 @@ int snd_hda_codec_new(struct hda_bus *bus,
 
 	INIT_DELAYED_WORK(&codec->jackpoll_work, hda_jackpoll_work);
 	codec->depop_delay = -1;
+	codec->fixup_id = HDA_FIXUP_ID_NOT_SET;
 
 #ifdef CONFIG_PM
 	spin_lock_init(&codec->power_lock);
@@ -2001,6 +2000,26 @@ u32 query_amp_caps(struct hda_codec *codec, hda_nid_t nid, int direction)
 			       read_amp_cap);
 }
 EXPORT_SYMBOL_GPL(query_amp_caps);
+
+/**
+ * snd_hda_check_amp_caps - query AMP capabilities
+ * @codec: the HD-audio codec
+ * @nid: the NID to query
+ * @dir: either #HDA_INPUT or #HDA_OUTPUT
+ *
+ * Check whether the widget has the given amp capability for the direction.
+ */
+bool snd_hda_check_amp_caps(struct hda_codec *codec, hda_nid_t nid,
+			   int dir, unsigned int bits)
+{
+	if (!nid)
+		return false;
+	if (get_wcaps(codec, nid) & (1 << (dir + 1)))
+		if (query_amp_caps(codec, nid, dir) & bits)
+			return true;
+	return false;
+}
+EXPORT_SYMBOL_GPL(snd_hda_check_amp_caps);
 
 /**
  * snd_hda_override_amp_caps - Override the AMP capabilities
@@ -2729,7 +2748,7 @@ int snd_hda_codec_reset(struct hda_codec *codec)
 	return 0;
 }
 
-typedef int (*map_slave_func_t)(void *, struct snd_kcontrol *);
+typedef int (*map_slave_func_t)(struct hda_codec *, void *, struct snd_kcontrol *);
 
 /* apply the function to all matching slave ctls in the mixer list */
 static int map_slaves(struct hda_codec *codec, const char * const *slaves,
@@ -2753,7 +2772,7 @@ static int map_slaves(struct hda_codec *codec, const char * const *slaves,
 				name = tmpname;
 			}
 			if (!strcmp(sctl->id.name, name)) {
-				err = func(data, sctl);
+				err = func(codec, data, sctl);
 				if (err)
 					return err;
 				break;
@@ -2763,13 +2782,15 @@ static int map_slaves(struct hda_codec *codec, const char * const *slaves,
 	return 0;
 }
 
-static int check_slave_present(void *data, struct snd_kcontrol *sctl)
+static int check_slave_present(struct hda_codec *codec,
+			       void *data, struct snd_kcontrol *sctl)
 {
 	return 1;
 }
 
 /* guess the value corresponding to 0dB */
-static int get_kctl_0dB_offset(struct snd_kcontrol *kctl, int *step_to_check)
+static int get_kctl_0dB_offset(struct hda_codec *codec,
+			       struct snd_kcontrol *kctl, int *step_to_check)
 {
 	int _tlv[4];
 	const int *tlv = NULL;
@@ -2790,8 +2811,8 @@ static int get_kctl_0dB_offset(struct snd_kcontrol *kctl, int *step_to_check)
 		if (!step)
 			return -1;
 		if (*step_to_check && *step_to_check != step) {
-			snd_printk(KERN_ERR "hda_codec: Mismatching dB step for vmaster slave (%d!=%d)\n",
-				   *step_to_check, step);
+			codec_err(codec, "Mismatching dB step for vmaster slave (%d!=%d)\n",
+-				   *step_to_check, step);
 			return -1;
 		}
 		*step_to_check = step;
@@ -2815,18 +2836,26 @@ static int put_kctl_with_value(struct snd_kcontrol *kctl, int val)
 }
 
 /* initialize the slave volume with 0dB */
-static int init_slave_0dB(void *data, struct snd_kcontrol *slave)
+static int init_slave_0dB(struct hda_codec *codec,
+			  void *data, struct snd_kcontrol *slave)
 {
-	int offset = get_kctl_0dB_offset(slave, data);
+	int offset = get_kctl_0dB_offset(codec, slave, data);
 	if (offset > 0)
 		put_kctl_with_value(slave, offset);
 	return 0;
 }
 
 /* unmute the slave */
-static int init_slave_unmute(void *data, struct snd_kcontrol *slave)
+static int init_slave_unmute(struct hda_codec *codec,
+			     void *data, struct snd_kcontrol *slave)
 {
 	return put_kctl_with_value(slave, 1);
+}
+
+static int add_slave(struct hda_codec *codec,
+		     void *data, struct snd_kcontrol *slave)
+{
+	return snd_ctl_add_slave(data, slave);
 }
 
 /**
@@ -2871,8 +2900,7 @@ int __snd_hda_add_vmaster(struct hda_codec *codec, char *name,
 	if (err < 0)
 		return err;
 
-	err = map_slaves(codec, slaves, suffix,
-			 (map_slave_func_t)snd_ctl_add_slave, kctl);
+	err = map_slaves(codec, slaves, suffix, add_slave, kctl);
 	if (err < 0)
 		return err;
 
@@ -2942,16 +2970,6 @@ static struct snd_kcontrol_new vmaster_mute_mode = {
 	.put = vmaster_mute_mode_put,
 };
 
-/* meta hook to call each driver's vmaster hook */
-static void vmaster_hook(void *private_data, int enabled)
-{
-	struct hda_vmaster_mute_hook *hook = private_data;
-
-	if (hook->mute_mode != HDA_VMUTE_FOLLOW_MASTER)
-		enabled = hook->mute_mode;
-	hook->hook(hook->codec, enabled);
-}
-
 /*
  * Add a mute-LED hook with the given vmaster switch kctl
  * "Mute-LED Mode" control is automatically created and associated with
@@ -2965,9 +2983,9 @@ int snd_hda_add_vmaster_hook(struct hda_codec *codec,
 
 	if (!hook->hook || !hook->sw_kctl)
 		return 0;
+	snd_ctl_add_vmaster_hook(hook->sw_kctl, hook->hook, codec);
 	hook->codec = codec;
 	hook->mute_mode = HDA_VMUTE_FOLLOW_MASTER;
-	snd_ctl_add_vmaster_hook(hook->sw_kctl, vmaster_hook, hook);
 	if (!expose_enum_ctl)
 		return 0;
 	kctl = snd_ctl_new1(&vmaster_mute_mode, hook);
@@ -2990,7 +3008,14 @@ void snd_hda_sync_vmaster_hook(struct hda_vmaster_mute_hook *hook)
 	 */
 	if (hook->codec->bus->shutdown)
 		return;
-	snd_ctl_sync_vmaster_hook(hook->sw_kctl);
+	switch (hook->mute_mode) {
+	case HDA_VMUTE_FOLLOW_MASTER:
+		snd_ctl_sync_vmaster_hook(hook->sw_kctl);
+		break;
+	default:
+		hook->hook(hook->codec, hook->mute_mode);
+		break;
+	}
 }
 EXPORT_SYMBOL_GPL(snd_hda_sync_vmaster_hook);
 
@@ -4285,6 +4310,7 @@ static struct hda_rate_tbl rate_bits[] = {
 
 /**
  * snd_hda_calc_stream_format - calculate format bitset
+ * @codec: HD-audio codec
  * @rate: the sample rate
  * @channels: the number of channels
  * @format: the PCM format (SNDRV_PCM_FORMAT_XXX)
@@ -4294,7 +4320,8 @@ static struct hda_rate_tbl rate_bits[] = {
  *
  * Return zero if invalid.
  */
-unsigned int snd_hda_calc_stream_format(unsigned int rate,
+unsigned int snd_hda_calc_stream_format(struct hda_codec *codec,
+					unsigned int rate,
 					unsigned int channels,
 					unsigned int format,
 					unsigned int maxbps,
@@ -4309,12 +4336,12 @@ unsigned int snd_hda_calc_stream_format(unsigned int rate,
 			break;
 		}
 	if (!rate_bits[i].hz) {
-		snd_printdd("invalid rate %d\n", rate);
+		codec_dbg(codec, "invalid rate %d\n", rate);
 		return 0;
 	}
 
 	if (channels == 0 || channels > 8) {
-		snd_printdd("invalid channels %d\n", channels);
+		codec_dbg(codec, "invalid channels %d\n", channels);
 		return 0;
 	}
 	val |= channels - 1;
@@ -4337,7 +4364,7 @@ unsigned int snd_hda_calc_stream_format(unsigned int rate,
 			val |= AC_FMT_BITS_20;
 		break;
 	default:
-		snd_printdd("invalid format width %d\n",
+		codec_dbg(codec, "invalid format width %d\n",
 			  snd_pcm_format_width(format));
 		return 0;
 	}
@@ -4808,121 +4835,6 @@ int snd_hda_build_pcms(struct hda_bus *bus)
 	return 0;
 }
 EXPORT_SYMBOL_GPL(snd_hda_build_pcms);
-
-/**
- * snd_hda_check_board_config - compare the current codec with the config table
- * @codec: the HDA codec
- * @num_configs: number of config enums
- * @models: array of model name strings
- * @tbl: configuration table, terminated by null entries
- *
- * Compares the modelname or PCI subsystem id of the current codec with the
- * given configuration table.  If a matching entry is found, returns its
- * config value (supposed to be 0 or positive).
- *
- * If no entries are matching, the function returns a negative value.
- */
-int snd_hda_check_board_config(struct hda_codec *codec,
-			       int num_configs, const char * const *models,
-			       const struct snd_pci_quirk *tbl)
-{
-	if (codec->modelname && models) {
-		int i;
-		for (i = 0; i < num_configs; i++) {
-			if (models[i] &&
-			    !strcmp(codec->modelname, models[i])) {
-				codec_info(codec, "model '%s' is selected\n",
-					   models[i]);
-				return i;
-			}
-		}
-	}
-
-	if (!codec->bus->pci || !tbl)
-		return -1;
-
-	tbl = snd_pci_quirk_lookup(codec->bus->pci, tbl);
-	if (!tbl)
-		return -1;
-	if (tbl->value >= 0 && tbl->value < num_configs) {
-#ifdef CONFIG_SND_DEBUG_VERBOSE
-		char tmp[10];
-		const char *model = NULL;
-		if (models)
-			model = models[tbl->value];
-		if (!model) {
-			sprintf(tmp, "#%d", tbl->value);
-			model = tmp;
-		}
-		codec_info(codec, "model '%s' is selected for config %x:%x (%s)\n",
-			   model, tbl->subvendor, tbl->subdevice,
-			   (tbl->name ? tbl->name : "Unknown device"));
-#endif
-		return tbl->value;
-	}
-	return -1;
-}
-EXPORT_SYMBOL_GPL(snd_hda_check_board_config);
-
-/**
- * snd_hda_check_board_codec_sid_config - compare the current codec
-					subsystem ID with the
-					config table
-
-	   This is important for Gateway notebooks with SB450 HDA Audio
-	   where the vendor ID of the PCI device is:
-		ATI Technologies Inc SB450 HDA Audio [1002:437b]
-	   and the vendor/subvendor are found only at the codec.
-
- * @codec: the HDA codec
- * @num_configs: number of config enums
- * @models: array of model name strings
- * @tbl: configuration table, terminated by null entries
- *
- * Compares the modelname or PCI subsystem id of the current codec with the
- * given configuration table.  If a matching entry is found, returns its
- * config value (supposed to be 0 or positive).
- *
- * If no entries are matching, the function returns a negative value.
- */
-int snd_hda_check_board_codec_sid_config(struct hda_codec *codec,
-			       int num_configs, const char * const *models,
-			       const struct snd_pci_quirk *tbl)
-{
-	const struct snd_pci_quirk *q;
-
-	/* Search for codec ID */
-	for (q = tbl; q->subvendor; q++) {
-		unsigned int mask = 0xffff0000 | q->subdevice_mask;
-		unsigned int id = (q->subdevice | (q->subvendor << 16)) & mask;
-		if ((codec->subsystem_id & mask) == id)
-			break;
-	}
-
-	if (!q->subvendor)
-		return -1;
-
-	tbl = q;
-
-	if (tbl->value >= 0 && tbl->value < num_configs) {
-#ifdef CONFIG_SND_DEBUG_VERBOSE
-		char tmp[10];
-		const char *model = NULL;
-		if (models)
-			model = models[tbl->value];
-		if (!model) {
-			sprintf(tmp, "#%d", tbl->value);
-			model = tmp;
-		}
-		codec_info(codec, "model '%s' is selected for config %x:%x (%s)\n",
-			   model, tbl->subvendor, tbl->subdevice,
-			   (tbl->name ? tbl->name : "Unknown device"));
-#endif
-		return tbl->value;
-	}
-	return -1;
-}
-EXPORT_SYMBOL_GPL(snd_hda_check_board_codec_sid_config);
 
 /**
  * snd_hda_add_new_ctls - create controls from the array
@@ -5675,12 +5587,13 @@ EXPORT_SYMBOL_GPL(_snd_hda_set_pin_ctl);
  * suffix is appended to the label.  This label index number is stored
  * to type_idx when non-NULL pointer is given.
  */
-int snd_hda_add_imux_item(struct hda_input_mux *imux, const char *label,
+int snd_hda_add_imux_item(struct hda_codec *codec,
+			  struct hda_input_mux *imux, const char *label,
 			  int index, int *type_idx)
 {
 	int i, label_idx = 0;
 	if (imux->num_items >= HDA_MAX_NUM_INPUTS) {
-		snd_printd(KERN_ERR "hda_codec: Too many imux items!\n");
+		codec_err(codec, "hda_codec: Too many imux items!\n");
 		return -EINVAL;
 	}
 	for (i = 0; i < imux->num_items; i++) {
@@ -5793,15 +5706,13 @@ void *snd_array_new(struct snd_array *array)
 		return NULL;
 	if (array->used >= array->alloced) {
 		int num = array->alloced + array->alloc_align;
-		int oldsize = array->alloced * array->elem_size;
 		int size = (num + 1) * array->elem_size;
 		void *nlist;
 		if (snd_BUG_ON(num >= 4096))
 			return NULL;
-		nlist = krealloc(array->list, size, GFP_KERNEL);
+		nlist = krealloc(array->list, size, GFP_KERNEL | __GFP_ZERO);
 		if (!nlist)
 			return NULL;
-		memset(nlist + oldsize, 0, size - oldsize);
 		array->list = nlist;
 		array->alloced = num;
 	}

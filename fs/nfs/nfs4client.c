@@ -33,7 +33,7 @@ static int nfs_get_cb_ident_idr(struct nfs_client *clp, int minorversion)
 		return ret;
 	idr_preload(GFP_KERNEL);
 	spin_lock(&nn->nfs_client_lock);
-	ret = idr_alloc(&nn->cb_ident_idr, clp, 1, 0, GFP_NOWAIT);
+	ret = idr_alloc(&nn->cb_ident_idr, clp, 0, 0, GFP_NOWAIT);
 	if (ret >= 0)
 		clp->cl_cb_ident = ret;
 	spin_unlock(&nn->nfs_client_lock);
@@ -572,13 +572,19 @@ static bool nfs4_match_clientids(struct nfs_client *a, struct nfs_client *b)
 }
 
 /*
- * Returns true if the server major ids match
+ * Returns true if the server owners match
  */
 static bool
-nfs4_check_clientid_trunking(struct nfs_client *a, struct nfs_client *b)
+nfs4_match_serverowners(struct nfs_client *a, struct nfs_client *b)
 {
 	struct nfs41_server_owner *o1 = a->cl_serverowner;
 	struct nfs41_server_owner *o2 = b->cl_serverowner;
+
+	if (o1->minor_id != o2->minor_id) {
+		dprintk("NFS: --> %s server owner minor IDs do not match\n",
+			__func__);
+		return false;
+	}
 
 	if (o1->major_id_sz != o2->major_id_sz)
 		goto out_major_mismatch;
@@ -640,7 +646,7 @@ int nfs41_walk_client_list(struct nfs_client *new,
 			prev = pos;
 
 			status = nfs_wait_client_init_complete(pos);
-			if (pos->cl_cons_state == NFS_CS_SESSION_INITING) {
+			if (status == 0) {
 				nfs4_schedule_lease_recovery(pos);
 				status = nfs4_wait_clnt_recover(pos);
 			}
@@ -655,12 +661,7 @@ int nfs41_walk_client_list(struct nfs_client *new,
 		if (!nfs4_match_clientids(pos, new))
 			continue;
 
-		/*
-		 * Note that session trunking is just a special subcase of
-		 * client id trunking. In either case, we want to fall back
-		 * to using the existing nfs_client.
-		 */
-		if (!nfs4_check_clientid_trunking(pos, new))
+		if (!nfs4_match_serverowners(pos, new))
 			continue;
 
 		atomic_inc(&pos->cl_count);
@@ -682,12 +683,9 @@ int nfs41_walk_client_list(struct nfs_client *new,
 
 static void nfs4_destroy_server(struct nfs_server *server)
 {
-	LIST_HEAD(freeme);
-
 	nfs_server_return_all_delegations(server);
 	unset_pnfs_layoutdriver(server);
-	nfs4_purge_state_owners(server, &freeme);
-	nfs4_free_state_owners(&freeme);
+	nfs4_purge_state_owners(server);
 }
 
 /*
@@ -859,6 +857,11 @@ struct nfs_client *nfs4_set_ds_client(struct nfs_client* mds_clp,
 	};
 	struct rpc_timeout ds_timeout;
 	struct nfs_client *clp;
+	char buf[INET6_ADDRSTRLEN + 1];
+
+	if (rpc_ntop(ds_addr, buf, sizeof(buf)) <= 0)
+		return ERR_PTR(-EINVAL);
+	cl_init.hostname = buf;
 
 	/*
 	 * Set an authflavor equual to the MDS value. Use the MDS nfs_client

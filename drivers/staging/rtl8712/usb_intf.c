@@ -144,7 +144,6 @@ static struct usb_device_id rtl871x_usb_id_tbl[] = {
 	{USB_DEVICE(0x0DF6, 0x0058)},
 	{USB_DEVICE(0x0DF6, 0x0049)},
 	{USB_DEVICE(0x0DF6, 0x004C)},
-	{USB_DEVICE(0x0DF6, 0x006C)},
 	{USB_DEVICE(0x0DF6, 0x0064)},
 	/* Skyworth */
 	{USB_DEVICE(0x14b2, 0x3300)},
@@ -269,7 +268,7 @@ static uint r8712_usb_dvobj_init(struct _adapter *padapter)
 	pdev_desc = &pusbd->descriptor;
 	phost_conf = pusbd->actconfig;
 	pconf_desc = &phost_conf->desc;
-	phost_iface = pintf->cur_altsetting;
+	phost_iface = &pintf->altsetting[0];
 	piface_desc = &phost_iface->desc;
 	pdvobjpriv->nr_endpoint = piface_desc->bNumEndpoints;
 	if (pusbd->speed == USB_SPEED_HIGH) {
@@ -582,9 +581,11 @@ static int r871xu_drv_init(struct usb_interface *pusb_intf,
 			 * address by setting bit 1 of first octet.
 			 */
 			mac[0] &= 0xFE;
-			dev_info(&udev->dev, "r8712u: MAC Address from user = %pM\n", mac);
+			dev_info(&udev->dev,
+				"r8712u: MAC Address from user = %pM\n", mac);
 		} else
-			dev_info(&udev->dev, "r8712u: MAC Address from efuse = %pM\n", mac);
+			dev_info(&udev->dev,
+				"r8712u: MAC Address from efuse = %pM\n", mac);
 		memcpy(pnetdev->dev_addr, mac, ETH_ALEN);
 	}
 	/* step 6. Load the firmware asynchronously */
@@ -608,37 +609,34 @@ error:
 static void r871xu_dev_remove(struct usb_interface *pusb_intf)
 {
 	struct net_device *pnetdev = usb_get_intfdata(pusb_intf);
-	struct _adapter *padapter = netdev_priv(pnetdev);
 	struct usb_device *udev = interface_to_usbdev(pusb_intf);
 
-	usb_set_intfdata(pusb_intf, NULL);
-	if (padapter->fw_found)
+	if (pnetdev) {
+		struct _adapter *padapter = netdev_priv(pnetdev);
+
+		usb_set_intfdata(pusb_intf, NULL);
 		release_firmware(padapter->fw);
-	/* never exit with a firmware callback pending */
-	wait_for_completion(&padapter->rtl8712_fw_ready);
-	if (drvpriv.drv_registered == true)
-		padapter->bSurpriseRemoved = true;
-	if (pnetdev != NULL) {
-		/* will call netdev_close() */
-		unregister_netdev(pnetdev);
-	}
-	flush_scheduled_work();
-	udelay(1);
-	/*Stop driver mlme relation timer */
-	if (padapter->fw_found)
+		/* never exit with a firmware callback pending */
+		wait_for_completion(&padapter->rtl8712_fw_ready);
+		if (drvpriv.drv_registered == true)
+			padapter->bSurpriseRemoved = true;
+		unregister_netdev(pnetdev); /* will call netdev_close() */
+		flush_scheduled_work();
+		udelay(1);
+		/* Stop driver mlme relation timer */
 		r8712_stop_drv_timers(padapter);
-	r871x_dev_unload(padapter);
-	r8712_free_drv_sw(padapter);
-	usb_set_intfdata(pusb_intf, NULL);
-	/* decrease the reference count of the usb device structure
-	 * when disconnect */
-	usb_put_dev(udev);
+		r871x_dev_unload(padapter);
+		r8712_free_drv_sw(padapter);
+
+		/* decrease the reference count of the usb device structure
+		 * when disconnect */
+		usb_put_dev(udev);
+	}
 	/* If we didn't unplug usb dongle and remove/insert module, driver
 	 * fails on sitesurvey for the first time when device is up.
 	 * Reset usb port for sitesurvey fail issue. */
 	if (udev->state != USB_STATE_NOTATTACHED)
 		usb_reset_device(udev);
-	return;
 }
 
 static int __init r8712u_drv_entry(void)

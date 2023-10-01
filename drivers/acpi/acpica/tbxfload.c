@@ -166,8 +166,7 @@ static acpi_status acpi_tb_load_namespace(void)
 
 	(void)acpi_ut_acquire_mutex(ACPI_MTX_TABLES);
 	for (i = 0; i < acpi_gbl_root_table_list.current_table_count; ++i) {
-		if (!acpi_gbl_root_table_list.tables[i].address ||
-		    (!ACPI_COMPARE_NAME
+		if ((!ACPI_COMPARE_NAME
 		     (&(acpi_gbl_root_table_list.tables[i].signature),
 		      ACPI_SIG_SSDT)
 		     &&

@@ -12,7 +12,6 @@
 #include <linux/pm.h>
 #include <linux/io.h>
 
-#include <asm/cpufeature.h>
 #include <asm/fixmap.h>
 #include <asm/hpet.h>
 #include <asm/time.h>

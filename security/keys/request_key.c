@@ -21,24 +21,6 @@
 
 #define key_negative_timeout	60	/* default timeout on a negative key's existence */
 
-/*
- * wait_on_bit() sleep function for uninterruptible waiting
- */
-static int key_wait_bit(void *flags)
-{
-	schedule();
-	return 0;
-}
-
-/*
- * wait_on_bit() sleep function for interruptible waiting
- */
-static int key_wait_bit_intr(void *flags)
-{
-	schedule();
-	return signal_pending(current) ? -ERESTARTSYS : 0;
-}
-
 /**
  * complete_request_key - Complete the construction of a key.
  * @cons: The key construction record.
@@ -268,12 +250,11 @@ static int construct_key(struct key *key, const void *callout_info,
  * The keyring selected is returned with an extra reference upon it which the
  * caller must release.
  */
-static int construct_get_dest_keyring(struct key **_dest_keyring)
+static void construct_get_dest_keyring(struct key **_dest_keyring)
 {
 	struct request_key_auth *rka;
 	const struct cred *cred = current_cred();
 	struct key *dest_keyring = *_dest_keyring, *authkey;
-	int ret;
 
 	kenter("%p", dest_keyring);
 
@@ -282,8 +263,6 @@ static int construct_get_dest_keyring(struct key **_dest_keyring)
 		/* the caller supplied one */
 		key_get(dest_keyring);
 	} else {
-		bool do_perm_check = true;
-
 		/* use a default keyring; falling through the cases until we
 		 * find one that we actually have */
 		switch (cred->jit_keyring) {
@@ -298,10 +277,8 @@ static int construct_get_dest_keyring(struct key **_dest_keyring)
 					dest_keyring =
 						key_get(rka->dest_keyring);
 				up_read(&authkey->sem);
-				if (dest_keyring) {
-					do_perm_check = false;
+				if (dest_keyring)
 					break;
-				}
 			}
 
 		case KEY_REQKEY_DEFL_THREAD_KEYRING:
@@ -336,29 +313,11 @@ static int construct_get_dest_keyring(struct key **_dest_keyring)
 		default:
 			BUG();
 		}
-
-		/*
-		 * Require Write permission on the keyring.  This is essential
-		 * because the default keyring may be the session keyring, and
-		 * joining a keyring only requires Search permission.
-		 *
-		 * However, this check is skipped for the "requestor keyring" so
-		 * that /sbin/request-key can itself use request_key() to add
-		 * keys to the original requestor's destination keyring.
-		 */
-		if (dest_keyring && do_perm_check) {
-			ret = key_permission(make_key_ref(dest_keyring, 1),
-					     KEY_NEED_WRITE);
-			if (ret) {
-				key_put(dest_keyring);
-				return ret;
-			}
-		}
 	}
 
 	*_dest_keyring = dest_keyring;
 	kleave(" [dk %d]", key_serial(dest_keyring));
-	return 0;
+	return;
 }
 
 /*
@@ -480,18 +439,11 @@ static struct key *construct_key_and_link(struct keyring_search_context *ctx,
 
 	kenter("");
 
-	if (ctx->index_key.type == &key_type_keyring)
-		return ERR_PTR(-EPERM);
-	
-	ret = construct_get_dest_keyring(&dest_keyring);
-	if (ret)
-		goto error;
-
 	user = key_user_lookup(current_fsuid());
-	if (!user) {
-		ret = -ENOMEM;
-		goto error_put_dest_keyring;
-	}
+	if (!user)
+		return ERR_PTR(-ENOMEM);
+
+	construct_get_dest_keyring(&dest_keyring);
 
 	ret = construct_alloc_key(ctx, dest_keyring, flags, user, &key);
 	key_user_put(user);
@@ -506,7 +458,7 @@ static struct key *construct_key_and_link(struct keyring_search_context *ctx,
 	} else if (ret == -EINPROGRESS) {
 		ret = 0;
 	} else {
-		goto error_put_dest_keyring;
+		goto couldnt_alloc_key;
 	}
 
 	key_put(dest_keyring);
@@ -516,9 +468,8 @@ static struct key *construct_key_and_link(struct keyring_search_context *ctx,
 construction_failed:
 	key_negate_and_link(key, key_negative_timeout, NULL, NULL);
 	key_put(key);
-error_put_dest_keyring:
+couldnt_alloc_key:
 	key_put(dest_keyring);
-error:
 	kleave(" = %d", ret);
 	return ERR_PTR(ret);
 }
@@ -561,11 +512,12 @@ struct key *request_key_and_link(struct key_type *type,
 	struct keyring_search_context ctx = {
 		.index_key.type		= type,
 		.index_key.description	= description,
-		.index_key.desc_len	= strlen(description),
 		.cred			= current_cred(),
-		.match			= type->match,
-		.match_data		= description,
-		.flags			= KEYRING_SEARCH_LOOKUP_DIRECT,
+		.match_data.cmp		= key_default_cmp,
+		.match_data.raw_data	= description,
+		.match_data.lookup_type	= KEYRING_SEARCH_LOOKUP_DIRECT,
+		.flags			= (KEYRING_SEARCH_DO_STATE_CHECK |
+					   KEYRING_SEARCH_SKIP_EXPIRED),
 	};
 	struct key *key;
 	key_ref_t key_ref;
@@ -574,6 +526,14 @@ struct key *request_key_and_link(struct key_type *type,
 	kenter("%s,%s,%p,%zu,%p,%p,%lx",
 	       ctx.index_key.type->name, ctx.index_key.description,
 	       callout_info, callout_len, aux, dest_keyring, flags);
+
+	if (type->match_preparse) {
+		ret = type->match_preparse(&ctx.match_data);
+		if (ret < 0) {
+			key = ERR_PTR(ret);
+			goto error;
+		}
+	}
 
 	/* search all the process keyrings for a key */
 	key_ref = search_process_keyrings(&ctx);
@@ -587,7 +547,7 @@ struct key *request_key_and_link(struct key_type *type,
 			if (ret < 0) {
 				key_put(key);
 				key = ERR_PTR(ret);
-				goto error;
+				goto error_free;
 			}
 		}
 	} else if (PTR_ERR(key_ref) != -EAGAIN) {
@@ -597,12 +557,15 @@ struct key *request_key_and_link(struct key_type *type,
 		 * should consult userspace if we can */
 		key = ERR_PTR(-ENOKEY);
 		if (!callout_info)
-			goto error;
+			goto error_free;
 
 		key = construct_key_and_link(&ctx, callout_info, callout_len,
 					     aux, dest_keyring, flags);
 	}
 
+error_free:
+	if (type->match_free)
+		type->match_free(&ctx.match_data);
 error:
 	kleave(" = %p", key);
 	return key;
@@ -624,10 +587,9 @@ int wait_for_key_construction(struct key *key, bool intr)
 	int ret;
 
 	ret = wait_on_bit(&key->flags, KEY_FLAG_USER_CONSTRUCT,
-			  intr ? key_wait_bit_intr : key_wait_bit,
 			  intr ? TASK_INTERRUPTIBLE : TASK_UNINTERRUPTIBLE);
-	if (ret < 0)
-		return ret;
+	if (ret)
+		return -ERESTARTSYS;
 	if (test_bit(KEY_FLAG_NEGATIVE, &key->flags)) {
 		smp_rmb();
 		return key->type_data.reject_error;

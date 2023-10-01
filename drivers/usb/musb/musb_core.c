@@ -99,7 +99,6 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
-#include <linux/usb.h>
 
 #include "musb_core.h"
 
@@ -132,7 +131,7 @@ static inline struct musb *dev_to_musb(struct device *dev)
 /*-------------------------------------------------------------------------*/
 
 #ifndef CONFIG_BLACKFIN
-static int musb_ulpi_read(struct usb_phy *phy, u32 reg)
+static int musb_ulpi_read(struct usb_phy *phy, u32 offset)
 {
 	void __iomem *addr = phy->io_priv;
 	int	i = 0;
@@ -151,7 +150,7 @@ static int musb_ulpi_read(struct usb_phy *phy, u32 reg)
 	 * ULPICarKitControlDisableUTMI after clearing POWER_SUSPENDM.
 	 */
 
-	musb_writeb(addr, MUSB_ULPI_REG_ADDR, (u8)reg);
+	musb_writeb(addr, MUSB_ULPI_REG_ADDR, (u8)offset);
 	musb_writeb(addr, MUSB_ULPI_REG_CONTROL,
 			MUSB_ULPI_REG_REQ | MUSB_ULPI_RDN_WR);
 
@@ -176,7 +175,7 @@ out:
 	return ret;
 }
 
-static int musb_ulpi_write(struct usb_phy *phy, u32 val, u32 reg)
+static int musb_ulpi_write(struct usb_phy *phy, u32 offset, u32 data)
 {
 	void __iomem *addr = phy->io_priv;
 	int	i = 0;
@@ -191,8 +190,8 @@ static int musb_ulpi_write(struct usb_phy *phy, u32 val, u32 reg)
 	power &= ~MUSB_POWER_SUSPENDM;
 	musb_writeb(addr, MUSB_POWER, power);
 
-	musb_writeb(addr, MUSB_ULPI_REG_ADDR, (u8)reg);
-	musb_writeb(addr, MUSB_ULPI_REG_DATA, (u8)val);
+	musb_writeb(addr, MUSB_ULPI_REG_ADDR, (u8)offset);
+	musb_writeb(addr, MUSB_ULPI_REG_DATA, (u8)data);
 	musb_writeb(addr, MUSB_ULPI_REG_CONTROL, MUSB_ULPI_REG_REQ);
 
 	while (!(musb_readb(addr, MUSB_ULPI_REG_CONTROL)
@@ -478,10 +477,10 @@ static irqreturn_t musb_stage0_irq(struct musb *musb, u8 int_usb,
 						(USB_PORT_STAT_C_SUSPEND << 16)
 						| MUSB_PORT_STAT_RESUME;
 				musb->rh_timer = jiffies
-					+ msecs_to_jiffies(USB_RESUME_TIMEOUT);
+						 + msecs_to_jiffies(20);
 				schedule_delayed_work(
 					&musb->finish_resume_work,
-					msecs_to_jiffies(USB_RESUME_TIMEOUT));
+					msecs_to_jiffies(20));
 
 				musb->xceiv->state = OTG_STATE_A_HOST;
 				musb->is_active = 1;
@@ -851,7 +850,8 @@ b_host:
 
 	/* handle babble condition */
 	if (int_usb & MUSB_INTR_BABBLE && is_host_active(musb))
-		schedule_work(&musb->recover_work);
+		schedule_delayed_work(&musb->recover_work,
+				      msecs_to_jiffies(100));
 
 #if 0
 /* REVISIT ... this would be for multiplexing periodic endpoints, or
@@ -1518,65 +1518,57 @@ irqreturn_t musb_interrupt(struct musb *musb)
 	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
 
 	dev_dbg(musb->controller, "** IRQ %s usb%04x tx%04x rx%04x\n",
-		(devctl & MUSB_DEVCTL_HM) ? "host" : "peripheral",
+		is_host_active(musb) ? "host" : "peripheral",
 		musb->int_usb, musb->int_tx, musb->int_rx);
 
-	/**
-	 * According to Mentor Graphics' documentation, flowchart on page 98,
-	 * IRQ should be handled as follows:
-	 *
-	 * . Resume IRQ
-	 * . Session Request IRQ
-	 * . VBUS Error IRQ
-	 * . Suspend IRQ
-	 * . Connect IRQ
-	 * . Disconnect IRQ
-	 * . Reset/Babble IRQ
-	 * . SOF IRQ (we're not using this one)
-	 * . Endpoint 0 IRQ
-	 * . TX Endpoints
-	 * . RX Endpoints
-	 *
-	 * We will be following that flowchart in order to avoid any problems
-	 * that might arise with internal Finite State Machine.
+	/* the core can interrupt us for multiple reasons; docs have
+	 * a generic interrupt flowchart to follow
 	 */
-
 	if (musb->int_usb)
 		retval |= musb_stage0_irq(musb, musb->int_usb,
 				devctl);
 
+	/* "stage 1" is handling endpoint irqs */
+
+	/* handle endpoint 0 first */
 	if (musb->int_tx & 1) {
-		if (devctl & MUSB_DEVCTL_HM)
+		if (is_host_active(musb))
 			retval |= musb_h_ep0_irq(musb);
 		else
 			retval |= musb_g_ep0_irq(musb);
 	}
 
-	reg = musb->int_tx >> 1;
-	ep_num = 1;
-	while (reg) {
-		if (reg & 1) {
-			retval = IRQ_HANDLED;
-			if (devctl & MUSB_DEVCTL_HM)
-				musb_host_tx(musb, ep_num);
-			else
-				musb_g_tx(musb, ep_num);
-		}
-		reg >>= 1;
-		ep_num++;
-	}
-
+	/* RX on endpoints 1-15 */
 	reg = musb->int_rx >> 1;
 	ep_num = 1;
 	while (reg) {
 		if (reg & 1) {
+			/* musb_ep_select(musb->mregs, ep_num); */
+			/* REVISIT just retval = ep->rx_irq(...) */
 			retval = IRQ_HANDLED;
-			if (devctl & MUSB_DEVCTL_HM)
+			if (is_host_active(musb))
 				musb_host_rx(musb, ep_num);
 			else
 				musb_g_rx(musb, ep_num);
 		}
 
+		reg >>= 1;
+		ep_num++;
+	}
+
+	/* TX on endpoints 1-15 */
+	reg = musb->int_tx >> 1;
+	ep_num = 1;
+	while (reg) {
+		if (reg & 1) {
+			/* musb_ep_select(musb->mregs, ep_num); */
+			/* REVISIT just retval |= ep->tx_irq(...) */
+			retval = IRQ_HANDLED;
+			if (is_host_active(musb))
+				musb_host_tx(musb, ep_num);
+			else
+				musb_g_tx(musb, ep_num);
+		}
 		reg >>= 1;
 		ep_num++;
 	}
@@ -1594,15 +1586,13 @@ MODULE_PARM_DESC(use_dma, "enable/disable use of DMA");
 
 void musb_dma_completion(struct musb *musb, u8 epnum, u8 transmit)
 {
-	u8	devctl = musb_readb(musb->mregs, MUSB_DEVCTL);
-
 	/* called with controller lock already held */
 
 	if (!epnum) {
 #ifndef CONFIG_USB_TUSB_OMAP_DMA
 		if (!is_cppi_enabled()) {
 			/* endpoint 0 */
-			if (devctl & MUSB_DEVCTL_HM)
+			if (is_host_active(musb))
 				musb_h_ep0_irq(musb);
 			else
 				musb_g_ep0_irq(musb);
@@ -1611,13 +1601,13 @@ void musb_dma_completion(struct musb *musb, u8 epnum, u8 transmit)
 	} else {
 		/* endpoints 1..15 */
 		if (transmit) {
-			if (devctl & MUSB_DEVCTL_HM)
+			if (is_host_active(musb))
 				musb_host_tx(musb, epnum);
 			else
 				musb_g_tx(musb, epnum);
 		} else {
 			/* receive */
-			if (devctl & MUSB_DEVCTL_HM)
+			if (is_host_active(musb))
 				musb_host_rx(musb, epnum);
 			else
 				musb_g_rx(musb, epnum);
@@ -1762,20 +1752,22 @@ static void musb_irq_work(struct work_struct *data)
 /* Recover from babble interrupt conditions */
 static void musb_recover_work(struct work_struct *data)
 {
-	struct musb *musb = container_of(data, struct musb, recover_work);
-	int status;
+	struct musb *musb = container_of(data, struct musb, recover_work.work);
+	int status, ret;
 
-	musb_platform_reset(musb);
+	ret  = musb_platform_reset(musb);
+	if (ret)
+		return;
 
 	usb_phy_vbus_off(musb->xceiv);
-	udelay(100);
+	usleep_range(100, 200);
 
 	usb_phy_vbus_on(musb->xceiv);
-	udelay(100);
+	usleep_range(100, 200);
 
 	/*
-	 * When a babble condition occurs, the musb controller removes the
-	 * session bit and the endpoint config is lost.
+	 * When a babble condition occurs, the musb controller
+	 * removes the session bit and the endpoint config is lost.
 	 */
 	if (musb->dyn_fifo)
 		status = ep_config_from_table(musb);
@@ -1901,17 +1893,15 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 		goto fail0;
 	}
 
+	pm_runtime_use_autosuspend(musb->controller);
+	pm_runtime_set_autosuspend_delay(musb->controller, 200);
+	pm_runtime_enable(musb->controller);
+
 	spin_lock_init(&musb->lock);
 	musb->board_set_power = plat->set_power;
 	musb->min_power = plat->min_power;
 	musb->ops = plat->platform_ops;
 	musb->port_mode = plat->mode;
-
-	/* We need musb_read/write functions initialized for PM */
-	pm_runtime_use_autosuspend(musb->controller);
-	pm_runtime_set_autosuspend_delay(musb->controller, 200);
-	pm_runtime_irq_safe(musb->controller);
-	pm_runtime_enable(musb->controller);
 
 	/* The musb_platform_init() call:
 	 *   - adjusts musb->mregs
@@ -1956,7 +1946,7 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 
 	/* Init IRQ workqueue before request_irq */
 	INIT_WORK(&musb->irq_work, musb_irq_work);
-	INIT_WORK(&musb->recover_work, musb_recover_work);
+	INIT_DELAYED_WORK(&musb->recover_work, musb_recover_work);
 	INIT_DELAYED_WORK(&musb->deassert_reset_work, musb_deassert_reset);
 	INIT_DELAYED_WORK(&musb->finish_resume_work, musb_host_finish_resume);
 
@@ -2052,7 +2042,7 @@ fail4:
 
 fail3:
 	cancel_work_sync(&musb->irq_work);
-	cancel_work_sync(&musb->recover_work);
+	cancel_delayed_work_sync(&musb->recover_work);
 	cancel_delayed_work_sync(&musb->finish_resume_work);
 	cancel_delayed_work_sync(&musb->deassert_reset_work);
 	if (musb->dma_controller)
@@ -2118,7 +2108,7 @@ static int musb_remove(struct platform_device *pdev)
 		dma_controller_destroy(musb->dma_controller);
 
 	cancel_work_sync(&musb->irq_work);
-	cancel_work_sync(&musb->recover_work);
+	cancel_delayed_work_sync(&musb->recover_work);
 	cancel_delayed_work_sync(&musb->finish_resume_work);
 	cancel_delayed_work_sync(&musb->deassert_reset_work);
 	musb_free(musb);

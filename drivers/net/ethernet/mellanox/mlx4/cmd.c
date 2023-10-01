@@ -42,7 +42,6 @@
 #include <linux/mlx4/device.h>
 #include <linux/semaphore.h>
 #include <rdma/ib_smi.h>
-#include <linux/etherdevice.h>
 
 #include <asm/io.h>
 
@@ -581,8 +580,18 @@ static int mlx4_cmd_wait(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 
 	err = context->result;
 	if (err) {
-		mlx4_err(dev, "command 0x%x failed: fw status = 0x%x\n",
-			 op, context->fw_status);
+		/* Since we do not want to have this error message always
+		 * displayed at driver start when there are ConnectX2 HCAs
+		 * on the host, we deprecate the error message for this
+		 * specific command/input_mod/opcode_mod/fw-status to be debug.
+		 */
+		if (op == MLX4_CMD_SET_PORT && in_modifier == 1 &&
+		    op_modifier == 0 && context->fw_status == CMD_STAT_BAD_SIZE)
+			mlx4_dbg(dev, "command 0x%x failed: fw status = 0x%x\n",
+				 op, context->fw_status);
+		else
+			mlx4_err(dev, "command 0x%x failed: fw status = 0x%x\n",
+				 op, context->fw_status);
 		goto out;
 	}
 
@@ -607,20 +616,14 @@ int __mlx4_cmd(struct mlx4_dev *dev, u64 in_param, u64 *out_param,
 		return -EIO;
 
 	if (!mlx4_is_mfunc(dev) || (native && mlx4_is_master(dev))) {
-		int ret;
-
-		down_read(&mlx4_priv(dev)->cmd.switch_sem);
 		if (mlx4_priv(dev)->cmd.use_events)
-			ret = mlx4_cmd_wait(dev, in_param, out_param,
-					    out_is_imm, in_modifier,
-					    op_modifier, op, timeout);
+			return mlx4_cmd_wait(dev, in_param, out_param,
+					     out_is_imm, in_modifier,
+					     op_modifier, op, timeout);
 		else
-			ret = mlx4_cmd_poll(dev, in_param, out_param,
-					    out_is_imm, in_modifier,
-					    op_modifier, op, timeout);
-
-		up_read(&mlx4_priv(dev)->cmd.switch_sem);
-		return ret;
+			return mlx4_cmd_poll(dev, in_param, out_param,
+					     out_is_imm, in_modifier,
+					     op_modifier, op, timeout);
 	}
 	return mlx4_slave_cmd(dev, in_param, out_param, out_is_imm,
 			      in_modifier, op_modifier, op, timeout);
@@ -721,7 +724,7 @@ static int mlx4_MAD_IFC_wrapper(struct mlx4_dev *dev, int slave,
 {
 	struct ib_smp *smp = inbox->buf;
 	u32 index;
-	u8 port, slave_port;
+	u8 port;
 	u8 opcode_modifier;
 	u16 *table;
 	int err;
@@ -733,8 +736,7 @@ static int mlx4_MAD_IFC_wrapper(struct mlx4_dev *dev, int slave,
 	__be32 slave_cap_mask;
 	__be64 slave_node_guid;
 
-	slave_port = vhcr->in_modifier;
-	port = mlx4_slave_convert_port(dev, slave, slave_port);
+	port = vhcr->in_modifier;
 
 	/* network-view bit is for driver use only, and should not be passed to FW */
 	opcode_modifier = vhcr->op_modifier & ~0x8; /* clear netw view bit */
@@ -768,9 +770,8 @@ static int mlx4_MAD_IFC_wrapper(struct mlx4_dev *dev, int slave,
 			if (smp->attr_id == IB_SMP_ATTR_PORT_INFO) {
 				/*get the slave specific caps:*/
 				/*do the command */
-				smp->attr_mod = cpu_to_be32(port);
 				err = mlx4_cmd_box(dev, inbox->dma, outbox->dma,
-					    port, opcode_modifier,
+					    vhcr->in_modifier, opcode_modifier,
 					    vhcr->op, MLX4_CMD_TIME_CLASS_C, MLX4_CMD_NATIVE);
 				/* modify the response for slaves */
 				if (!err && slave != mlx4_master_func_num(dev)) {
@@ -801,7 +802,7 @@ static int mlx4_MAD_IFC_wrapper(struct mlx4_dev *dev, int slave,
 			}
 			if (smp->attr_id == IB_SMP_ATTR_NODE_INFO) {
 				err = mlx4_cmd_box(dev, inbox->dma, outbox->dma,
-					     port, opcode_modifier,
+					     vhcr->in_modifier, opcode_modifier,
 					     vhcr->op, MLX4_CMD_TIME_CLASS_C, MLX4_CMD_NATIVE);
 				if (!err) {
 					slave_node_guid =  mlx4_get_slave_node_guid(dev, slave);
@@ -1320,6 +1321,15 @@ static struct mlx4_cmd_info cmd_info[] = {
 		.wrapper = mlx4_MAD_IFC_wrapper
 	},
 	{
+		.opcode = MLX4_CMD_MAD_DEMUX,
+		.has_inbox = false,
+		.has_outbox = false,
+		.out_is_imm = false,
+		.encode_slave_id = false,
+		.verify = NULL,
+		.wrapper = mlx4_CMD_EPERM_wrapper
+	},
+	{
 		.opcode = MLX4_CMD_QUERY_IF_STAT,
 		.has_inbox = false,
 		.has_outbox = true,
@@ -1695,7 +1705,7 @@ static int mlx4_master_activate_admin_state(struct mlx4_priv *priv, int slave)
 			if (err) {
 				vp_oper->vlan_idx = NO_INDX;
 				mlx4_warn(&priv->dev,
-					  "No vlan resorces slave %d, port %d\n",
+					  "No vlan resources slave %d, port %d\n",
 					  slave, port);
 				return err;
 			}
@@ -1711,7 +1721,7 @@ static int mlx4_master_activate_admin_state(struct mlx4_priv *priv, int slave)
 				err = vp_oper->mac_idx;
 				vp_oper->mac_idx = NO_INDX;
 				mlx4_warn(&priv->dev,
-					  "No mac resorces slave %d, port %d\n",
+					  "No mac resources slave %d, port %d\n",
 					  slave, port);
 				return err;
 			}
@@ -2036,7 +2046,7 @@ int mlx4_multi_func_init(struct mlx4_dev *dev)
 			spin_lock_init(&s_state->lock);
 		}
 
-		memset(&priv->mfunc.master.cmd_eqe, 0, sizeof(struct mlx4_eqe));
+		memset(&priv->mfunc.master.cmd_eqe, 0, dev->caps.eqe_size);
 		priv->mfunc.master.cmd_eqe.type = MLX4_EVENT_TYPE_CMD;
 		INIT_WORK(&priv->mfunc.master.comm_work,
 			  mlx4_master_comm_channel);
@@ -2099,7 +2109,6 @@ int mlx4_cmd_init(struct mlx4_dev *dev)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 
-	init_rwsem(&priv->cmd.switch_sem);
 	mutex_init(&priv->cmd.hcr_mutex);
 	mutex_init(&priv->cmd.slave_cmd_mutex);
 	sema_init(&priv->cmd.poll_sem, 1);
@@ -2196,9 +2205,6 @@ int mlx4_cmd_use_events(struct mlx4_dev *dev)
 	if (!priv->cmd.context)
 		return -ENOMEM;
 
-	if (mlx4_is_mfunc(dev))
-		mutex_lock(&priv->cmd.slave_cmd_mutex);
-	down_write(&priv->cmd.switch_sem);
 	for (i = 0; i < priv->cmd.max_cmds; ++i) {
 		priv->cmd.context[i].token = i;
 		priv->cmd.context[i].next  = i + 1;
@@ -2218,9 +2224,6 @@ int mlx4_cmd_use_events(struct mlx4_dev *dev)
 
 	down(&priv->cmd.poll_sem);
 	priv->cmd.use_events = 1;
-	up_write(&priv->cmd.switch_sem);
-	if (mlx4_is_mfunc(dev))
-		mutex_unlock(&priv->cmd.slave_cmd_mutex);
 
 	return err;
 }
@@ -2233,9 +2236,6 @@ void mlx4_cmd_use_polling(struct mlx4_dev *dev)
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	int i;
 
-	if (mlx4_is_mfunc(dev))
-		mutex_lock(&priv->cmd.slave_cmd_mutex);
-	down_write(&priv->cmd.switch_sem);
 	priv->cmd.use_events = 0;
 
 	for (i = 0; i < priv->cmd.max_cmds; ++i)
@@ -2244,9 +2244,6 @@ void mlx4_cmd_use_polling(struct mlx4_dev *dev)
 	kfree(priv->cmd.context);
 
 	up(&priv->cmd.poll_sem);
-	up_write(&priv->cmd.switch_sem);
-	if (mlx4_is_mfunc(dev))
-		mutex_unlock(&priv->cmd.slave_cmd_mutex);
 }
 
 struct mlx4_cmd_mailbox *mlx4_alloc_cmd_mailbox(struct mlx4_dev *dev)
@@ -2418,7 +2415,7 @@ static int mlx4_slaves_closest_port(struct mlx4_dev *dev, int slave, int port)
 	return port;
 }
 
-int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u8 *mac)
+int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u64 mac)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_vport_state *s_info;
@@ -2427,22 +2424,13 @@ int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u8 *mac)
 	if (!mlx4_is_master(dev))
 		return -EPROTONOSUPPORT;
 
-	if (is_multicast_ether_addr(mac))
-		return -EINVAL;
-
 	slave = mlx4_get_slave_indx(dev, vf);
 	if (slave < 0)
 		return -EINVAL;
 
 	port = mlx4_slaves_closest_port(dev, slave, port);
 	s_info = &priv->mfunc.master.vf_admin[slave].vport[port];
-
-	if (s_info->spoofchk && is_zero_ether_addr(mac)) {
-		mlx4_info(dev, "MAC invalidation is not allowed when spoofchk is on\n");
-		return -EPERM;
-	}
-
-	s_info->mac = mlx4_mac_to_u64(mac);
+	s_info->mac = mac;
 	mlx4_info(dev, "default mac on vf %d port %d to %llX will take afect only after vf restart\n",
 		  vf, port, s_info->mac);
 	return 0;
@@ -2514,7 +2502,6 @@ int mlx4_set_vf_spoofchk(struct mlx4_dev *dev, int port, int vf, bool setting)
 	struct mlx4_priv *priv = mlx4_priv(dev);
 	struct mlx4_vport_state *s_info;
 	int slave;
-	u8 mac[ETH_ALEN];
 
 	if ((!mlx4_is_master(dev)) ||
 	    !(dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_FSM))
@@ -2526,13 +2513,6 @@ int mlx4_set_vf_spoofchk(struct mlx4_dev *dev, int port, int vf, bool setting)
 
 	port = mlx4_slaves_closest_port(dev, slave, port);
 	s_info = &priv->mfunc.master.vf_admin[slave].vport[port];
-
-	mlx4_u64_to_mac(mac, s_info->mac);
-	if (setting && !is_valid_ether_addr(mac)) {
-		mlx4_info(dev, "Illegal MAC with spoofchk\n");
-		return -EPERM;
-	}
-
 	s_info->spoofchk = setting;
 
 	return 0;

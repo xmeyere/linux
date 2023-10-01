@@ -321,7 +321,6 @@ struct sec4_sg_entry {
 /* Continue - Not the last FIFO store to come */
 #define FIFOST_CONT_SHIFT	23
 #define FIFOST_CONT_MASK	(1 << FIFOST_CONT_SHIFT)
-#define FIFOST_CONT_MASK	(1 << FIFOST_CONT_SHIFT)
 
 /*
  * Extended Length - use 32-bit extended length that
@@ -1434,7 +1433,7 @@ struct sec4_sg_entry {
 #define MATH_SRC1_REG2		(0x02 << MATH_SRC1_SHIFT)
 #define MATH_SRC1_REG3		(0x03 << MATH_SRC1_SHIFT)
 #define MATH_SRC1_IMM		(0x04 << MATH_SRC1_SHIFT)
-#define MATH_SRC1_DPOVRD	(0x07 << MATH_SRC1_SHIFT)
+#define MATH_SRC1_DPOVRD	(0x07 << MATH_SRC0_SHIFT)
 #define MATH_SRC1_INFIFO	(0x0a << MATH_SRC1_SHIFT)
 #define MATH_SRC1_OUTFIFO	(0x0b << MATH_SRC1_SHIFT)
 #define MATH_SRC1_ONE		(0x0c << MATH_SRC1_SHIFT)

@@ -58,6 +58,8 @@ static inline void devm_ioport_unmap(struct device *dev, void __iomem *addr)
 }
 #endif
 
+#define IOMEM_ERR_PTR(err) (__force void __iomem *)ERR_PTR(err)
+
 void __iomem *devm_ioremap(struct device *dev, resource_size_t offset,
 			    unsigned long size);
 void __iomem *devm_ioremap_nocache(struct device *dev, resource_size_t offset,
@@ -99,28 +101,6 @@ static inline void arch_phys_wc_del(int handle)
 }
 
 #define arch_phys_wc_add arch_phys_wc_add
-#endif
-
-/*
- * On x86 PAT systems we have memory tracking that keeps track of
- * the allowed mappings on memory ranges. This tracking works for
- * all the in-kernel mapping APIs (ioremap*), but where the user
- * wishes to map a range from a physical device into user memory
- * the tracking won't be updated. This API is to be used by
- * drivers which remap physical device pages into userspace,
- * and wants to make sure they are mapped WC and not UC.
- */
-#ifndef arch_io_reserve_memtype_wc
-static inline int arch_io_reserve_memtype_wc(resource_size_t base,
-					     resource_size_t size)
-{
-	return 0;
-}
-
-static inline void arch_io_free_memtype_wc(resource_size_t base,
-					   resource_size_t size)
-{
-}
 #endif
 
 #endif /* _LINUX_IO_H */

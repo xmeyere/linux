@@ -46,7 +46,6 @@
 #include <linux/proc_fs.h>
 #include <linux/rcupdate.h>
 #include <linux/interrupt.h>
-#include <linux/nospec.h>
 
 #define PFX "IPMI message handler: "
 
@@ -1117,7 +1116,6 @@ int ipmi_set_my_address(ipmi_user_t   user,
 {
 	if (channel >= IPMI_MAX_CHANNELS)
 		return -EINVAL;
-	channel = array_index_nospec(channel, IPMI_MAX_CHANNELS);
 	user->intf->channels[channel].address = address;
 	return 0;
 }
@@ -1129,7 +1127,6 @@ int ipmi_get_my_address(ipmi_user_t   user,
 {
 	if (channel >= IPMI_MAX_CHANNELS)
 		return -EINVAL;
-	channel = array_index_nospec(channel, IPMI_MAX_CHANNELS);
 	*address = user->intf->channels[channel].address;
 	return 0;
 }
@@ -1141,7 +1138,6 @@ int ipmi_set_my_LUN(ipmi_user_t   user,
 {
 	if (channel >= IPMI_MAX_CHANNELS)
 		return -EINVAL;
-	channel = array_index_nospec(channel, IPMI_MAX_CHANNELS);
 	user->intf->channels[channel].lun = LUN & 0x3;
 	return 0;
 }
@@ -1153,7 +1149,6 @@ int ipmi_get_my_LUN(ipmi_user_t   user,
 {
 	if (channel >= IPMI_MAX_CHANNELS)
 		return -EINVAL;
-	channel = array_index_nospec(channel, IPMI_MAX_CHANNELS);
 	*address = user->intf->channels[channel].lun;
 	return 0;
 }
@@ -1880,7 +1875,6 @@ static int check_addr(ipmi_smi_t       intf,
 {
 	if (addr->channel >= IPMI_MAX_CHANNELS)
 		return -EINVAL;
-	addr->channel = array_index_nospec(addr->channel, IPMI_MAX_CHANNELS);
 	*lun = intf->channels[addr->channel].lun;
 	*saddr = intf->channels[addr->channel].address;
 	return 0;
@@ -2802,7 +2796,6 @@ channel_handler(ipmi_smi_t intf, struct ipmi_recv_msg *msg)
 					= IPMI_CHANNEL_MEDIUM_IPMB;
 				intf->channels[0].protocol
 					= IPMI_CHANNEL_PROTOCOL_IPMB;
-				rv = -ENOSYS;
 
 				intf->curr_channel = IPMI_MAX_CHANNELS;
 				wake_up(&intf->waitq);
@@ -2827,12 +2820,12 @@ channel_handler(ipmi_smi_t intf, struct ipmi_recv_msg *msg)
 
 		if (rv) {
 			/* Got an error somehow, just give up. */
+			printk(KERN_WARNING PFX
+			       "Error sending channel information for channel"
+			       " %d: %d\n", intf->curr_channel, rv);
+
 			intf->curr_channel = IPMI_MAX_CHANNELS;
 			wake_up(&intf->waitq);
-
-			printk(KERN_WARNING PFX
-			       "Error sending channel information: %d\n",
-			       rv);
 		}
 	}
  out:
@@ -2970,8 +2963,12 @@ int ipmi_register_smi(struct ipmi_smi_handlers *handlers,
 		intf->null_user_handler = channel_handler;
 		intf->curr_channel = 0;
 		rv = send_channel_info_cmd(intf, 0);
-		if (rv)
+		if (rv) {
+			printk(KERN_WARNING PFX
+			       "Error sending channel information for channel"
+			       " 0, %d\n", rv);
 			goto out;
+		}
 
 		/* Wait for the channel info to be read. */
 		wait_event(intf->waitq,
@@ -4013,8 +4010,7 @@ smi_from_recv_msg(ipmi_smi_t intf, struct ipmi_recv_msg *recv_msg,
 }
 
 static void check_msg_timeout(ipmi_smi_t intf, struct seq_table *ent,
-			      struct list_head *timeouts,
-			      unsigned long timeout_period,
+			      struct list_head *timeouts, long timeout_period,
 			      int slot, unsigned long *flags,
 			      unsigned int *waiting_msgs)
 {
@@ -4027,8 +4023,8 @@ static void check_msg_timeout(ipmi_smi_t intf, struct seq_table *ent,
 	if (!ent->inuse)
 		return;
 
-	if (timeout_period < ent->timeout) {
-		ent->timeout -= timeout_period;
+	ent->timeout -= timeout_period;
+	if (ent->timeout > 0) {
 		(*waiting_msgs)++;
 		return;
 	}
@@ -4095,8 +4091,7 @@ static void check_msg_timeout(ipmi_smi_t intf, struct seq_table *ent,
 	}
 }
 
-static unsigned int ipmi_timeout_handler(ipmi_smi_t intf,
-					 unsigned long timeout_period)
+static unsigned int ipmi_timeout_handler(ipmi_smi_t intf, long timeout_period)
 {
 	struct list_head     timeouts;
 	struct ipmi_recv_msg *msg, *msg2;

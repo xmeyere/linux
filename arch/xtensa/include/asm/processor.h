@@ -25,11 +25,7 @@
 # error Linux requires the Xtensa Windowed Registers Option.
 #endif
 
-/* Xtensa ABI requires stack alignment to be at least 16 */
-
-#define STACK_ALIGN (XCHAL_DATA_WIDTH > 16 ? XCHAL_DATA_WIDTH : 16)
-
-#define ARCH_SLAB_MINALIGN STACK_ALIGN
+#define ARCH_SLAB_MINALIGN	XCHAL_DATA_WIDTH
 
 /*
  * User space process size: 1 GB.
@@ -186,6 +182,7 @@ extern unsigned long get_wchan(struct task_struct *p);
 #define KSTK_ESP(tsk)		(task_pt_regs(tsk)->areg[1])
 
 #define cpu_relax()  barrier()
+#define cpu_relax_lowlatency() cpu_relax()
 
 /* Special register access. */
 

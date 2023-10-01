@@ -33,7 +33,7 @@ static ssize_t ade7854_read_8bit(struct device *dev,
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
 
 	ret = st->read_reg_8(dev, this_attr->address, &val);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	return sprintf(buf, "%u\n", val);
@@ -50,7 +50,7 @@ static ssize_t ade7854_read_16bit(struct device *dev,
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
 
 	ret = st->read_reg_16(dev, this_attr->address, &val);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	return sprintf(buf, "%u\n", val);
@@ -67,7 +67,7 @@ static ssize_t ade7854_read_24bit(struct device *dev,
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
 
 	ret = st->read_reg_24(dev, this_attr->address, &val);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	return sprintf(buf, "%u\n", val);
@@ -84,7 +84,7 @@ static ssize_t ade7854_read_32bit(struct device *dev,
 	struct ade7854_state *st = iio_priv(indio_dev);
 
 	ret = st->read_reg_32(dev, this_attr->address, &val);
-	if (ret < 0)
+	if (ret)
 		return ret;
 
 	return sprintf(buf, "%u\n", val);
@@ -269,7 +269,7 @@ static IIO_DEV_ATTR_VPEAK(S_IWUSR | S_IRUGO,
 static IIO_DEV_ATTR_IPEAK(S_IWUSR | S_IRUGO,
 		ade7854_read_32bit,
 		ade7854_write_32bit,
-		ADE7854_IPEAK);
+		ADE7854_VPEAK);
 static IIO_DEV_ATTR_APHCAL(S_IWUSR | S_IRUGO,
 		ade7854_read_16bit,
 		ade7854_write_16bit,
@@ -416,7 +416,7 @@ static int ade7854_set_irq(struct device *dev, bool enable)
 	u32 irqen;
 
 	ret = st->read_reg_32(dev, ADE7854_MASK0, &irqen);
-	if (ret < 0)
+	if (ret)
 		goto error_ret;
 
 	if (enable)

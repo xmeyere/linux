@@ -37,6 +37,8 @@
 #define ISL_ALS_I2C_ADDR	0x44
 #define TAOS_ALS_I2C_ADDR	0x29
 
+#define MAX_I2C_DEVICE_DEFERRALS	5
+
 static struct i2c_client *als;
 static struct i2c_client *tp;
 static struct i2c_client *ts;
@@ -58,9 +60,17 @@ enum i2c_adapter_type {
 	I2C_ADAPTER_DESIGNWARE_1,
 };
 
+enum i2c_peripheral_state {
+	UNPROBED = 0,
+	PROBED,
+	TIMEDOUT,
+};
+
 struct i2c_peripheral {
 	int (*add)(enum i2c_adapter_type type);
 	enum i2c_adapter_type type;
+	enum i2c_peripheral_state state;
+	int tries;
 };
 
 #define MAX_I2C_PERIPHERALS 3
@@ -101,8 +111,6 @@ static struct mxt_platform_data atmel_224s_tp_platform_data = {
 	.irqflags		= IRQF_TRIGGER_FALLING,
 	.t19_num_keys		= ARRAY_SIZE(mxt_t19_keys),
 	.t19_keymap		= mxt_t19_keys,
-	.config			= NULL,
-	.config_length		= 0,
 };
 
 static struct i2c_board_info atmel_224s_tp_device = {
@@ -113,8 +121,6 @@ static struct i2c_board_info atmel_224s_tp_device = {
 
 static struct mxt_platform_data atmel_1664s_platform_data = {
 	.irqflags		= IRQF_TRIGGER_FALLING,
-	.config			= NULL,
-	.config_length		= 0,
 };
 
 static struct i2c_board_info atmel_1664s_device = {
@@ -166,8 +172,8 @@ static struct i2c_client *__add_probed_i2c_device(
 	/* add the i2c device */
 	client = i2c_new_probed_device(adapter, info, addrs, NULL);
 	if (!client)
-		pr_err("%s failed to register device %d-%02x\n",
-		       __func__, bus, info->addr);
+		pr_notice("%s failed to register device %d-%02x\n",
+			  __func__, bus, info->addr);
 	else
 		pr_debug("%s added i2c device %d-%02x\n",
 			 __func__, bus, info->addr);
@@ -187,6 +193,7 @@ static int __find_i2c_adap(struct device *dev, void *data)
 	struct i2c_lookup *lookup = data;
 	static const char *prefix = "i2c-";
 	struct i2c_adapter *adapter;
+
 	if (strncmp(dev_name(dev), prefix, strlen(prefix)) != 0)
 		return 0;
 	adapter = to_i2c_adapter(dev);
@@ -248,6 +255,7 @@ static struct i2c_client *add_i2c_device(const char *name,
 						struct i2c_board_info *info)
 {
 	const unsigned short addr_list[] = { info->addr, I2C_CLIENT_END };
+
 	return __add_probed_i2c_device(name,
 				       find_i2c_adapter_num(type),
 				       info,
@@ -345,9 +353,36 @@ static int chromeos_laptop_probe(struct platform_device *pdev)
 		if (i2c_dev->add == NULL)
 			break;
 
-		/* Add the device. Set -EPROBE_DEFER on any failure */
-		if (i2c_dev->add(i2c_dev->type))
+		if (i2c_dev->state == TIMEDOUT || i2c_dev->state == PROBED)
+			continue;
+
+		/*
+		 * Check that the i2c adapter is present.
+		 * -EPROBE_DEFER if missing as the adapter may appear much
+		 * later.
+		 */
+		if (find_i2c_adapter_num(i2c_dev->type) == -ENODEV) {
 			ret = -EPROBE_DEFER;
+			continue;
+		}
+
+		/* Add the device. */
+		if (i2c_dev->add(i2c_dev->type) == -EAGAIN) {
+			/*
+			 * Set -EPROBE_DEFER a limited num of times
+			 * if device is not successfully added.
+			 */
+			if (++i2c_dev->tries < MAX_I2C_DEVICE_DEFERRALS) {
+				ret = -EPROBE_DEFER;
+			} else {
+				/* Ran out of tries. */
+				pr_notice("%s: Ran out of tries for device.\n",
+					  __func__);
+				i2c_dev->state = TIMEDOUT;
+			}
+		} else {
+			i2c_dev->state = PROBED;
+		}
 	}
 
 	return ret;
@@ -544,6 +579,7 @@ static struct platform_driver cros_platform_driver = {
 static int __init chromeos_laptop_init(void)
 {
 	int ret;
+
 	if (!dmi_check_system(chromeos_laptop_dmi_table)) {
 		pr_debug("%s unsupported system.\n", __func__);
 		return -ENODEV;

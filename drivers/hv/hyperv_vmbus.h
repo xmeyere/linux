@@ -580,9 +580,8 @@ int hv_ringbuffer_read(struct hv_ring_buffer_info *ring_info,
 		   u32 offset, bool *signal);
 
 
-
-int hv_ringbuffer_get_debuginfo(struct hv_ring_buffer_info *ring_info,
-				struct hv_ring_buffer_debug_info *debug_info);
+void hv_ringbuffer_get_debuginfo(struct hv_ring_buffer_info *ring_info,
+			    struct hv_ring_buffer_debug_info *debug_info);
 
 void hv_begin_read(struct hv_ring_buffer_info *rbi);
 
@@ -673,7 +672,7 @@ void vmbus_free_channels(void);
 
 int vmbus_connect(void);
 
-int vmbus_post_msg(void *buffer, size_t buflen, bool can_sleep);
+int vmbus_post_msg(void *buffer, size_t buflen);
 
 int vmbus_set_event(struct vmbus_channel *channel);
 

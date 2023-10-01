@@ -331,7 +331,7 @@ static int bch_allocator_thread(void *arg)
 				mutex_unlock(&ca->set->bucket_lock);
 				blkdev_issue_discard(ca->bdev,
 					bucket_to_sector(ca->set, bucket),
-					ca->sb.block_size, GFP_KERNEL, 0);
+					ca->sb.bucket_size, GFP_KERNEL, 0);
 				mutex_lock(&ca->set->bucket_lock);
 			}
 
@@ -406,8 +406,7 @@ long bch_bucket_alloc(struct cache *ca, unsigned reserve, bool wait)
 
 	finish_wait(&ca->set->bucket_wait, &w);
 out:
-	if (ca->alloc_thread)
-		wake_up_process(ca->alloc_thread);
+	wake_up_process(ca->alloc_thread);
 
 	trace_bcache_alloc(ca, reserve);
 

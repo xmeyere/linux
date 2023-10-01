@@ -195,15 +195,12 @@ static struct ip6_tnl *vti6_tnl_create(struct net *net, struct __ip6_tnl_parm *p
 	char name[IFNAMSIZ];
 	int err;
 
-	if (p->name[0]) {
-		if (!dev_valid_name(p->name))
-			goto failed;
+	if (p->name[0])
 		strlcpy(name, p->name, IFNAMSIZ);
-	} else {
+	else
 		sprintf(name, "ip6_vti%%d");
-	}
 
-	dev = alloc_netdev(sizeof(*t), name, vti6_dev_setup);
+	dev = alloc_netdev(sizeof(*t), name, NET_NAME_UNKNOWN, vti6_dev_setup);
 	if (dev == NULL)
 		goto failed;
 
@@ -252,8 +249,12 @@ static struct ip6_tnl *vti6_locate(struct net *net, struct __ip6_tnl_parm *p,
 	     (t = rtnl_dereference(*tp)) != NULL;
 	     tp = &t->next) {
 		if (ipv6_addr_equal(local, &t->parms.laddr) &&
-		    ipv6_addr_equal(remote, &t->parms.raddr))
+		    ipv6_addr_equal(remote, &t->parms.raddr)) {
+			if (create)
+				return NULL;
+
 			return t;
+		}
 	}
 	if (!create)
 		return NULL;
@@ -270,7 +271,8 @@ static struct ip6_tnl *vti6_locate(struct net *net, struct __ip6_tnl_parm *p,
 static void vti6_dev_uninit(struct net_device *dev)
 {
 	struct ip6_tnl *t = netdev_priv(dev);
-	struct vti6_net *ip6n = net_generic(t->net, vti6_net_id);
+	struct net *net = dev_net(dev);
+	struct vti6_net *ip6n = net_generic(net, vti6_net_id);
 
 	if (dev == ip6n->fb_tnl_dev)
 		RCU_INIT_POINTER(ip6n->tnls_wc[0], NULL);
@@ -297,7 +299,6 @@ static int vti6_rcv(struct sk_buff *skb)
 			return 0;
 		}
 
-		ipv6h = ipv6_hdr(skb);
 		if (!ip6_tnl_rcv_ctl(t, &ipv6h->daddr, &ipv6h->saddr)) {
 			t->dev->stats.rx_dropped++;
 			rcu_read_unlock();
@@ -411,7 +412,6 @@ vti6_xmit(struct sk_buff *skb, struct net_device *dev, struct flowi *fl)
 	struct net_device_stats *stats = &t->dev->stats;
 	struct dst_entry *dst = skb_dst(skb);
 	struct net_device *tdev;
-	int pkt_len = skb->len;
 	int err = -1;
 
 	if (!dst)
@@ -446,7 +446,7 @@ vti6_xmit(struct sk_buff *skb, struct net_device *dev, struct flowi *fl)
 		struct pcpu_sw_netstats *tstats = this_cpu_ptr(dev->tstats);
 
 		u64_stats_update_begin(&tstats->syncp);
-		tstats->tx_bytes += pkt_len;
+		tstats->tx_bytes += skb->len;
 		tstats->tx_packets++;
 		u64_stats_update_end(&tstats->syncp);
 	} else {
@@ -804,7 +804,7 @@ static void vti6_dev_setup(struct net_device *dev)
 	dev->mtu = ETH_DATA_LEN;
 	dev->flags |= IFF_NOARP;
 	dev->addr_len = sizeof(struct in6_addr);
-	dev->priv_flags &= ~IFF_XMIT_DST_RELEASE;
+	netif_keep_dst(dev);
 }
 
 /**
@@ -1025,7 +1025,7 @@ static int __net_init vti6_init_net(struct net *net)
 
 	err = -ENOMEM;
 	ip6n->fb_tnl_dev = alloc_netdev(sizeof(struct ip6_tnl), "ip6_vti0",
-					vti6_dev_setup);
+					NET_NAME_UNKNOWN, vti6_dev_setup);
 
 	if (!ip6n->fb_tnl_dev)
 		goto err_alloc_dev;
@@ -1095,36 +1095,26 @@ static struct xfrm6_protocol vti_ipcomp6_protocol __read_mostly = {
  **/
 static int __init vti6_tunnel_init(void)
 {
-	int  err;
+	const char *msg;
+	int err;
 
+	msg = "tunnel device";
 	err = register_pernet_device(&vti6_net_ops);
 	if (err < 0)
-		goto out_pernet;
+		goto pernet_dev_failed;
 
+	msg = "tunnel protocols";
 	err = xfrm6_protocol_register(&vti_esp6_protocol, IPPROTO_ESP);
-	if (err < 0) {
-		pr_err("%s: can't register vti6 protocol\n", __func__);
-
-		goto out;
-	}
-
+	if (err < 0)
+		goto xfrm_proto_esp_failed;
 	err = xfrm6_protocol_register(&vti_ah6_protocol, IPPROTO_AH);
-	if (err < 0) {
-		xfrm6_protocol_deregister(&vti_esp6_protocol, IPPROTO_ESP);
-		pr_err("%s: can't register vti6 protocol\n", __func__);
-
-		goto out;
-	}
-
+	if (err < 0)
+		goto xfrm_proto_ah_failed;
 	err = xfrm6_protocol_register(&vti_ipcomp6_protocol, IPPROTO_COMP);
-	if (err < 0) {
-		xfrm6_protocol_deregister(&vti_ah6_protocol, IPPROTO_AH);
-		xfrm6_protocol_deregister(&vti_esp6_protocol, IPPROTO_ESP);
-		pr_err("%s: can't register vti6 protocol\n", __func__);
+	if (err < 0)
+		goto xfrm_proto_comp_failed;
 
-		goto out;
-	}
-
+	msg = "netlink interface";
 	err = rtnl_link_register(&vti6_link_ops);
 	if (err < 0)
 		goto rtnl_link_failed;
@@ -1133,11 +1123,14 @@ static int __init vti6_tunnel_init(void)
 
 rtnl_link_failed:
 	xfrm6_protocol_deregister(&vti_ipcomp6_protocol, IPPROTO_COMP);
+xfrm_proto_comp_failed:
 	xfrm6_protocol_deregister(&vti_ah6_protocol, IPPROTO_AH);
+xfrm_proto_ah_failed:
 	xfrm6_protocol_deregister(&vti_esp6_protocol, IPPROTO_ESP);
-out:
+xfrm_proto_esp_failed:
 	unregister_pernet_device(&vti6_net_ops);
-out_pernet:
+pernet_dev_failed:
+	pr_err("vti6 init: failed to register %s\n", msg);
 	return err;
 }
 
@@ -1147,13 +1140,9 @@ out_pernet:
 static void __exit vti6_tunnel_cleanup(void)
 {
 	rtnl_link_unregister(&vti6_link_ops);
-	if (xfrm6_protocol_deregister(&vti_ipcomp6_protocol, IPPROTO_COMP))
-		pr_info("%s: can't deregister protocol\n", __func__);
-	if (xfrm6_protocol_deregister(&vti_ah6_protocol, IPPROTO_AH))
-		pr_info("%s: can't deregister protocol\n", __func__);
-	if (xfrm6_protocol_deregister(&vti_esp6_protocol, IPPROTO_ESP))
-		pr_info("%s: can't deregister protocol\n", __func__);
-
+	xfrm6_protocol_deregister(&vti_ipcomp6_protocol, IPPROTO_COMP);
+	xfrm6_protocol_deregister(&vti_ah6_protocol, IPPROTO_AH);
+	xfrm6_protocol_deregister(&vti_esp6_protocol, IPPROTO_ESP);
 	unregister_pernet_device(&vti6_net_ops);
 }
 

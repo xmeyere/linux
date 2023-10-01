@@ -97,16 +97,12 @@ static struct reg_default twl6040_patch[] = {
 };
 
 
-static bool twl6040_has_vibra(struct device_node *parent)
+static bool twl6040_has_vibra(struct device_node *node)
 {
-	struct device_node *node;
-
-	node = of_get_child_by_name(parent, "vibra");
-	if (node) {
-		of_node_put(node);
+#ifdef CONFIG_OF
+	if (of_find_node_by_name(node, "vibra"))
 		return true;
-	}
-
+#endif
 	return false;
 }
 
@@ -651,8 +647,6 @@ static int twl6040_probe(struct i2c_client *client,
 
 	twl6040->clk32k = devm_clk_get(&client->dev, "clk32k");
 	if (IS_ERR(twl6040->clk32k)) {
-		if (PTR_ERR(twl6040->clk32k) == -EPROBE_DEFER)
-			return -EPROBE_DEFER;
 		dev_info(&client->dev, "clk32k is not handled\n");
 		twl6040->clk32k = NULL;
 	}
@@ -685,6 +679,7 @@ static int twl6040_probe(struct i2c_client *client,
 	if (twl6040->rev < 0) {
 		dev_err(&client->dev, "Failed to read revision register: %d\n",
 			twl6040->rev);
+		ret = twl6040->rev;
 		goto gpio_err;
 	}
 
@@ -706,7 +701,7 @@ static int twl6040_probe(struct i2c_client *client,
 	}
 
 	ret = regmap_add_irq_chip(twl6040->regmap, twl6040->irq, IRQF_ONESHOT,
-				  0, &twl6040_irq_chip,&twl6040->irq_data);
+				  0, &twl6040_irq_chip, &twl6040->irq_data);
 	if (ret < 0)
 		goto gpio_err;
 

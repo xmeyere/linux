@@ -45,7 +45,7 @@ void tcf_hash_destroy(struct tc_action *a)
 }
 EXPORT_SYMBOL(tcf_hash_destroy);
 
-int __tcf_hash_release(struct tc_action *a, bool bind, bool strict)
+int tcf_hash_release(struct tc_action *a, int bind)
 {
 	struct tcf_common *p = a->priv;
 	int ret = 0;
@@ -53,7 +53,7 @@ int __tcf_hash_release(struct tc_action *a, bool bind, bool strict)
 	if (p) {
 		if (bind)
 			p->tcfc_bindcnt--;
-		else if (strict && p->tcfc_bindcnt > 0)
+		else if (p->tcfc_bindcnt > 0)
 			return -EPERM;
 
 		p->tcfc_refcnt--;
@@ -64,10 +64,9 @@ int __tcf_hash_release(struct tc_action *a, bool bind, bool strict)
 			ret = 1;
 		}
 	}
-
 	return ret;
 }
-EXPORT_SYMBOL(__tcf_hash_release);
+EXPORT_SYMBOL(tcf_hash_release);
 
 static int tcf_dump_walker(struct sk_buff *skb, struct netlink_callback *cb,
 			   struct tc_action *a)
@@ -137,7 +136,7 @@ static int tcf_del_walker(struct sk_buff *skb, struct tc_action *a)
 		head = &hinfo->htab[tcf_hash(i, hinfo->hmask)];
 		hlist_for_each_entry_safe(p, n, head, tcfc_head) {
 			a->priv = p;
-			ret = __tcf_hash_release(a, false, true);
+			ret = tcf_hash_release(a, 0);
 			if (ret == ACT_P_DELETED) {
 				module_put(a->ops->owner);
 				n_i++;
@@ -253,7 +252,8 @@ int tcf_hash_create(u32 index, struct nlattr *est, struct tc_action *a,
 	p->tcfc_tm.install = jiffies;
 	p->tcfc_tm.lastuse = jiffies;
 	if (est) {
-		int err = gen_new_estimator(&p->tcfc_bstats, &p->tcfc_rate_est,
+		int err = gen_new_estimator(&p->tcfc_bstats, NULL,
+					    &p->tcfc_rate_est,
 					    &p->tcfc_lock, est);
 		if (err) {
 			kfree(p);
@@ -413,7 +413,7 @@ int tcf_action_destroy(struct list_head *actions, int bind)
 	int ret = 0;
 
 	list_for_each_entry_safe(a, tmp, actions, list) {
-		ret = __tcf_hash_release(a, bind, true);
+		ret = tcf_hash_release(a, bind);
 		if (ret == ACT_P_DELETED)
 			module_put(a->ops->owner);
 		else if (ret < 0)
@@ -620,10 +620,12 @@ int tcf_action_copy_stats(struct sk_buff *skb, struct tc_action *a,
 	if (err < 0)
 		goto errout;
 
-	if (gnet_stats_copy_basic(&d, &p->tcfc_bstats) < 0 ||
+	if (gnet_stats_copy_basic(&d, NULL, &p->tcfc_bstats) < 0 ||
 	    gnet_stats_copy_rate_est(&d, &p->tcfc_bstats,
 				     &p->tcfc_rate_est) < 0 ||
-	    gnet_stats_copy_queue(&d, &p->tcfc_qstats) < 0)
+	    gnet_stats_copy_queue(&d, NULL,
+				  &p->tcfc_qstats,
+				  p->tcfc_qstats.qlen) < 0)
 		goto errout;
 
 	if (gnet_stats_finish_copy(&d) < 0)
@@ -799,8 +801,10 @@ static int tca_action_flush(struct net *net, struct nlattr *nla,
 		goto out_module_put;
 
 	err = a.ops->walk(skb, &dcb, RTM_DELACTION, &a);
-	if (err <= 0)
+	if (err < 0)
 		goto out_module_put;
+	if (err == 0)
+		goto noflush_out;
 
 	nla_nest_end(skb, nest);
 
@@ -817,6 +821,7 @@ static int tca_action_flush(struct net *net, struct nlattr *nla,
 out_module_put:
 	module_put(a.ops->owner);
 err_out:
+noflush_out:
 	kfree_skb(skb);
 	return err;
 }
@@ -923,15 +928,10 @@ static int
 tcf_action_add(struct net *net, struct nlattr *nla, struct nlmsghdr *n,
 	       u32 portid, int ovr)
 {
-	int loop, ret;
+	int ret = 0;
 	LIST_HEAD(actions);
 
-	for (loop = 0; loop < 10; loop++) {
-		ret = tcf_action_init(net, nla, NULL, NULL, ovr, 0, &actions);
-		if (ret != -EAGAIN)
-			break;
-	}
-
+	ret = tcf_action_init(net, nla, NULL, NULL, ovr, 0, &actions);
 	if (ret)
 		goto done;
 
@@ -974,7 +974,10 @@ static int tc_ctl_action(struct sk_buff *skb, struct nlmsghdr *n)
 		 */
 		if (n->nlmsg_flags & NLM_F_REPLACE)
 			ovr = 1;
+replay:
 		ret = tcf_action_add(net, tca[TCA_ACT_TAB], n, portid, ovr);
+		if (ret == -EAGAIN)
+			goto replay;
 		break;
 	case RTM_DELACTION:
 		ret = tca_action_gd(net, tca[TCA_ACT_TAB], n,

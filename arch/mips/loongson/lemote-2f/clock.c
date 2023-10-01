@@ -80,9 +80,6 @@ EXPORT_SYMBOL(clk_disable);
 
 unsigned long clk_get_rate(struct clk *clk)
 {
-	if (!clk)
-		return 0;
-
 	return (unsigned long)clk->rate;
 }
 EXPORT_SYMBOL(clk_get_rate);
@@ -118,9 +115,9 @@ int clk_set_rate(struct clk *clk, unsigned long rate)
 
 	clk->rate = rate;
 
-	regval = LOONGSON_CHIPCFG0;
+	regval = LOONGSON_CHIPCFG(0);
 	regval = (regval & ~0x7) | (pos->driver_data - 1);
-	LOONGSON_CHIPCFG0 = regval;
+	LOONGSON_CHIPCFG(0) = regval;
 
 	return ret;
 }

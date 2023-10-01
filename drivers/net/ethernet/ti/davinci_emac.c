@@ -1537,13 +1537,7 @@ static int emac_dev_open(struct net_device *ndev)
 	int i = 0;
 	struct emac_priv *priv = netdev_priv(ndev);
 
-	ret = pm_runtime_get_sync(&priv->pdev->dev);
-	if (ret < 0) {
-		pm_runtime_put_noidle(&priv->pdev->dev);
-		dev_err(&priv->pdev->dev, "%s: failed to get_sync(%d)\n",
-			__func__, ret);
-		return ret;
-	}
+	pm_runtime_get(&priv->pdev->dev);
 
 	netif_carrier_off(ndev);
 	for (cnt = 0; cnt < ETH_ALEN; cnt++)
@@ -1730,15 +1724,6 @@ static struct net_device_stats *emac_dev_getnetstats(struct net_device *ndev)
 	struct emac_priv *priv = netdev_priv(ndev);
 	u32 mac_control;
 	u32 stats_clear_mask;
-	int err;
-
-	err = pm_runtime_get_sync(&priv->pdev->dev);
-	if (err < 0) {
-		pm_runtime_put_noidle(&priv->pdev->dev);
-		dev_err(&priv->pdev->dev, "%s: failed to get_sync(%d)\n",
-			__func__, err);
-		return &ndev->stats;
-	}
 
 	/* update emac hardware stats and reset the registers*/
 
@@ -1780,8 +1765,6 @@ static struct net_device_stats *emac_dev_getnetstats(struct net_device *ndev)
 
 	ndev->stats.tx_fifo_errors += emac_read(EMAC_TXUNDERRUN);
 	emac_write(EMAC_TXUNDERRUN, stats_clear_mask);
-
-	pm_runtime_put(&priv->pdev->dev);
 
 	return &ndev->stats;
 }
@@ -1859,6 +1842,8 @@ davinci_emac_of_get_pdata(struct platform_device *pdev, struct emac_priv *priv)
 		pdata->version = auxdata->version;
 		pdata->hw_ram_addr = auxdata->hw_ram_addr;
 	}
+
+	pdev->dev.platform_data = pdata;
 
 	return  pdata;
 }
@@ -1968,25 +1953,18 @@ static int davinci_emac_probe(struct platform_device *pdev)
 
 	priv->txchan = cpdma_chan_create(priv->dma, tx_chan_num(EMAC_DEF_TX_CH),
 				       emac_tx_handler);
-	if (IS_ERR(priv->txchan)) {
-		dev_err(&pdev->dev, "error initializing tx dma channel\n");
-		rc = PTR_ERR(priv->txchan);
-		goto err_free_dma;
-	}
-
 	priv->rxchan = cpdma_chan_create(priv->dma, rx_chan_num(EMAC_DEF_RX_CH),
 				       emac_rx_handler);
-	if (IS_ERR(priv->rxchan)) {
-		dev_err(&pdev->dev, "error initializing rx dma channel\n");
-		rc = PTR_ERR(priv->rxchan);
-		goto err_free_txchan;
+	if (WARN_ON(!priv->txchan || !priv->rxchan)) {
+		rc = -ENOMEM;
+		goto no_cpdma_chan;
 	}
 
 	res = platform_get_resource(pdev, IORESOURCE_IRQ, 0);
 	if (!res) {
 		dev_err(&pdev->dev, "error getting irq res\n");
 		rc = -ENOENT;
-		goto err_free_rxchan;
+		goto no_cpdma_chan;
 	}
 	ndev->irq = res->start;
 
@@ -2002,42 +1980,32 @@ static int davinci_emac_probe(struct platform_device *pdev)
 	ndev->ethtool_ops = &ethtool_ops;
 	netif_napi_add(ndev, &priv->napi, emac_poll, EMAC_POLL_WEIGHT);
 
-	pm_runtime_enable(&pdev->dev);
-	rc = pm_runtime_get_sync(&pdev->dev);
-	if (rc < 0) {
-		pm_runtime_put_noidle(&pdev->dev);
-		dev_err(&pdev->dev, "%s: failed to get_sync(%d)\n",
-			__func__, rc);
-		goto err_napi_del;
-	}
-
 	/* register the network device */
 	SET_NETDEV_DEV(ndev, &pdev->dev);
 	rc = register_netdev(ndev);
 	if (rc) {
 		dev_err(&pdev->dev, "error in register_netdev\n");
 		rc = -ENODEV;
-		pm_runtime_put(&pdev->dev);
-		goto err_napi_del;
+		goto no_cpdma_chan;
 	}
 
 
 	if (netif_msg_probe(priv)) {
 		dev_notice(&pdev->dev, "DaVinci EMAC Probe found device "
-			   "(regs: %pa, irq: %d)\n",
-			   &priv->emac_base_phys, ndev->irq);
+			   "(regs: %p, irq: %d)\n",
+			   (void *)priv->emac_base_phys, ndev->irq);
 	}
-	pm_runtime_put(&pdev->dev);
+
+	pm_runtime_enable(&pdev->dev);
+	pm_runtime_resume(&pdev->dev);
 
 	return 0;
 
-err_napi_del:
-	netif_napi_del(&priv->napi);
-err_free_rxchan:
-	cpdma_chan_destroy(priv->rxchan);
-err_free_txchan:
-	cpdma_chan_destroy(priv->txchan);
-err_free_dma:
+no_cpdma_chan:
+	if (priv->txchan)
+		cpdma_chan_destroy(priv->txchan);
+	if (priv->rxchan)
+		cpdma_chan_destroy(priv->rxchan);
 	cpdma_ctlr_destroy(priv->dma);
 no_pdata:
 	free_netdev(ndev);
@@ -2065,7 +2033,6 @@ static int davinci_emac_remove(struct platform_device *pdev)
 	cpdma_ctlr_destroy(priv->dma);
 
 	unregister_netdev(ndev);
-	pm_runtime_disable(&pdev->dev);
 	free_netdev(ndev);
 
 	return 0;
@@ -2116,7 +2083,6 @@ MODULE_DEVICE_TABLE(of, davinci_emac_of_match);
 static struct platform_driver davinci_emac_driver = {
 	.driver = {
 		.name	 = "davinci_emac",
-		.owner	 = THIS_MODULE,
 		.pm	 = &davinci_emac_pm_ops,
 		.of_match_table = of_match_ptr(davinci_emac_of_match),
 	},

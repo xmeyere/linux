@@ -15,7 +15,6 @@
 #include <linux/vhost.h>
 #include <linux/uio.h>
 #include <linux/mm.h>
-#include <linux/sched.h>
 #include <linux/mmu_context.h>
 #include <linux/miscdevice.h>
 #include <linux/mutex.h>
@@ -292,24 +291,8 @@ static void vhost_dev_free_iovecs(struct vhost_dev *dev)
 		vhost_vq_free_iovecs(dev->vqs[i]);
 }
 
-bool vhost_exceeds_weight(struct vhost_virtqueue *vq,
-			  int pkts, int total_len)
-{
-	struct vhost_dev *dev = vq->dev;
-
-	if ((dev->byte_weight && total_len >= dev->byte_weight) ||
-	    pkts >= dev->weight) {
-		vhost_poll_queue(&vq->poll);
-		return true;
-	}
-
-	return false;
-}
-EXPORT_SYMBOL_GPL(vhost_exceeds_weight);
-
 void vhost_dev_init(struct vhost_dev *dev,
-		    struct vhost_virtqueue **vqs, int nvqs,
-		    int weight, int byte_weight)
+		    struct vhost_virtqueue **vqs, int nvqs)
 {
 	struct vhost_virtqueue *vq;
 	int i;
@@ -324,8 +307,6 @@ void vhost_dev_init(struct vhost_dev *dev,
 	spin_lock_init(&dev->work_lock);
 	INIT_LIST_HEAD(&dev->work_list);
 	dev->worker = NULL;
-	dev->weight = weight;
-	dev->byte_weight = byte_weight;
 
 	for (i = 0; i < dev->nvqs; ++i) {
 		vq = dev->vqs[i];
@@ -901,7 +882,6 @@ long vhost_dev_ioctl(struct vhost_dev *d, unsigned int ioctl, void __user *argp)
 		}
 		if (eventfp != d->log_file) {
 			filep = d->log_file;
-			d->log_file = eventfp;
 			ctx = d->log_ctx;
 			d->log_ctx = eventfp ?
 				eventfd_ctx_fileget(eventfp) : NULL;
@@ -1194,7 +1174,7 @@ static int get_indirect(struct vhost_virtqueue *vq,
 		/* If this is an input descriptor, increment that count. */
 		if (desc.flags & VRING_DESC_F_WRITE) {
 			*in_num += ret;
-			if (unlikely(log && ret)) {
+			if (unlikely(log)) {
 				log[*log_num].addr = desc.addr;
 				log[*log_num].len = desc.len;
 				++*log_num;
@@ -1317,7 +1297,7 @@ int vhost_get_vq_desc(struct vhost_virtqueue *vq,
 			/* If this is an input descriptor,
 			 * increment that count. */
 			*in_num += ret;
-			if (unlikely(log && ret)) {
+			if (unlikely(log)) {
 				log[*log_num].addr = desc.addr;
 				log[*log_num].len = desc.len;
 				++*log_num;
@@ -1429,8 +1409,6 @@ int vhost_add_used_n(struct vhost_virtqueue *vq, struct vring_used_elem *heads,
 		return -EFAULT;
 	}
 	if (unlikely(vq->log_used)) {
-		/* Make sure used idx is seen before log. */
-		smp_wmb();
 		/* Log used index update. */
 		log_write(vq->log_base,
 			  vq->log_addr + offsetof(struct vring_used, idx),

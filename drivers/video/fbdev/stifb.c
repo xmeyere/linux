@@ -918,7 +918,7 @@ static int
 stifb_setcolreg(u_int regno, u_int red, u_int green,
 	      u_int blue, u_int transp, struct fb_info *info)
 {
-	struct stifb_info *fb = (struct stifb_info *) info;
+	struct stifb_info *fb = container_of(info, struct stifb_info, info);
 	u32 color;
 
 	if (regno >= NR_PALETTE)
@@ -978,7 +978,7 @@ stifb_setcolreg(u_int regno, u_int red, u_int green,
 static int
 stifb_blank(int blank_mode, struct fb_info *info)
 {
-	struct stifb_info *fb = (struct stifb_info *) info;
+	struct stifb_info *fb = container_of(info, struct stifb_info, info);
 	int enable = (blank_mode == 0) ? ENABLE : DISABLE;
 
 	switch (fb->id) {
@@ -1091,7 +1091,7 @@ static int __init stifb_init_fb(struct sti_struct *sti, int bpp_pref)
 	fb = kzalloc(sizeof(*fb), GFP_ATOMIC);
 	if (!fb) {
 		printk(KERN_ERR "stifb: Could not allocate stifb structure\n");
-		return -ENOMEM;
+		return -ENODEV;
 	}
 	
 	info = &fb->info;

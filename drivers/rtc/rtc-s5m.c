@@ -644,16 +644,6 @@ static int s5m8767_rtc_init_reg(struct s5m_rtc_info *info)
 	case S2MPS14X:
 		data[0] = (0 << BCD_EN_SHIFT) | (1 << MODEL24_SHIFT);
 		ret = regmap_write(info->regmap, info->regs->ctrl, data[0]);
-		if (ret < 0)
-			break;
-
-		/*
-		 * Should set WUDR & (RUDR or AUDR) bits to high after writing
-		 * RTC_CTRL register like writing Alarm registers. We can't find
-		 * the description from datasheet but vendor code does that
-		 * really.
-		 */
-		ret = s5m8767_rtc_set_alarm_reg(info);
 		break;
 
 	default:
@@ -727,12 +717,14 @@ static int s5m_rtc_probe(struct platform_device *pdev)
 	info->device_type = s5m87xx->device_type;
 	info->wtsr_smpl = s5m87xx->wtsr_smpl;
 
-	info->irq = regmap_irq_get_virq(s5m87xx->irq_data, alarm_irq);
-	if (info->irq <= 0) {
-		ret = -EINVAL;
-		dev_err(&pdev->dev, "Failed to get virtual IRQ %d\n",
+	if (s5m87xx->irq_data) {
+		info->irq = regmap_irq_get_virq(s5m87xx->irq_data, alarm_irq);
+		if (info->irq <= 0) {
+			ret = -EINVAL;
+			dev_err(&pdev->dev, "Failed to get virtual IRQ %d\n",
 				alarm_irq);
-		goto err;
+			goto err;
+		}
 	}
 
 	platform_set_drvdata(pdev, info);
@@ -752,6 +744,11 @@ static int s5m_rtc_probe(struct platform_device *pdev)
 	if (IS_ERR(info->rtc_dev)) {
 		ret = PTR_ERR(info->rtc_dev);
 		goto err;
+	}
+
+	if (!info->irq) {
+		dev_info(&pdev->dev, "Alarm IRQ not available\n");
+		return 0;
 	}
 
 	ret = devm_request_threaded_irq(&pdev->dev, info->irq, NULL,
@@ -812,7 +809,7 @@ static int s5m_rtc_resume(struct device *dev)
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (device_may_wakeup(dev))
+	if (info->irq && device_may_wakeup(dev))
 		ret = disable_irq_wake(info->irq);
 
 	return ret;
@@ -823,7 +820,7 @@ static int s5m_rtc_suspend(struct device *dev)
 	struct s5m_rtc_info *info = dev_get_drvdata(dev);
 	int ret = 0;
 
-	if (device_may_wakeup(dev))
+	if (info->irq && device_may_wakeup(dev))
 		ret = enable_irq_wake(info->irq);
 
 	return ret;
@@ -835,7 +832,6 @@ static SIMPLE_DEV_PM_OPS(s5m_rtc_pm_ops, s5m_rtc_suspend, s5m_rtc_resume);
 static const struct platform_device_id s5m_rtc_id[] = {
 	{ "s5m-rtc",		S5M8767X },
 	{ "s2mps14-rtc",	S2MPS14X },
-	{ },
 };
 
 static struct platform_driver s5m_rtc_driver = {

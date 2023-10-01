@@ -87,7 +87,7 @@ static inline unsigned int acpi_processor_cstate_check(unsigned int max_cstate)
 	if (boot_cpu_data.x86 == 0x0F &&
 	    boot_cpu_data.x86_vendor == X86_VENDOR_AMD &&
 	    boot_cpu_data.x86_model <= 0x05 &&
-	    boot_cpu_data.x86_stepping < 0x0A)
+	    boot_cpu_data.x86_mask < 0x0A)
 		return 1;
 	else if (amd_e400_c1e_detected)
 		return 1;
@@ -119,6 +119,11 @@ static inline void arch_acpi_set_pdc_bits(u32 *buf)
 	 */
 	if (!cpu_has(c, X86_FEATURE_MWAIT))
 		buf[2] &= ~(ACPI_PDC_C_C2C3_FFH);
+}
+
+static inline bool acpi_has_cpu_in_madt(void)
+{
+	return !!acpi_lapic;
 }
 
 #else /* !CONFIG_ACPI */

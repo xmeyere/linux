@@ -331,7 +331,7 @@ static void advance_oldest_read(struct t4_wq *wq)
  * Deal with out-of-order and/or completions that complete
  * prior unsignalled WRs.
  */
-void c4iw_flush_hw_cq(struct c4iw_cq *chp, struct c4iw_qp *flush_qhp)
+void c4iw_flush_hw_cq(struct c4iw_cq *chp)
 {
 	struct t4_cqe *hw_cqe, *swcqe, read_cqe;
 	struct c4iw_qp *qhp;
@@ -354,13 +354,6 @@ void c4iw_flush_hw_cq(struct c4iw_cq *chp, struct c4iw_qp *flush_qhp)
 		 */
 		if (qhp == NULL)
 			goto next_cqe;
-
-		if (flush_qhp != qhp) {
-			spin_lock(&qhp->lock);
-
-			if (qhp->wq.flushed == 1)
-				goto next_cqe;
-		}
 
 		if (CQE_OPCODE(hw_cqe) == FW_RI_TERMINATE)
 			goto next_cqe;
@@ -413,8 +406,6 @@ void c4iw_flush_hw_cq(struct c4iw_cq *chp, struct c4iw_qp *flush_qhp)
 next_cqe:
 		t4_hwcq_consume(&chp->cq);
 		ret = t4_next_hw_cqe(&chp->cq, &hw_cqe);
-		if (qhp && flush_qhp != qhp)
-			spin_unlock(&qhp->lock);
 	}
 }
 
@@ -583,10 +574,10 @@ static int poll_cq(struct t4_wq *wq, struct t4_cq *cq, struct t4_cqe *cqe,
 			ret = -EAGAIN;
 			goto skip_cqe;
 		}
-		if (unlikely(!CQE_STATUS(hw_cqe) &&
-			     CQE_WRID_MSN(hw_cqe) != wq->rq.msn)) {
+		if (unlikely((CQE_WRID_MSN(hw_cqe) != (wq->rq.msn)))) {
 			t4_set_wq_in_error(wq);
-			hw_cqe->header |= cpu_to_be32(V_CQE_STATUS(T4_ERR_MSN));
+			hw_cqe->header |= htonl(V_CQE_STATUS(T4_ERR_MSN));
+			goto proc_cqe;
 		}
 		goto proc_cqe;
 	}
@@ -642,11 +633,15 @@ proc_cqe:
 		wq->sq.cidx = (uint16_t)idx;
 		PDBG("%s completing sq idx %u\n", __func__, wq->sq.cidx);
 		*cookie = wq->sq.sw_sq[wq->sq.cidx].wr_id;
+		if (c4iw_wr_log)
+			c4iw_log_wr_stats(wq, hw_cqe);
 		t4_sq_consume(wq);
 	} else {
 		PDBG("%s completing rq idx %u\n", __func__, wq->rq.cidx);
 		*cookie = wq->rq.sw_rq[wq->rq.cidx].wr_id;
 		BUG_ON(t4_rq_empty(wq));
+		if (c4iw_wr_log)
+			c4iw_log_wr_stats(wq, hw_cqe);
 		t4_rq_consume(wq);
 		goto skip_cqe;
 	}
@@ -904,7 +899,7 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 	/*
 	 * Make actual HW queue 2x to avoid cdix_inc overflows.
 	 */
-	hwentries = min(entries * 2, T4_MAX_IQ_SIZE);
+	hwentries = min(entries * 2, rhp->rdev.hw_queue.t4_max_iq_size);
 
 	/*
 	 * Make HW queue at least 64 entries so GTS updates aren't too
@@ -918,14 +913,8 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 	/*
 	 * memsize must be a multiple of the page size if its a user cq.
 	 */
-	if (ucontext) {
+	if (ucontext)
 		memsize = roundup(memsize, PAGE_SIZE);
-		hwentries = memsize / sizeof *chp->cq.queue;
-		while (hwentries > T4_MAX_IQ_SIZE) {
-			memsize -= PAGE_SIZE;
-			hwentries = memsize / sizeof *chp->cq.queue;
-		}
-	}
 	chp->cq.size = hwentries;
 	chp->cq.memsize = memsize;
 	chp->cq.vector = vector;
@@ -947,7 +936,6 @@ struct ib_cq *c4iw_create_cq(struct ib_device *ibdev, int entries,
 		goto err2;
 
 	if (ucontext) {
-		ret = -ENOMEM;
 		mm = kmalloc(sizeof *mm, GFP_KERNEL);
 		if (!mm)
 			goto err3;

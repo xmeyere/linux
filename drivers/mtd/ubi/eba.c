@@ -425,27 +425,8 @@ retry:
 					ubi_warn("corrupted VID header at PEB %d, LEB %d:%d",
 						 pnum, vol_id, lnum);
 					err = -EBADMSG;
-				} else {
-					/*
-					 * Ending up here in the non-Fastmap case
-					 * is a clear bug as the VID header had to
-					 * be present at scan time to have it referenced.
-					 * With fastmap the story is more complicated.
-					 * Fastmap has the mapping info without the need
-					 * of a full scan. So the LEB could have been
-					 * unmapped, Fastmap cannot know this and keeps
-					 * the LEB referenced.
-					 * This is valid and works as the layer above UBI
-					 * has to do bookkeeping about used/referenced
-					 * LEBs in any case.
-					 */
-					if (ubi->fast_attach) {
-						err = -EBADMSG;
-					} else {
-						err = -EINVAL;
-						ubi_ro_mode(ubi);
-					}
-				}
+				} else
+					ubi_ro_mode(ubi);
 			}
 			goto out_free;
 		} else if (err == UBI_IO_BITFLIPS)
@@ -460,10 +441,9 @@ retry:
 
 	err = ubi_io_read_data(ubi, buf, pnum, offset, len);
 	if (err) {
-		if (err == UBI_IO_BITFLIPS) {
+		if (err == UBI_IO_BITFLIPS)
 			scrub = 1;
-			err = 0;
-		} else if (mtd_is_eccerr(err)) {
+		else if (mtd_is_eccerr(err)) {
 			if (vol->vol_type == UBI_DYNAMIC_VOLUME)
 				goto out_unlock;
 			scrub = 1;
@@ -521,7 +501,6 @@ static int recover_peb(struct ubi_device *ubi, int pnum, int vol_id, int lnum,
 	int err, idx = vol_id2idx(ubi, vol_id), new_pnum, data_size, tries = 0;
 	struct ubi_volume *vol = ubi->volumes[idx];
 	struct ubi_vid_hdr *vid_hdr;
-	uint32_t crc;
 
 	vid_hdr = ubi_zalloc_vid_hdr(ubi, GFP_NOFS);
 	if (!vid_hdr)
@@ -543,8 +522,12 @@ retry:
 		goto out_put;
 	}
 
-	ubi_assert(vid_hdr->vol_type == UBI_VID_DYNAMIC);
+	vid_hdr->sqnum = cpu_to_be64(ubi_next_sqnum(ubi));
+	err = ubi_io_write_vid_hdr(ubi, new_pnum, vid_hdr);
+	if (err)
+		goto write_error;
 
+	data_size = offset + len;
 	mutex_lock(&ubi->buf_mutex);
 	memset(ubi->peb_buf + offset, 0xFF, len);
 
@@ -556,18 +539,6 @@ retry:
 	}
 
 	memcpy(ubi->peb_buf + offset, buf, len);
-
-	data_size = offset + len;
-	crc = crc32(UBI_CRC32_INIT, ubi->peb_buf, data_size);
-	vid_hdr->sqnum = cpu_to_be64(ubi_next_sqnum(ubi));
-	vid_hdr->copy_flag = 1;
-	vid_hdr->data_size = cpu_to_be32(data_size);
-	vid_hdr->data_crc = cpu_to_be32(crc);
-	err = ubi_io_write_vid_hdr(ubi, new_pnum, vid_hdr);
-	if (err) {
-		mutex_unlock(&ubi->buf_mutex);
-		goto write_error;
-	}
 
 	err = ubi_io_write_data(ubi, ubi->peb_buf, new_pnum, 0, data_size);
 	if (err) {
@@ -1021,8 +992,6 @@ int ubi_eba_copy_leb(struct ubi_device *ubi, int from, int to,
 	struct ubi_volume *vol;
 	uint32_t crc;
 
-	ubi_assert(rwsem_is_locked(&ubi->fm_sem));
-
 	vol_id = be32_to_cpu(vid_hdr->vol_id);
 	lnum = be32_to_cpu(vid_hdr->lnum);
 
@@ -1191,7 +1160,9 @@ int ubi_eba_copy_leb(struct ubi_device *ubi, int from, int to,
 	}
 
 	ubi_assert(vol->eba_tbl[lnum] == from);
+	down_read(&ubi->fm_sem);
 	vol->eba_tbl[lnum] = to;
+	up_read(&ubi->fm_sem);
 
 out_unlock_buf:
 	mutex_unlock(&ubi->buf_mutex);
@@ -1390,8 +1361,7 @@ int ubi_eba_init(struct ubi_device *ubi, struct ubi_attach_info *ai)
 				 * during re-size.
 				 */
 				ubi_move_aeb_to_list(av, aeb, &ai->erase);
-			else
-				vol->eba_tbl[aeb->lnum] = aeb->pnum;
+			vol->eba_tbl[aeb->lnum] = aeb->pnum;
 		}
 	}
 

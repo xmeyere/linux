@@ -63,8 +63,8 @@ struct thread_map *thread_map__new_by_uid(uid_t uid)
 {
 	DIR *proc;
 	int max_threads = 32, items, i;
-	char path[NAME_MAX + 1 + 6];
-	struct dirent *dirent, **namelist = NULL;
+	char path[256];
+	struct dirent dirent, *next, **namelist = NULL;
 	struct thread_map *threads = malloc(sizeof(*threads) +
 					    max_threads * sizeof(pid_t));
 	if (threads == NULL)
@@ -76,16 +76,16 @@ struct thread_map *thread_map__new_by_uid(uid_t uid)
 
 	threads->nr = 0;
 
-	while ((dirent = readdir(proc)) != NULL) {
+	while (!readdir_r(proc, &dirent, &next) && next) {
 		char *end;
 		bool grow = false;
 		struct stat st;
-		pid_t pid = strtol(dirent->d_name, &end, 10);
+		pid_t pid = strtol(dirent.d_name, &end, 10);
 
 		if (*end) /* only interested in proper numerical dirents */
 			continue;
 
-		snprintf(path, sizeof(path), "/proc/%s", dirent->d_name);
+		snprintf(path, sizeof(path), "/proc/%s", dirent.d_name);
 
 		if (stat(path, &st) != 0)
 			continue;
@@ -214,6 +214,17 @@ out_free_threads:
 	goto out;
 }
 
+struct thread_map *thread_map__new_dummy(void)
+{
+	struct thread_map *threads = malloc(sizeof(*threads) + sizeof(pid_t));
+
+	if (threads != NULL) {
+		threads->map[0]	= -1;
+		threads->nr	= 1;
+	}
+	return threads;
+}
+
 static struct thread_map *thread_map__new_by_tid_str(const char *tid_str)
 {
 	struct thread_map *threads = NULL, *nt;
@@ -224,14 +235,8 @@ static struct thread_map *thread_map__new_by_tid_str(const char *tid_str)
 	struct strlist *slist;
 
 	/* perf-stat expects threads to be generated even if tid not given */
-	if (!tid_str) {
-		threads = malloc(sizeof(*threads) + sizeof(pid_t));
-		if (threads != NULL) {
-			threads->map[0] = -1;
-			threads->nr	= 1;
-		}
-		return threads;
-	}
+	if (!tid_str)
+		return thread_map__new_dummy();
 
 	slist = strlist__new(false, tid_str);
 	if (!slist)

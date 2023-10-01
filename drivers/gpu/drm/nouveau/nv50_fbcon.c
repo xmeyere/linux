@@ -95,7 +95,7 @@ nv50_fbcon_imageblit(struct fb_info *info, const struct fb_image *image)
 	struct nouveau_fbdev *nfbdev = info->par;
 	struct nouveau_drm *drm = nouveau_drm(nfbdev->dev);
 	struct nouveau_channel *chan = drm->channel;
-	uint32_t dwords, *data = (uint32_t *)image->data;
+	uint32_t width, dwords, *data = (uint32_t *)image->data;
 	uint32_t mask = ~(~0 >> (32 - info->var.bits_per_pixel));
 	uint32_t *palette = info->pseudo_palette;
 	int ret;
@@ -106,6 +106,9 @@ nv50_fbcon_imageblit(struct fb_info *info, const struct fb_image *image)
 	ret = RING_SPACE(chan, 11);
 	if (ret)
 		return ret;
+
+	width = ALIGN(image->width, 32);
+	dwords = (width * image->height) >> 5;
 
 	BEGIN_NV04(chan, NvSub2D, 0x0814, 2);
 	if (info->fix.visual == FB_VISUAL_TRUECOLOR ||
@@ -125,7 +128,6 @@ nv50_fbcon_imageblit(struct fb_info *info, const struct fb_image *image)
 	OUT_RING(chan, 0);
 	OUT_RING(chan, image->dy);
 
-	dwords = ALIGN(ALIGN(image->width, 8) * image->height, 32) >> 5;
 	while (dwords) {
 		int push = dwords > 2047 ? 2047 : dwords;
 
@@ -152,7 +154,6 @@ nv50_fbcon_accel_init(struct fb_info *info)
 	struct drm_device *dev = nfbdev->dev;
 	struct nouveau_drm *drm = nouveau_drm(dev);
 	struct nouveau_channel *chan = drm->channel;
-	struct nouveau_object *object;
 	int ret, format;
 
 	switch (info->var.bits_per_pixel) {
@@ -182,8 +183,8 @@ nv50_fbcon_accel_init(struct fb_info *info)
 		return -EINVAL;
 	}
 
-	ret = nouveau_object_new(nv_object(chan->cli), NVDRM_CHAN, Nv2D,
-				 0x502d, NULL, 0, &object);
+	ret = nvif_object_init(chan->object, NULL, 0x502d, 0x502d, NULL, 0,
+			       &nfbdev->twod);
 	if (ret)
 		return ret;
 
@@ -194,11 +195,11 @@ nv50_fbcon_accel_init(struct fb_info *info)
 	}
 
 	BEGIN_NV04(chan, NvSub2D, 0x0000, 1);
-	OUT_RING(chan, Nv2D);
+	OUT_RING(chan, nfbdev->twod.handle);
 	BEGIN_NV04(chan, NvSub2D, 0x0184, 3);
-	OUT_RING(chan, NvDmaFB);
-	OUT_RING(chan, NvDmaFB);
-	OUT_RING(chan, NvDmaFB);
+	OUT_RING(chan, chan->vram.handle);
+	OUT_RING(chan, chan->vram.handle);
+	OUT_RING(chan, chan->vram.handle);
 	BEGIN_NV04(chan, NvSub2D, 0x0290, 1);
 	OUT_RING(chan, 0);
 	BEGIN_NV04(chan, NvSub2D, 0x0888, 1);

@@ -113,16 +113,12 @@ enum ad5064_type {
 	ID_AD5065,
 	ID_AD5628_1,
 	ID_AD5628_2,
-	ID_AD5629_1,
-	ID_AD5629_2,
 	ID_AD5648_1,
 	ID_AD5648_2,
 	ID_AD5666_1,
 	ID_AD5666_2,
 	ID_AD5668_1,
 	ID_AD5668_2,
-	ID_AD5669_1,
-	ID_AD5669_2,
 };
 
 static int ad5064_write(struct ad5064_state *st, unsigned int cmd,
@@ -295,7 +291,7 @@ static const struct iio_chan_spec_ext_info ad5064_ext_info[] = {
 	{ },
 };
 
-#define AD5064_CHANNEL(chan, addr, bits, _shift) {		\
+#define AD5064_CHANNEL(chan, addr, bits) {			\
 	.type = IIO_VOLTAGE,					\
 	.indexed = 1,						\
 	.output = 1,						\
@@ -307,39 +303,36 @@ static const struct iio_chan_spec_ext_info ad5064_ext_info[] = {
 		.sign = 'u',					\
 		.realbits = (bits),				\
 		.storagebits = 16,				\
-		.shift = (_shift),				\
+		.shift = 20 - bits,				\
 	},							\
 	.ext_info = ad5064_ext_info,				\
 }
 
-#define DECLARE_AD5064_CHANNELS(name, bits, shift) \
+#define DECLARE_AD5064_CHANNELS(name, bits) \
 const struct iio_chan_spec name[] = { \
-	AD5064_CHANNEL(0, 0, bits, shift), \
-	AD5064_CHANNEL(1, 1, bits, shift), \
-	AD5064_CHANNEL(2, 2, bits, shift), \
-	AD5064_CHANNEL(3, 3, bits, shift), \
-	AD5064_CHANNEL(4, 4, bits, shift), \
-	AD5064_CHANNEL(5, 5, bits, shift), \
-	AD5064_CHANNEL(6, 6, bits, shift), \
-	AD5064_CHANNEL(7, 7, bits, shift), \
+	AD5064_CHANNEL(0, 0, bits), \
+	AD5064_CHANNEL(1, 1, bits), \
+	AD5064_CHANNEL(2, 2, bits), \
+	AD5064_CHANNEL(3, 3, bits), \
+	AD5064_CHANNEL(4, 4, bits), \
+	AD5064_CHANNEL(5, 5, bits), \
+	AD5064_CHANNEL(6, 6, bits), \
+	AD5064_CHANNEL(7, 7, bits), \
 }
 
-#define DECLARE_AD5065_CHANNELS(name, bits, shift) \
+#define DECLARE_AD5065_CHANNELS(name, bits) \
 const struct iio_chan_spec name[] = { \
-	AD5064_CHANNEL(0, 0, bits, shift), \
-	AD5064_CHANNEL(1, 3, bits, shift), \
+	AD5064_CHANNEL(0, 0, bits), \
+	AD5064_CHANNEL(1, 3, bits), \
 }
 
-static DECLARE_AD5064_CHANNELS(ad5024_channels, 12, 8);
-static DECLARE_AD5064_CHANNELS(ad5044_channels, 14, 6);
-static DECLARE_AD5064_CHANNELS(ad5064_channels, 16, 4);
+static DECLARE_AD5064_CHANNELS(ad5024_channels, 12);
+static DECLARE_AD5064_CHANNELS(ad5044_channels, 14);
+static DECLARE_AD5064_CHANNELS(ad5064_channels, 16);
 
-static DECLARE_AD5065_CHANNELS(ad5025_channels, 12, 8);
-static DECLARE_AD5065_CHANNELS(ad5045_channels, 14, 6);
-static DECLARE_AD5065_CHANNELS(ad5065_channels, 16, 4);
-
-static DECLARE_AD5064_CHANNELS(ad5629_channels, 12, 4);
-static DECLARE_AD5064_CHANNELS(ad5669_channels, 16, 0);
+static DECLARE_AD5065_CHANNELS(ad5025_channels, 12);
+static DECLARE_AD5065_CHANNELS(ad5045_channels, 14);
+static DECLARE_AD5065_CHANNELS(ad5065_channels, 16);
 
 static const struct ad5064_chip_info ad5064_chip_info_tbl[] = {
 	[ID_AD5024] = {
@@ -389,18 +382,6 @@ static const struct ad5064_chip_info ad5064_chip_info_tbl[] = {
 		.channels = ad5024_channels,
 		.num_channels = 8,
 	},
-	[ID_AD5629_1] = {
-		.shared_vref = true,
-		.internal_vref = 2500000,
-		.channels = ad5629_channels,
-		.num_channels = 8,
-	},
-	[ID_AD5629_2] = {
-		.shared_vref = true,
-		.internal_vref = 5000000,
-		.channels = ad5629_channels,
-		.num_channels = 8,
-	},
 	[ID_AD5648_1] = {
 		.shared_vref = true,
 		.internal_vref = 2500000,
@@ -437,18 +418,6 @@ static const struct ad5064_chip_info ad5064_chip_info_tbl[] = {
 		.channels = ad5064_channels,
 		.num_channels = 8,
 	},
-	[ID_AD5669_1] = {
-		.shared_vref = true,
-		.internal_vref = 2500000,
-		.channels = ad5669_channels,
-		.num_channels = 8,
-	},
-	[ID_AD5669_2] = {
-		.shared_vref = true,
-		.internal_vref = 5000000,
-		.channels = ad5669_channels,
-		.num_channels = 8,
-	},
 };
 
 static inline unsigned int ad5064_num_vref(struct ad5064_state *st)
@@ -467,41 +436,6 @@ static const char * const ad5064_vref_name(struct ad5064_state *st,
 	unsigned int vref)
 {
 	return st->chip_info->shared_vref ? "vref" : ad5064_vref_names[vref];
-}
-
-static int ad5064_request_vref(struct ad5064_state *st, struct device *dev)
-{
-	unsigned int i;
-	int ret;
-
-	for (i = 0; i < ad5064_num_vref(st); ++i)
-		st->vref_reg[i].supply = ad5064_vref_name(st, i);
-
-	if (!st->chip_info->internal_vref)
-		return devm_regulator_bulk_get(dev, ad5064_num_vref(st),
-					       st->vref_reg);
-
-	/*
-	 * This assumes that when the regulator has an internal VREF
-	 * there is only one external VREF connection, which is
-	 * currently the case for all supported devices.
-	 */
-	st->vref_reg[0].consumer = devm_regulator_get_optional(dev, "vref");
-	if (!IS_ERR(st->vref_reg[0].consumer))
-		return 0;
-
-	ret = PTR_ERR(st->vref_reg[0].consumer);
-	if (ret != -ENODEV)
-		return ret;
-
-	/* If no external regulator was supplied use the internal VREF */
-	st->use_internal_vref = true;
-	ret = ad5064_write(st, AD5064_CMD_CONFIG, 0,
-		AD5064_CONFIG_INT_VREF_ENABLE, 0);
-	if (ret)
-		dev_err(dev, "Failed to enable internal vref: %d\n", ret);
-
-	return ret;
 }
 
 static int ad5064_probe(struct device *dev, enum ad5064_type type,
@@ -524,11 +458,23 @@ static int ad5064_probe(struct device *dev, enum ad5064_type type,
 	st->dev = dev;
 	st->write = write;
 
-	ret = ad5064_request_vref(st, dev);
-	if (ret)
-		return ret;
+	for (i = 0; i < ad5064_num_vref(st); ++i)
+		st->vref_reg[i].supply = ad5064_vref_name(st, i);
 
-	if (!st->use_internal_vref) {
+	ret = devm_regulator_bulk_get(dev, ad5064_num_vref(st),
+		st->vref_reg);
+	if (ret) {
+		if (!st->chip_info->internal_vref)
+			return ret;
+		st->use_internal_vref = true;
+		ret = ad5064_write(st, AD5064_CMD_CONFIG, 0,
+			AD5064_CONFIG_INT_VREF_ENABLE, 0);
+		if (ret) {
+			dev_err(dev, "Failed to enable internal vref: %d\n",
+				ret);
+			return ret;
+		}
+	} else {
 		ret = regulator_bulk_enable(ad5064_num_vref(st), st->vref_reg);
 		if (ret)
 			return ret;
@@ -652,16 +598,10 @@ static int ad5064_i2c_write(struct ad5064_state *st, unsigned int cmd,
 	unsigned int addr, unsigned int val)
 {
 	struct i2c_client *i2c = to_i2c_client(st->dev);
-	int ret;
 
 	st->data.i2c[0] = (cmd << 4) | addr;
 	put_unaligned_be16(val, &st->data.i2c[1]);
-
-	ret = i2c_master_send(i2c, st->data.i2c, 3);
-	if (ret < 0)
-		return ret;
-
-	return 0;
+	return i2c_master_send(i2c, st->data.i2c, 3);
 }
 
 static int ad5064_i2c_probe(struct i2c_client *i2c,
@@ -677,12 +617,12 @@ static int ad5064_i2c_remove(struct i2c_client *i2c)
 }
 
 static const struct i2c_device_id ad5064_i2c_ids[] = {
-	{"ad5629-1", ID_AD5629_1},
-	{"ad5629-2", ID_AD5629_2},
-	{"ad5629-3", ID_AD5629_2}, /* similar enough to ad5629-2 */
-	{"ad5669-1", ID_AD5669_1},
-	{"ad5669-2", ID_AD5669_2},
-	{"ad5669-3", ID_AD5669_2}, /* similar enough to ad5669-2 */
+	{"ad5629-1", ID_AD5628_1},
+	{"ad5629-2", ID_AD5628_2},
+	{"ad5629-3", ID_AD5628_2}, /* similar enough to ad5629-2 */
+	{"ad5669-1", ID_AD5668_1},
+	{"ad5669-2", ID_AD5668_2},
+	{"ad5669-3", ID_AD5668_2}, /* similar enough to ad5669-2 */
 	{}
 };
 MODULE_DEVICE_TABLE(i2c, ad5064_i2c_ids);

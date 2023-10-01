@@ -54,7 +54,6 @@ static int nft_bitwise_init(const struct nft_ctx *ctx,
 {
 	struct nft_bitwise *priv = nft_expr_priv(expr);
 	struct nft_data_desc d1, d2;
-	u32 len;
 	int err;
 
 	if (tb[NFTA_BITWISE_SREG] == NULL ||
@@ -77,34 +76,21 @@ static int nft_bitwise_init(const struct nft_ctx *ctx,
 	if (err < 0)
 		return err;
 
-	err = nft_parse_u32_check(tb[NFTA_BITWISE_LEN], U8_MAX, &len);
-	if (err < 0)
-		return err;
-
-	priv->len = len;
+	priv->len = ntohl(nla_get_be32(tb[NFTA_BITWISE_LEN]));
 
 	err = nft_data_init(NULL, &priv->mask, &d1, tb[NFTA_BITWISE_MASK]);
 	if (err < 0)
 		return err;
-	if (d1.type != NFT_DATA_VALUE || d1.len != priv->len) {
-		err = -EINVAL;
-		goto err1;
-	}
+	if (d1.len != priv->len)
+		return -EINVAL;
 
 	err = nft_data_init(NULL, &priv->xor, &d2, tb[NFTA_BITWISE_XOR]);
 	if (err < 0)
-		goto err1;
-	if (d2.type != NFT_DATA_VALUE || d2.len != priv->len) {
-		err = -EINVAL;
-		goto err2;
-	}
+		return err;
+	if (d2.len != priv->len)
+		return -EINVAL;
 
 	return 0;
-err2:
-	nft_data_uninit(&priv->xor, d2.type);
-err1:
-	nft_data_uninit(&priv->mask, d1.type);
-	return err;
 }
 
 static int nft_bitwise_dump(struct sk_buff *skb, const struct nft_expr *expr)

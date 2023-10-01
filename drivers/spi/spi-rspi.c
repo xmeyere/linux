@@ -87,7 +87,7 @@
 /* RSPI on SH only */
 #define SPCR_TXMD		0x02	/* TX Only Mode (vs. Full Duplex) */
 #define SPCR_SPMS		0x01	/* 3-wire Mode (vs. 4-wire) */
-/* QSPI on R-Car M2 only */
+/* QSPI on R-Car Gen2 only */
 #define SPCR_WSWAP		0x02	/* Word Swap of read-data for DMAC */
 #define SPCR_BSWAP		0x01	/* Byte Swap of read-data for DMAC */
 
@@ -277,8 +277,7 @@ static int rspi_set_config_register(struct rspi_data *rspi, int access_size)
 	/* Sets parity, interrupt mask */
 	rspi_write8(rspi, 0x00, RSPI_SPCR2);
 
-	/* Resets sequencer */
-	rspi_write8(rspi, 0, RSPI_SPSCR);
+	/* Sets SPCMD */
 	rspi->spcmd |= SPCMD_SPB_8_TO_16(access_size);
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
@@ -312,8 +311,7 @@ static int rspi_rz_set_config_register(struct rspi_data *rspi, int access_size)
 	rspi_write8(rspi, 0x00, RSPI_SSLND);
 	rspi_write8(rspi, 0x00, RSPI_SPND);
 
-	/* Resets sequencer */
-	rspi_write8(rspi, 0, RSPI_SPSCR);
+	/* Sets SPCMD */
 	rspi->spcmd |= SPCMD_SPB_8_TO_16(access_size);
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
@@ -364,8 +362,7 @@ static int qspi_set_config_register(struct rspi_data *rspi, int access_size)
 	/* Sets buffer to allow normal operation */
 	rspi_write8(rspi, 0x00, QSPI_SPBFCR);
 
-	/* Resets sequencer */
-	rspi_write8(rspi, 0, RSPI_SPSCR);
+	/* Sets SPCMD */
 	rspi_write16(rspi, rspi->spcmd, RSPI_SPCMD0);
 
 	/* Enables SPI function in master mode */
@@ -541,13 +538,11 @@ static int rspi_dma_transfer(struct rspi_data *rspi, struct sg_table *tx,
 
 	ret = wait_event_interruptible_timeout(rspi->wait,
 					       rspi->dma_callbacked, HZ);
-	if (ret > 0 && rspi->dma_callbacked) {
+	if (ret > 0 && rspi->dma_callbacked)
 		ret = 0;
-	} else {
-		if (!ret) {
-			dev_err(&rspi->master->dev, "DMA timeout\n");
-			ret = -ETIMEDOUT;
-		}
+	else if (!ret) {
+		dev_err(&rspi->master->dev, "DMA timeout\n");
+		ret = -ETIMEDOUT;
 		if (tx)
 			dmaengine_terminate_all(rspi->master->dma_tx);
 		if (rx)
@@ -729,6 +724,28 @@ static int qspi_transfer_one(struct spi_master *master, struct spi_device *spi,
 	}
 }
 
+static int rspi_setup(struct spi_device *spi)
+{
+	struct rspi_data *rspi = spi_master_get_devdata(spi->master);
+
+	rspi->max_speed_hz = spi->max_speed_hz;
+
+	rspi->spcmd = SPCMD_SSLKP;
+	if (spi->mode & SPI_CPOL)
+		rspi->spcmd |= SPCMD_CPOL;
+	if (spi->mode & SPI_CPHA)
+		rspi->spcmd |= SPCMD_CPHA;
+
+	/* CMOS output mode and MOSI signal from previous transfer */
+	rspi->sppcr = 0;
+	if (spi->mode & SPI_LOOP)
+		rspi->sppcr |= SPPCR_SPLP;
+
+	set_config_register(rspi, 8);
+
+	return 0;
+}
+
 static u16 qspi_transfer_mode(const struct spi_transfer *xfer)
 {
 	if (xfer->tx_buf)
@@ -798,23 +815,7 @@ static int rspi_prepare_message(struct spi_master *master,
 				struct spi_message *msg)
 {
 	struct rspi_data *rspi = spi_master_get_devdata(master);
-	struct spi_device *spi = msg->spi;
 	int ret;
-
-	rspi->max_speed_hz = spi->max_speed_hz;
-
-	rspi->spcmd = SPCMD_SSLKP;
-	if (spi->mode & SPI_CPOL)
-		rspi->spcmd |= SPCMD_CPOL;
-	if (spi->mode & SPI_CPHA)
-		rspi->spcmd |= SPCMD_CPHA;
-
-	/* CMOS output mode and MOSI signal from previous transfer */
-	rspi->sppcr = 0;
-	if (spi->mode & SPI_LOOP)
-		rspi->sppcr |= SPPCR_SPLP;
-
-	set_config_register(rspi, 8);
 
 	if (msg->spi->mode &
 	    (SPI_TX_DUAL | SPI_TX_QUAD | SPI_RX_DUAL | SPI_RX_QUAD)) {
@@ -908,20 +909,24 @@ static struct dma_chan *rspi_request_dma_chan(struct device *dev,
 	dma_cap_zero(mask);
 	dma_cap_set(DMA_SLAVE, mask);
 
-	chan = dma_request_channel(mask, shdma_chan_filter,
-				   (void *)(unsigned long)id);
+	chan = dma_request_slave_channel_compat(mask, shdma_chan_filter,
+				(void *)(unsigned long)id, dev,
+				dir == DMA_MEM_TO_DEV ? "tx" : "rx");
 	if (!chan) {
-		dev_warn(dev, "dma_request_channel failed\n");
+		dev_warn(dev, "dma_request_slave_channel_compat failed\n");
 		return NULL;
 	}
 
 	memset(&cfg, 0, sizeof(cfg));
 	cfg.slave_id = id;
 	cfg.direction = dir;
-	if (dir == DMA_MEM_TO_DEV)
+	if (dir == DMA_MEM_TO_DEV) {
 		cfg.dst_addr = port_addr;
-	else
+		cfg.dst_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
+	} else {
 		cfg.src_addr = port_addr;
+		cfg.src_addr_width = DMA_SLAVE_BUSWIDTH_1_BYTE;
+	}
 
 	ret = dmaengine_slave_config(chan, &cfg);
 	if (ret) {
@@ -937,22 +942,30 @@ static int rspi_request_dma(struct device *dev, struct spi_master *master,
 			    const struct resource *res)
 {
 	const struct rspi_plat_data *rspi_pd = dev_get_platdata(dev);
+	unsigned int dma_tx_id, dma_rx_id;
 
-	if (!rspi_pd || !rspi_pd->dma_rx_id || !rspi_pd->dma_tx_id)
-		return 0;	/* The driver assumes no error. */
+	if (dev->of_node) {
+		/* In the OF case we will get the slave IDs from the DT */
+		dma_tx_id = 0;
+		dma_rx_id = 0;
+	} else if (rspi_pd && rspi_pd->dma_tx_id && rspi_pd->dma_rx_id) {
+		dma_tx_id = rspi_pd->dma_tx_id;
+		dma_rx_id = rspi_pd->dma_rx_id;
+	} else {
+		/* The driver assumes no error. */
+		return 0;
+	}
 
-	master->dma_rx = rspi_request_dma_chan(dev, DMA_DEV_TO_MEM,
-					       rspi_pd->dma_rx_id,
+	master->dma_tx = rspi_request_dma_chan(dev, DMA_MEM_TO_DEV, dma_tx_id,
 					       res->start + RSPI_SPDR);
-	if (!master->dma_rx)
+	if (!master->dma_tx)
 		return -ENODEV;
 
-	master->dma_tx = rspi_request_dma_chan(dev, DMA_MEM_TO_DEV,
-					       rspi_pd->dma_tx_id,
+	master->dma_rx = rspi_request_dma_chan(dev, DMA_DEV_TO_MEM, dma_rx_id,
 					       res->start + RSPI_SPDR);
-	if (!master->dma_tx) {
-		dma_release_channel(master->dma_rx);
-		master->dma_rx = NULL;
+	if (!master->dma_rx) {
+		dma_release_channel(master->dma_tx);
+		master->dma_tx = NULL;
 		return -ENODEV;
 	}
 
@@ -961,19 +974,19 @@ static int rspi_request_dma(struct device *dev, struct spi_master *master,
 	return 0;
 }
 
-static void rspi_release_dma(struct rspi_data *rspi)
+static void rspi_release_dma(struct spi_master *master)
 {
-	if (rspi->master->dma_tx)
-		dma_release_channel(rspi->master->dma_tx);
-	if (rspi->master->dma_rx)
-		dma_release_channel(rspi->master->dma_rx);
+	if (master->dma_tx)
+		dma_release_channel(master->dma_tx);
+	if (master->dma_rx)
+		dma_release_channel(master->dma_rx);
 }
 
 static int rspi_remove(struct platform_device *pdev)
 {
 	struct rspi_data *rspi = platform_get_drvdata(pdev);
 
-	rspi_release_dma(rspi);
+	rspi_release_dma(rspi->master);
 	pm_runtime_disable(&pdev->dev);
 
 	return 0;
@@ -1045,12 +1058,11 @@ static int rspi_request_irq(struct device *dev, unsigned int irq,
 			    irq_handler_t handler, const char *suffix,
 			    void *dev_id)
 {
-	const char *base = dev_name(dev);
-	size_t len = strlen(base) + strlen(suffix) + 2;
-	char *name = devm_kzalloc(dev, len, GFP_KERNEL);
+	const char *name = devm_kasprintf(dev, GFP_KERNEL, "%s:%s",
+					  dev_name(dev), suffix);
 	if (!name)
 		return -ENOMEM;
-	snprintf(name, len, "%s:%s", base, suffix);
+
 	return devm_request_irq(dev, irq, handler, 0, name, dev_id);
 }
 
@@ -1083,7 +1095,7 @@ static int rspi_probe(struct platform_device *pdev)
 			master->num_chipselect = rspi_pd->num_chipselect;
 		else
 			master->num_chipselect = 2; /* default */
-	};
+	}
 
 	/* ops parameter check */
 	if (!ops->set_config_register) {
@@ -1116,6 +1128,7 @@ static int rspi_probe(struct platform_device *pdev)
 	init_waitqueue_head(&rspi->wait);
 
 	master->bus_num = pdev->id;
+	master->setup = rspi_setup;
 	master->auto_runtime_pm = true;
 	master->transfer_one = ops->transfer_one;
 	master->prepare_message = rspi_prepare_message;
@@ -1174,7 +1187,7 @@ static int rspi_probe(struct platform_device *pdev)
 	return 0;
 
 error3:
-	rspi_release_dma(rspi);
+	rspi_release_dma(master);
 error2:
 	pm_runtime_disable(&pdev->dev);
 error1:
@@ -1192,29 +1205,6 @@ static struct platform_device_id spi_driver_ids[] = {
 
 MODULE_DEVICE_TABLE(platform, spi_driver_ids);
 
-#ifdef CONFIG_PM_SLEEP
-static int rspi_suspend(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rspi_data *rspi = platform_get_drvdata(pdev);
-
-	return spi_master_suspend(rspi->master);
-}
-
-static int rspi_resume(struct device *dev)
-{
-	struct platform_device *pdev = to_platform_device(dev);
-	struct rspi_data *rspi = platform_get_drvdata(pdev);
-
-	return spi_master_resume(rspi->master);
-}
-
-static SIMPLE_DEV_PM_OPS(rspi_pm_ops, rspi_suspend, rspi_resume);
-#define DEV_PM_OPS	&rspi_pm_ops
-#else
-#define DEV_PM_OPS	NULL
-#endif /* CONFIG_PM_SLEEP */
-
 static struct platform_driver rspi_driver = {
 	.probe =	rspi_probe,
 	.remove =	rspi_remove,
@@ -1222,7 +1212,6 @@ static struct platform_driver rspi_driver = {
 	.driver		= {
 		.name = "renesas_spi",
 		.owner	= THIS_MODULE,
-		.pm = DEV_PM_OPS,
 		.of_match_table = of_match_ptr(rspi_of_match),
 	},
 };

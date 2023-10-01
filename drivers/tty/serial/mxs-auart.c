@@ -90,8 +90,6 @@
 #define AUART_CTRL2_TXE				(1 << 8)
 #define AUART_CTRL2_UARTEN			(1 << 0)
 
-#define AUART_LINECTRL_BAUD_DIV_MAX		0x003fffc0
-#define AUART_LINECTRL_BAUD_DIV_MIN		0x000000ec
 #define AUART_LINECTRL_BAUD_DIVINT_SHIFT	16
 #define AUART_LINECTRL_BAUD_DIVINT_MASK		0xffff0000
 #define AUART_LINECTRL_BAUD_DIVINT(v)		(((v) & 0xffff) << 16)
@@ -410,7 +408,7 @@ static void mxs_auart_set_mctrl(struct uart_port *u, unsigned mctrl)
 
 	ctrl &= ~(AUART_CTRL2_RTSEN | AUART_CTRL2_RTS);
 	if (mctrl & TIOCM_RTS) {
-		if (tty_port_cts_enabled(&u->state->port))
+		if (uart_cts_enabled(u))
 			ctrl |= AUART_CTRL2_RTSEN;
 		else
 			ctrl |= AUART_CTRL2_RTS;
@@ -568,7 +566,7 @@ static void mxs_auart_settermios(struct uart_port *u,
 {
 	struct mxs_auart_port *s = to_auart_port(u);
 	u32 bm, ctrl, ctrl2, div;
-	unsigned int cflag, baud, baud_min, baud_max;
+	unsigned int cflag, baud;
 
 	cflag = termios->c_cflag;
 
@@ -658,10 +656,8 @@ static void mxs_auart_settermios(struct uart_port *u,
 	}
 
 	/* set baud rate */
-	baud_min = DIV_ROUND_UP(u->uartclk * 32, AUART_LINECTRL_BAUD_DIV_MAX);
-	baud_max = u->uartclk * 32 / AUART_LINECTRL_BAUD_DIV_MIN;
-	baud = uart_get_baud_rate(u, termios, old, baud_min, baud_max);
-	div = DIV_ROUND_CLOSEST(u->uartclk * 32, baud);
+	baud = uart_get_baud_rate(u, termios, old, 0, u->uartclk);
+	div = u->uartclk * 32 / baud;
 	ctrl |= AUART_LINECTRL_BAUD_DIVFRAC(div & 0x3F);
 	ctrl |= AUART_LINECTRL_BAUD_DIVINT(div >> 6);
 
@@ -819,17 +815,11 @@ static void mxs_auart_break_ctl(struct uart_port *u, int ctl)
 			     u->membase + AUART_LINECTRL_CLR);
 }
 
-static void mxs_auart_enable_ms(struct uart_port *port)
-{
-	/* just empty */
-}
-
 static struct uart_ops mxs_auart_ops = {
 	.tx_empty       = mxs_auart_tx_empty,
 	.start_tx       = mxs_auart_start_tx,
 	.stop_tx	= mxs_auart_stop_tx,
 	.stop_rx	= mxs_auart_stop_rx,
-	.enable_ms      = mxs_auart_enable_ms,
 	.break_ctl      = mxs_auart_break_ctl,
 	.set_mctrl	= mxs_auart_set_mctrl,
 	.get_mctrl      = mxs_auart_get_mctrl,
@@ -1050,11 +1040,6 @@ static int mxs_auart_probe(struct platform_device *pdev)
 		s->port.line = pdev->id < 0 ? 0 : pdev->id;
 	else if (ret < 0)
 		goto out_free;
-	if (s->port.line >= ARRAY_SIZE(auart_port)) {
-		dev_err(&pdev->dev, "serial%d out of range\n", s->port.line);
-		ret = -EINVAL;
-		goto out_free;
-	}
 
 	if (of_id) {
 		pdev->id_entry = of_id->data;
@@ -1075,10 +1060,6 @@ static int mxs_auart_probe(struct platform_device *pdev)
 
 	s->port.mapbase = r->start;
 	s->port.membase = ioremap(r->start, resource_size(r));
-	if (!s->port.membase) {
-		ret = -ENOMEM;
-		goto out_free_clk;
-	}
 	s->port.ops = &mxs_auart_ops;
 	s->port.iotype = UPIO_MEM;
 	s->port.fifosize = MXS_AUART_FIFO_SIZE;

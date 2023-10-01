@@ -275,7 +275,7 @@ static int hypfs_show_options(struct seq_file *s, struct dentry *root)
 static int hypfs_fill_super(struct super_block *sb, void *data, int silent)
 {
 	struct inode *root_inode;
-	struct dentry *root_dentry, *update_file;
+	struct dentry *root_dentry;
 	int rc = 0;
 	struct hypfs_sb_info *sbi;
 
@@ -306,10 +306,9 @@ static int hypfs_fill_super(struct super_block *sb, void *data, int silent)
 		rc = hypfs_diag_create_files(root_dentry);
 	if (rc)
 		return rc;
-	update_file = hypfs_create_update_file(root_dentry);
-	if (IS_ERR(update_file))
-		return PTR_ERR(update_file);
-	sbi->update_file = update_file;
+	sbi->update_file = hypfs_create_update_file(root_dentry);
+	if (IS_ERR(sbi->update_file))
+		return PTR_ERR(sbi->update_file);
 	hypfs_update_update(sb);
 	pr_info("Hypervisor filesystem mounted\n");
 	return 0;
@@ -327,7 +326,7 @@ static void hypfs_kill_super(struct super_block *sb)
 
 	if (sb->s_root)
 		hypfs_delete_tree(sb->s_root);
-	if (sb_info && sb_info->update_file)
+	if (sb_info->update_file)
 		hypfs_remove(sb_info->update_file);
 	kfree(sb->s_fs_info);
 	sb->s_fs_info = NULL;
@@ -462,6 +461,8 @@ static const struct super_operations hypfs_s_ops = {
 	.show_options	= hypfs_show_options,
 };
 
+static struct kobject *s390_kobj;
+
 static int __init hypfs_init(void)
 {
 	int rc;
@@ -481,16 +482,18 @@ static int __init hypfs_init(void)
 		rc = -ENODATA;
 		goto fail_hypfs_vm_exit;
 	}
-	rc = sysfs_create_mount_point(hypervisor_kobj, "s390");
-	if (rc)
+	s390_kobj = kobject_create_and_add("s390", hypervisor_kobj);
+	if (!s390_kobj) {
+		rc = -ENOMEM;
 		goto fail_hypfs_sprp_exit;
+	}
 	rc = register_filesystem(&hypfs_type);
 	if (rc)
 		goto fail_filesystem;
 	return 0;
 
 fail_filesystem:
-	sysfs_remove_mount_point(hypervisor_kobj, "s390");
+	kobject_put(s390_kobj);
 fail_hypfs_sprp_exit:
 	hypfs_sprp_exit();
 fail_hypfs_vm_exit:
@@ -506,7 +509,7 @@ fail_dbfs_exit:
 static void __exit hypfs_exit(void)
 {
 	unregister_filesystem(&hypfs_type);
-	sysfs_remove_mount_point(hypervisor_kobj, "s390");
+	kobject_put(s390_kobj);
 	hypfs_sprp_exit();
 	hypfs_vm_exit();
 	hypfs_diag_exit();

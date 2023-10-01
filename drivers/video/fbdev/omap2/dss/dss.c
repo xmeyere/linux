@@ -708,7 +708,7 @@ static const struct dss_features omap34xx_dss_feats __initconst = {
 };
 
 static const struct dss_features omap3630_dss_feats __initconst = {
-	.fck_div_max		=	31,
+	.fck_div_max		=	32,
 	.dss_fck_multiplier	=	1,
 	.parent_clk_name	=	"dpll4_ck",
 	.dpi_select_source	=	&dss_dpi_select_source_omap2_omap3,
@@ -966,6 +966,7 @@ static struct platform_driver omap_dsshw_driver = {
 		.owner  = THIS_MODULE,
 		.pm	= &dss_pm_ops,
 		.of_match_table = dss_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 

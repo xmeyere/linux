@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: AP specific command handling
  *
- * Copyright (C) 2012, Marvell International Ltd.
+ * Copyright (C) 2012-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -159,6 +159,7 @@ mwifiex_set_ht_params(struct mwifiex_private *priv,
 		      struct cfg80211_ap_settings *params)
 {
 	const u8 *ht_ie;
+	u16 cap_info;
 
 	if (!ISSUPP_11NENABLED(priv->adapter->fw_cap_info))
 		return;
@@ -168,6 +169,27 @@ mwifiex_set_ht_params(struct mwifiex_private *priv,
 	if (ht_ie) {
 		memcpy(&bss_cfg->ht_cap, ht_ie + 2,
 		       sizeof(struct ieee80211_ht_cap));
+		cap_info = le16_to_cpu(bss_cfg->ht_cap.cap_info);
+		memset(&bss_cfg->ht_cap.mcs, 0,
+		       priv->adapter->number_of_antenna);
+		switch (GET_RXSTBC(cap_info)) {
+		case MWIFIEX_RX_STBC1:
+			/* HT_CAP 1X1 mode */
+			bss_cfg->ht_cap.mcs.rx_mask[0] = 0xff;
+			break;
+		case MWIFIEX_RX_STBC12:	/* fall through */
+		case MWIFIEX_RX_STBC123:
+			/* HT_CAP 2X2 mode */
+			bss_cfg->ht_cap.mcs.rx_mask[0] = 0xff;
+			bss_cfg->ht_cap.mcs.rx_mask[1] = 0xff;
+			break;
+		default:
+			dev_warn(priv->adapter->dev,
+				 "Unsupported RX-STBC, default to 2x2\n");
+			bss_cfg->ht_cap.mcs.rx_mask[0] = 0xff;
+			bss_cfg->ht_cap.mcs.rx_mask[1] = 0xff;
+			break;
+		}
 		priv->ap_11n_enabled = 1;
 	} else {
 		memset(&bss_cfg->ht_cap , 0, sizeof(struct ieee80211_ht_cap));
@@ -247,8 +269,6 @@ mwifiex_set_uap_rates(struct mwifiex_uap_bss_param *bss_cfg,
 
 	rate_ie = (void *)cfg80211_find_ie(WLAN_EID_SUPP_RATES, var_pos, len);
 	if (rate_ie) {
-		if (rate_ie->len > MWIFIEX_SUPPORTED_RATES)
-			return;
 		memcpy(bss_cfg->rates, rate_ie + 1, rate_ie->len);
 		rate_len = rate_ie->len;
 	}
@@ -256,11 +276,8 @@ mwifiex_set_uap_rates(struct mwifiex_uap_bss_param *bss_cfg,
 	rate_ie = (void *)cfg80211_find_ie(WLAN_EID_EXT_SUPP_RATES,
 					   params->beacon.tail,
 					   params->beacon.tail_len);
-	if (rate_ie) {
-		if (rate_ie->len > MWIFIEX_SUPPORTED_RATES - rate_len)
-			return;
+	if (rate_ie)
 		memcpy(bss_cfg->rates + rate_len, rate_ie + 1, rate_ie->len);
-	}
 
 	return;
 }
@@ -369,7 +386,7 @@ mwifiex_set_wmm_params(struct mwifiex_private *priv,
 		       struct cfg80211_ap_settings *params)
 {
 	const u8 *vendor_ie;
-	const u8 *wmm_ie;
+	struct ieee_types_header *wmm_ie;
 	u8 wmm_oui[] = {0x00, 0x50, 0xf2, 0x02};
 
 	vendor_ie = cfg80211_find_vendor_ie(WLAN_OUI_MICROSOFT,
@@ -377,11 +394,9 @@ mwifiex_set_wmm_params(struct mwifiex_private *priv,
 					    params->beacon.tail,
 					    params->beacon.tail_len);
 	if (vendor_ie) {
-		wmm_ie = vendor_ie;
-		if (*(wmm_ie + 1) > sizeof(struct mwifiex_types_wmm_info))
-			return;
-		memcpy(&bss_cfg->wmm_info, wmm_ie +
-		       sizeof(struct ieee_types_header), *(wmm_ie + 1));
+		wmm_ie = (struct ieee_types_header *)vendor_ie;
+		memcpy(&bss_cfg->wmm_info, wmm_ie + 1,
+		       sizeof(bss_cfg->wmm_info));
 		priv->wmm_enabled = 1;
 	} else {
 		memset(&bss_cfg->wmm_info, 0, sizeof(bss_cfg->wmm_info));

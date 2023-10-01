@@ -72,9 +72,11 @@ static inline u8 *ablkcipher_get_spot(u8 *start, unsigned int len)
 	return max(start, end_page);
 }
 
-static inline void ablkcipher_done_slow(struct ablkcipher_walk *walk,
-					unsigned int n)
+static inline unsigned int ablkcipher_done_slow(struct ablkcipher_walk *walk,
+						unsigned int bsize)
 {
+	unsigned int n = bsize;
+
 	for (;;) {
 		unsigned int len_this_page = scatterwalk_pagelen(&walk->out);
 
@@ -86,13 +88,17 @@ static inline void ablkcipher_done_slow(struct ablkcipher_walk *walk,
 		n -= len_this_page;
 		scatterwalk_start(&walk->out, scatterwalk_sg_next(walk->out.sg));
 	}
+
+	return bsize;
 }
 
-static inline void ablkcipher_done_fast(struct ablkcipher_walk *walk,
-					unsigned int n)
+static inline unsigned int ablkcipher_done_fast(struct ablkcipher_walk *walk,
+						unsigned int n)
 {
 	scatterwalk_advance(&walk->in, n);
 	scatterwalk_advance(&walk->out, n);
+
+	return n;
 }
 
 static int ablkcipher_walk_next(struct ablkcipher_request *req,
@@ -102,40 +108,39 @@ int ablkcipher_walk_done(struct ablkcipher_request *req,
 			 struct ablkcipher_walk *walk, int err)
 {
 	struct crypto_tfm *tfm = req->base.tfm;
-	unsigned int n; /* bytes processed */
-	bool more;
+	unsigned int nbytes = 0;
 
-	if (unlikely(err < 0))
-		goto finish;
+	if (likely(err >= 0)) {
+		unsigned int n = walk->nbytes - err;
 
-	n = walk->nbytes - err;
-	walk->total -= n;
-	more = (walk->total != 0);
-
-	if (likely(!(walk->flags & ABLKCIPHER_WALK_SLOW))) {
-		ablkcipher_done_fast(walk, n);
-	} else {
-		if (WARN_ON(err)) {
-			/* unexpected case; didn't process all bytes */
+		if (likely(!(walk->flags & ABLKCIPHER_WALK_SLOW)))
+			n = ablkcipher_done_fast(walk, n);
+		else if (WARN_ON(err)) {
 			err = -EINVAL;
-			goto finish;
-		}
-		ablkcipher_done_slow(walk, n);
+			goto err;
+		} else
+			n = ablkcipher_done_slow(walk, n);
+
+		nbytes = walk->total - n;
+		err = 0;
 	}
 
-	scatterwalk_done(&walk->in, 0, more);
-	scatterwalk_done(&walk->out, 1, more);
+	scatterwalk_done(&walk->in, 0, nbytes);
+	scatterwalk_done(&walk->out, 1, nbytes);
 
-	if (more) {
+err:
+	walk->total = nbytes;
+	walk->nbytes = nbytes;
+
+	if (nbytes) {
 		crypto_yield(req->base.flags);
 		return ablkcipher_walk_next(req, walk);
 	}
-	err = 0;
-finish:
-	walk->nbytes = 0;
+
 	if (walk->iv != req->info)
 		memcpy(req->info, walk->iv, tfm->crt_ablkcipher.ivsize);
 	kfree(walk->iv_buffer);
+
 	return err;
 }
 EXPORT_SYMBOL_GPL(ablkcipher_walk_done);
@@ -271,12 +276,12 @@ static int ablkcipher_walk_first(struct ablkcipher_request *req,
 	if (WARN_ON_ONCE(in_irq()))
 		return -EDEADLK;
 
-	walk->iv = req->info;
 	walk->nbytes = walk->total;
 	if (unlikely(!walk->total))
 		return 0;
 
 	walk->iv_buffer = NULL;
+	walk->iv = req->info;
 	if (unlikely(((unsigned long)walk->iv & alignmask))) {
 		int err = ablkcipher_copy_iv(walk, tfm, alignmask);
 		if (err)
@@ -370,7 +375,6 @@ static int crypto_init_ablkcipher_ops(struct crypto_tfm *tfm, u32 type,
 	}
 	crt->base = __crypto_ablkcipher_cast(tfm);
 	crt->ivsize = alg->ivsize;
-	crt->has_setkey = alg->max_keysize;
 
 	return 0;
 }
@@ -452,7 +456,6 @@ static int crypto_init_givcipher_ops(struct crypto_tfm *tfm, u32 type,
 	crt->givdecrypt = alg->givdecrypt ?: no_givdecrypt;
 	crt->base = __crypto_ablkcipher_cast(tfm);
 	crt->ivsize = alg->ivsize;
-	crt->has_setkey = alg->max_keysize;
 
 	return 0;
 }
@@ -692,7 +695,7 @@ struct crypto_ablkcipher *crypto_alloc_ablkcipher(const char *alg_name,
 err:
 		if (err != -EAGAIN)
 			break;
-		if (fatal_signal_pending(current)) {
+		if (signal_pending(current)) {
 			err = -EINTR;
 			break;
 		}

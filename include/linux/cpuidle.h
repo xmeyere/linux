@@ -69,6 +69,7 @@ struct cpuidle_device {
 	unsigned int		cpu;
 
 	int			last_residency;
+	int			state_count;
 	struct cpuidle_state_usage	states_usage[CPUIDLE_STATE_MAX];
 	struct cpuidle_state_kobj *kobjs[CPUIDLE_STATE_MAX];
 	struct cpuidle_driver_kobj *kobj_driver;
@@ -146,8 +147,6 @@ extern int cpuidle_play_dead(void);
 extern void cpuidle_use_deepest_state(bool enable);
 
 extern struct cpuidle_driver *cpuidle_get_cpu_driver(struct cpuidle_device *dev);
-static inline struct cpuidle_device *cpuidle_get_device(void)
-{return __this_cpu_read(cpuidle_devices); }
 #else
 static inline void disable_cpuidle(void) { }
 static inline int cpuidle_select(struct cpuidle_driver *drv,
@@ -181,7 +180,6 @@ static inline int cpuidle_play_dead(void) {return -ENODEV; }
 static inline void cpuidle_use_deepest_state(bool enable) {}
 static inline struct cpuidle_driver *cpuidle_get_cpu_driver(
 	struct cpuidle_device *dev) {return NULL; }
-static inline struct cpuidle_device *cpuidle_get_device(void) {return NULL; }
 #endif
 
 #ifdef CONFIG_ARCH_NEEDS_CPU_IDLE_COUPLED

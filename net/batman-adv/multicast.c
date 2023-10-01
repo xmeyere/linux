@@ -20,10 +20,6 @@
 #include "originator.h"
 #include "hard-interface.h"
 #include "translation-table.h"
-#include "multicast.h"
-
-#include <linux/bitops.h>
-#include <linux/bug.h>
 
 /**
  * batadv_mcast_mla_softif_get - get softif multicast listeners
@@ -398,8 +394,8 @@ static struct batadv_orig_node *
 batadv_mcast_forw_tt_node_get(struct batadv_priv *bat_priv,
 			      struct ethhdr *ethhdr)
 {
-	return batadv_transtable_search(bat_priv, NULL, ethhdr->h_dest,
-					BATADV_NO_FLAGS);
+	return batadv_transtable_search(bat_priv, ethhdr->h_source,
+					ethhdr->h_dest, BATADV_NO_FLAGS);
 }
 
 /**
@@ -569,26 +565,19 @@ batadv_mcast_forw_mode(struct batadv_priv *bat_priv, struct sk_buff *skb,
  *
  * If the BATADV_MCAST_WANT_ALL_UNSNOOPABLES flag of this originator,
  * orig, has toggled then this method updates counter and list accordingly.
- *
- * Caller needs to hold orig->mcast_handler_lock.
  */
 static void batadv_mcast_want_unsnoop_update(struct batadv_priv *bat_priv,
 					     struct batadv_orig_node *orig,
 					     uint8_t mcast_flags)
 {
-	struct hlist_node *node = &orig->mcast_want_all_unsnoopables_node;
-	struct hlist_head *head = &bat_priv->mcast.want_all_unsnoopables_list;
-
 	/* switched from flag unset to set */
 	if (mcast_flags & BATADV_MCAST_WANT_ALL_UNSNOOPABLES &&
 	    !(orig->mcast_flags & BATADV_MCAST_WANT_ALL_UNSNOOPABLES)) {
 		atomic_inc(&bat_priv->mcast.num_want_all_unsnoopables);
 
 		spin_lock_bh(&bat_priv->mcast.want_lists_lock);
-		/* flag checks above + mcast_handler_lock prevents this */
-		WARN_ON(!hlist_unhashed(node));
-
-		hlist_add_head_rcu(node, head);
+		hlist_add_head_rcu(&orig->mcast_want_all_unsnoopables_node,
+				   &bat_priv->mcast.want_all_unsnoopables_list);
 		spin_unlock_bh(&bat_priv->mcast.want_lists_lock);
 	/* switched from flag set to unset */
 	} else if (!(mcast_flags & BATADV_MCAST_WANT_ALL_UNSNOOPABLES) &&
@@ -596,10 +585,7 @@ static void batadv_mcast_want_unsnoop_update(struct batadv_priv *bat_priv,
 		atomic_dec(&bat_priv->mcast.num_want_all_unsnoopables);
 
 		spin_lock_bh(&bat_priv->mcast.want_lists_lock);
-		/* flag checks above + mcast_handler_lock prevents this */
-		WARN_ON(hlist_unhashed(node));
-
-		hlist_del_init_rcu(node);
+		hlist_del_rcu(&orig->mcast_want_all_unsnoopables_node);
 		spin_unlock_bh(&bat_priv->mcast.want_lists_lock);
 	}
 }
@@ -612,26 +598,19 @@ static void batadv_mcast_want_unsnoop_update(struct batadv_priv *bat_priv,
  *
  * If the BATADV_MCAST_WANT_ALL_IPV4 flag of this originator, orig, has
  * toggled then this method updates counter and list accordingly.
- *
- * Caller needs to hold orig->mcast_handler_lock.
  */
 static void batadv_mcast_want_ipv4_update(struct batadv_priv *bat_priv,
 					  struct batadv_orig_node *orig,
 					  uint8_t mcast_flags)
 {
-	struct hlist_node *node = &orig->mcast_want_all_ipv4_node;
-	struct hlist_head *head = &bat_priv->mcast.want_all_ipv4_list;
-
 	/* switched from flag unset to set */
 	if (mcast_flags & BATADV_MCAST_WANT_ALL_IPV4 &&
 	    !(orig->mcast_flags & BATADV_MCAST_WANT_ALL_IPV4)) {
 		atomic_inc(&bat_priv->mcast.num_want_all_ipv4);
 
 		spin_lock_bh(&bat_priv->mcast.want_lists_lock);
-		/* flag checks above + mcast_handler_lock prevents this */
-		WARN_ON(!hlist_unhashed(node));
-
-		hlist_add_head_rcu(node, head);
+		hlist_add_head_rcu(&orig->mcast_want_all_ipv4_node,
+				   &bat_priv->mcast.want_all_ipv4_list);
 		spin_unlock_bh(&bat_priv->mcast.want_lists_lock);
 	/* switched from flag set to unset */
 	} else if (!(mcast_flags & BATADV_MCAST_WANT_ALL_IPV4) &&
@@ -639,10 +618,7 @@ static void batadv_mcast_want_ipv4_update(struct batadv_priv *bat_priv,
 		atomic_dec(&bat_priv->mcast.num_want_all_ipv4);
 
 		spin_lock_bh(&bat_priv->mcast.want_lists_lock);
-		/* flag checks above + mcast_handler_lock prevents this */
-		WARN_ON(hlist_unhashed(node));
-
-		hlist_del_init_rcu(node);
+		hlist_del_rcu(&orig->mcast_want_all_ipv4_node);
 		spin_unlock_bh(&bat_priv->mcast.want_lists_lock);
 	}
 }
@@ -655,26 +631,19 @@ static void batadv_mcast_want_ipv4_update(struct batadv_priv *bat_priv,
  *
  * If the BATADV_MCAST_WANT_ALL_IPV6 flag of this originator, orig, has
  * toggled then this method updates counter and list accordingly.
- *
- * Caller needs to hold orig->mcast_handler_lock.
  */
 static void batadv_mcast_want_ipv6_update(struct batadv_priv *bat_priv,
 					  struct batadv_orig_node *orig,
 					  uint8_t mcast_flags)
 {
-	struct hlist_node *node = &orig->mcast_want_all_ipv6_node;
-	struct hlist_head *head = &bat_priv->mcast.want_all_ipv6_list;
-
 	/* switched from flag unset to set */
 	if (mcast_flags & BATADV_MCAST_WANT_ALL_IPV6 &&
 	    !(orig->mcast_flags & BATADV_MCAST_WANT_ALL_IPV6)) {
 		atomic_inc(&bat_priv->mcast.num_want_all_ipv6);
 
 		spin_lock_bh(&bat_priv->mcast.want_lists_lock);
-		/* flag checks above + mcast_handler_lock prevents this */
-		WARN_ON(!hlist_unhashed(node));
-
-		hlist_add_head_rcu(node, head);
+		hlist_add_head_rcu(&orig->mcast_want_all_ipv6_node,
+				   &bat_priv->mcast.want_all_ipv6_list);
 		spin_unlock_bh(&bat_priv->mcast.want_lists_lock);
 	/* switched from flag set to unset */
 	} else if (!(mcast_flags & BATADV_MCAST_WANT_ALL_IPV6) &&
@@ -682,10 +651,7 @@ static void batadv_mcast_want_ipv6_update(struct batadv_priv *bat_priv,
 		atomic_dec(&bat_priv->mcast.num_want_all_ipv6);
 
 		spin_lock_bh(&bat_priv->mcast.want_lists_lock);
-		/* flag checks above + mcast_handler_lock prevents this */
-		WARN_ON(hlist_unhashed(node));
-
-		hlist_del_init_rcu(node);
+		hlist_del_rcu(&orig->mcast_want_all_ipv6_node);
 		spin_unlock_bh(&bat_priv->mcast.want_lists_lock);
 	}
 }
@@ -708,42 +674,37 @@ static void batadv_mcast_tvlv_ogm_handler_v1(struct batadv_priv *bat_priv,
 	uint8_t mcast_flags = BATADV_NO_FLAGS;
 	bool orig_initialized;
 
-	if (orig_mcast_enabled && tvlv_value &&
-	    (tvlv_value_len >= sizeof(mcast_flags)))
-		mcast_flags = *(uint8_t *)tvlv_value;
-
-	spin_lock_bh(&orig->mcast_handler_lock);
-	orig_initialized = test_bit(BATADV_ORIG_CAPA_HAS_MCAST,
-				    &orig->capa_initialized);
+	orig_initialized = orig->capa_initialized & BATADV_ORIG_CAPA_HAS_MCAST;
 
 	/* If mcast support is turned on decrease the disabled mcast node
 	 * counter only if we had increased it for this node before. If this
 	 * is a completely new orig_node no need to decrease the counter.
 	 */
 	if (orig_mcast_enabled &&
-	    !test_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capabilities)) {
+	    !(orig->capabilities & BATADV_ORIG_CAPA_HAS_MCAST)) {
 		if (orig_initialized)
 			atomic_dec(&bat_priv->mcast.num_disabled);
-		set_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capabilities);
-	/* If mcast support is being switched off or if this is an initial
-	 * OGM without mcast support then increase the disabled mcast
-	 * node counter.
+		orig->capabilities |= BATADV_ORIG_CAPA_HAS_MCAST;
+	/* If mcast support is being switched off increase the disabled
+	 * mcast node counter.
 	 */
 	} else if (!orig_mcast_enabled &&
-		   (test_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capabilities) ||
-		    !orig_initialized)) {
+		   orig->capabilities & BATADV_ORIG_CAPA_HAS_MCAST) {
 		atomic_inc(&bat_priv->mcast.num_disabled);
-		clear_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capabilities);
+		orig->capabilities &= ~BATADV_ORIG_CAPA_HAS_MCAST;
 	}
 
-	set_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capa_initialized);
+	orig->capa_initialized |= BATADV_ORIG_CAPA_HAS_MCAST;
+
+	if (orig_mcast_enabled && tvlv_value &&
+	    (tvlv_value_len >= sizeof(mcast_flags)))
+		mcast_flags = *(uint8_t *)tvlv_value;
 
 	batadv_mcast_want_unsnoop_update(bat_priv, orig, mcast_flags);
 	batadv_mcast_want_ipv4_update(bat_priv, orig, mcast_flags);
 	batadv_mcast_want_ipv6_update(bat_priv, orig, mcast_flags);
 
 	orig->mcast_flags = mcast_flags;
-	spin_unlock_bh(&orig->mcast_handler_lock);
 }
 
 /**
@@ -777,15 +738,10 @@ void batadv_mcast_purge_orig(struct batadv_orig_node *orig)
 {
 	struct batadv_priv *bat_priv = orig->bat_priv;
 
-	spin_lock_bh(&orig->mcast_handler_lock);
-
-	if (!test_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capabilities) &&
-	    test_bit(BATADV_ORIG_CAPA_HAS_MCAST, &orig->capa_initialized))
+	if (!(orig->capabilities & BATADV_ORIG_CAPA_HAS_MCAST))
 		atomic_dec(&bat_priv->mcast.num_disabled);
 
 	batadv_mcast_want_unsnoop_update(bat_priv, orig, BATADV_NO_FLAGS);
 	batadv_mcast_want_ipv4_update(bat_priv, orig, BATADV_NO_FLAGS);
 	batadv_mcast_want_ipv6_update(bat_priv, orig, BATADV_NO_FLAGS);
-
-	spin_unlock_bh(&orig->mcast_handler_lock);
 }

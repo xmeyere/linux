@@ -42,6 +42,7 @@
 #include <asm/time.h>
 
 static pgd_t *save_pgd __initdata;
+static unsigned long efi_flags __initdata;
 
 /*
  * We allocate runtime services regions bottom-up, starting from -4G, i.e.
@@ -78,7 +79,7 @@ static void __init early_code_mapping_set_exec(int executable)
 	}
 }
 
-void __init efi_call_phys_prelog(void)
+void __init efi_call_phys_prolog(void)
 {
 	unsigned long vaddress;
 	int pgd;
@@ -88,6 +89,7 @@ void __init efi_call_phys_prelog(void)
 		return;
 
 	early_code_mapping_set_exec(1);
+	local_irq_save(efi_flags);
 
 	n_pgds = DIV_ROUND_UP((max_pfn << PAGE_SHIFT), PGDIR_SIZE);
 	save_pgd = kmalloc(n_pgds * sizeof(pgd_t), GFP_KERNEL);
@@ -115,6 +117,7 @@ void __init efi_call_phys_epilog(void)
 		set_pgd(pgd_offset_k(pgd * PGDIR_SIZE), save_pgd[pgd]);
 	kfree(save_pgd);
 	__flush_tlb_all();
+	local_irq_restore(efi_flags);
 	early_code_mapping_set_exec(0);
 }
 
@@ -136,7 +139,7 @@ void efi_sync_low_kernel_mappings(void)
 		sizeof(pgd_t) * num_pgds);
 }
 
-int efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
+int __init efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 {
 	unsigned long text;
 	struct page *page;
@@ -189,7 +192,7 @@ int efi_setup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 	return 0;
 }
 
-void efi_cleanup_page_tables(unsigned long pa_memmap, unsigned num_pages)
+void __init efi_cleanup_page_tables(unsigned long pa_memmap, unsigned num_pages)
 {
 	pgd_t *pgd = (pgd_t *)__va(real_mode_header->trampoline_pgd);
 

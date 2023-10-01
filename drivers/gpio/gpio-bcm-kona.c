@@ -496,7 +496,7 @@ static struct irq_chip bcm_gpio_irq_chip = {
 	.irq_release_resources = bcm_kona_gpio_irq_relres,
 };
 
-static struct __initconst of_device_id bcm_kona_gpio_of_match[] = {
+static struct of_device_id const bcm_kona_gpio_of_match[] = {
 	{ .compatible = "brcm,kona-gpio" },
 	{}
 };
@@ -549,11 +549,11 @@ static void bcm_kona_gpio_reset(struct bcm_kona_gpio *kona_gpio)
 	/* disable interrupts and clear status */
 	for (i = 0; i < kona_gpio->num_bank; i++) {
 		/* Unlock the entire bank first */
-		bcm_kona_gpio_write_lock_regs(reg_base, i, UNLOCK_CODE);
+		bcm_kona_gpio_write_lock_regs(kona_gpio, i, UNLOCK_CODE);
 		writel(0xffffffff, reg_base + GPIO_INT_MASK(i));
 		writel(0xffffffff, reg_base + GPIO_INT_STATUS(i));
 		/* Now re-lock the bank */
-		bcm_kona_gpio_write_lock_regs(reg_base, i, LOCK_CODE);
+		bcm_kona_gpio_write_lock_regs(kona_gpio, i, LOCK_CODE);
 	}
 }
 

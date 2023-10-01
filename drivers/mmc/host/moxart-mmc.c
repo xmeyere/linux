@@ -13,7 +13,6 @@
  * warranty of any kind, whether express or implied.
  */
 
-#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/platform_device.h>
@@ -257,7 +256,7 @@ static void moxart_dma_complete(void *param)
 static void moxart_transfer_dma(struct mmc_data *data, struct moxart_host *host)
 {
 	u32 len, dir_data, dir_slave;
-	long dma_time;
+	unsigned long dma_time;
 	struct dma_async_tx_descriptor *desc = NULL;
 	struct dma_chan *dma_chan;
 
@@ -397,8 +396,7 @@ static void moxart_prepare_data(struct moxart_host *host)
 static void moxart_request(struct mmc_host *mmc, struct mmc_request *mrq)
 {
 	struct moxart_host *host = mmc_priv(mmc);
-	long pio_time;
-	unsigned long flags;
+	unsigned long pio_time, flags;
 	u32 status;
 
 	spin_lock_irqsave(&host->lock, flags);
@@ -719,7 +717,6 @@ static struct platform_driver moxart_mmc_driver = {
 	.remove     = moxart_remove,
 	.driver     = {
 		.name		= "mmc-moxart",
-		.owner		= THIS_MODULE,
 		.of_match_table	= moxart_mmc_match,
 	},
 };

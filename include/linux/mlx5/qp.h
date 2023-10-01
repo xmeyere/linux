@@ -40,6 +40,15 @@
 #define MLX5_SIG_WQE_SIZE	(MLX5_SEND_WQE_BB * 5)
 #define MLX5_DIF_SIZE		8
 #define MLX5_STRIDE_BLOCK_OP	0x400
+#define MLX5_CPY_GRD_MASK	0xc0
+#define MLX5_CPY_APP_MASK	0x30
+#define MLX5_CPY_REF_MASK	0x0f
+#define MLX5_BSF_INC_REFTAG	(1 << 6)
+#define MLX5_BSF_INL_VALID	(1 << 15)
+#define MLX5_BSF_REFRESH_DIF	(1 << 14)
+#define MLX5_BSF_REPEAT_BLOCK	(1 << 7)
+#define MLX5_BSF_APPTAG_ESCAPE	0x1
+#define MLX5_BSF_APPREF_ESCAPE	0x2
 
 enum mlx5_qp_optpar {
 	MLX5_QP_OPTPAR_ALT_ADDR_PATH		= 1 << 0,
@@ -140,7 +149,6 @@ enum {
 enum {
 	MLX5_FENCE_MODE_NONE			= 0 << 5,
 	MLX5_FENCE_MODE_INITIATOR_SMALL		= 1 << 5,
-	MLX5_FENCE_MODE_FENCE			= 2 << 5,
 	MLX5_FENCE_MODE_STRONG_ORDERING		= 3 << 5,
 	MLX5_FENCE_MODE_SMALL_AND_FENCE		= 4 << 5,
 };
@@ -288,6 +296,22 @@ struct mlx5_wqe_inline_seg {
 	__be32	byte_count;
 };
 
+enum mlx5_sig_type {
+	MLX5_DIF_CRC = 0x1,
+	MLX5_DIF_IPCS = 0x2,
+};
+
+struct mlx5_bsf_inl {
+	__be16		vld_refresh;
+	__be16		dif_apptag;
+	__be32		dif_reftag;
+	u8		sig_type;
+	u8		rp_inv_seed;
+	u8		rsvd[3];
+	u8		dif_inc_ref_guard_check;
+	__be16		dif_app_bitmask_check;
+};
+
 struct mlx5_bsf {
 	struct mlx5_bsf_basic {
 		u8		bsf_size_sbs;
@@ -311,14 +335,8 @@ struct mlx5_bsf {
 		__be32		w_tfs_psv;
 		__be32		m_tfs_psv;
 	} ext;
-	struct mlx5_bsf_inl {
-		__be32		w_inl_vld;
-		__be32		w_rsvd;
-		__be64		w_block_format;
-		__be32		m_inl_vld;
-		__be32		m_rsvd;
-		__be64		m_block_format;
-	} inl;
+	struct mlx5_bsf_inl	w_inl;
+	struct mlx5_bsf_inl	m_inl;
 };
 
 struct mlx5_klm {
@@ -343,10 +361,9 @@ struct mlx5_stride_block_ctrl_seg {
 };
 
 struct mlx5_core_qp {
+	struct mlx5_core_rsc_common	common; /* must be first */
 	void (*event)		(struct mlx5_core_qp *, int);
 	int			qpn;
-	atomic_t		refcount;
-	struct completion	free;
 	struct mlx5_rsc_debug	*dbg;
 	int			pid;
 };
@@ -442,11 +459,10 @@ struct mlx5_destroy_qp_mbox_out {
 struct mlx5_modify_qp_mbox_in {
 	struct mlx5_inbox_hdr	hdr;
 	__be32			qpn;
-	u8			rsvd0[4];
-	__be32			optparam;
 	u8			rsvd1[4];
+	__be32			optparam;
+	u8			rsvd0[4];
 	struct mlx5_qp_context	ctx;
-	u8			rsvd2[16];
 };
 
 struct mlx5_modify_qp_mbox_out {

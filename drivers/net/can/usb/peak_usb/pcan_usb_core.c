@@ -572,15 +572,15 @@ static int peak_usb_ndo_stop(struct net_device *netdev)
 	dev->state &= ~PCAN_USB_STATE_STARTED;
 	netif_stop_queue(netdev);
 
-	close_candev(netdev);
-
-	dev->can.state = CAN_STATE_STOPPED;
-
 	/* unlink all pending urbs and free used memory */
 	peak_usb_unlink_all_urbs(dev);
 
 	if (dev->adapter->dev_stop)
 		dev->adapter->dev_stop(dev);
+
+	close_candev(netdev);
+
+	dev->can.state = CAN_STATE_STOPPED;
 
 	/* can set bus off now */
 	if (dev->adapter->dev_set_bus) {
@@ -732,10 +732,10 @@ static int peak_usb_create_dev(struct peak_usb_adapter *peak_usb_adapter,
 	dev = netdev_priv(netdev);
 
 	/* allocate a buffer large enough to send commands */
-	dev->cmd_buf = kzalloc(PCAN_USB_MAX_CMD_LEN, GFP_KERNEL);
+	dev->cmd_buf = kmalloc(PCAN_USB_MAX_CMD_LEN, GFP_KERNEL);
 	if (!dev->cmd_buf) {
 		err = -ENOMEM;
-		goto lbl_free_candev;
+		goto lbl_set_intf_data;
 	}
 
 	dev->udev = usb_dev;
@@ -775,7 +775,7 @@ static int peak_usb_create_dev(struct peak_usb_adapter *peak_usb_adapter,
 	err = register_candev(netdev);
 	if (err) {
 		dev_err(&intf->dev, "couldn't register CAN device: %d\n", err);
-		goto lbl_restore_intf_data;
+		goto lbl_free_cmd_buf;
 	}
 
 	if (dev->prev_siblings)
@@ -788,14 +788,14 @@ static int peak_usb_create_dev(struct peak_usb_adapter *peak_usb_adapter,
 	if (dev->adapter->dev_init) {
 		err = dev->adapter->dev_init(dev);
 		if (err)
-			goto lbl_unregister_candev;
+			goto lbl_free_cmd_buf;
 	}
 
 	/* set bus off */
 	if (dev->adapter->dev_set_bus) {
 		err = dev->adapter->dev_set_bus(dev, 0);
 		if (err)
-			goto lbl_unregister_candev;
+			goto lbl_free_cmd_buf;
 	}
 
 	/* get device number early */
@@ -807,14 +807,11 @@ static int peak_usb_create_dev(struct peak_usb_adapter *peak_usb_adapter,
 
 	return 0;
 
-lbl_unregister_candev:
-	unregister_candev(netdev);
-
-lbl_restore_intf_data:
-	usb_set_intfdata(intf, dev->prev_siblings);
+lbl_free_cmd_buf:
 	kfree(dev->cmd_buf);
 
-lbl_free_candev:
+lbl_set_intf_data:
+	usb_set_intfdata(intf, dev->prev_siblings);
 	free_candev(netdev);
 
 	return err;
@@ -826,25 +823,23 @@ lbl_free_candev:
 static void peak_usb_disconnect(struct usb_interface *intf)
 {
 	struct peak_usb_device *dev;
-	struct peak_usb_device *dev_prev_siblings;
 
 	/* unregister as many netdev devices as siblings */
-	for (dev = usb_get_intfdata(intf); dev; dev = dev_prev_siblings) {
+	for (dev = usb_get_intfdata(intf); dev; dev = dev->prev_siblings) {
 		struct net_device *netdev = dev->netdev;
 		char name[IFNAMSIZ];
 
-		dev_prev_siblings = dev->prev_siblings;
 		dev->state &= ~PCAN_USB_STATE_CONNECTED;
 		strncpy(name, netdev->name, IFNAMSIZ);
 
 		unregister_netdev(netdev);
+		free_candev(netdev);
 
 		kfree(dev->cmd_buf);
 		dev->next_siblings = NULL;
 		if (dev->adapter->dev_free)
 			dev->adapter->dev_free(dev);
 
-		free_candev(netdev);
 		dev_info(&intf->dev, "%s removed\n", name);
 	}
 

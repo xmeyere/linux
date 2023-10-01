@@ -402,8 +402,8 @@ static void giveback(struct driver_data *drv_data)
 			cs_deassert(drv_data);
 	}
 
-	drv_data->cur_chip = NULL;
 	spi_finalize_current_message(drv_data->master);
+	drv_data->cur_chip = NULL;
 }
 
 static void reset_sccr1(struct driver_data *drv_data)
@@ -563,10 +563,6 @@ static irqreturn_t ssp_int(int irq, void *dev_id)
 	/* Ignore possible writes if we don't need to write */
 	if (!(sccr1_reg & SSCR1_TIE))
 		mask &= ~SSSR_TFS;
-
-	/* Ignore RX timeout interrupt if it is disabled */
-	if (!(sccr1_reg & SSCR1_TINTE))
-		mask &= ~SSSR_TINT;
 
 	if (!(status & mask))
 		return IRQ_NONE;
@@ -1066,8 +1062,6 @@ pxa2xx_spi_acpi_get_pdata(struct platform_device *pdev)
 
 	pdata->num_chipselect = 1;
 	pdata->enable_dma = true;
-	pdata->tx_chan_id = -1;
-	pdata->rx_chan_id = -1;
 
 	return pdata;
 }
@@ -1182,9 +1176,7 @@ static int pxa2xx_spi_probe(struct platform_device *pdev)
 	}
 
 	/* Enable SOC clock */
-	status = clk_prepare_enable(ssp->clk);
-	if (status)
-		goto out_error_dma_irq_alloc;
+	clk_prepare_enable(ssp->clk);
 
 	drv_data->max_clk_rate = clk_get_rate(ssp->clk);
 
@@ -1223,8 +1215,6 @@ static int pxa2xx_spi_probe(struct platform_device *pdev)
 
 out_error_clock_enabled:
 	clk_disable_unprepare(ssp->clk);
-
-out_error_dma_irq_alloc:
 	pxa2xx_spi_dma_release(drv_data);
 	free_irq(ssp->irq, drv_data);
 
@@ -1300,11 +1290,8 @@ static int pxa2xx_spi_resume(struct device *dev)
 	pxa2xx_spi_dma_resume(drv_data);
 
 	/* Enable the SSP clock */
-	if (!pm_runtime_suspended(dev)) {
-		status = clk_prepare_enable(ssp->clk);
-		if (status)
-			return status;
-	}
+	if (!pm_runtime_suspended(dev))
+		clk_prepare_enable(ssp->clk);
 
 	/* Restore LPSS private register bits */
 	lpss_ssp_setup(drv_data);
@@ -1332,10 +1319,9 @@ static int pxa2xx_spi_runtime_suspend(struct device *dev)
 static int pxa2xx_spi_runtime_resume(struct device *dev)
 {
 	struct driver_data *drv_data = dev_get_drvdata(dev);
-	int status;
 
-	status = clk_prepare_enable(drv_data->ssp->clk);
-	return status;
+	clk_prepare_enable(drv_data->ssp->clk);
+	return 0;
 }
 #endif
 

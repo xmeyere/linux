@@ -1,5 +1,5 @@
 /**
- * Copyright (C) 2005 - 2013 Emulex
+ * Copyright (C) 2005 - 2014 Emulex
  * All rights reserved.
  *
  * This program is free software; you can redistribute it and/or
@@ -48,6 +48,7 @@ static unsigned int be_iopoll_budget = 10;
 static unsigned int be_max_phys_size = 64;
 static unsigned int enable_msix = 1;
 
+MODULE_DEVICE_TABLE(pci, beiscsi_pci_id_table);
 MODULE_DESCRIPTION(DRV_DESC " " BUILD_STR);
 MODULE_VERSION(BUILD_STR);
 MODULE_AUTHOR("Emulex Corporation");
@@ -538,7 +539,7 @@ static umode_t beiscsi_eth_get_attr_visibility(void *data, int type)
 }
 
 /*------------------- PCI Driver operations and data ----------------- */
-static DEFINE_PCI_DEVICE_TABLE(beiscsi_pci_id_table) = {
+static const struct pci_device_id beiscsi_pci_id_table[] = {
 	{ PCI_DEVICE(BE_VENDOR_ID, BE_DEVICE_ID1) },
 	{ PCI_DEVICE(BE_VENDOR_ID, BE_DEVICE_ID2) },
 	{ PCI_DEVICE(BE_VENDOR_ID, OC_DEVICE_ID1) },
@@ -585,6 +586,7 @@ static struct beiscsi_hba *beiscsi_hba_alloc(struct pci_dev *pcidev)
 			"beiscsi_hba_alloc - iscsi_host_alloc failed\n");
 		return NULL;
 	}
+	shost->dma_boundary = pcidev->dma_mask;
 	shost->max_id = BE2_MAX_SESSIONS;
 	shost->max_channel = 0;
 	shost->max_cmd_len = BEISCSI_MAX_CMD_LEN;
@@ -2066,7 +2068,7 @@ static void  beiscsi_process_mcc_isr(struct beiscsi_hba *phba)
  * return
  *     Number of Completion Entries processed.
  **/
-static unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
+unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
 {
 	struct be_queue_info *cq;
 	struct sol_cqe *sol;
@@ -2108,6 +2110,18 @@ static unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
 
 		cri_index = BE_GET_CRI_FROM_CID(cid);
 		ep = phba->ep_array[cri_index];
+
+		if (ep == NULL) {
+			/* connection has already been freed
+			 * just move on to next one
+			 */
+			beiscsi_log(phba, KERN_WARNING,
+				    BEISCSI_LOG_INIT,
+				    "BM_%d : proc cqe of disconn ep: cid %d\n",
+				    cid);
+			goto proc_next_cqe;
+		}
+
 		beiscsi_ep = ep->dd_data;
 		beiscsi_conn = beiscsi_ep->conn;
 
@@ -2217,6 +2231,7 @@ static unsigned int beiscsi_process_cq(struct be_eq_obj *pbe_eq)
 			break;
 		}
 
+proc_next_cqe:
 		AMAP_SET_BITS(struct amap_sol_cqe, valid, sol, 0);
 		queue_tail_inc(cq);
 		sol = queue_tail_node(cq);
@@ -3152,7 +3167,7 @@ be_sgl_create_contiguous(void *virtual_address,
 {
 	WARN_ON(!virtual_address);
 	WARN_ON(!physical_address);
-	WARN_ON(!length);
+	WARN_ON(!length > 0);
 	WARN_ON(!sgl);
 
 	sgl->va = virtual_address;
@@ -3536,10 +3551,9 @@ static int be_queue_alloc(struct beiscsi_hba *phba, struct be_queue_info *q,
 	q->len = len;
 	q->entry_size = entry_size;
 	mem->size = len * entry_size;
-	mem->va = pci_alloc_consistent(phba->pcidev, mem->size, &mem->dma);
+	mem->va = pci_zalloc_consistent(phba->pcidev, mem->size, &mem->dma);
 	if (!mem->va)
 		return -ENOMEM;
-	memset(mem->va, 0, mem->size);
 	return 0;
 }
 
@@ -4318,9 +4332,9 @@ static int beiscsi_get_boot_info(struct beiscsi_hba *phba)
 			    "BM_%d : No boot session\n");
 		return ret;
 	}
-	nonemb_cmd.va = pci_alloc_consistent(phba->ctrl.pdev,
-				sizeof(*session_resp),
-				&nonemb_cmd.dma);
+	nonemb_cmd.va = pci_zalloc_consistent(phba->ctrl.pdev,
+					      sizeof(*session_resp),
+					      &nonemb_cmd.dma);
 	if (nonemb_cmd.va == NULL) {
 		beiscsi_log(phba, KERN_ERR,
 			    BEISCSI_LOG_INIT | BEISCSI_LOG_CONFIG,
@@ -4330,7 +4344,6 @@ static int beiscsi_get_boot_info(struct beiscsi_hba *phba)
 		return -ENOMEM;
 	}
 
-	memset(nonemb_cmd.va, 0, sizeof(*session_resp));
 	tag = mgmt_get_session_info(phba, s_handle,
 				    &nonemb_cmd);
 	if (!tag) {
@@ -4377,6 +4390,10 @@ static int beiscsi_setup_boot_info(struct beiscsi_hba *phba)
 {
 	struct iscsi_boot_kobj *boot_kobj;
 
+	/* it has been created previously */
+	if (phba->boot_kset)
+		return 0;
+
 	/* get boot info using mgmt cmd */
 	if (beiscsi_get_boot_info(phba))
 		/* Try to see if we can carry on without this */
@@ -4419,7 +4436,6 @@ put_shost:
 	scsi_host_put(phba->shost);
 free_kset:
 	iscsi_boot_destroy_kset(phba->boot_kset);
-	phba->boot_kset = NULL;
 	return -ENOMEM;
 }
 
@@ -5207,6 +5223,7 @@ static void beiscsi_quiesce(struct beiscsi_hba *phba,
 			free_irq(phba->pcidev->irq, phba);
 		}
 	pci_disable_msix(phba->pcidev);
+	cancel_delayed_work_sync(&phba->beiscsi_hw_check_task);
 
 	for (i = 0; i < phba->num_cpus; i++) {
 		pbe_eq = &phwi_context->be_eq[i];
@@ -5228,7 +5245,6 @@ static void beiscsi_quiesce(struct beiscsi_hba *phba,
 		hwi_cleanup(phba);
 	}
 
-	cancel_delayed_work_sync(&phba->beiscsi_hw_check_task);
 }
 
 static void beiscsi_remove(struct pci_dev *pcidev)
@@ -5277,9 +5293,9 @@ static void beiscsi_msix_enable(struct beiscsi_hba *phba)
 	for (i = 0; i <= phba->num_cpus; i++)
 		phba->msix_entries[i].entry = i;
 
-	status = pci_enable_msix(phba->pcidev, phba->msix_entries,
-				 (phba->num_cpus + 1));
-	if (!status)
+	status = pci_enable_msix_range(phba->pcidev, phba->msix_entries,
+				       phba->num_cpus + 1, phba->num_cpus + 1);
+	if (status > 0)
 		phba->msix_enabled = true;
 
 	return;
@@ -5336,6 +5352,14 @@ static void be_eqd_update(struct beiscsi_hba *phba)
 	}
 }
 
+static void be_check_boot_session(struct beiscsi_hba *phba)
+{
+	if (beiscsi_setup_boot_info(phba))
+		beiscsi_log(phba, KERN_ERR, BEISCSI_LOG_INIT,
+			    "BM_%d : Could not set up "
+			    "iSCSI boot info on async event.\n");
+}
+
 /*
  * beiscsi_hw_health_check()- Check adapter health
  * @work: work item to check HW health
@@ -5350,6 +5374,11 @@ beiscsi_hw_health_check(struct work_struct *work)
 			     beiscsi_hw_check_task.work);
 
 	be_eqd_update(phba);
+
+	if (phba->state & BE_ADAPTER_CHECK_BOOT) {
+		phba->state &= ~BE_ADAPTER_CHECK_BOOT;
+		be_check_boot_session(phba);
+	}
 
 	beiscsi_ue_detect(phba);
 
@@ -5707,9 +5736,9 @@ free_port:
 hba_free:
 	if (phba->msix_enabled)
 		pci_disable_msix(phba->pcidev);
+	iscsi_host_remove(phba->shost);
 	pci_dev_put(phba->pcidev);
 	iscsi_host_free(phba->shost);
-	pci_set_drvdata(pcidev, NULL);
 disable_pci:
 	pci_disable_device(pcidev);
 	return ret;

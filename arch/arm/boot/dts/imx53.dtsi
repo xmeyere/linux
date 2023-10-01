@@ -108,7 +108,7 @@
 			clocks = <&clks IMX5_CLK_SATA_GATE>,
 				 <&clks IMX5_CLK_SATA_REF>,
 				 <&clks IMX5_CLK_AHB>;
-			clock-names = "sata_gate", "sata_ref", "ahb";
+			clock-names = "sata", "sata_ref", "ahb";
 			status = "disabled";
 		};
 
@@ -221,6 +221,7 @@
 				};
 
 				ssi2: ssi@50014000 {
+					#sound-dai-cells = <0>;
 					compatible = "fsl,imx53-ssi",
 							"fsl,imx51-ssi",
 							"fsl,imx21-ssi";
@@ -231,7 +232,6 @@
 					       <&sdma 25 1 0>;
 					dma-names = "rx", "tx";
 					fsl,fifo-depth = <15>;
-					fsl,ssi-dma-events = <25 24 23 22>; /* TX0 RX0 TX1 RX1 */
 					status = "disabled";
 				};
 
@@ -258,6 +258,11 @@
 					bus-width = <4>;
 					status = "disabled";
 				};
+			};
+
+			aipstz1: bridge@53f00000 {
+				compatible = "fsl,imx53-aipstz";
+				reg = <0x53f00000 0x60>;
 			};
 
 			usbphy0: usbphy@0 {
@@ -580,6 +585,11 @@
 			reg = <0x60000000 0x10000000>;
 			ranges;
 
+			aipstz2: bridge@63f00000 {
+				compatible = "fsl,imx53-aipstz";
+				reg = <0x63f00000 0x60>;
+			};
+
 			iim: iim@63f98000 {
 				compatible = "fsl,imx53-iim", "fsl,imx27-iim";
 				reg = <0x63f98000 0x4000>;
@@ -660,6 +670,7 @@
 			};
 
 			ssi1: ssi@63fcc000 {
+				#sound-dai-cells = <0>;
 				compatible = "fsl,imx53-ssi", "fsl,imx51-ssi",
 						"fsl,imx21-ssi";
 				reg = <0x63fcc000 0x4000>;
@@ -669,7 +680,6 @@
 				       <&sdma 29 0 0>;
 				dma-names = "rx", "tx";
 				fsl,fifo-depth = <15>;
-				fsl,ssi-dma-events = <29 28 27 26>; /* TX0 RX0 TX1 RX1 */
 				status = "disabled";
 			};
 
@@ -688,6 +698,7 @@
 			};
 
 			ssi3: ssi@63fe8000 {
+				#sound-dai-cells = <0>;
 				compatible = "fsl,imx53-ssi", "fsl,imx51-ssi",
 						"fsl,imx21-ssi";
 				reg = <0x63fe8000 0x4000>;
@@ -697,7 +708,6 @@
 				       <&sdma 47 0 0>;
 				dma-names = "rx", "tx";
 				fsl,fifo-depth = <15>;
-				fsl,ssi-dma-events = <47 46 45 44>; /* TX0 RX0 TX1 RX1 */
 				status = "disabled";
 			};
 
@@ -744,6 +754,11 @@
 			compatible = "mmio-sram";
 			reg = <0xf8000000 0x20000>;
 			clocks = <&clks IMX5_CLK_OCRAM>;
+		};
+
+		pmu {
+			compatible = "arm,cortex-a8-pmu";
+			interrupts = <77>;
 		};
 	};
 };

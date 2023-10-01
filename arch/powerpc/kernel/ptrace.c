@@ -394,10 +394,6 @@ static int fpr_set(struct task_struct *target, const struct user_regset *regset,
 	flush_fp_to_thread(target);
 
 #ifdef CONFIG_VSX
-	for (i = 0; i < 32 ; i++)
-		buf[i] = target->thread.TS_FPR(i);
-	buf[32] = target->thread.fp_state.fpscr;
-
 	/* copy to local buffer then write that out */
 	i = user_regset_copyin(&pos, &count, &kbuf, &ubuf, buf, 0, -1);
 	if (i)
@@ -540,9 +536,6 @@ static int vsr_set(struct task_struct *target, const struct user_regset *regset,
 	int ret,i;
 
 	flush_vsx_to_thread(target);
-
-	for (i = 0; i < 32 ; i++)
-		buf[i] = target->thread.fp_state.fpr[i][TS_VSRLOWOFFSET];
 
 	ret = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 				 buf, 0, 32 * sizeof(double));
@@ -939,7 +932,7 @@ void ptrace_triggered(struct perf_event *bp,
 }
 #endif /* CONFIG_HAVE_HW_BREAKPOINT */
 
-int ptrace_set_debugreg(struct task_struct *task, unsigned long addr,
+static int ptrace_set_debugreg(struct task_struct *task, unsigned long addr,
 			       unsigned long data)
 {
 #ifdef CONFIG_HAVE_HW_BREAKPOINT
@@ -1011,7 +1004,6 @@ int ptrace_set_debugreg(struct task_struct *task, unsigned long addr,
 	/* Create a new breakpoint request if one doesn't exist already */
 	hw_breakpoint_init(&attr);
 	attr.bp_addr = hw_brk.address;
-	attr.bp_len = 8;
 	arch_bp_generic_fields(hw_brk.type,
 			       &attr.bp_type);
 
@@ -1777,7 +1769,6 @@ long arch_ptrace(struct task_struct *child, long request,
 long do_syscall_trace_enter(struct pt_regs *regs)
 {
 	long ret = 0;
-	int arch;
 
 	user_exit();
 
@@ -1795,21 +1786,13 @@ long do_syscall_trace_enter(struct pt_regs *regs)
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->gpr[0]);
 
-	arch = is_32bit_task() ? AUDIT_ARCH_PPC : AUDIT_ARCH_PPC64;
-#ifdef __LITTLE_ENDIAN__
-	arch |= __AUDIT_ARCH_LE;
-#endif
-
 #ifdef CONFIG_PPC64
 	if (!is_32bit_task())
-		audit_syscall_entry(arch,
-				    regs->gpr[0],
-				    regs->gpr[3], regs->gpr[4],
+		audit_syscall_entry(regs->gpr[0], regs->gpr[3], regs->gpr[4],
 				    regs->gpr[5], regs->gpr[6]);
 	else
 #endif
-		audit_syscall_entry(arch,
-				    regs->gpr[0],
+		audit_syscall_entry(regs->gpr[0],
 				    regs->gpr[3] & 0xffffffff,
 				    regs->gpr[4] & 0xffffffff,
 				    regs->gpr[5] & 0xffffffff,

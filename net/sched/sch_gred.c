@@ -209,7 +209,7 @@ static int gred_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		break;
 
 	case RED_PROB_MARK:
-		sch->qstats.overlimits++;
+		qdisc_qstats_overlimit(sch);
 		if (!gred_use_ecn(t) || !INET_ECN_set_ce(skb)) {
 			q->stats.prob_drop++;
 			goto congestion_drop;
@@ -219,7 +219,7 @@ static int gred_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		break;
 
 	case RED_HARD_MARK:
-		sch->qstats.overlimits++;
+		qdisc_qstats_overlimit(sch);
 		if (gred_use_harddrop(t) || !gred_use_ecn(t) ||
 		    !INET_ECN_set_ce(skb)) {
 			q->stats.forced_drop++;
@@ -388,9 +388,6 @@ static inline int gred_change_vq(struct Qdisc *sch, int dp,
 	struct gred_sched *table = qdisc_priv(sch);
 	struct gred_sched_data *q = table->tab[dp];
 
-	if (!red_check_params(ctl->qth_min, ctl->qth_max, ctl->Wlog))
-		return -EINVAL;
-
 	if (!q) {
 		table->tab[dp] = q = *prealloc;
 		*prealloc = NULL;
@@ -437,7 +434,7 @@ static int gred_change(struct Qdisc *sch, struct nlattr *opt)
 		return err;
 
 	if (tb[TCA_GRED_PARMS] == NULL && tb[TCA_GRED_STAB] == NULL)
-		return gred_change_table_def(sch, tb[TCA_GRED_DPS]);
+		return gred_change_table_def(sch, opt);
 
 	if (tb[TCA_GRED_PARMS] == NULL ||
 	    tb[TCA_GRED_STAB] == NULL)

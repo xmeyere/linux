@@ -73,6 +73,8 @@ static inline unsigned keyring_hash(const char *desc)
  * can be treated as ordinary keys in addition to having their own special
  * operations.
  */
+static int keyring_preparse(struct key_preparsed_payload *prep);
+static void keyring_free_preparse(struct key_preparsed_payload *prep);
 static int keyring_instantiate(struct key *keyring,
 			       struct key_preparsed_payload *prep);
 static void keyring_revoke(struct key *keyring);
@@ -84,8 +86,9 @@ static long keyring_read(const struct key *keyring,
 struct key_type key_type_keyring = {
 	.name		= "keyring",
 	.def_datalen	= 0,
+	.preparse	= keyring_preparse,
+	.free_preparse	= keyring_free_preparse,
 	.instantiate	= keyring_instantiate,
-	.match		= user_match,
 	.revoke		= keyring_revoke,
 	.destroy	= keyring_destroy,
 	.describe	= keyring_describe,
@@ -123,6 +126,21 @@ static void keyring_publish_name(struct key *keyring)
 }
 
 /*
+ * Preparse a keyring payload
+ */
+static int keyring_preparse(struct key_preparsed_payload *prep)
+{
+	return prep->datalen != 0 ? -EINVAL : 0;
+}
+
+/*
+ * Free a preparse of a user defined key payload
+ */
+static void keyring_free_preparse(struct key_preparsed_payload *prep)
+{
+}
+
+/*
  * Initialise a keyring.
  *
  * Returns 0 on success, -EINVAL if given any data.
@@ -130,17 +148,10 @@ static void keyring_publish_name(struct key *keyring)
 static int keyring_instantiate(struct key *keyring,
 			       struct key_preparsed_payload *prep)
 {
-	int ret;
-
-	ret = -EINVAL;
-	if (prep->datalen == 0) {
-		assoc_array_init(&keyring->keys);
-		/* make the keyring available by name if it has one */
-		keyring_publish_name(keyring);
-		ret = 0;
-	}
-
-	return ret;
+	assoc_array_init(&keyring->keys);
+	/* make the keyring available by name if it has one */
+	keyring_publish_name(keyring);
+	return 0;
 }
 
 /*
@@ -405,7 +416,7 @@ static void keyring_describe(const struct key *keyring, struct seq_file *m)
 }
 
 struct keyring_read_iterator_context {
-	size_t			buflen;
+	size_t			qty;
 	size_t			count;
 	key_serial_t __user	*buffer;
 };
@@ -417,9 +428,9 @@ static int keyring_read_iterator(const void *object, void *data)
 	int ret;
 
 	kenter("{%s,%d},,{%zu/%zu}",
-	       key->type->name, key->serial, ctx->count, ctx->buflen);
+	       key->type->name, key->serial, ctx->count, ctx->qty);
 
-	if (ctx->count >= ctx->buflen)
+	if (ctx->count >= ctx->qty)
 		return 1;
 
 	ret = put_user(key->serial, ctx->buffer);
@@ -441,33 +452,38 @@ static long keyring_read(const struct key *keyring,
 			 char __user *buffer, size_t buflen)
 {
 	struct keyring_read_iterator_context ctx;
-	long ret;
+	unsigned long nr_keys;
+	int ret;
 
 	kenter("{%d},,%zu", key_serial(keyring), buflen);
 
 	if (buflen & (sizeof(key_serial_t) - 1))
 		return -EINVAL;
 
-	/* Copy as many key IDs as fit into the buffer */
-	if (buffer && buflen) {
-		ctx.buffer = (key_serial_t __user *)buffer;
-		ctx.buflen = buflen;
-		ctx.count = 0;
-		ret = assoc_array_iterate(&keyring->keys,
-					  keyring_read_iterator, &ctx);
-		if (ret < 0) {
-			kleave(" = %ld [iterate]", ret);
-			return ret;
-		}
+	nr_keys = keyring->keys.nr_leaves_on_tree;
+	if (nr_keys == 0)
+		return 0;
+
+	/* Calculate how much data we could return */
+	ctx.qty = nr_keys * sizeof(key_serial_t);
+
+	if (!buffer || !buflen)
+		return ctx.qty;
+
+	if (buflen > ctx.qty)
+		ctx.qty = buflen;
+
+	/* Copy the IDs of the subscribed keys into the buffer */
+	ctx.buffer = (key_serial_t __user *)buffer;
+	ctx.count = 0;
+	ret = assoc_array_iterate(&keyring->keys, keyring_read_iterator, &ctx);
+	if (ret < 0) {
+		kleave(" = %d [iterate]", ret);
+		return ret;
 	}
 
-	/* Return the size of the buffer needed */
-	ret = keyring->keys.nr_leaves_on_tree * sizeof(key_serial_t);
-	if (ret <= buflen)
-		kleave("= %ld [ok]", ret);
-	else
-		kleave("= %ld [buffer too small]", ret);
-	return ret;
+	kleave(" = %zu [ok]", ctx.count);
+	return ctx.count;
 }
 
 /*
@@ -493,6 +509,15 @@ struct key *keyring_alloc(const char *description, kuid_t uid, kgid_t gid,
 	return keyring;
 }
 EXPORT_SYMBOL(keyring_alloc);
+
+/*
+ * By default, we keys found by getting an exact match on their descriptions.
+ */
+bool key_default_cmp(const struct key *key,
+		     const struct key_match_data *match_data)
+{
+	return strcmp(key->description, match_data->raw_data) == 0;
+}
 
 /*
  * Iteration function to consider each key found.
@@ -521,14 +546,15 @@ static int keyring_search_iterator(const void *object, void *iterator_data)
 		}
 
 		if (key->expiry && ctx->now.tv_sec >= key->expiry) {
-			ctx->result = ERR_PTR(-EKEYEXPIRED);
+			if (!(ctx->flags & KEYRING_SEARCH_SKIP_EXPIRED))
+				ctx->result = ERR_PTR(-EKEYEXPIRED);
 			kleave(" = %d [expire]", ctx->skipped_ret);
 			goto skipped;
 		}
 	}
 
 	/* keys that don't match */
-	if (!ctx->match(key, ctx->match_data)) {
+	if (!ctx->match_data.cmp(key, &ctx->match_data)) {
 		kleave(" = 0 [!match]");
 		return 0;
 	}
@@ -568,8 +594,7 @@ skipped:
  */
 static int search_keyring(struct key *keyring, struct keyring_search_context *ctx)
 {
-	if ((ctx->flags & KEYRING_SEARCH_LOOKUP_TYPE) ==
-	    KEYRING_SEARCH_LOOKUP_DIRECT) {
+	if (ctx->match_data.lookup_type == KEYRING_SEARCH_LOOKUP_DIRECT) {
 		const void *object;
 
 		object = assoc_array_find(&keyring->keys,
@@ -604,13 +629,19 @@ static bool search_nested_keyrings(struct key *keyring,
 	       ctx->index_key.type->name,
 	       ctx->index_key.description);
 
+#define STATE_CHECKS (KEYRING_SEARCH_NO_STATE_CHECK | KEYRING_SEARCH_DO_STATE_CHECK)
+	BUG_ON((ctx->flags & STATE_CHECKS) == 0 ||
+	       (ctx->flags & STATE_CHECKS) == STATE_CHECKS);
+
+	if (ctx->index_key.description)
+		ctx->index_key.desc_len = strlen(ctx->index_key.description);
+
 	/* Check to see if this top-level keyring is what we are looking for
 	 * and whether it is valid or not.
 	 */
-	if (ctx->flags & KEYRING_SEARCH_LOOKUP_ITERATE ||
+	if (ctx->match_data.lookup_type == KEYRING_SEARCH_LOOKUP_ITERATE ||
 	    keyring_compare_object(keyring, &ctx->index_key)) {
 		ctx->skipped_ret = 2;
-		ctx->flags |= KEYRING_SEARCH_DO_STATE_CHECK;
 		switch (ctx->iterator(keyring_key_to_ptr(keyring), ctx)) {
 		case 1:
 			goto found;
@@ -622,8 +653,6 @@ static bool search_nested_keyrings(struct key *keyring,
 	}
 
 	ctx->skipped_ret = 0;
-	if (ctx->flags & KEYRING_SEARCH_NO_STATE_CHECK)
-		ctx->flags &= ~KEYRING_SEARCH_DO_STATE_CHECK;
 
 	/* Start processing a new keyring */
 descend_to_keyring:
@@ -840,9 +869,6 @@ key_ref_t keyring_search_aux(key_ref_t keyring_ref,
 			return ERR_PTR(err);
 	}
 
-	if (!ctx->match)
-		return ERR_PTR(-ENOKEY);
-
 	rcu_read_lock();
 	ctx->now = current_kernel_time();
 	if (search_nested_keyrings(keyring, ctx))
@@ -867,15 +893,26 @@ key_ref_t keyring_search(key_ref_t keyring,
 	struct keyring_search_context ctx = {
 		.index_key.type		= type,
 		.index_key.description	= description,
-		.index_key.desc_len	= strlen(description),
 		.cred			= current_cred(),
-		.match			= type->match,
-		.match_data		= description,
-		.flags			= (type->def_lookup_type |
-					   KEYRING_SEARCH_DO_STATE_CHECK),
+		.match_data.cmp		= key_default_cmp,
+		.match_data.raw_data	= description,
+		.match_data.lookup_type	= KEYRING_SEARCH_LOOKUP_DIRECT,
+		.flags			= KEYRING_SEARCH_DO_STATE_CHECK,
 	};
+	key_ref_t key;
+	int ret;
 
-	return keyring_search_aux(keyring, &ctx);
+	if (type->match_preparse) {
+		ret = type->match_preparse(&ctx.match_data);
+		if (ret < 0)
+			return ERR_PTR(ret);
+	}
+
+	key = keyring_search_aux(keyring, &ctx);
+
+	if (type->match_free)
+		type->match_free(&ctx.match_data);
+	return key;
 }
 EXPORT_SYMBOL(keyring_search);
 
@@ -928,15 +965,15 @@ found:
 /*
  * Find a keyring with the specified name.
  *
- * Only keyrings that have nonzero refcount, are not revoked, and are owned by a
- * user in the current user namespace are considered.  If @uid_keyring is %true,
- * the keyring additionally must have been allocated as a user or user session
- * keyring; otherwise, it must grant Search permission directly to the caller.
+ * All named keyrings in the current user namespace are searched, provided they
+ * grant Search permission directly to the caller (unless this check is
+ * skipped).  Keyrings whose usage points have reached zero or who have been
+ * revoked are skipped.
  *
  * Returns a pointer to the keyring with the keyring's refcount having being
  * incremented on success.  -ENOKEY is returned if a key could not be found.
  */
-struct key *find_keyring_by_name(const char *name, bool uid_keyring)
+struct key *find_keyring_by_name(const char *name, bool skip_perm_check)
 {
 	struct key *keyring;
 	int bucket;
@@ -964,15 +1001,10 @@ struct key *find_keyring_by_name(const char *name, bool uid_keyring)
 			if (strcmp(keyring->description, name) != 0)
 				continue;
 
-			if (uid_keyring) {
-				if (!test_bit(KEY_FLAG_UID_KEYRING,
-					      &keyring->flags))
-					continue;
-			} else {
-				if (key_permission(make_key_ref(keyring, 0),
-						   KEY_NEED_SEARCH) < 0)
-					continue;
-			}
+			if (!skip_perm_check &&
+			    key_permission(make_key_ref(keyring, 0),
+					   KEY_NEED_SEARCH) < 0)
+				continue;
 
 			/* we've got a match but we might end up racing with
 			 * key_cleanup() if the keyring is currently 'dead'
@@ -1000,7 +1032,7 @@ static int keyring_detect_cycle_iterator(const void *object,
 
 	/* We might get a keyring with matching index-key that is nonetheless a
 	 * different keyring. */
-	if (key != ctx->match_data)
+	if (key != ctx->match_data.raw_data)
 		return 0;
 
 	ctx->result = ERR_PTR(-EDEADLK);
@@ -1017,14 +1049,14 @@ static int keyring_detect_cycle_iterator(const void *object,
 static int keyring_detect_cycle(struct key *A, struct key *B)
 {
 	struct keyring_search_context ctx = {
-		.index_key	= A->index_key,
-		.match_data	= A,
-		.iterator	= keyring_detect_cycle_iterator,
-		.flags		= (KEYRING_SEARCH_LOOKUP_DIRECT |
-				   KEYRING_SEARCH_NO_STATE_CHECK |
-				   KEYRING_SEARCH_NO_UPDATE_TIME |
-				   KEYRING_SEARCH_NO_CHECK_PERM |
-				   KEYRING_SEARCH_DETECT_TOO_DEEP),
+		.index_key		= A->index_key,
+		.match_data.raw_data	= A,
+		.match_data.lookup_type = KEYRING_SEARCH_LOOKUP_DIRECT,
+		.iterator		= keyring_detect_cycle_iterator,
+		.flags			= (KEYRING_SEARCH_NO_STATE_CHECK |
+					   KEYRING_SEARCH_NO_UPDATE_TIME |
+					   KEYRING_SEARCH_NO_CHECK_PERM |
+					   KEYRING_SEARCH_DETECT_TOO_DEEP),
 	};
 
 	rcu_read_lock();
@@ -1149,11 +1181,9 @@ void __key_link_end(struct key *keyring,
 	if (index_key->type == &key_type_keyring)
 		up_write(&keyring_serialise_link_sem);
 
-	if (edit) {
-		if (!edit->dead_leaf) {
-			key_payload_reserve(keyring,
-				keyring->datalen - KEYQUOTA_LINK_BYTES);
-		}
+	if (edit && !edit->dead_leaf) {
+		key_payload_reserve(keyring,
+				    keyring->datalen - KEYQUOTA_LINK_BYTES);
 		assoc_array_cancel_edit(edit);
 	}
 	up_write(&keyring->sem);

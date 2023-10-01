@@ -290,7 +290,7 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 	struct device_node *p;
 	const __be32 *intspec, *tmp, *addr;
 	u32 intsize, intlen;
-	int i, res;
+	int i, res = -EINVAL;
 
 	pr_debug("of_irq_parse_one: dev=%s, index=%d\n", of_node_full_name(device), index);
 
@@ -323,19 +323,15 @@ int of_irq_parse_one(struct device_node *device, int index, struct of_phandle_ar
 
 	/* Get size of interrupt specifier */
 	tmp = of_get_property(p, "#interrupt-cells", NULL);
-	if (tmp == NULL) {
-		res = -EINVAL;
+	if (tmp == NULL)
 		goto out;
-	}
 	intsize = be32_to_cpu(*tmp);
 
 	pr_debug(" intsize=%d intlen=%d\n", intsize, intlen);
 
 	/* Check index */
-	if ((index + 1) * intsize > intlen) {
-		res = -EINVAL;
+	if ((index + 1) * intsize > intlen)
 		goto out;
-	}
 
 	/* Copy intspec into irq structure */
 	intspec += index * intsize;
@@ -385,13 +381,13 @@ int of_irq_to_resource(struct device_node *dev, int index, struct resource *r)
 EXPORT_SYMBOL_GPL(of_irq_to_resource);
 
 /**
- * of_irq_get - Decode a node's IRQ and return it as a Linux IRQ number
+ * of_irq_get - Decode a node's IRQ and return it as a Linux irq number
  * @dev: pointer to device tree node
- * @index: zero-based index of the IRQ
+ * @index: zero-based index of the irq
  *
- * Returns Linux IRQ number on success, or 0 on the IRQ mapping failure, or
- * -EPROBE_DEFER if the IRQ domain is not yet created, or error code in case
- * of any other failure.
+ * Returns Linux irq number on success, or -EPROBE_DEFER if the irq domain
+ * is not yet created.
+ *
  */
 int of_irq_get(struct device_node *dev, int index)
 {
@@ -411,13 +407,12 @@ int of_irq_get(struct device_node *dev, int index)
 }
 
 /**
- * of_irq_get_byname - Decode a node's IRQ and return it as a Linux IRQ number
+ * of_irq_get_byname - Decode a node's IRQ and return it as a Linux irq number
  * @dev: pointer to device tree node
- * @name: IRQ name
+ * @name: irq name
  *
- * Returns Linux IRQ number on success, or 0 on the IRQ mapping failure, or
- * -EPROBE_DEFER if the IRQ domain is not yet created, or error code in case
- * of any other failure.
+ * Returns Linux irq number on success, or -EPROBE_DEFER if the irq domain
+ * is not yet created, or error code in case of any other failure.
  */
 int of_irq_get_byname(struct device_node *dev, const char *name)
 {

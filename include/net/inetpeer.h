@@ -35,7 +35,6 @@ struct inet_peer {
 
 	u32			metrics[RTAX_MAX];
 	u32			rate_tokens;	/* rate limiting for ICMP */
-	u32			n_redirects;
 	unsigned long		rate_last;
 	union {
 		struct list_head	gc_list;
@@ -62,7 +61,6 @@ struct inet_peer {
 struct inet_peer_base {
 	struct inet_peer __rcu	*root;
 	seqlock_t		lock;
-	u32			flush_seq;
 	int			total;
 };
 

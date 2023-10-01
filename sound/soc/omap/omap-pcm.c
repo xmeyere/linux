@@ -31,6 +31,7 @@
 #include <sound/pcm_params.h>
 #include <sound/dmaengine_pcm.h>
 #include <sound/soc.h>
+#include <sound/omap-pcm.h>
 
 #ifdef CONFIG_ARCH_OMAP1
 #define pcm_omap1510()	cpu_is_omap1510()
@@ -200,7 +201,7 @@ static int omap_pcm_new(struct snd_soc_pcm_runtime *rtd)
 	struct snd_pcm *pcm = rtd->pcm;
 	int ret;
 
-	ret = dma_coerce_mask_and_coherent(card->dev, DMA_BIT_MASK(32));
+	ret = dma_coerce_mask_and_coherent(card->dev, DMA_BIT_MASK(64));
 	if (ret)
 		return ret;
 

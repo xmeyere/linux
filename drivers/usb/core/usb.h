@@ -29,9 +29,6 @@ extern int usb_deauthorize_device(struct usb_device *);
 extern int usb_authorize_device(struct usb_device *);
 extern void usb_detect_quirks(struct usb_device *udev);
 extern void usb_detect_interface_quirks(struct usb_device *udev);
-extern bool usb_endpoint_is_blacklisted(struct usb_device *udev,
-		struct usb_host_interface *intf,
-		struct usb_endpoint_descriptor *epd);
 extern int usb_remove_device(struct usb_device *udev);
 
 extern int usb_get_device_descriptor(struct usb_device *dev,
@@ -51,7 +48,7 @@ static inline unsigned usb_get_max_power(struct usb_device *udev,
 	return c->desc.bMaxPower * mul;
 }
 
-extern void usb_kick_khubd(struct usb_device *dev);
+extern void usb_kick_hub_wq(struct usb_device *dev);
 extern int usb_match_one_id_intf(struct usb_device *dev,
 				 struct usb_host_interface *intf,
 				 const struct usb_device_id *id);
@@ -68,7 +65,6 @@ extern int  usb_hub_init(void);
 extern void usb_hub_cleanup(void);
 extern int usb_major_init(void);
 extern void usb_major_cleanup(void);
-extern int usb_device_supports_lpm(struct usb_device *udev);
 
 #ifdef	CONFIG_PM
 

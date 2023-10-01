@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: functions for station ioctl
  *
- * Copyright (C) 2011, Marvell International Ltd.
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -26,7 +26,7 @@
 #include "11n.h"
 #include "cfg80211.h"
 
-static int disconnect_on_suspend = 1;
+static int disconnect_on_suspend;
 module_param(disconnect_on_suspend, int, 0644);
 
 /*
@@ -223,15 +223,6 @@ static int mwifiex_process_country_ie(struct mwifiex_private *priv,
 			  "11D: skip setting domain info in FW\n");
 		return 0;
 	}
-
-	if (country_ie_len >
-	    (IEEE80211_COUNTRY_STRING_LEN + MWIFIEX_MAX_TRIPLET_802_11D)) {
-		rcu_read_unlock();
-		wiphy_dbg(priv->wdev->wiphy,
-			  "11D: country_ie_len overflow!, deauth AP\n");
-		return -EINVAL;
-	}
-
 	memcpy(priv->adapter->country_code, &country_ie[2], 2);
 
 	domain_info->country_code[0] = country_ie[2];
@@ -275,9 +266,7 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 	priv->scan_block = false;
 
 	if (bss) {
-		if (adapter->region_code == 0x00 &&
-		    mwifiex_process_country_ie(priv, bss))
-			return -EINVAL;
+		mwifiex_process_country_ie(priv, bss);
 
 		/* Allocate and fill new bss descriptor */
 		bss_desc = kzalloc(sizeof(struct mwifiex_bssdescriptor),
@@ -294,18 +283,17 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 	    priv->bss_mode == NL80211_IFTYPE_P2P_CLIENT) {
 		u8 config_bands;
 
-		ret = mwifiex_deauthenticate(priv, NULL);
-		if (ret)
-			goto done;
-
 		if (!bss_desc)
 			return -1;
 
 		if (mwifiex_band_to_radio_type(bss_desc->bss_band) ==
-						HostCmd_SCAN_RADIO_TYPE_BG)
+						HostCmd_SCAN_RADIO_TYPE_BG) {
 			config_bands = BAND_B | BAND_G | BAND_GN;
-		else
-			config_bands = BAND_A | BAND_AN | BAND_AAC;
+		} else {
+			config_bands = BAND_A | BAND_AN;
+			if (adapter->fw_bands & BAND_AAC)
+				config_bands |= BAND_AAC;
+		}
 
 		if (!((config_bands | adapter->fw_bands) & ~adapter->fw_bands))
 			adapter->config_bands = config_bands;
@@ -319,7 +307,6 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 			dev_err(adapter->dev,
 				"Attempt to reconnect on csa closed chan(%d)\n",
 				bss_desc->channel);
-			ret = -1;
 			goto done;
 		}
 
@@ -356,12 +343,6 @@ int mwifiex_bss_start(struct mwifiex_private *priv, struct cfg80211_bss *bss,
 			ret = 0;
 			goto done;
 		}
-
-		/* Exit Adhoc mode first */
-		dev_dbg(adapter->dev, "info: Sending Adhoc Stop\n");
-		ret = mwifiex_deauthenticate(priv, NULL);
-		if (ret)
-			goto done;
 
 		priv->adhoc_is_link_sensed = false;
 
@@ -401,8 +382,8 @@ done:
  * This function prepares the correct firmware command and
  * issues it.
  */
-static int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
-				 int cmd_type, struct mwifiex_ds_hs_cfg *hs_cfg)
+int mwifiex_set_hs_params(struct mwifiex_private *priv, u16 action,
+			  int cmd_type, struct mwifiex_ds_hs_cfg *hs_cfg)
 
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
@@ -670,9 +651,6 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 	txp_cfg = (struct host_cmd_ds_txpwr_cfg *) buf;
 	txp_cfg->action = cpu_to_le16(HostCmd_ACT_GEN_SET);
 	if (!power_cfg->is_power_auto) {
-		u16 dbm_min = power_cfg->is_power_fixed ?
-			      dbm : priv->min_tx_power_level;
-
 		txp_cfg->mode = cpu_to_le32(1);
 		pg_tlv = (struct mwifiex_types_power_group *)
 			 (buf + sizeof(struct host_cmd_ds_txpwr_cfg));
@@ -687,7 +665,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x03;
 		pg->modulation_class = MOD_CLASS_HR_DSSS;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg++;
 		/* Power group for modulation class OFDM */
@@ -695,7 +673,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x07;
 		pg->modulation_class = MOD_CLASS_OFDM;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg++;
 		/* Power group for modulation class HTBW20 */
@@ -703,7 +681,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x20;
 		pg->modulation_class = MOD_CLASS_HT;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg->ht_bandwidth = HT_BW_20;
 		pg++;
@@ -712,7 +690,7 @@ int mwifiex_set_tx_power(struct mwifiex_private *priv,
 		pg->last_rate_code = 0x20;
 		pg->modulation_class = MOD_CLASS_HT;
 		pg->power_step = 0;
-		pg->power_min = (s8) dbm_min;
+		pg->power_min = (s8) dbm;
 		pg->power_max = (s8) dbm;
 		pg->ht_bandwidth = HT_BW_40;
 	}
@@ -902,7 +880,7 @@ static int mwifiex_sec_ioctl_set_wep_key(struct mwifiex_private *priv,
 			return -1;
 		}
 
-		if (adapter->fw_key_api_major_ver == FW_KEY_API_VER_MAJOR_V2) {
+		if (adapter->key_api_major_ver == KEY_API_VER_MAJOR_V2) {
 			memcpy(encrypt_key->key_material,
 			       wep_key->key_material, wep_key->key_length);
 			encrypt_key->key_len = wep_key->key_length;
@@ -928,7 +906,7 @@ static int mwifiex_sec_ioctl_set_wep_key(struct mwifiex_private *priv,
 			memset(&priv->wep_key[index], 0,
 			       sizeof(struct mwifiex_wep_key));
 
-		if (adapter->fw_key_api_major_ver == FW_KEY_API_VER_MAJOR_V2)
+		if (adapter->key_api_major_ver == KEY_API_VER_MAJOR_V2)
 			enc_key = encrypt_key;
 		else
 			enc_key = NULL;
@@ -1096,6 +1074,8 @@ int mwifiex_set_encode(struct mwifiex_private *priv, struct key_params *kp,
 			encrypt_key.is_rx_seq_valid = true;
 		}
 	} else {
+		if (GET_BSS_ROLE(priv) == MWIFIEX_BSS_ROLE_UAP)
+			return 0;
 		encrypt_key.key_disable = true;
 		if (mac_addr)
 			memcpy(encrypt_key.mac_addr, mac_addr, ETH_ALEN);
@@ -1332,7 +1312,7 @@ mwifiex_set_gen_ie_helper(struct mwifiex_private *priv, u8 *ie_data_ptr,
 	pvendor_ie = (struct ieee_types_vendor_header *) ie_data_ptr;
 	/* Test to see if it is a WPA IE, if not, then it is a gen IE */
 	if (((pvendor_ie->element_id == WLAN_EID_VENDOR_SPECIFIC) &&
-	     (!memcmp(&pvendor_ie->oui, wpa_oui, sizeof(wpa_oui)))) ||
+	     (!memcmp(pvendor_ie->oui, wpa_oui, sizeof(wpa_oui)))) ||
 	    (pvendor_ie->element_id == WLAN_EID_RSN)) {
 
 		/* IE is a WPA/WPA2 IE so call set_wpa function */
@@ -1357,7 +1337,7 @@ mwifiex_set_gen_ie_helper(struct mwifiex_private *priv, u8 *ie_data_ptr,
 		 */
 		pvendor_ie = (struct ieee_types_vendor_header *) ie_data_ptr;
 		if ((pvendor_ie->element_id == WLAN_EID_VENDOR_SPECIFIC) &&
-		    (!memcmp(&pvendor_ie->oui, wps_oui, sizeof(wps_oui)))) {
+		    (!memcmp(pvendor_ie->oui, wps_oui, sizeof(wps_oui)))) {
 			priv->wps.session_enable = true;
 			dev_dbg(priv->adapter->dev,
 				"info: WPS Session Enabled.\n");

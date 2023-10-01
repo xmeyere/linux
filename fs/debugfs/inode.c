@@ -66,7 +66,7 @@ static struct inode *debugfs_get_inode(struct super_block *sb, umode_t mode, dev
 			break;
 		}
 	}
-	return inode; 
+	return inode;
 }
 
 /* SMP-safe */
@@ -246,19 +246,10 @@ static int debugfs_show_options(struct seq_file *m, struct dentry *root)
 	return 0;
 }
 
-static void debugfs_evict_inode(struct inode *inode)
-{
-	truncate_inode_pages_final(&inode->i_data);
-	clear_inode(inode);
-	if (S_ISLNK(inode->i_mode))
-		kfree(inode->i_private);
-}
-
 static const struct super_operations debugfs_super_operations = {
 	.statfs		= simple_statfs,
 	.remount_fs	= debugfs_remount,
 	.show_options	= debugfs_show_options,
-	.evict_inode	= debugfs_evict_inode,
 };
 
 static int debug_fill_super(struct super_block *sb, void *data, int silent)
@@ -326,7 +317,7 @@ static struct dentry *__create_file(const char *name, umode_t mode,
 		goto exit;
 
 	/* If the parent is not specified, we create it in the root.
-	 * We need the root dentry to do this, which is in the super 
+	 * We need the root dentry to do this, which is in the super
 	 * block. A pointer to that is in the struct vfsmount that we
 	 * have around.
 	 */
@@ -339,7 +330,7 @@ static struct dentry *__create_file(const char *name, umode_t mode,
 		switch (mode & S_IFMT) {
 		case S_IFDIR:
 			error = debugfs_mkdir(parent->d_inode, dentry, mode);
-					      
+
 			break;
 		case S_IFLNK:
 			error = debugfs_link(parent->d_inode, dentry, mode,
@@ -475,14 +466,23 @@ static int __debugfs_remove(struct dentry *dentry, struct dentry *parent)
 	int ret = 0;
 
 	if (debugfs_positive(dentry)) {
-		dget(dentry);
-		if (S_ISDIR(dentry->d_inode->i_mode))
-			ret = simple_rmdir(parent->d_inode, dentry);
-		else
-			simple_unlink(parent->d_inode, dentry);
-		if (!ret)
-			d_delete(dentry);
-		dput(dentry);
+		if (dentry->d_inode) {
+			dget(dentry);
+			switch (dentry->d_inode->i_mode & S_IFMT) {
+			case S_IFDIR:
+				ret = simple_rmdir(parent->d_inode, dentry);
+				break;
+			case S_IFLNK:
+				kfree(dentry->d_inode->i_private);
+				/* fall through */
+			default:
+				simple_unlink(parent->d_inode, dentry);
+				break;
+			}
+			if (!ret)
+				d_delete(dentry);
+			dput(dentry);
+		}
 	}
 	return ret;
 }
@@ -553,7 +553,7 @@ void debugfs_remove_recursive(struct dentry *dentry)
 	 * use the d_u.d_child as the rcu head and corrupt this list.
 	 */
 	spin_lock(&parent->d_lock);
-	list_for_each_entry(child, &parent->d_subdirs, d_child) {
+	list_for_each_entry(child, &parent->d_subdirs, d_u.d_child) {
 		if (!debugfs_positive(child))
 			continue;
 
@@ -620,14 +620,7 @@ struct dentry *debugfs_rename(struct dentry *old_dir, struct dentry *old_dentry,
 {
 	int error;
 	struct dentry *dentry = NULL, *trap;
-	struct name_snapshot old_name;
-
-	if (IS_ERR(old_dir))
-		return old_dir;
-	if (IS_ERR(new_dir))
-		return new_dir;
-	if (IS_ERR_OR_NULL(old_dentry))
-		return old_dentry;
+	const char *old_name;
 
 	trap = lock_rename(new_dir, old_dir);
 	/* Source or destination directories don't exist? */
@@ -642,19 +635,19 @@ struct dentry *debugfs_rename(struct dentry *old_dir, struct dentry *old_dentry,
 	if (IS_ERR(dentry) || dentry == trap || dentry->d_inode)
 		goto exit;
 
-	take_dentry_name_snapshot(&old_name, old_dentry);
+	old_name = fsnotify_oldname_init(old_dentry->d_name.name);
 
 	error = simple_rename(old_dir->d_inode, old_dentry, new_dir->d_inode,
 		dentry);
 	if (error) {
-		release_dentry_name_snapshot(&old_name);
+		fsnotify_oldname_free(old_name);
 		goto exit;
 	}
 	d_move(old_dentry, dentry);
-	fsnotify_move(old_dir->d_inode, new_dir->d_inode, old_name.name,
+	fsnotify_move(old_dir->d_inode, new_dir->d_inode, old_name,
 		S_ISDIR(old_dentry->d_inode->i_mode),
 		NULL, old_dentry);
-	release_dentry_name_snapshot(&old_name);
+	fsnotify_oldname_free(old_name);
 	unlock_rename(new_dir, old_dir);
 	dput(dentry);
 	return old_dentry;
@@ -675,17 +668,20 @@ bool debugfs_initialized(void)
 }
 EXPORT_SYMBOL_GPL(debugfs_initialized);
 
+
+static struct kobject *debug_kobj;
+
 static int __init debugfs_init(void)
 {
 	int retval;
 
-	retval = sysfs_create_mount_point(kernel_kobj, "debug");
-	if (retval)
-		return retval;
+	debug_kobj = kobject_create_and_add("debug", kernel_kobj);
+	if (!debug_kobj)
+		return -EINVAL;
 
 	retval = register_filesystem(&debug_fs_type);
 	if (retval)
-		sysfs_remove_mount_point(kernel_kobj, "debug");
+		kobject_put(debug_kobj);
 	else
 		debugfs_registered = true;
 

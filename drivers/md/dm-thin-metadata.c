@@ -81,14 +81,10 @@
 #define SECTOR_TO_BLOCK_SHIFT 3
 
 /*
- * For btree insert:
  *  3 for btree insert +
  *  2 for btree lookup used within space map
- * For btree remove:
- *  2 for shadow spine +
- *  4 for rebalance 3 child node
  */
-#define THIN_MAX_CONCURRENT_LOCKS 6
+#define THIN_MAX_CONCURRENT_LOCKS 5
 
 /* This should be plenty */
 #define SPACE_MAP_ROOT_SIZE 128
@@ -196,15 +192,6 @@ struct dm_pool_metadata {
 	 * operation possible in this state is the closing of the device.
 	 */
 	bool fail_io:1;
-
-	/*
-	 * Pre-commit callback.
-	 *
-	 * This allows the thin provisioning target to run a callback before
-	 * the metadata are committed.
-	 */
-	dm_pool_pre_commit_fn pre_commit_fn;
-	void *pre_commit_context;
 
 	/*
 	 * Reading the space map roots can fail, so we read it into these
@@ -497,11 +484,11 @@ static int __write_initial_superblock(struct dm_pool_metadata *pmd)
 	if (r < 0)
 		return r;
 
-	r = dm_tm_pre_commit(pmd->tm);
+	r = save_sm_roots(pmd);
 	if (r < 0)
 		return r;
 
-	r = save_sm_roots(pmd);
+	r = dm_tm_pre_commit(pmd->tm);
 	if (r < 0)
 		return r;
 
@@ -793,14 +780,6 @@ static int __commit_transaction(struct dm_pool_metadata *pmd)
 	 */
 	BUILD_BUG_ON(sizeof(struct thin_disk_superblock) > 512);
 
-	if (pmd->pre_commit_fn) {
-		r = pmd->pre_commit_fn(pmd->pre_commit_context);
-		if (r < 0) {
-			DMERR("pre-commit callback failed");
-			return r;
-		}
-	}
-
 	r = __write_changed_details(pmd);
 	if (r < 0)
 		return r;
@@ -861,8 +840,6 @@ struct dm_pool_metadata *dm_pool_metadata_open(struct block_device *bdev,
 	pmd->fail_io = false;
 	pmd->bdev = bdev;
 	pmd->data_block_size = data_block_size;
-	pmd->pre_commit_fn = NULL;
-	pmd->pre_commit_context = NULL;
 
 	r = __create_persistent_data_objects(pmd, format_device);
 	if (r) {
@@ -1228,12 +1205,6 @@ static int __reserve_metadata_snap(struct dm_pool_metadata *pmd)
 	dm_block_t held_root;
 
 	/*
-	 * We commit to ensure the btree roots which we increment in a
-	 * moment are up to date.
-	 */
-	__commit_transaction(pmd);
-
-	/*
 	 * Copy the superblock.
 	 */
 	dm_sm_inc_block(pmd->metadata_sm, THIN_SUPERBLOCK_LOCATION);
@@ -1324,8 +1295,8 @@ static int __release_metadata_snap(struct dm_pool_metadata *pmd)
 		return r;
 
 	disk_super = dm_block_data(copy);
-	dm_btree_del(&pmd->info, le64_to_cpu(disk_super->data_mapping_root));
-	dm_btree_del(&pmd->details_info, le64_to_cpu(disk_super->device_details_root));
+	dm_sm_dec_block(pmd->metadata_sm, le64_to_cpu(disk_super->data_mapping_root));
+	dm_sm_dec_block(pmd->metadata_sm, le64_to_cpu(disk_super->device_details_root));
 	dm_sm_dec_block(pmd->metadata_sm, held_root);
 
 	return dm_tm_unlock(pmd->tm, copy);
@@ -1806,16 +1777,6 @@ int dm_pool_register_metadata_threshold(struct dm_pool_metadata *pmd,
 	up_write(&pmd->root_lock);
 
 	return r;
-}
-
-void dm_pool_register_pre_commit_callback(struct dm_pool_metadata *pmd,
-					  dm_pool_pre_commit_fn fn,
-					  void *context)
-{
-	down_write(&pmd->root_lock);
-	pmd->pre_commit_fn = fn;
-	pmd->pre_commit_context = context;
-	up_write(&pmd->root_lock);
 }
 
 int dm_pool_metadata_set_needs_check(struct dm_pool_metadata *pmd)

@@ -1697,16 +1697,16 @@ static int dbg_asicmode_show(struct seq_file *s, void *p)
 
 	switch (mode) {
 	case DOC_ASICMODE_RESET:
-		pos += seq_printf(s, "reset");
+		pos += seq_puts(s, "reset");
 		break;
 	case DOC_ASICMODE_NORMAL:
-		pos += seq_printf(s, "normal");
+		pos += seq_puts(s, "normal");
 		break;
 	case DOC_ASICMODE_POWERDOWN:
-		pos += seq_printf(s, "powerdown");
+		pos += seq_puts(s, "powerdown");
 		break;
 	}
-	pos += seq_printf(s, ")\n");
+	pos += seq_puts(s, ")\n");
 	return pos;
 }
 DEBUGFS_RO_ATTR(asic_mode, dbg_asicmode_show);
@@ -1745,22 +1745,22 @@ static int dbg_protection_show(struct seq_file *s, void *p)
 	pos += seq_printf(s, "Protection = 0x%02x (",
 			 protect);
 	if (protect & DOC_PROTECT_FOUNDRY_OTP_LOCK)
-		pos += seq_printf(s, "FOUNDRY_OTP_LOCK,");
+		pos += seq_puts(s, "FOUNDRY_OTP_LOCK,");
 	if (protect & DOC_PROTECT_CUSTOMER_OTP_LOCK)
-		pos += seq_printf(s, "CUSTOMER_OTP_LOCK,");
+		pos += seq_puts(s, "CUSTOMER_OTP_LOCK,");
 	if (protect & DOC_PROTECT_LOCK_INPUT)
-		pos += seq_printf(s, "LOCK_INPUT,");
+		pos += seq_puts(s, "LOCK_INPUT,");
 	if (protect & DOC_PROTECT_STICKY_LOCK)
-		pos += seq_printf(s, "STICKY_LOCK,");
+		pos += seq_puts(s, "STICKY_LOCK,");
 	if (protect & DOC_PROTECT_PROTECTION_ENABLED)
-		pos += seq_printf(s, "PROTECTION ON,");
+		pos += seq_puts(s, "PROTECTION ON,");
 	if (protect & DOC_PROTECT_IPL_DOWNLOAD_LOCK)
-		pos += seq_printf(s, "IPL_DOWNLOAD_LOCK,");
+		pos += seq_puts(s, "IPL_DOWNLOAD_LOCK,");
 	if (protect & DOC_PROTECT_PROTECTION_ERROR)
-		pos += seq_printf(s, "PROTECT_ERR,");
+		pos += seq_puts(s, "PROTECT_ERR,");
 	else
-		pos += seq_printf(s, "NO_PROTECT_ERR");
-	pos += seq_printf(s, ")\n");
+		pos += seq_puts(s, "NO_PROTECT_ERR");
+	pos += seq_puts(s, ")\n");
 
 	pos += seq_printf(s, "DPS0 = 0x%02x : "
 			 "Protected area [0x%x - 0x%x] : OTP=%d, READ=%d, "
@@ -1822,7 +1822,7 @@ static void __exit doc_dbg_unregister(struct docg3 *docg3)
  * @chip_id: The chip ID of the supported chip
  * @mtd: The structure to fill
  */
-static int __init doc_set_driver_info(int chip_id, struct mtd_info *mtd)
+static void __init doc_set_driver_info(int chip_id, struct mtd_info *mtd)
 {
 	struct docg3 *docg3 = mtd->priv;
 	int cfg;
@@ -1835,8 +1835,6 @@ static int __init doc_set_driver_info(int chip_id, struct mtd_info *mtd)
 	case DOC_CHIPID_G3:
 		mtd->name = kasprintf(GFP_KERNEL, "docg3.%d",
 				      docg3->device_id);
-		if (!mtd->name)
-			return -ENOMEM;
 		docg3->max_block = 2047;
 		break;
 	}
@@ -1859,8 +1857,6 @@ static int __init doc_set_driver_info(int chip_id, struct mtd_info *mtd)
 	mtd->_block_isbad = doc_block_isbad;
 	mtd->ecclayout = &docg3_oobinfo;
 	mtd->ecc_strength = DOC_ECC_BCH_T;
-
-	return 0;
 }
 
 /**
@@ -1911,7 +1907,7 @@ doc_probe_device(struct docg3_cascade *cascade, int floor, struct device *dev)
 
 	ret = 0;
 	if (chip_id != (u16)(~chip_id_inv)) {
-		goto nomem4;
+		goto nomem3;
 	}
 
 	switch (chip_id) {
@@ -1921,25 +1917,21 @@ doc_probe_device(struct docg3_cascade *cascade, int floor, struct device *dev)
 		break;
 	default:
 		doc_err("Chip id %04x is not a DiskOnChip G3 chip\n", chip_id);
-		goto nomem4;
+		goto nomem3;
 	}
 
-	ret = doc_set_driver_info(chip_id, mtd);
-	if (ret)
-		goto nomem4;
+	doc_set_driver_info(chip_id, mtd);
 
 	doc_hamming_ecc_init(docg3, DOC_LAYOUT_OOB_PAGEINFO_SZ);
 	doc_reload_bbt(docg3);
 	return mtd;
 
-nomem4:
-	kfree(docg3->bbt);
 nomem3:
 	kfree(mtd);
 nomem2:
 	kfree(docg3);
 nomem1:
-	return ret ? ERR_PTR(ret) : NULL;
+	return ERR_PTR(ret);
 }
 
 /**

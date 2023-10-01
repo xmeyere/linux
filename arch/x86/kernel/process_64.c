@@ -49,16 +49,13 @@
 #include <asm/syscalls.h>
 #include <asm/debugreg.h>
 #include <asm/switch_to.h>
-#include <asm/xen/hypervisor.h>
-
-#include "process.h"
 
 asmlinkage extern void ret_from_fork(void);
 
-__visible DEFINE_PER_CPU_USER_MAPPED(unsigned long, old_rsp);
+__visible DEFINE_PER_CPU(unsigned long, old_rsp);
 
 /* Prints also some state that isn't saved in the pt_regs */
-void __show_regs(struct pt_regs *regs, enum show_regs_mode mode)
+void __show_regs(struct pt_regs *regs, int all)
 {
 	unsigned long cr0 = 0L, cr2 = 0L, cr3 = 0L, cr4 = 0L, fs, gs, shadowgs;
 	unsigned long d0, d1, d2, d3, d6, d7;
@@ -90,14 +87,8 @@ void __show_regs(struct pt_regs *regs, enum show_regs_mode mode)
 	rdmsrl(MSR_GS_BASE, gs);
 	rdmsrl(MSR_KERNEL_GS_BASE, shadowgs);
 
-	if (mode == SHOW_REGS_SHORT)
+	if (!all)
 		return;
-
-	if (mode == SHOW_REGS_USER) {
-		printk(KERN_DEFAULT "FS:  %016lx GS:  %016lx\n",
-		       fs, shadowgs);
-		return;
-	}
 
 	cr0 = read_cr0();
 	cr2 = read_cr2();
@@ -131,11 +122,11 @@ void __show_regs(struct pt_regs *regs, enum show_regs_mode mode)
 void release_thread(struct task_struct *dead_task)
 {
 	if (dead_task->mm) {
-		if (dead_task->mm->context.ldt) {
+		if (dead_task->mm->context.size) {
 			pr_warn("WARNING: dead process %s still has LDT? <%p/%d>\n",
 				dead_task->comm,
-				dead_task->mm->context.ldt->entries,
-				dead_task->mm->context.ldt->size);
+				dead_task->mm->context.ldt,
+				dead_task->mm->context.size);
 			BUG();
 		}
 	}
@@ -172,7 +163,6 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 	p->thread.sp = (unsigned long) childregs;
 	p->thread.usersp = me->thread.usersp;
 	set_tsk_thread_flag(p, TIF_FORK);
-	p->thread.fpu_counter = 0;
 	p->thread.io_bitmap_ptr = NULL;
 
 	savesegment(gs, p->thread.gsindex);
@@ -202,8 +192,6 @@ int copy_thread(unsigned long clone_flags, unsigned long sp,
 		childregs->sp = sp;
 
 	err = -ENOMEM;
-	memset(p->thread.ptrace_bps, 0, sizeof(p->thread.ptrace_bps));
-
 	if (unlikely(test_tsk_thread_flag(me, TIF_IO_BITMAP))) {
 		p->thread.io_bitmap_ptr = kmemdup(me->thread.io_bitmap_ptr,
 						  IO_BITMAP_BYTES, GFP_KERNEL);
@@ -262,7 +250,6 @@ start_thread(struct pt_regs *regs, unsigned long new_ip, unsigned long new_sp)
 	start_thread_common(regs, new_ip, new_sp,
 			    __USER_CS, __USER_DS, 0);
 }
-EXPORT_SYMBOL_GPL(start_thread);
 
 #ifdef CONFIG_IA32_EMULATION
 void start_thread_ia32(struct pt_regs *regs, u32 new_ip, u32 new_sp)
@@ -296,45 +283,14 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 
 	fpu = switch_fpu_prepare(prev_p, next_p, cpu);
 
-	/* Reload esp0 and ss1. */
+	/*
+	 * Reload esp0, LDT and the page table pointer:
+	 */
 	load_sp0(tss, next);
 
-	/* We must save %fs and %gs before load_TLS() because
-	 * %fs and %gs may be cleared by load_TLS().
-	 *
-	 * (e.g. xen_load_tls())
-	 */
-	savesegment(fs, fsindex);
-	savesegment(gs, gsindex);
-
 	/*
-	 * Load TLS before restoring any segments so that segment loads
-	 * reference the correct GDT entries.
-	 */
-	load_TLS(next, cpu);
-
-	/*
-	 * Leave lazy mode, flushing any hypercalls made here.  This
-	 * must be done after loading TLS entries in the GDT but before
-	 * loading segments that might reference them, and and it must
-	 * be done before math_state_restore, so the TS bit is up to
-	 * date.
-	 */
-	arch_end_context_switch(next_p);
-
-	/* Switch DS and ES.
-	 *
-	 * Reading them only returns the selectors, but writing them (if
-	 * nonzero) loads the full descriptor from the GDT or LDT.  The
-	 * LDT for next is loaded in switch_mm, and the GDT is loaded
-	 * above.
-	 *
-	 * We therefore need to write new values to the segment
-	 * registers on every context switch unless both the new and old
-	 * values are zero.
-	 *
-	 * Note that we don't need to do anything for CS and SS, as
-	 * those are saved and restored as part of pt_regs.
+	 * Switch DS and ES.
+	 * This won't pick up thread selector changes, but I guess that is ok.
 	 */
 	savesegment(es, prev->es);
 	if (unlikely(next->es | prev->es))
@@ -344,64 +300,50 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 	if (unlikely(next->ds | prev->ds))
 		loadsegment(ds, next->ds);
 
+
+	/* We must save %fs and %gs before load_TLS() because
+	 * %fs and %gs may be cleared by load_TLS().
+	 *
+	 * (e.g. xen_load_tls())
+	 */
+	savesegment(fs, fsindex);
+	savesegment(gs, gsindex);
+
+	load_TLS(next, cpu);
+
+	/*
+	 * Leave lazy mode, flushing any hypercalls made here.
+	 * This must be done before restoring TLS segments so
+	 * the GDT and LDT are properly updated, and must be
+	 * done before math_state_restore, so the TS bit is up
+	 * to date.
+	 */
+	arch_end_context_switch(next_p);
+
 	/*
 	 * Switch FS and GS.
 	 *
-	 * These are even more complicated than FS and GS: they have
-	 * 64-bit bases are that controlled by arch_prctl.  Those bases
-	 * only differ from the values in the GDT or LDT if the selector
-	 * is 0.
-	 *
-	 * Loading the segment register resets the hidden base part of
-	 * the register to 0 or the value from the GDT / LDT.  If the
-	 * next base address zero, writing 0 to the segment register is
-	 * much faster than using wrmsr to explicitly zero the base.
-	 *
-	 * The thread_struct.fs and thread_struct.gs values are 0
-	 * if the fs and gs bases respectively are not overridden
-	 * from the values implied by fsindex and gsindex.  They
-	 * are nonzero, and store the nonzero base addresses, if
-	 * the bases are overridden.
-	 *
-	 * (fs != 0 && fsindex != 0) || (gs != 0 && gsindex != 0) should
-	 * be impossible.
-	 *
-	 * Therefore we need to reload the segment registers if either
-	 * the old or new selector is nonzero, and we need to override
-	 * the base address if next thread expects it to be overridden.
-	 *
-	 * This code is unnecessarily slow in the case where the old and
-	 * new indexes are zero and the new base is nonzero -- it will
-	 * unnecessarily write 0 to the selector before writing the new
-	 * base address.
-	 *
-	 * Note: This all depends on arch_prctl being the only way that
-	 * user code can override the segment base.  Once wrfsbase and
-	 * wrgsbase are enabled, most of this code will need to change.
+	 * Segment register != 0 always requires a reload.  Also
+	 * reload when it has changed.  When prev process used 64bit
+	 * base always reload to avoid an information leak.
 	 */
 	if (unlikely(fsindex | next->fsindex | prev->fs)) {
 		loadsegment(fs, next->fsindex);
-
 		/*
-		 * If user code wrote a nonzero value to FS, then it also
-		 * cleared the overridden base address.
-		 *
-		 * XXX: if user code wrote 0 to FS and cleared the base
-		 * address itself, we won't notice and we'll incorrectly
-		 * restore the prior base address next time we reschdule
-		 * the process.
+		 * Check if the user used a selector != 0; if yes
+		 *  clear 64bit base, since overloaded base is always
+		 *  mapped to the Null selector
 		 */
 		if (fsindex)
 			prev->fs = 0;
 	}
+	/* when next process has a 64bit base use it */
 	if (next->fs)
 		wrmsrl(MSR_FS_BASE, next->fs);
 	prev->fsindex = fsindex;
 
 	if (unlikely(gsindex | next->gsindex | prev->gs)) {
 		load_gs_index(next->gsindex);
-
-		/* This works (and fails) the same way as fsindex above. */
 		if (gsindex)
 			prev->gs = 0;
 	}
@@ -430,18 +372,12 @@ __switch_to(struct task_struct *prev_p, struct task_struct *next_p)
 		  (unsigned long)task_stack_page(next_p) +
 		  THREAD_SIZE - KERNEL_STACK_OFFSET);
 
-	switch_to_extra(prev_p, next_p);
-
-#ifdef CONFIG_XEN
 	/*
-	 * On Xen PV, IOPL bits in pt_regs->flags have no effect, and
-	 * current_pt_regs()->flags may not match the current task's
-	 * intended IOPL.  We need to switch it manually.
+	 * Now maybe reload the debug registers and handle I/O bitmaps
 	 */
-	if (unlikely(xen_pv_domain() &&
-		     prev->iopl != next->iopl))
-		xen_set_iopl_mask(next->iopl);
-#endif
+	if (unlikely(task_thread_info(next_p)->flags & _TIF_WORK_CTXSW_NEXT ||
+		     task_thread_info(prev_p)->flags & _TIF_WORK_CTXSW_PREV))
+		__switch_to_xtra(prev_p, next_p, tss);
 
 	return prev_p;
 }

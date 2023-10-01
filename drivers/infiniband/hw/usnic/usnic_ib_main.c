@@ -305,7 +305,7 @@ static void *usnic_ib_device_add(struct pci_dev *dev)
 {
 	struct usnic_ib_dev *us_ibdev;
 	union ib_gid gid;
-	struct in_device *ind;
+	struct in_ifaddr *in;
 	struct net_device *netdev;
 
 	usnic_dbg("\n");
@@ -393,11 +393,9 @@ static void *usnic_ib_device_add(struct pci_dev *dev)
 	if (netif_carrier_ok(us_ibdev->netdev))
 		usnic_fwd_carrier_up(us_ibdev->ufdev);
 
-	ind = in_dev_get(netdev);
-	if (ind->ifa_list)
-		usnic_fwd_add_ipaddr(us_ibdev->ufdev,
-				     ind->ifa_list->ifa_address);
-	in_dev_put(ind);
+	in = ((struct in_device *)(netdev->ip_ptr))->ifa_list;
+	if (in != NULL)
+		usnic_fwd_add_ipaddr(us_ibdev->ufdev, in->ifa_address);
 
 	usnic_mac_ip_to_gid(us_ibdev->netdev->perm_addr,
 				us_ibdev->ufdev->inaddr, &gid.raw[0]);
@@ -492,7 +490,7 @@ out:
 
 /* Start of PCI section */
 
-static DEFINE_PCI_DEVICE_TABLE(usnic_ib_pci_ids) = {
+static const struct pci_device_id usnic_ib_pci_ids[] = {
 	{PCI_DEVICE(PCI_VENDOR_ID_CISCO, PCI_DEVICE_ID_CISCO_VIC_USPACE_NIC)},
 	{0,}
 };

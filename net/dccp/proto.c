@@ -252,7 +252,6 @@ int dccp_disconnect(struct sock *sk, int flags)
 {
 	struct inet_connection_sock *icsk = inet_csk(sk);
 	struct inet_sock *inet = inet_sk(sk);
-	struct dccp_sock *dp = dccp_sk(sk);
 	int err = 0;
 	const int old_state = sk->sk_state;
 
@@ -272,10 +271,6 @@ int dccp_disconnect(struct sock *sk, int flags)
 		sk->sk_err = ECONNRESET;
 
 	dccp_clear_xmit_timers(sk);
-	ccid_hc_rx_delete(dp->dccps_hc_rx_ccid, sk);
-	ccid_hc_tx_delete(dp->dccps_hc_tx_ccid, sk);
-	dp->dccps_hc_rx_ccid = NULL;
-	dp->dccps_hc_tx_ccid = NULL;
 
 	__skb_queue_purge(&sk->sk_receive_queue);
 	__skb_queue_purge(&sk->sk_write_queue);
@@ -785,11 +780,6 @@ int dccp_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 	if (skb == NULL)
 		goto out_release;
 
-	if (sk->sk_state == DCCP_CLOSED) {
-		rc = -ENOTCONN;
-		goto out_discard;
-	}
-
 	skb_reserve(skb, sk->sk_prot->max_header);
 	rc = memcpy_fromiovec(skb_put(skb, len), msg->msg_iov, len);
 	if (rc != 0)
@@ -858,7 +848,7 @@ int dccp_recvmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 		default:
 			dccp_pr_debug("packet_type=%s\n",
 				      dccp_packet_name(dh->dccph_type));
-			sk_eat_skb(sk, skb, false);
+			sk_eat_skb(sk, skb);
 		}
 verify_sock_status:
 		if (sock_flag(sk, SOCK_DONE)) {
@@ -915,7 +905,7 @@ verify_sock_status:
 			len = skb->len;
 	found_fin_ok:
 		if (!(flags & MSG_PEEK))
-			sk_eat_skb(sk, skb, false);
+			sk_eat_skb(sk, skb);
 		break;
 	} while (1);
 out:
@@ -1022,10 +1012,6 @@ void dccp_close(struct sock *sk, long timeout)
 		__kfree_skb(skb);
 	}
 
-	/* If socket has been already reset kill it. */
-	if (sk->sk_state == DCCP_CLOSED)
-		goto adjudge_to_death;
-
 	if (data_was_unread) {
 		/* Unread data was tossed, send an appropriate Reset Code */
 		DCCP_WARN("ABORT with %u bytes unread\n", data_was_unread);
@@ -1096,7 +1082,7 @@ void dccp_shutdown(struct sock *sk, int how)
 
 EXPORT_SYMBOL_GPL(dccp_shutdown);
 
-static inline int dccp_mib_init(void)
+static inline int __init dccp_mib_init(void)
 {
 	dccp_statistics = alloc_percpu(struct dccp_mib);
 	if (!dccp_statistics)
@@ -1129,7 +1115,7 @@ static int __init dccp_init(void)
 
 	BUILD_BUG_ON(sizeof(struct dccp_skb_cb) >
 		     FIELD_SIZEOF(struct sk_buff, cb));
-	rc = percpu_counter_init(&dccp_orphan_count, 0);
+	rc = percpu_counter_init(&dccp_orphan_count, 0, GFP_KERNEL);
 	if (rc)
 		goto out_fail;
 	rc = -ENOBUFS;

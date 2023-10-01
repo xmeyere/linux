@@ -114,7 +114,6 @@ int of_get_display_timing(struct device_node *np, const char *name,
 		struct display_timing *dt)
 {
 	struct device_node *timing_np;
-	int ret;
 
 	if (!np)
 		return -EINVAL;
@@ -126,11 +125,7 @@ int of_get_display_timing(struct device_node *np, const char *name,
 		return -ENOENT;
 	}
 
-	ret = of_parse_display_timing(timing_np, dt);
-
-	of_node_put(timing_np);
-
-	return ret;
+	return of_parse_display_timing(timing_np, dt);
 }
 EXPORT_SYMBOL_GPL(of_get_display_timing);
 
@@ -238,9 +233,9 @@ struct display_timings *of_get_display_timings(struct device_node *np)
 	return disp;
 
 timingfail:
-	if (native_mode)
-		of_node_put(native_mode);
+	of_node_put(native_mode);
 	display_timings_release(disp);
+	disp = NULL;
 entryfail:
 	kfree(disp);
 dispfail:

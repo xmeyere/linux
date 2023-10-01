@@ -1156,7 +1156,7 @@ arch_ptrace (struct task_struct *child, long request,
 	case PTRACE_PEEKTEXT:
 	case PTRACE_PEEKDATA:
 		/* read word at location addr */
-		if (ptrace_access_vm(child, addr, &data, sizeof(data), 0)
+		if (access_process_vm(child, addr, &data, sizeof(data), 0)
 		    != sizeof(data))
 			return -EIO;
 		/* ensure return value is not mistaken for error code */
@@ -1219,7 +1219,7 @@ syscall_trace_enter (long arg0, long arg1, long arg2, long arg3,
 		ia64_sync_krbs();
 
 
-	audit_syscall_entry(AUDIT_ARCH_IA64, regs.r15, arg0, arg1, arg2, arg3);
+	audit_syscall_entry(regs.r15, arg0, arg1, arg2, arg3);
 
 	return 0;
 }

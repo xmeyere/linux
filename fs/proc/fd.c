@@ -129,8 +129,6 @@ static int tid_fd_revalidate(struct dentry *dentry, unsigned int flags)
 		}
 		put_task_struct(task);
 	}
-
-	d_drop(dentry);
 	return 0;
 }
 
@@ -206,7 +204,7 @@ static struct dentry *proc_lookupfd_common(struct inode *dir,
 {
 	struct task_struct *task = get_proc_task(dir);
 	int result = -ENOENT;
-	unsigned fd = name_to_int(dentry);
+	unsigned fd = name_to_int(&dentry->d_name);
 
 	if (!task)
 		goto out_no_task;
@@ -285,19 +283,11 @@ static struct dentry *proc_lookupfd(struct inode *dir, struct dentry *dentry,
  */
 int proc_fd_permission(struct inode *inode, int mask)
 {
-	struct task_struct *p;
-	int rv;
-
-	rv = generic_permission(inode, mask);
+	int rv = generic_permission(inode, mask);
 	if (rv == 0)
-		return rv;
-
-	rcu_read_lock();
-	p = pid_task(proc_pid(inode), PIDTYPE_PID);
-	if (p && same_thread_group(p, current))
+		return 0;
+	if (task_tgid(current) == proc_pid(inode))
 		rv = 0;
-	rcu_read_unlock();
-
 	return rv;
 }
 

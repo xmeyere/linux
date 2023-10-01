@@ -374,10 +374,7 @@ static int clk_main_probe_frequency(struct at91_pmc *pmc)
 		tmp = pmc_read(pmc, AT91_CKGR_MCFR);
 		if (tmp & AT91_PMC_MAINRDY)
 			return 0;
-		if (system_state < SYSTEM_RUNNING)
-			udelay(MAINF_LOOP_MIN_WAIT);
-		else
-			usleep_range(MAINF_LOOP_MIN_WAIT, MAINF_LOOP_MAX_WAIT);
+		usleep_range(MAINF_LOOP_MIN_WAIT, MAINF_LOOP_MAX_WAIT);
 	} while (time_before(prep_time, timeout));
 
 	return -ETIMEDOUT;
@@ -391,6 +388,7 @@ static unsigned long clk_main_recalc_rate(struct at91_pmc *pmc,
 	if (parent_rate)
 		return parent_rate;
 
+	pr_warn("Main crystal frequency not set, using approximate value\n");
 	tmp = pmc_read(pmc, AT91_CKGR_MCFR);
 	if (!(tmp & AT91_PMC_MAINRDY))
 		return 0;

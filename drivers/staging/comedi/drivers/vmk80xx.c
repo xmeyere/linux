@@ -757,15 +757,17 @@ static int vmk80xx_alloc_usb_buffers(struct comedi_device *dev)
 
 	size = le16_to_cpu(devpriv->ep_tx->wMaxPacketSize);
 	devpriv->usb_tx_buf = kzalloc(size, GFP_KERNEL);
-	if (!devpriv->usb_tx_buf)
+	if (!devpriv->usb_tx_buf) {
+		kfree(devpriv->usb_rx_buf);
 		return -ENOMEM;
+	}
 
 	return 0;
 }
 
 static int vmk80xx_init_subdevices(struct comedi_device *dev)
 {
-	const struct vmk80xx_board *boardinfo = comedi_board(dev);
+	const struct vmk80xx_board *boardinfo = dev->board_ptr;
 	struct vmk80xx_private *devpriv = dev->private;
 	struct comedi_subdevice *s;
 	int n_subd;
@@ -870,8 +872,6 @@ static int vmk80xx_auto_attach(struct comedi_device *dev,
 
 	devpriv->model = boardinfo->model;
 
-	sema_init(&devpriv->limit_sem, 8);
-
 	ret = vmk80xx_find_usb_endpoints(dev);
 	if (ret)
 		return ret;
@@ -879,6 +879,8 @@ static int vmk80xx_auto_attach(struct comedi_device *dev,
 	ret = vmk80xx_alloc_usb_buffers(dev);
 	if (ret)
 		return ret;
+
+	sema_init(&devpriv->limit_sem, 8);
 
 	usb_set_intfdata(intf, devpriv);
 
@@ -957,5 +959,4 @@ module_comedi_usb_driver(vmk80xx_driver, vmk80xx_usb_driver);
 MODULE_AUTHOR("Manuel Gebele <forensixs@gmx.de>");
 MODULE_DESCRIPTION("Velleman USB Board Low-Level Driver");
 MODULE_SUPPORTED_DEVICE("K8055/K8061 aka VM110/VM140");
-MODULE_VERSION("0.8.01");
 MODULE_LICENSE("GPL");

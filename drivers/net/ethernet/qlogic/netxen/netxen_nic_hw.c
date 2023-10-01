@@ -922,7 +922,7 @@ int netxen_config_ipaddr(struct netxen_adapter *adapter, __be32 ip, int cmd)
 
 	rv = netxen_send_cmd_descs(adapter, (struct cmd_desc_type0 *)&req, 1);
 	if (rv != 0) {
-		printk(KERN_ERR "%s: could not notify %s IP 0x%x reuqest\n",
+		printk(KERN_ERR "%s: could not notify %s IP 0x%x request\n",
 				adapter->netdev->name,
 				(cmd == NX_IP_UP) ? "Add" : "Remove", ip);
 	}
@@ -2332,7 +2332,7 @@ netxen_md_rdqueue(struct netxen_adapter *adapter,
 				 loop_cnt++) {
 		NX_WR_DUMP_REG(select_addr, adapter->ahw.pci_base0, queue_id);
 		read_addr = queueEntry->read_addr;
-		for (k = 0; k < read_cnt; k++) {
+		for (k = 0; k < read_cnt; k--) {
 			NX_RD_DUMP_REG(read_addr, adapter->ahw.pci_base0,
 							&read_value);
 			*data_buff++ = read_value;

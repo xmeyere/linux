@@ -93,13 +93,14 @@
  * OS related constants and tunables
  */
 
+#define MLX4_EN_PRIV_FLAGS_BLUEFLAME 1
+
 #define MLX4_EN_WATCHDOG_TIMEOUT	(15 * HZ)
 
 /* Use the maximum between 16384 and a single page */
 #define MLX4_EN_ALLOC_SIZE	PAGE_ALIGN(16384)
 
-#define MLX4_EN_ALLOC_PREFER_ORDER min_t(int, get_order(32768),		\
-					 PAGE_ALLOC_COSTLY_ORDER)
+#define MLX4_EN_ALLOC_PREFER_ORDER	PAGE_ALLOC_COSTLY_ORDER
 
 /* Receive fragment sizes; we use at most 3 fragments (for 9600 byte MTU
  * and 4K allocations) */
@@ -120,6 +121,7 @@ enum {
 #define MLX4_EN_MIN_TX_SIZE	(4096 / TXBB_SIZE)
 
 #define MLX4_EN_SMALL_PKT_SIZE		64
+#define MLX4_EN_MIN_TX_RING_P_UP	1
 #define MLX4_EN_MAX_TX_RING_P_UP	32
 #define MLX4_EN_NUM_UP			8
 #define MLX4_EN_DEF_TX_RING_SIZE	512
@@ -135,9 +137,6 @@ enum {
 
 #define MLX4_EN_TX_COAL_PKTS	16
 #define MLX4_EN_TX_COAL_TIME	0x10
-
-#define MLX4_EN_MAX_COAL_PKTS	U16_MAX
-#define MLX4_EN_MAX_COAL_TIME	U16_MAX
 
 #define MLX4_EN_RX_RATE_LOW		400000
 #define MLX4_EN_RX_COAL_TIME_LOW	0
@@ -157,8 +156,6 @@ enum {
    instead of interrupts (in per-core Tx rings) - should be power of 2 */
 #define MLX4_EN_TX_POLL_MODER	16
 #define MLX4_EN_TX_POLL_TIMEOUT	(HZ / 4)
-
-#define ETH_LLC_SNAP_SIZE	8
 
 #define SMALL_PACKET_SIZE      (256 - NET_IP_ALIGN)
 #define HEADER_COPY_SIZE       (128 - NET_IP_ALIGN)
@@ -219,13 +216,16 @@ enum cq_type {
 
 struct mlx4_en_tx_info {
 	struct sk_buff *skb;
-	u32 nr_txbb;
-	u32 nr_bytes;
-	u8 linear;
-	u8 data_offset;
-	u8 inl;
-	u8 ts_requested;
-};
+	dma_addr_t	map0_dma;
+	u32		map0_byte_count;
+	u32		nr_txbb;
+	u32		nr_bytes;
+	u8		linear;
+	u8		data_offset;
+	u8		inl;
+	u8		ts_requested;
+	u8		nr_maps;
+} ____cacheline_aligned_in_smp;
 
 
 #define MLX4_EN_BIT_DESC_OWN	0x80000000
@@ -256,38 +256,46 @@ struct mlx4_en_rx_alloc {
 };
 
 struct mlx4_en_tx_ring {
+	/* cache line used and dirtied in tx completion
+	 * (mlx4_en_free_tx_buf())
+	 */
+	u32			last_nr_txbb;
+	u32			cons;
+	unsigned long		wake_queue;
+
+	/* cache line used and dirtied in mlx4_en_xmit() */
+	u32			prod ____cacheline_aligned_in_smp;
+	unsigned long		bytes;
+	unsigned long		packets;
+	unsigned long		tx_csum;
+	unsigned long		tso_packets;
+	unsigned long		xmit_more;
+	struct mlx4_bf		bf;
+	unsigned long		queue_stopped;
+
+	/* Following part should be mostly read */
+	cpumask_t		affinity_mask;
+	struct mlx4_qp		qp;
 	struct mlx4_hwq_resources wqres;
-	u32 size ; /* number of TXBBs */
-	u32 size_mask;
-	u16 stride;
-	u16 cqn;	/* index of port CQ associated with this ring */
-	u32 prod;
-	u32 cons;
-	u32 buf_size;
-	u32 doorbell_qpn;
-	void *buf;
-	u16 poll_cnt;
-	struct mlx4_en_tx_info *tx_info;
-	u8 *bounce_buf;
-	u8 queue_index;
-	cpumask_t affinity_mask;
-	u32 last_nr_txbb;
-	struct mlx4_qp qp;
-	struct mlx4_qp_context context;
-	int qpn;
-	enum mlx4_qp_state qp_state;
-	struct mlx4_srq dummy;
-	unsigned long bytes;
-	unsigned long packets;
-	unsigned long tx_csum;
-	unsigned long queue_stopped;
-	unsigned long wake_queue;
-	struct mlx4_bf bf;
-	bool bf_enabled;
-	struct netdev_queue *tx_queue;
-	int hwtstamp_tx_type;
-	int inline_thold;
-};
+	u32			size; /* number of TXBBs */
+	u32			size_mask;
+	u16			stride;
+	u16			cqn;	/* index of port CQ associated with this ring */
+	u32			buf_size;
+	__be32			doorbell_qpn;
+	__be32			mr_key;
+	void			*buf;
+	struct mlx4_en_tx_info	*tx_info;
+	u8			*bounce_buf;
+	struct mlx4_qp_context	context;
+	int			qpn;
+	enum mlx4_qp_state	qp_state;
+	u8			queue_index;
+	bool			bf_enabled;
+	bool			bf_alloced;
+	struct netdev_queue	*tx_queue;
+	int			hwtstamp_tx_type;
+} ____cacheline_aligned_in_smp;
 
 struct mlx4_en_rx_desc {
 	/* actual number of entries depends on rx ring stride */
@@ -428,6 +436,7 @@ struct mlx4_en_pkt_stats {
 
 struct mlx4_en_port_stats {
 	unsigned long tso_packets;
+	unsigned long xmit_more;
 	unsigned long queue_stopped;
 	unsigned long wake_queue;
 	unsigned long tx_timeout;
@@ -435,7 +444,7 @@ struct mlx4_en_port_stats {
 	unsigned long rx_chksum_good;
 	unsigned long rx_chksum_none;
 	unsigned long tx_chksum_offload;
-#define NUM_PORT_STATS		8
+#define NUM_PORT_STATS		9
 };
 
 struct mlx4_en_perf_stats {
@@ -525,8 +534,8 @@ struct mlx4_en_priv {
 	u16 rx_usecs_low;
 	u32 pkt_rate_high;
 	u16 rx_usecs_high;
-	u32 sample_interval;
-	u32 adaptive_rx_coal;
+	u16 sample_interval;
+	u16 adaptive_rx_coal;
 	u32 msg_enable;
 	u32 loopback_ok;
 	u32 validate_loopback;
@@ -539,11 +548,12 @@ struct mlx4_en_priv {
 	int registered;
 	int allocated;
 	int stride;
-	unsigned char prev_mac[ETH_ALEN + 2];
+	unsigned char current_mac[ETH_ALEN + 2];
 	int mac_index;
 	unsigned max_mtu;
 	int base_qpn;
 	int cqe_factor;
+	int cqe_size;
 
 	struct mlx4_en_rss_map rss_map;
 	__be32 ctrl_flags;
@@ -598,6 +608,8 @@ struct mlx4_en_priv {
 #endif
 	u64 tunnel_reg_id;
 	__be16 vxlan_port;
+
+	u32 pflags;
 };
 
 enum mlx4_en_wol {
@@ -611,6 +623,11 @@ struct mlx4_mac_entry {
 	u64 reg_id;
 	struct rcu_head rcu;
 };
+
+static inline struct mlx4_cqe *mlx4_en_get_cqe(void *buf, int idx, int cqe_sz)
+{
+	return buf + idx * cqe_sz;
+}
 
 #ifdef CONFIG_NET_RX_BUSY_POLL
 static inline void mlx4_en_cq_init_lock(struct mlx4_en_cq *cq)
@@ -762,7 +779,6 @@ int mlx4_en_activate_tx_ring(struct mlx4_en_priv *priv,
 void mlx4_en_deactivate_tx_ring(struct mlx4_en_priv *priv,
 				struct mlx4_en_tx_ring *ring);
 void mlx4_en_set_num_rx_rings(struct mlx4_en_dev *mdev);
-void mlx4_en_recover_from_oom(struct mlx4_en_priv *priv);
 int mlx4_en_create_rx_ring(struct mlx4_en_priv *priv,
 			   struct mlx4_en_rx_ring **pring,
 			   u32 size, u16 stride, int node);
@@ -837,8 +853,8 @@ extern const struct ethtool_ops mlx4_en_ethtool_ops;
  */
 
 __printf(3, 4)
-int en_print(const char *level, const struct mlx4_en_priv *priv,
-	     const char *format, ...);
+void en_print(const char *level, const struct mlx4_en_priv *priv,
+	      const char *format, ...);
 
 #define en_dbg(mlevel, priv, format, ...)				\
 do {									\

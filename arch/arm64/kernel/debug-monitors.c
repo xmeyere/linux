@@ -30,15 +30,6 @@
 #include <asm/cputype.h>
 #include <asm/system_misc.h>
 
-/* Low-level stepping controls. */
-#define DBG_MDSCR_SS		(1 << 0)
-#define DBG_SPSR_SS		(1 << 21)
-
-/* MDSCR_EL1 enabling bits */
-#define DBG_MDSCR_KDE		(1 << 13)
-#define DBG_MDSCR_MDE		(1 << 15)
-#define DBG_MDSCR_MASK		~(DBG_MDSCR_KDE | DBG_MDSCR_MDE)
-
 /* Determine debug architecture. */
 u8 debug_monitors_arch(void)
 {
@@ -159,6 +150,7 @@ static int debug_monitors_init(void)
 	/* Clear the OS lock. */
 	on_each_cpu(clear_os_lock, NULL, 1);
 	isb();
+	local_dbg_enable();
 
 	/* Register hotplug handler. */
 	__register_cpu_notifier(&os_lock_nb);
@@ -427,10 +419,8 @@ int kernel_active_single_step(void)
 /* ptrace API */
 void user_enable_single_step(struct task_struct *task)
 {
-	struct thread_info *ti = task_thread_info(task);
-
-	if (!test_and_set_ti_thread_flag(ti, TIF_SINGLESTEP))
-		set_regs_spsr_ss(task_pt_regs(task));
+	set_ti_thread_flag(task_thread_info(task), TIF_SINGLESTEP);
+	set_regs_spsr_ss(task_pt_regs(task));
 }
 
 void user_disable_single_step(struct task_struct *task)

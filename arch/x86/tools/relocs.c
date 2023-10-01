@@ -695,7 +695,7 @@ static void walk_relocs(int (*process)(struct section *sec, Elf_Rel *rel,
  *
  */
 static int per_cpu_shndx	= -1;
-Elf_Addr per_cpu_load_addr;
+static Elf_Addr per_cpu_load_addr;
 
 static void percpu_init(void)
 {
@@ -763,7 +763,6 @@ static int do_reloc64(struct section *sec, Elf_Rel *rel, ElfW(Sym) *sym,
 	switch (r_type) {
 	case R_X86_64_NONE:
 	case R_X86_64_PC32:
-	case R_X86_64_PLT32:
 		/*
 		 * NONE can be ignored and PC relative relocations don't
 		 * need to be adjusted.
@@ -985,12 +984,9 @@ static void emit_relocs(int as_text, int use_real_mode)
 		die("Segment relocations found but --realmode not specified\n");
 
 	/* Order the relocations for more efficient processing */
-	sort_relocs(&relocs32);
-#if ELF_BITS == 64
-	sort_relocs(&relocs64);
-#else
 	sort_relocs(&relocs16);
-#endif
+	sort_relocs(&relocs32);
+	sort_relocs(&relocs64);
 
 	/* Print the relocations */
 	if (as_text) {

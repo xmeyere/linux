@@ -19,7 +19,6 @@
 
 
 #include <linux/skbuff.h>
-#include <linux/dmaengine.h>
 #include <net/sock.h>
 #include <net/inet_connection_sock.h>
 #include <net/inet_timewait_sock.h>
@@ -57,13 +56,8 @@ static inline unsigned int tcp_optlen(const struct sk_buff *skb)
 
 /* TCP Fast Open Cookie as stored in memory */
 struct tcp_fastopen_cookie {
-	union {
-		u8	val[TCP_FASTOPEN_COOKIE_MAX];
-#if IS_ENABLED(CONFIG_IPV6)
-		struct in6_addr addr;
-#endif
-	};
 	s8	len;
+	u8	val[TCP_FASTOPEN_COOKIE_MAX];
 };
 
 /* This defines a selective acknowledgement block. */
@@ -116,10 +110,7 @@ struct tcp_request_sock_ops;
 
 struct tcp_request_sock {
 	struct inet_request_sock 	req;
-#ifdef CONFIG_TCP_MD5SIG
-	/* Only used by TCP MD5 Signature so far. */
 	const struct tcp_request_sock_ops *af_specific;
-#endif
 	struct sock			*listener; /* needed for TFO */
 	u32				rcv_isn;
 	u32				snt_isn;
@@ -174,13 +165,6 @@ struct tcp_sock {
 		struct iovec		*iov;
 		int			memory;
 		int			len;
-#ifdef CONFIG_NET_DMA
-		/* members for async copy */
-		struct dma_chan		*dma_chan;
-		int			wakeup;
-		struct dma_pinned_list	*pinned_list;
-		dma_cookie_t		dma_cookie;
-#endif
 	} ucopy;
 
 	u32	snd_wl1;	/* Sequence for window update		*/
@@ -284,7 +268,7 @@ struct tcp_sock {
 	u32	retrans_stamp;	/* Timestamp of the last retransmit,
 				 * also used in SYN-SENT to remember stamp of
 				 * the first SYN. */
-	u32	undo_marker;	/* tracking retrans started here. */
+	u32	undo_marker;	/* snd_una upon a new recovery episode. */
 	int	undo_retrans;	/* number of undoable retransmissions. */
 	u32	total_retrans;	/* Total retransmits for entire connection */
 
@@ -393,8 +377,5 @@ static inline int fastopen_init_queue(struct sock *sk, int backlog)
 	queue->fastopenq->max_qlen = backlog;
 	return 0;
 }
-
-int tcp_skb_shift(struct sk_buff *to, struct sk_buff *from, int pcount,
-		  int shiftlen);
 
 #endif	/* _LINUX_TCP_H */

@@ -317,8 +317,10 @@ static void __choose_pgpath(struct multipath *m, size_t nr_bytes)
 	struct priority_group *pg;
 	unsigned bypassed = 1;
 
-	if (!m->nr_valid_paths)
+	if (!m->nr_valid_paths) {
+		m->queue_io = 0;
 		goto failed;
+	}
 
 	/* Were we instructed to switch PG? */
 	if (m->next_pg) {
@@ -373,8 +375,6 @@ static int __must_push_back(struct multipath *m)
 		 dm_noflush_suspending(m->ti)));
 }
 
-#define pg_ready(m) (!(m)->queue_io && !(m)->pg_init_required)
-
 /*
  * Map cloned requests
  */
@@ -402,11 +402,11 @@ static int multipath_map(struct dm_target *ti, struct request *clone,
 		if (!__must_push_back(m))
 			r = -EIO;	/* Failed */
 		goto out_unlock;
-	}
-	if (!pg_ready(m)) {
+	} else if (m->queue_io || m->pg_init_required) {
 		__pg_init_all_paths(m);
 		goto out_unlock;
 	}
+
 	if (set_mapinfo(m, map_context) < 0)
 		/* ENOMEM, requeue */
 		goto out_unlock;
@@ -1196,10 +1196,10 @@ static void activate_path(struct work_struct *work)
 {
 	struct pgpath *pgpath =
 		container_of(work, struct pgpath, activate_path.work);
-	struct request_queue *q = bdev_get_queue(pgpath->path.dev->bdev);
 
-	if (pgpath->is_active && !blk_queue_dying(q))
-		scsi_dh_activate(q, pg_init_done, pgpath);
+	if (pgpath->is_active)
+		scsi_dh_activate(bdev_get_queue(pgpath->path.dev->bdev),
+				 pg_init_done, pgpath);
 	else
 		pg_init_done(pgpath, SCSI_DH_DEV_OFFLINED);
 }
@@ -1545,10 +1545,13 @@ static int multipath_ioctl(struct dm_target *ti, unsigned int cmd,
 	/*
 	 * Only pass ioctls through if the device sizes match exactly.
 	 */
-	if (!r && ti->len != i_size_read(bdev->bd_inode) >> SECTOR_SHIFT)
-		r = scsi_verify_blk_ioctl(NULL, cmd);
+	if (!bdev || ti->len != i_size_read(bdev->bd_inode) >> SECTOR_SHIFT) {
+		int err = scsi_verify_blk_ioctl(NULL, cmd);
+		if (err)
+			r = err;
+	}
 
-	if (r == -ENOTCONN) {
+	if (r == -ENOTCONN && !fatal_signal_pending(current)) {
 		spin_lock_irqsave(&m->lock, flags);
 		if (!m->current_pg) {
 			/* Path status changed, redo selection */
@@ -1688,11 +1691,19 @@ static int __init dm_multipath_init(void)
 	if (!_mpio_cache)
 		return -ENOMEM;
 
+	r = dm_register_target(&multipath_target);
+	if (r < 0) {
+		DMERR("register failed %d", r);
+		kmem_cache_destroy(_mpio_cache);
+		return -EINVAL;
+	}
+
 	kmultipathd = alloc_workqueue("kmpathd", WQ_MEM_RECLAIM, 0);
 	if (!kmultipathd) {
 		DMERR("failed to create workqueue kmpathd");
-		r = -ENOMEM;
-		goto bad_alloc_kmultipathd;
+		dm_unregister_target(&multipath_target);
+		kmem_cache_destroy(_mpio_cache);
+		return -ENOMEM;
 	}
 
 	/*
@@ -1705,29 +1716,15 @@ static int __init dm_multipath_init(void)
 						  WQ_MEM_RECLAIM);
 	if (!kmpath_handlerd) {
 		DMERR("failed to create workqueue kmpath_handlerd");
-		r = -ENOMEM;
-		goto bad_alloc_kmpath_handlerd;
-	}
-
-	r = dm_register_target(&multipath_target);
-	if (r < 0) {
-		DMERR("register failed %d", r);
-		r = -EINVAL;
-		goto bad_register_target;
+		destroy_workqueue(kmultipathd);
+		dm_unregister_target(&multipath_target);
+		kmem_cache_destroy(_mpio_cache);
+		return -ENOMEM;
 	}
 
 	DMINFO("version %u.%u.%u loaded",
 	       multipath_target.version[0], multipath_target.version[1],
 	       multipath_target.version[2]);
-
-	return 0;
-
-bad_register_target:
-	destroy_workqueue(kmpath_handlerd);
-bad_alloc_kmpath_handlerd:
-	destroy_workqueue(kmultipathd);
-bad_alloc_kmultipathd:
-	kmem_cache_destroy(_mpio_cache);
 
 	return r;
 }

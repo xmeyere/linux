@@ -175,7 +175,7 @@ static const struct stmmac_stats stmmac_mmc[] = {
 	STMMAC_MMC_STAT(mmc_rx_octetcount_g),
 	STMMAC_MMC_STAT(mmc_rx_broadcastframe_g),
 	STMMAC_MMC_STAT(mmc_rx_multicastframe_g),
-	STMMAC_MMC_STAT(mmc_rx_crc_errror),
+	STMMAC_MMC_STAT(mmc_rx_crc_error),
 	STMMAC_MMC_STAT(mmc_rx_align_error),
 	STMMAC_MMC_STAT(mmc_rx_run_error),
 	STMMAC_MMC_STAT(mmc_rx_jabber_error),
@@ -261,10 +261,10 @@ static int stmmac_ethtool_getsettings(struct net_device *dev,
 		ethtool_cmd_speed_set(cmd, priv->xstats.pcs_speed);
 
 		/* Get and convert ADV/LP_ADV from the HW AN registers */
-		if (priv->hw->mac->get_adv)
-			priv->hw->mac->get_adv(priv->ioaddr, &adv);
-		else
+		if (!priv->hw->mac->get_adv)
 			return -EOPNOTSUPP;	/* should never happen indeed */
+
+		priv->hw->mac->get_adv(priv->hw, &adv);
 
 		/* Encoding of PSE bits is defined in 802.3z, 37.2.1.4 */
 
@@ -340,19 +340,17 @@ static int stmmac_ethtool_setsettings(struct net_device *dev,
 		if (cmd->autoneg != AUTONEG_ENABLE)
 			return -EINVAL;
 
-		if (cmd->autoneg == AUTONEG_ENABLE) {
-			mask &= (ADVERTISED_1000baseT_Half |
+		mask &= (ADVERTISED_1000baseT_Half |
 			ADVERTISED_1000baseT_Full |
 			ADVERTISED_100baseT_Half |
 			ADVERTISED_100baseT_Full |
 			ADVERTISED_10baseT_Half |
 			ADVERTISED_10baseT_Full);
 
-			spin_lock(&priv->lock);
-			if (priv->hw->mac->ctrl_ane)
-				priv->hw->mac->ctrl_ane(priv->ioaddr, 1);
-			spin_unlock(&priv->lock);
-		}
+		spin_lock(&priv->lock);
+		if (priv->hw->mac->ctrl_ane)
+			priv->hw->mac->ctrl_ane(priv->hw, 1);
+		spin_unlock(&priv->lock);
 
 		return 0;
 	}
@@ -464,7 +462,7 @@ stmmac_set_pauseparam(struct net_device *netdev,
 		if (netif_running(netdev))
 			ret = phy_start_aneg(phy);
 	} else
-		priv->hw->mac->flow_ctrl(priv->ioaddr, phy->duplex,
+		priv->hw->mac->flow_ctrl(priv->hw, phy->duplex,
 					 priv->flow_ctrl, priv->pause);
 	return ret;
 }
@@ -616,27 +614,25 @@ static int stmmac_ethtool_op_set_eee(struct net_device *dev,
 				     struct ethtool_eee *edata)
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
-	int ret;
 
-	if (!edata->eee_enabled) {
+	priv->eee_enabled = edata->eee_enabled;
+
+	if (!priv->eee_enabled)
 		stmmac_disable_eee_mode(priv);
-	} else {
+	else {
 		/* We are asking for enabling the EEE but it is safe
 		 * to verify all by invoking the eee_init function.
 		 * In case of failure it will return an error.
 		 */
-		edata->eee_enabled = stmmac_eee_init(priv);
-		if (!edata->eee_enabled)
+		priv->eee_enabled = stmmac_eee_init(priv);
+		if (!priv->eee_enabled)
 			return -EOPNOTSUPP;
+
+		/* Do not change tx_lpi_timer in case of failure */
+		priv->tx_lpi_timer = edata->tx_lpi_timer;
 	}
 
-	ret = phy_ethtool_set_eee(priv->phydev, edata);
-	if (ret)
-		return ret;
-
-	priv->eee_enabled = edata->eee_enabled;
-	priv->tx_lpi_timer = edata->tx_lpi_timer;
-	return 0;
+	return phy_ethtool_set_eee(priv->phydev, edata);
 }
 
 static u32 stmmac_usec2riwt(u32 usec, struct stmmac_priv *priv)
@@ -725,13 +721,10 @@ static int stmmac_get_ts_info(struct net_device *dev,
 {
 	struct stmmac_priv *priv = netdev_priv(dev);
 
-	if ((priv->dma_cap.time_stamp || priv->dma_cap.atime_stamp)) {
+	if ((priv->hwts_tx_en) && (priv->hwts_rx_en)) {
 
-		info->so_timestamping = SOF_TIMESTAMPING_TX_SOFTWARE |
-					SOF_TIMESTAMPING_TX_HARDWARE |
-					SOF_TIMESTAMPING_RX_SOFTWARE |
+		info->so_timestamping = SOF_TIMESTAMPING_TX_HARDWARE |
 					SOF_TIMESTAMPING_RX_HARDWARE |
-					SOF_TIMESTAMPING_SOFTWARE |
 					SOF_TIMESTAMPING_RAW_HARDWARE;
 
 		if (priv->ptp_clock)

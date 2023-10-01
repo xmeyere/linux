@@ -54,20 +54,19 @@ struct fib_nh_exception {
 	int				fnhe_genid;
 	__be32				fnhe_daddr;
 	u32				fnhe_pmtu;
-	bool				fnhe_mtu_locked;
 	__be32				fnhe_gw;
 	unsigned long			fnhe_expires;
 	struct rtable __rcu		*fnhe_rth_input;
 	struct rtable __rcu		*fnhe_rth_output;
 	unsigned long			fnhe_stamp;
-	struct rcu_head			rcu;
 };
 
 struct fnhe_hash_bucket {
 	struct fib_nh_exception __rcu	*chain;
 };
 
-#define FNHE_HASH_SIZE		2048
+#define FNHE_HASH_SHIFT		11
+#define FNHE_HASH_SIZE		(1 << FNHE_HASH_SHIFT)
 #define FNHE_RECLAIM_DEPTH	5
 
 struct fib_nh {
@@ -109,11 +108,11 @@ struct fib_info {
 	unsigned char		fib_type;
 	__be32			fib_prefsrc;
 	u32			fib_priority;
-	struct dst_metrics	*fib_metrics;
-#define fib_mtu fib_metrics->metrics[RTAX_MTU-1]
-#define fib_window fib_metrics->metrics[RTAX_WINDOW-1]
-#define fib_rtt fib_metrics->metrics[RTAX_RTT-1]
-#define fib_advmss fib_metrics->metrics[RTAX_ADVMSS-1]
+	u32			*fib_metrics;
+#define fib_mtu fib_metrics[RTAX_MTU-1]
+#define fib_window fib_metrics[RTAX_WINDOW-1]
+#define fib_rtt fib_metrics[RTAX_RTT-1]
+#define fib_advmss fib_metrics[RTAX_ADVMSS-1]
 	int			fib_nhs;
 #ifdef CONFIG_IP_ROUTE_MULTIPATH
 	int			fib_power;
@@ -202,8 +201,8 @@ void fib_free_table(struct fib_table *tb);
 
 #ifndef CONFIG_IP_MULTIPLE_TABLES
 
-#define TABLE_LOCAL_INDEX	(RT_TABLE_LOCAL & (FIB_TABLE_HASHSZ - 1))
-#define TABLE_MAIN_INDEX	(RT_TABLE_MAIN  & (FIB_TABLE_HASHSZ - 1))
+#define TABLE_LOCAL_INDEX	0
+#define TABLE_MAIN_INDEX	1
 
 static inline struct fib_table *fib_get_table(struct net *net, u32 id)
 {
@@ -293,7 +292,6 @@ int ip_fib_check_default(__be32 gw, struct net_device *dev);
 int fib_sync_down_dev(struct net_device *dev, int force);
 int fib_sync_down_addr(struct net *net, __be32 local);
 int fib_sync_up(struct net_device *dev);
-void fib_sync_mtu(struct net_device *dev, u32 orig_mtu);
 void fib_select_multipath(struct fib_result *res);
 
 /* Exported by fib_trie.c */

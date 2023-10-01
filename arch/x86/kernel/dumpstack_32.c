@@ -123,7 +123,7 @@ void show_regs(struct pt_regs *regs)
 	int i;
 
 	show_regs_print_info(KERN_EMERG);
-	__show_regs(regs, user_mode_vm(regs) ? SHOW_REGS_USER : SHOW_REGS_ALL);
+	__show_regs(regs, !user_mode_vm(regs));
 
 	/*
 	 * When in-kernel, we also print out the stack and code at the

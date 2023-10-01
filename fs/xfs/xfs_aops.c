@@ -240,7 +240,7 @@ xfs_end_io(
 
 done:
 	if (error)
-		ioend->io_error = -error;
+		ioend->io_error = error;
 	xfs_destroy_ioend(ioend);
 }
 
@@ -308,14 +308,14 @@ xfs_map_blocks(
 	int			nimaps = 1;
 
 	if (XFS_FORCED_SHUTDOWN(mp))
-		return -XFS_ERROR(EIO);
+		return -EIO;
 
 	if (type == XFS_IO_UNWRITTEN)
 		bmapi_flags |= XFS_BMAPI_IGSTATE;
 
 	if (!xfs_ilock_nowait(ip, XFS_ILOCK_SHARED)) {
 		if (nonblocking)
-			return -XFS_ERROR(EAGAIN);
+			return -EAGAIN;
 		xfs_ilock(ip, XFS_ILOCK_SHARED);
 	}
 
@@ -332,14 +332,14 @@ xfs_map_blocks(
 	xfs_iunlock(ip, XFS_ILOCK_SHARED);
 
 	if (error)
-		return -XFS_ERROR(error);
+		return error;
 
 	if (type == XFS_IO_DELALLOC &&
 	    (!nimaps || isnullstartblock(imap->br_startblock))) {
 		error = xfs_iomap_write_allocate(ip, offset, imap);
 		if (!error)
 			trace_xfs_map_blocks_alloc(ip, offset, count, type, imap);
-		return -XFS_ERROR(error);
+		return error;
 	}
 
 #ifdef DEBUG
@@ -377,8 +377,7 @@ xfs_end_bio(
 	xfs_ioend_t		*ioend = bio->bi_private;
 
 	ASSERT(atomic_read(&bio->bi_cnt) >= 1);
-	if (!ioend->io_error && !test_bit(BIO_UPTODATE, &bio->bi_flags))
-		ioend->io_error = error;
+	ioend->io_error = test_bit(BIO_UPTODATE, &bio->bi_flags) ? 0 : error;
 
 	/* Toss bio and pass work off to an xfsdatad thread */
 	bio->bi_private = NULL;
@@ -515,7 +514,7 @@ xfs_submit_ioend(
 		 * time.
 		 */
 		if (fail) {
-			ioend->io_error = -fail;
+			ioend->io_error = fail;
 			xfs_finish_ioend(ioend);
 			continue;
 		}
@@ -561,6 +560,13 @@ xfs_cancel_ioend(
 		do {
 			next_bh = bh->b_private;
 			clear_buffer_async_write(bh);
+			/*
+			 * The unwritten flag is cleared when added to the
+			 * ioend. We're not submitting for I/O so mark the
+			 * buffer unwritten again for next time around.
+			 */
+			if (ioend->io_type == XFS_IO_UNWRITTEN)
+				set_buffer_unwritten(bh);
 			unlock_buffer(bh);
 		} while ((bh = next_bh) != NULL);
 
@@ -1266,7 +1272,7 @@ __xfs_get_blocks(
 	int			new = 0;
 
 	if (XFS_FORCED_SHUTDOWN(mp))
-		return -XFS_ERROR(EIO);
+		return -EIO;
 
 	offset = (xfs_off_t)iblock << inode->i_blkbits;
 	ASSERT(bh_result->b_size >= (1 << inode->i_blkbits));
@@ -1300,26 +1306,6 @@ __xfs_get_blocks(
 	if (error)
 		goto out_unlock;
 
-	/*
-	 * The only time we can ever safely find delalloc blocks on direct I/O
-	 * is a dio write to post-eof speculative preallocation. All other
-	 * scenarios are indicative of a problem or misuse (such as mixing
-	 * direct and mapped I/O).
-	 *
-	 * The file may be unmapped by the time we get here so we cannot
-	 * reliably fail the I/O based on mapping. Instead, fail the I/O if this
-	 * is a read or a write within eof. Otherwise, carry on but warn as a
-	 * precuation if the file happens to be mapped.
-	 */
-	if (direct && imap.br_startblock == DELAYSTARTBLOCK) {
-		if (!create || offset < i_size_read(VFS_I(ip))) {
-			WARN_ON_ONCE(1);
-			error = EIO;
-			goto out_unlock;
-		}
-		WARN_ON_ONCE(mapping_mapped(VFS_I(ip)->i_mapping));
-	}
-
 	if (create &&
 	    (!nimaps ||
 	     (imap.br_startblock == HOLESTARTBLOCK ||
@@ -1335,7 +1321,7 @@ __xfs_get_blocks(
 			error = xfs_iomap_write_direct(ip, offset, size,
 						       &imap, nimaps);
 			if (error)
-				return -error;
+				return error;
 			new = 1;
 		} else {
 			/*
@@ -1403,6 +1389,7 @@ __xfs_get_blocks(
 		set_buffer_new(bh_result);
 
 	if (imap.br_startblock == DELAYSTARTBLOCK) {
+		BUG_ON(direct);
 		if (create) {
 			set_buffer_uptodate(bh_result);
 			set_buffer_mapped(bh_result);
@@ -1447,7 +1434,7 @@ __xfs_get_blocks(
 
 out_unlock:
 	xfs_iunlock(ip, lockmode);
-	return -error;
+	return error;
 }
 
 int

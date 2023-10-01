@@ -12,10 +12,7 @@
  */
 
 struct ceph_auth_client;
-
-struct ceph_authorizer {
-	void (*destroy)(struct ceph_authorizer *);
-};
+struct ceph_authorizer;
 
 struct ceph_auth_handshake {
 	struct ceph_authorizer *authorizer;
@@ -60,6 +57,8 @@ struct ceph_auth_client_ops {
 				 struct ceph_auth_handshake *auth);
 	int (*verify_authorizer_reply)(struct ceph_auth_client *ac,
 				       struct ceph_authorizer *a, size_t len);
+	void (*destroy_authorizer)(struct ceph_auth_client *ac,
+				   struct ceph_authorizer *a);
 	void (*invalidate_authorizer)(struct ceph_auth_client *ac,
 				      int peer_type);
 
@@ -103,7 +102,8 @@ extern int ceph_auth_is_authenticated(struct ceph_auth_client *ac);
 extern int ceph_auth_create_authorizer(struct ceph_auth_client *ac,
 				       int peer_type,
 				       struct ceph_auth_handshake *auth);
-void ceph_auth_destroy_authorizer(struct ceph_authorizer *a);
+extern void ceph_auth_destroy_authorizer(struct ceph_auth_client *ac,
+					 struct ceph_authorizer *a);
 extern int ceph_auth_update_authorizer(struct ceph_auth_client *ac,
 				       int peer_type,
 				       struct ceph_auth_handshake *a);

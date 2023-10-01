@@ -5,7 +5,7 @@
  *
  * Author: Frank Haverkamp <haver@linux.vnet.ibm.com>
  * Author: Joerg-Stephan Vogt <jsvogt@de.ibm.com>
- * Author: Michael Jung <mijung@de.ibm.com>
+ * Author: Michael Jung <mijung@gmx.net>
  * Author: Michael Ruettger <michael@ibmra.de>
  *
  * This program is free software; you can redistribute it and/or modify
@@ -52,7 +52,7 @@ static void genwqe_add_file(struct genwqe_dev *cd, struct genwqe_file *cfile)
 {
 	unsigned long flags;
 
-	cfile->opener = get_pid(task_tgid(current));
+	cfile->owner = current;
 	spin_lock_irqsave(&cd->file_lock, flags);
 	list_add(&cfile->list, &cd->file_list);
 	spin_unlock_irqrestore(&cd->file_lock, flags);
@@ -65,7 +65,6 @@ static int genwqe_del_file(struct genwqe_dev *cd, struct genwqe_file *cfile)
 	spin_lock_irqsave(&cd->file_lock, flags);
 	list_del(&cfile->list);
 	spin_unlock_irqrestore(&cd->file_lock, flags);
-	put_pid(cfile->opener);
 
 	return 0;
 }
@@ -214,9 +213,9 @@ static void genwqe_remove_mappings(struct genwqe_file *cfile)
 		 * GENWQE_MAPPING_SGL_TEMP should be removed by tidy up code.
 		 */
 		dev_err(&pci_dev->dev,
-			"[%s] %d. cleanup mapping: u_vaddr=%p "
-			"u_kaddr=%016lx dma_addr=%lx\n", __func__, i++,
-			dma_map->u_vaddr, (unsigned long)dma_map->k_vaddr,
+			"[%s] %d. cleanup mapping: u_vaddr=%p u_kaddr=%016lx dma_addr=%lx\n",
+			__func__, i++, dma_map->u_vaddr,
+			(unsigned long)dma_map->k_vaddr,
 			(unsigned long)dma_map->dma_addr);
 
 		if (dma_map->type == GENWQE_MAPPING_RAW) {
@@ -276,7 +275,7 @@ static int genwqe_kill_fasync(struct genwqe_dev *cd, int sig)
 	return files;
 }
 
-static int genwqe_terminate(struct genwqe_dev *cd)
+static int genwqe_force_sig(struct genwqe_dev *cd, int sig)
 {
 	unsigned int files = 0;
 	unsigned long flags;
@@ -284,7 +283,7 @@ static int genwqe_terminate(struct genwqe_dev *cd)
 
 	spin_lock_irqsave(&cd->file_lock, flags);
 	list_for_each_entry(cfile, &cd->file_list, list) {
-		kill_pid(cfile->opener, SIGKILL, 1);
+		force_sig(sig, cfile->owner);
 		files++;
 	}
 	spin_unlock_irqrestore(&cd->file_lock, flags);
@@ -347,6 +346,7 @@ static int genwqe_open(struct inode *inode, struct file *filp)
 static int genwqe_fasync(int fd, struct file *filp, int mode)
 {
 	struct genwqe_file *cdev = (struct genwqe_file *)filp->private_data;
+
 	return fasync_helper(fd, filp, mode, &cdev->async_queue);
 }
 
@@ -516,6 +516,7 @@ static int do_flash_update(struct genwqe_file *cfile,
 	u32 crc;
 	u8 cmdopts;
 	struct genwqe_dev *cd = cfile->cd;
+	struct file *filp = cfile->filp;
 	struct pci_dev *pci_dev = cd->pci_dev;
 
 	if ((load->size & 0x3) != 0)
@@ -610,7 +611,7 @@ static int do_flash_update(struct genwqe_file *cfile,
 		/* For Genwqe5 we get back the calculated CRC */
 		*(u64 *)&req->asv[0] = 0ULL;			/* 0x80 */
 
-		rc = __genwqe_execute_raw_ddcb(cd, req);
+		rc = __genwqe_execute_raw_ddcb(cd, req, filp->f_flags);
 
 		load->retc = req->retc;
 		load->attn = req->attn;
@@ -650,6 +651,7 @@ static int do_flash_read(struct genwqe_file *cfile,
 	u8 *xbuf;
 	u8 cmdopts;
 	struct genwqe_dev *cd = cfile->cd;
+	struct file *filp = cfile->filp;
 	struct pci_dev *pci_dev = cd->pci_dev;
 	struct genwqe_ddcb_cmd *cmd;
 
@@ -727,7 +729,7 @@ static int do_flash_read(struct genwqe_file *cfile,
 		/* we only get back the calculated CRC */
 		*(u64 *)&cmd->asv[0] = 0ULL;	/* 0x80 */
 
-		rc = __genwqe_execute_raw_ddcb(cd, cmd);
+		rc = __genwqe_execute_raw_ddcb(cd, cmd, filp->f_flags);
 
 		load->retc = cmd->retc;
 		load->attn = cmd->attn;
@@ -778,8 +780,6 @@ static int genwqe_pin_mem(struct genwqe_file *cfile, struct genwqe_mem *m)
 	unsigned long map_size;
 
 	if ((m->addr == 0x0) || (m->size == 0))
-		return -EINVAL;
-	if (m->size > ULONG_MAX - PAGE_SIZE - (m->addr & ~PAGE_MASK))
 		return -EINVAL;
 
 	map_addr = (m->addr & PAGE_MASK);
@@ -990,13 +990,14 @@ static int genwqe_execute_ddcb(struct genwqe_file *cfile,
 {
 	int rc;
 	struct genwqe_dev *cd = cfile->cd;
+	struct file *filp = cfile->filp;
 	struct ddcb_requ *req = container_of(cmd, struct ddcb_requ, cmd);
 
 	rc = ddcb_cmd_fixups(cfile, req);
 	if (rc != 0)
 		return rc;
 
-	rc = __genwqe_execute_raw_ddcb(cd, cmd);
+	rc = __genwqe_execute_raw_ddcb(cd, cmd, filp->f_flags);
 	ddcb_cmd_cleanup(cfile, req);
 	return rc;
 }
@@ -1008,6 +1009,7 @@ static int do_execute_ddcb(struct genwqe_file *cfile,
 	struct genwqe_ddcb_cmd *cmd;
 	struct ddcb_requ *req;
 	struct genwqe_dev *cd = cfile->cd;
+	struct file *filp = cfile->filp;
 
 	cmd = ddcb_requ_alloc();
 	if (cmd == NULL)
@@ -1023,7 +1025,7 @@ static int do_execute_ddcb(struct genwqe_file *cfile,
 	if (!raw)
 		rc = genwqe_execute_ddcb(cfile, cmd);
 	else
-		rc = __genwqe_execute_raw_ddcb(cd, cmd);
+		rc = __genwqe_execute_raw_ddcb(cd, cmd, filp->f_flags);
 
 	/* Copy back only the modifed fields. Do not copy ASIV
 	   back since the copy got modified by the driver. */
@@ -1051,9 +1053,14 @@ static long genwqe_ioctl(struct file *filp, unsigned int cmd,
 	int rc = 0;
 	struct genwqe_file *cfile = (struct genwqe_file *)filp->private_data;
 	struct genwqe_dev *cd = cfile->cd;
+	struct pci_dev *pci_dev = cd->pci_dev;
 	struct genwqe_reg_io __user *io;
 	u64 val;
 	u32 reg_offs;
+
+	/* Return -EIO if card hit EEH */
+	if (pci_channel_offline(pci_dev))
+		return -EIO;
 
 	if (_IOC_TYPE(cmd) != GENWQE_IOC_CODE)
 		return -EINVAL;
@@ -1349,7 +1356,7 @@ static int genwqe_inform_and_stop_processes(struct genwqe_dev *cd)
 		dev_warn(&pci_dev->dev,
 			 "[%s] send SIGKILL and wait ...\n", __func__);
 
-		rc = genwqe_terminate(cd);
+		rc = genwqe_force_sig(cd, SIGKILL); /* force terminate */
 		if (rc) {
 			/* Give kill_timout more seconds to end processes */
 			for (i = 0; (i < genwqe_kill_timeout) &&

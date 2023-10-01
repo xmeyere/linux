@@ -122,6 +122,8 @@ static void usbvision_release(struct usb_usbvision *usbvision);
 static int isoc_mode = ISOC_MODE_COMPRESS;
 /* Set the default Debug Mode of the device driver */
 static int video_debug;
+/* Set the default device to power on at startup */
+static int power_on_at_open = 1;
 /* Sequential Number of Video Device */
 static int video_nr = -1;
 /* Sequential Number of Radio Device */
@@ -132,11 +134,13 @@ static int radio_nr = -1;
 /* Showing parameters under SYSFS */
 module_param(isoc_mode, int, 0444);
 module_param(video_debug, int, 0444);
+module_param(power_on_at_open, int, 0444);
 module_param(video_nr, int, 0444);
 module_param(radio_nr, int, 0444);
 
 MODULE_PARM_DESC(isoc_mode, " Set the default format for ISOC endpoint.  Default: 0x60 (Compression On)");
 MODULE_PARM_DESC(video_debug, " Set the default Debug Mode of the device driver.  Default: 0 (Off)");
+MODULE_PARM_DESC(power_on_at_open, " Set the default device to power on when device is opened.  Default: 1 (On)");
 MODULE_PARM_DESC(video_nr, "Set video device number (/dev/videoX).  Default: -1 (autodetect)");
 MODULE_PARM_DESC(radio_nr, "Set radio device number (/dev/radioX).  Default: -1 (autodetect)");
 
@@ -347,14 +351,11 @@ static int usbvision_v4l2_open(struct file *file)
 
 	if (mutex_lock_interruptible(&usbvision->v4l2_lock))
 		return -ERESTARTSYS;
+	usbvision_reset_power_off_timer(usbvision);
 
-	if (usbvision->remove_pending) {
-		err_code = -ENODEV;
-		goto unlock;
-	}
-	if (usbvision->user) {
+	if (usbvision->user)
 		err_code = -EBUSY;
-	} else {
+	else {
 		/* Allocate memory for the scratch ring buffer */
 		err_code = usbvision_scratch_alloc(usbvision);
 		if (isoc_mode == ISOC_MODE_COMPRESS) {
@@ -371,6 +372,11 @@ static int usbvision_v4l2_open(struct file *file)
 
 	/* If so far no errors then we shall start the camera */
 	if (!err_code) {
+		if (usbvision->power == 0) {
+			usbvision_power_on(usbvision);
+			usbvision_i2c_register(usbvision);
+		}
+
 		/* Send init sequence only once, it's large! */
 		if (!usbvision->initialized) {
 			int setup_ok = 0;
@@ -386,14 +392,18 @@ static int usbvision_v4l2_open(struct file *file)
 			err_code = usbvision_init_isoc(usbvision);
 			/* device must be initialized before isoc transfer */
 			usbvision_muxsel(usbvision, 0);
-
-			/* prepare queues */
-			usbvision_empty_framequeues(usbvision);
 			usbvision->user++;
+		} else {
+			if (power_on_at_open) {
+				usbvision_i2c_unregister(usbvision);
+				usbvision_power_off(usbvision);
+				usbvision->initialized = 0;
+			}
 		}
 	}
 
-unlock:
+	/* prepare queues */
+	usbvision_empty_framequeues(usbvision);
 	mutex_unlock(&usbvision->v4l2_lock);
 
 	PDEBUG(DBG_IO, "success");
@@ -411,7 +421,6 @@ unlock:
 static int usbvision_v4l2_close(struct file *file)
 {
 	struct usb_usbvision *usbvision = video_drvdata(file);
-	int r;
 
 	PDEBUG(DBG_IO, "close");
 
@@ -426,14 +435,20 @@ static int usbvision_v4l2_close(struct file *file)
 	usbvision_scratch_free(usbvision);
 
 	usbvision->user--;
-	r = usbvision->remove_pending;
-	mutex_unlock(&usbvision->v4l2_lock);
 
-	if (r) {
+	if (power_on_at_open) {
+		/* power off in a little while
+		   to avoid off/on every close/open short sequences */
+		usbvision_set_power_off_timer(usbvision);
+		usbvision->initialized = 0;
+	}
+
+	if (usbvision->remove_pending) {
 		printk(KERN_INFO "%s: Final disconnect\n", __func__);
 		usbvision_release(usbvision);
 		return 0;
 	}
+	mutex_unlock(&usbvision->v4l2_lock);
 
 	PDEBUG(DBG_IO, "success");
 	return 0;
@@ -488,9 +503,6 @@ static int vidioc_querycap(struct file *file, void  *priv,
 					struct v4l2_capability *vc)
 {
 	struct usb_usbvision *usbvision = video_drvdata(file);
-
-	if (!usbvision->dev)
-		return -ENODEV;
 
 	strlcpy(vc->driver, "USBVision", sizeof(vc->driver));
 	strlcpy(vc->card,
@@ -1143,17 +1155,20 @@ static int usbvision_radio_open(struct file *file)
 
 	if (mutex_lock_interruptible(&usbvision->v4l2_lock))
 		return -ERESTARTSYS;
-
-	if (usbvision->remove_pending) {
-		err_code = -ENODEV;
-		goto out;
-	}
 	if (usbvision->user) {
 		dev_err(&usbvision->rdev->dev,
 			"%s: Someone tried to open an already opened USBVision Radio!\n",
 				__func__);
 		err_code = -EBUSY;
 	} else {
+		if (power_on_at_open) {
+			usbvision_reset_power_off_timer(usbvision);
+			if (usbvision->power == 0) {
+				usbvision_power_on(usbvision);
+				usbvision_i2c_register(usbvision);
+			}
+		}
+
 		/* Alternate interface 1 is is the biggest frame size */
 		err_code = usbvision_set_alternate(usbvision);
 		if (err_code < 0) {
@@ -1168,6 +1183,14 @@ static int usbvision_radio_open(struct file *file)
 		usbvision_set_audio(usbvision, USBVISION_AUDIO_RADIO);
 		usbvision->user++;
 	}
+
+	if (err_code) {
+		if (power_on_at_open) {
+			usbvision_i2c_unregister(usbvision);
+			usbvision_power_off(usbvision);
+			usbvision->initialized = 0;
+		}
+	}
 out:
 	mutex_unlock(&usbvision->v4l2_lock);
 	return err_code;
@@ -1178,29 +1201,31 @@ static int usbvision_radio_close(struct file *file)
 {
 	struct usb_usbvision *usbvision = video_drvdata(file);
 	int err_code = 0;
-	int r;
 
 	PDEBUG(DBG_IO, "");
 
 	mutex_lock(&usbvision->v4l2_lock);
 	/* Set packet size to 0 */
 	usbvision->iface_alt = 0;
-	if (usbvision->dev)
-		err_code = usb_set_interface(usbvision->dev, usbvision->iface,
-					     usbvision->iface_alt);
+	err_code = usb_set_interface(usbvision->dev, usbvision->iface,
+				    usbvision->iface_alt);
 
 	usbvision_audio_off(usbvision);
 	usbvision->radio = 0;
 	usbvision->user--;
-	r = usbvision->remove_pending;
-	mutex_unlock(&usbvision->v4l2_lock);
 
-	if (r) {
+	if (power_on_at_open) {
+		usbvision_set_power_off_timer(usbvision);
+		usbvision->initialized = 0;
+	}
+
+	if (usbvision->remove_pending) {
 		printk(KERN_INFO "%s: Final disconnect\n", __func__);
 		usbvision_release(usbvision);
 		return err_code;
 	}
 
+	mutex_unlock(&usbvision->v4l2_lock);
 	PDEBUG(DBG_IO, "success");
 	return err_code;
 }
@@ -1409,6 +1434,8 @@ static struct usb_usbvision *usbvision_alloc(struct usb_device *dev,
 		goto err_unreg;
 	init_waitqueue_head(&usbvision->ctrl_urb_wq);
 
+	usbvision_init_power_off_timer(usbvision);
+
 	return usbvision;
 
 err_unreg:
@@ -1428,6 +1455,8 @@ err_free:
 static void usbvision_release(struct usb_usbvision *usbvision)
 {
 	PDEBUG(DBG_PROBE, "");
+
+	usbvision_reset_power_off_timer(usbvision);
 
 	usbvision->initialized = 0;
 
@@ -1472,9 +1501,11 @@ static void usbvision_configure_video(struct usb_usbvision *usbvision)
 	/* first switch off audio */
 	if (usbvision_device_data[model].audio_channels > 0)
 		usbvision_audio_off(usbvision);
-	/* and then power up the tuner */
-	usbvision_power_on(usbvision);
-	usbvision_i2c_register(usbvision);
+	if (!power_on_at_open) {
+		/* and then power up the noisy tuner */
+		usbvision_power_on(usbvision);
+		usbvision_i2c_register(usbvision);
+	}
 }
 
 /*
@@ -1493,7 +1524,7 @@ static int usbvision_probe(struct usb_interface *intf,
 	const struct usb_host_interface *interface;
 	struct usb_usbvision *usbvision = NULL;
 	const struct usb_endpoint_descriptor *endpoint;
-	int model, i, ret;
+	int model, i;
 
 	PDEBUG(DBG_PROBE, "VID=%#04x, PID=%#04x, ifnum=%u",
 				dev->descriptor.idVendor,
@@ -1502,51 +1533,33 @@ static int usbvision_probe(struct usb_interface *intf,
 	model = devid->driver_info;
 	if (model < 0 || model >= usbvision_device_data_size) {
 		PDEBUG(DBG_PROBE, "model out of bounds %d", model);
-		ret = -ENODEV;
-		goto err_usb;
+		return -ENODEV;
 	}
 	printk(KERN_INFO "%s: %s found\n", __func__,
 				usbvision_device_data[model].model_string);
 
 	if (usbvision_device_data[model].interface >= 0)
 		interface = &dev->actconfig->interface[usbvision_device_data[model].interface]->altsetting[0];
-	else if (ifnum < dev->actconfig->desc.bNumInterfaces)
+	else
 		interface = &dev->actconfig->interface[ifnum]->altsetting[0];
-	else {
-		dev_err(&intf->dev, "interface %d is invalid, max is %d\n",
-		    ifnum, dev->actconfig->desc.bNumInterfaces - 1);
-		ret = -ENODEV;
-		goto err_usb;
-	}
-
-	if (interface->desc.bNumEndpoints < 2) {
-		dev_err(&intf->dev, "interface %d has %d endpoints, but must"
-		    " have minimum 2\n", ifnum, interface->desc.bNumEndpoints);
-		ret = -ENODEV;
-		goto err_usb;
-	}
 	endpoint = &interface->endpoint[1].desc;
-
 	if (!usb_endpoint_xfer_isoc(endpoint)) {
 		dev_err(&intf->dev, "%s: interface %d. has non-ISO endpoint!\n",
 		    __func__, ifnum);
 		dev_err(&intf->dev, "%s: Endpoint attributes %d",
 		    __func__, endpoint->bmAttributes);
-		ret = -ENODEV;
-		goto err_usb;
+		return -ENODEV;
 	}
 	if (usb_endpoint_dir_out(endpoint)) {
 		dev_err(&intf->dev, "%s: interface %d. has ISO OUT endpoint!\n",
 		    __func__, ifnum);
-		ret = -ENODEV;
-		goto err_usb;
+		return -ENODEV;
 	}
 
 	usbvision = usbvision_alloc(dev, intf);
 	if (usbvision == NULL) {
 		dev_err(&intf->dev, "%s: couldn't allocate USBVision struct\n", __func__);
-		ret = -ENOMEM;
-		goto err_usb;
+		return -ENOMEM;
 	}
 
 	if (dev->descriptor.bNumConfigurations > 1)
@@ -1565,19 +1578,12 @@ static int usbvision_probe(struct usb_interface *intf,
 	usbvision->alt_max_pkt_size = kmalloc(32 * usbvision->num_alt, GFP_KERNEL);
 	if (usbvision->alt_max_pkt_size == NULL) {
 		dev_err(&intf->dev, "usbvision: out of memory!\n");
-		ret = -ENOMEM;
-		goto err_pkt;
+		usbvision_release(usbvision);
+		return -ENOMEM;
 	}
 
 	for (i = 0; i < usbvision->num_alt; i++) {
-		u16 tmp;
-
-		if (uif->altsetting[i].desc.bNumEndpoints < 2) {
-			ret = -ENODEV;
-			goto err_pkt;
-		}
-
-		tmp = le16_to_cpu(uif->altsetting[i].endpoint[1].desc.
+		u16 tmp = le16_to_cpu(uif->altsetting[i].endpoint[1].desc.
 				      wMaxPacketSize);
 		usbvision->alt_max_pkt_size[i] =
 			(tmp & 0x07ff) * (((tmp & 0x1800) >> 11) + 1);
@@ -1608,12 +1614,6 @@ static int usbvision_probe(struct usb_interface *intf,
 
 	PDEBUG(DBG_PROBE, "success");
 	return 0;
-
-err_pkt:
-	usbvision_release(usbvision);
-err_usb:
-	usb_put_dev(dev);
-	return ret;
 }
 
 
@@ -1628,7 +1628,6 @@ err_usb:
 static void usbvision_disconnect(struct usb_interface *intf)
 {
 	struct usb_usbvision *usbvision = to_usbvision(usb_get_intfdata(intf));
-	int u;
 
 	PDEBUG(DBG_PROBE, "");
 
@@ -1643,16 +1642,19 @@ static void usbvision_disconnect(struct usb_interface *intf)
 	usbvision_stop_isoc(usbvision);
 
 	v4l2_device_disconnect(&usbvision->v4l2_dev);
-	usbvision_i2c_unregister(usbvision);
+
+	if (usbvision->power) {
+		usbvision_i2c_unregister(usbvision);
+		usbvision_power_off(usbvision);
+	}
 	usbvision->remove_pending = 1;	/* Now all ISO data will be ignored */
-	u = usbvision->user;
 
 	usb_put_dev(usbvision->dev);
 	usbvision->dev = NULL;	/* USB device is no more */
 
 	mutex_unlock(&usbvision->v4l2_lock);
 
-	if (u) {
+	if (usbvision->user) {
 		printk(KERN_INFO "%s: In use, disconnect pending\n",
 		       __func__);
 		wake_up_interruptible(&usbvision->wait_frame);

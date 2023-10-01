@@ -85,7 +85,7 @@ V_FUNCTION_BEGIN(__kernel_clock_gettime)
 	 * At this point, r4,r5 contain our sec/nsec values.
 	 */
 
-	ld	r6,WTOM_CLOCK_SEC(r3)
+	lwa	r6,WTOM_CLOCK_SEC(r3)
 	lwa	r9,WTOM_CLOCK_NSEC(r3)
 
 	/* We now have our result in r6,r9. We create a fake dependency
@@ -144,15 +144,12 @@ V_FUNCTION_BEGIN(__kernel_clock_getres)
 	cror	cr0*4+eq,cr0*4+eq,cr1*4+eq
 	bne	cr0,99f
 
-	mflr	r12
-  .cfi_register lr,r12
-	bl	V_LOCAL_FUNC(__get_datapage)
-	lwz	r5, CLOCK_HRTIMER_RES(r3)
-	mtlr	r12
 	li	r3,0
-	cmpldi	cr0,r4,0
+	cmpli	cr0,r4,0
 	crclr	cr0*4+so
 	beqlr
+	lis	r5,CLOCK_REALTIME_RES@h
+	ori	r5,r5,CLOCK_REALTIME_RES@l
 	std	r3,TSPC64_TV_SEC(r4)
 	std	r5,TSPC64_TV_NSEC(r4)
 	blr

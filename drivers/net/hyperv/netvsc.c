@@ -42,6 +42,12 @@ static struct netvsc_device *alloc_net_device(struct hv_device *device)
 	if (!net_device)
 		return NULL;
 
+	net_device->cb_buffer = kzalloc(NETVSC_PACKET_SIZE, GFP_KERNEL);
+	if (!net_device->cb_buffer) {
+		kfree(net_device);
+		return NULL;
+	}
+
 	init_waitqueue_head(&net_device->wait_drain);
 	net_device->start_remove = false;
 	net_device->destroy = false;
@@ -50,6 +56,12 @@ static struct netvsc_device *alloc_net_device(struct hv_device *device)
 
 	hv_set_drvdata(device, net_device);
 	return net_device;
+}
+
+static void free_netvsc_device(struct netvsc_device *nvdev)
+{
+	kfree(nvdev->cb_buffer);
+	kfree(nvdev);
 }
 
 static struct netvsc_device *get_outbound_net_device(struct hv_device *device)
@@ -193,8 +205,7 @@ static int netvsc_destroy_buf(struct netvsc_device *net_device)
 	}
 	if (net_device->send_buf) {
 		/* Free up the receive buffer */
-		free_pages((unsigned long)net_device->send_buf,
-			   get_order(net_device->send_buf_size));
+		vfree(net_device->send_buf);
 		net_device->send_buf = NULL;
 	}
 	kfree(net_device->send_section_map);
@@ -303,9 +314,7 @@ static int netvsc_init_buf(struct hv_device *device)
 
 	/* Now setup the send buffer.
 	 */
-	net_device->send_buf =
-		(void *)__get_free_pages(GFP_KERNEL|__GFP_ZERO,
-					 get_order(net_device->send_buf_size));
+	net_device->send_buf = vzalloc(net_device->send_buf_size);
 	if (!net_device->send_buf) {
 		netdev_err(ndev, "unable to allocate send "
 			   "buffer of size %d\n", net_device->send_buf_size);
@@ -554,7 +563,7 @@ int netvsc_device_remove(struct hv_device *device)
 	if (net_device->sub_cb_buf)
 		vfree(net_device->sub_cb_buf);
 
-	kfree(net_device);
+	free_netvsc_device(net_device);
 	return 0;
 }
 
@@ -707,7 +716,7 @@ int netvsc_send(struct hv_device *device,
 	u64 req_id;
 	unsigned int section_index = NETVSC_INVALID_INDEX;
 	u32 msg_size = 0;
-	struct sk_buff *skb = NULL;
+	struct sk_buff *skb;
 	u16 q_idx = packet->q_idx;
 
 
@@ -734,6 +743,8 @@ int netvsc_send(struct hv_device *device,
 							   packet);
 			skb = (struct sk_buff *)
 			      (unsigned long)packet->send_completion_tid;
+			if (skb)
+				dev_kfree_skb_any(skb);
 			packet->page_buf_cnt = 0;
 		}
 	}
@@ -794,13 +805,6 @@ int netvsc_send(struct hv_device *device,
 	} else {
 		netdev_err(ndev, "Unable to send packet %p ret %d\n",
 			   packet, ret);
-	}
-
-	if (ret != 0) {
-		if (section_index != NETVSC_INVALID_INDEX)
-			netvsc_free_send_slot(net_device, section_index);
-	} else if (skb) {
-		dev_kfree_skb_any(skb);
 	}
 
 	return ret;
@@ -1051,10 +1055,8 @@ int netvsc_device_add(struct hv_device *device, void *additional_info)
 	struct net_device *ndev;
 
 	net_device = alloc_net_device(device);
-	if (!net_device) {
-		ret = -ENOMEM;
-		goto cleanup;
-	}
+	if (!net_device)
+		return -ENOMEM;
 
 	net_device->ring_size = ring_size;
 
@@ -1102,9 +1104,7 @@ close:
 	vmbus_close(device->channel);
 
 cleanup:
-
-	if (net_device)
-		kfree(net_device);
+	free_netvsc_device(net_device);
 
 	return ret;
 }

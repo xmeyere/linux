@@ -120,7 +120,7 @@ static void musb_h_tx_flush_fifo(struct musb_hw_ep *ep)
 		if (csr != lastcsr)
 			dev_dbg(musb->controller, "Host TX FIFONOTEMPTY csr: %02x\n", csr);
 		lastcsr = csr;
-		csr |= MUSB_TXCSR_FLUSHFIFO;
+		csr |= MUSB_TXCSR_FLUSHFIFO | MUSB_TXCSR_TXPKTRDY;
 		musb_writew(epio, MUSB_TXCSR, csr);
 		csr = musb_readw(epio, MUSB_TXCSR);
 		if (WARN(retries-- < 1,
@@ -583,13 +583,14 @@ musb_rx_reinit(struct musb *musb, struct musb_qh *qh, struct musb_hw_ep *ep)
 		musb_writew(ep->regs, MUSB_TXCSR, 0);
 
 	/* scrub all previous state, clearing toggle */
-	}
-	csr = musb_readw(ep->regs, MUSB_RXCSR);
-	if (csr & MUSB_RXCSR_RXPKTRDY)
-		WARNING("rx%d, packet/%d ready?\n", ep->epnum,
-			musb_readw(ep->regs, MUSB_RXCOUNT));
+	} else {
+		csr = musb_readw(ep->regs, MUSB_RXCSR);
+		if (csr & MUSB_RXCSR_RXPKTRDY)
+			WARNING("rx%d, packet/%d ready?\n", ep->epnum,
+				musb_readw(ep->regs, MUSB_RXCOUNT));
 
-	musb_h_flush_rxfifo(ep, MUSB_RXCSR_CLRDATATOG);
+		musb_h_flush_rxfifo(ep, MUSB_RXCSR_CLRDATATOG);
+	}
 
 	/* target addr and (for multipoint) hub addr/port */
 	if (musb->is_multipoint) {
@@ -949,15 +950,9 @@ static void musb_bulk_nak_timeout(struct musb *musb, struct musb_hw_ep *ep,
 	if (is_in) {
 		dma = is_dma_capable() ? ep->rx_channel : NULL;
 
-		/*
-		 * Need to stop the transaction by clearing REQPKT first
-		 * then the NAK Timeout bit ref MUSBMHDRC USB 2.0 HIGH-SPEED
-		 * DUAL-ROLE CONTROLLER Programmer's Guide, section 9.2.2
-		 */
+		/* clear nak timeout bit */
 		rx_csr = musb_readw(epio, MUSB_RXCSR);
 		rx_csr |= MUSB_RXCSR_H_WZC_BITS;
-		rx_csr &= ~MUSB_RXCSR_H_REQPKT;
-		musb_writew(epio, MUSB_RXCSR, rx_csr);
 		rx_csr &= ~MUSB_RXCSR_DATAERROR;
 		musb_writew(epio, MUSB_RXCSR, rx_csr);
 
@@ -1002,9 +997,7 @@ static void musb_bulk_nak_timeout(struct musb *musb, struct musb_hw_ep *ep,
 			/* set tx_reinit and schedule the next qh */
 			ep->tx_reinit = 1;
 		}
-
-		if (next_qh)
-			musb_start_urb(musb, is_in, next_qh);
+		musb_start_urb(musb, is_in, next_qh);
 	}
 }
 
@@ -1302,7 +1295,7 @@ done:
 	if (status) {
 		if (dma_channel_status(dma) == MUSB_DMA_STATUS_BUSY) {
 			dma->status = MUSB_DMA_STATUS_CORE_ABORT;
-			(void) musb->dma_controller->channel_abort(dma);
+			musb->dma_controller->channel_abort(dma);
 		}
 
 		/* do the proper sequence to abort the transfer in the
@@ -1647,7 +1640,7 @@ void musb_host_rx(struct musb *musb, u8 epnum)
 		/* clean up dma and collect transfer count */
 		if (dma_channel_status(dma) == MUSB_DMA_STATUS_BUSY) {
 			dma->status = MUSB_DMA_STATUS_CORE_ABORT;
-			(void) musb->dma_controller->channel_abort(dma);
+			musb->dma_controller->channel_abort(dma);
 			xfer_len = dma->actual_len;
 		}
 		musb_h_flush_rxfifo(hw_ep, MUSB_RXCSR_CLRDATATOG);
@@ -1678,7 +1671,7 @@ void musb_host_rx(struct musb *musb, u8 epnum)
 		 */
 		if (dma_channel_status(dma) == MUSB_DMA_STATUS_BUSY) {
 			dma->status = MUSB_DMA_STATUS_CORE_ABORT;
-			(void) musb->dma_controller->channel_abort(dma);
+			musb->dma_controller->channel_abort(dma);
 			xfer_len = dma->actual_len;
 			done = true;
 		}
@@ -1741,10 +1734,11 @@ void musb_host_rx(struct musb *musb, u8 epnum)
 			}
 
 		} else  {
-		/* done if urb buffer is full or short packet is recd */
-		done = (urb->actual_length + xfer_len >=
-				urb->transfer_buffer_length
-			|| dma->actual_len < qh->maxpacket);
+			/* done if urb buffer is full or short packet is recd */
+			done = (urb->actual_length + xfer_len >=
+					urb->transfer_buffer_length
+				|| dma->actual_len < qh->maxpacket
+				|| dma->rx_packet_done);
 		}
 
 		/* send IN token for next packet, without AUTOREQ */
@@ -1964,7 +1958,7 @@ static int musb_schedule(
 	struct musb_qh		*qh,
 	int			is_in)
 {
-	int			idle;
+	int			idle = 0;
 	int			best_diff;
 	int			best_end, epnum;
 	struct musb_hw_ep	*hw_ep = NULL;
@@ -2669,6 +2663,7 @@ void musb_host_cleanup(struct musb *musb)
 	if (musb->port_mode == MUSB_PORT_MODE_GADGET)
 		return;
 	usb_remove_hcd(musb->hcd);
+	musb->hcd = NULL;
 }
 
 void musb_host_free(struct musb *musb)

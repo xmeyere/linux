@@ -568,6 +568,7 @@ static struct sock *iucv_sock_alloc(struct socket *sock, int proto, gfp_t prio)
 
 	sk->sk_destruct = iucv_sock_destruct;
 	sk->sk_sndtimeo = IUCV_CONN_TIMEOUT;
+	sk->sk_allocation = GFP_DMA;
 
 	sock_reset_flag(sk, SOCK_ZAPPED);
 
@@ -705,8 +706,7 @@ static int iucv_sock_bind(struct socket *sock, struct sockaddr *addr,
 	char uid[9];
 
 	/* Verify the input sockaddr */
-	if (addr_len < sizeof(struct sockaddr_iucv) ||
-	    addr->sa_family != AF_IUCV)
+	if (!addr || addr->sa_family != AF_IUCV)
 		return -EINVAL;
 
 	lock_sock(sk);
@@ -761,7 +761,6 @@ vm_bind:
 		memcpy(iucv->src_user_id, iucv_userid, 8);
 		sk->sk_state = IUCV_BOUND;
 		iucv->transport = AF_IUCV_TRANS_IUCV;
-		sk->sk_allocation |= GFP_DMA;
 		if (!iucv->msglimit)
 			iucv->msglimit = IUCV_QUEUELEN_DEFAULT;
 		goto done_unlock;
@@ -786,8 +785,6 @@ static int iucv_sock_autobind(struct sock *sk)
 		return -EPROTO;
 
 	memcpy(iucv->src_user_id, iucv_userid, 8);
-	iucv->transport = AF_IUCV_TRANS_IUCV;
-	sk->sk_allocation |= GFP_DMA;
 
 	write_lock_bh(&iucv_sk_list.lock);
 	__iucv_auto_name(iucv);
@@ -853,7 +850,7 @@ static int iucv_sock_connect(struct socket *sock, struct sockaddr *addr,
 	struct iucv_sock *iucv = iucv_sk(sk);
 	int err;
 
-	if (alen < sizeof(struct sockaddr_iucv) || addr->sa_family != AF_IUCV)
+	if (addr->sa_family != AF_IUCV || alen < sizeof(struct sockaddr_iucv))
 		return -EINVAL;
 
 	if (sk->sk_state != IUCV_OPEN && sk->sk_state != IUCV_BOUND)
@@ -1106,7 +1103,6 @@ static int iucv_sock_sendmsg(struct kiocb *iocb, struct socket *sock,
 		default:
 			err = -EINVAL;
 			goto out;
-			break;
 		}
 	}
 
@@ -1546,7 +1542,8 @@ static int iucv_sock_shutdown(struct socket *sock, int how)
 
 	sk->sk_shutdown |= how;
 	if (how == RCV_SHUTDOWN || how == SHUTDOWN_MASK) {
-		if (iucv->transport == AF_IUCV_TRANS_IUCV) {
+		if ((iucv->transport == AF_IUCV_TRANS_IUCV) &&
+		    iucv->path) {
 			err = pr_iucv->path_quiesce(iucv->path, NULL);
 			if (err)
 				err = -ENOTCONN;
@@ -1739,8 +1736,6 @@ static int iucv_callback_connreq(struct iucv_path *path,
 
 	niucv = iucv_sk(nsk);
 	iucv_sock_init(nsk, sk);
-	niucv->transport = AF_IUCV_TRANS_IUCV;
-	nsk->sk_allocation |= GFP_DMA;
 
 	/* Set the new iucv_sock */
 	memcpy(niucv->dst_name, ipuser + 8, 8);
@@ -2399,13 +2394,6 @@ out:
 	return err;
 }
 
-static void afiucv_iucv_exit(void)
-{
-	device_unregister(af_iucv_dev);
-	driver_unregister(&af_iucv_driver);
-	pr_iucv->iucv_unregister(&af_iucv_handler, 0);
-}
-
 static int __init afiucv_init(void)
 {
 	int err;
@@ -2439,18 +2427,11 @@ static int __init afiucv_init(void)
 		err = afiucv_iucv_init();
 		if (err)
 			goto out_sock;
-	}
-
-	err = register_netdevice_notifier(&afiucv_netdev_notifier);
-	if (err)
-		goto out_notifier;
-
+	} else
+		register_netdevice_notifier(&afiucv_netdev_notifier);
 	dev_add_pack(&iucv_packet_type);
 	return 0;
 
-out_notifier:
-	if (pr_iucv)
-		afiucv_iucv_exit();
 out_sock:
 	sock_unregister(PF_IUCV);
 out_proto:
@@ -2464,11 +2445,12 @@ out:
 static void __exit afiucv_exit(void)
 {
 	if (pr_iucv) {
-		afiucv_iucv_exit();
+		device_unregister(af_iucv_dev);
+		driver_unregister(&af_iucv_driver);
+		pr_iucv->iucv_unregister(&af_iucv_handler, 0);
 		symbol_put(iucv_if);
-	}
-
-	unregister_netdevice_notifier(&afiucv_netdev_notifier);
+	} else
+		unregister_netdevice_notifier(&afiucv_netdev_notifier);
 	dev_remove_pack(&iucv_packet_type);
 	sock_unregister(PF_IUCV);
 	proto_unregister(&iucv_proto);

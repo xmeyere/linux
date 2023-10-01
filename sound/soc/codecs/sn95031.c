@@ -531,8 +531,8 @@ static const struct snd_soc_dapm_route sn95031_audio_map[] = {
 	/* speaker map */
 	{ "IHFOUTL", NULL, "Speaker Rail"},
 	{ "IHFOUTR", NULL, "Speaker Rail"},
-	{ "IHFOUTL", NULL, "Speaker Left Playback"},
-	{ "IHFOUTR", NULL, "Speaker Right Playback"},
+	{ "IHFOUTL", "NULL", "Speaker Left Playback"},
+	{ "IHFOUTR", "NULL", "Speaker Right Playback"},
 	{ "Speaker Left Playback", NULL, "Speaker Left Filter"},
 	{ "Speaker Right Playback", NULL, "Speaker Right Filter"},
 	{ "Speaker Left Filter", NULL, "IHFDAC Left"},
@@ -661,12 +661,12 @@ static int sn95031_pcm_hw_params(struct snd_pcm_substream *substream,
 {
 	unsigned int format, rate;
 
-	switch (params_format(params)) {
-	case SNDRV_PCM_FORMAT_S16_LE:
+	switch (params_width(params)) {
+	case 16:
 		format = BIT(4)|BIT(5);
 		break;
 
-	case SNDRV_PCM_FORMAT_S24_LE:
+	case 24:
 		format = 0;
 		break;
 	default:

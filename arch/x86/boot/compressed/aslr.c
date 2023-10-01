@@ -1,6 +1,5 @@
 #include "misc.h"
 
-#ifdef CONFIG_RANDOMIZE_BASE
 #include <asm/msr.h>
 #include <asm/archrandom.h>
 #include <asm/e820.h>
@@ -25,8 +24,8 @@ static inline u16 i8254(void)
 	u16 status, timer;
 
 	do {
-		outb(I8254_CMD_READBACK | I8254_SELECT_COUNTER0,
-		     I8254_PORT_CONTROL);
+		outb(I8254_PORT_CONTROL,
+		     I8254_CMD_READBACK | I8254_SELECT_COUNTER0);
 		status = inb(I8254_PORT_COUNTER0);
 		timer  = inb(I8254_PORT_COUNTER0);
 		timer |= inb(I8254_PORT_COUNTER0) << 8;
@@ -195,7 +194,7 @@ static bool mem_avoid_overlap(struct mem_vector *img)
 	while (ptr) {
 		struct mem_vector avoid;
 
-		avoid.start = (u64)ptr;
+		avoid.start = (unsigned long)ptr;
 		avoid.size = sizeof(*ptr) + ptr->len;
 
 		if (mem_overlaps(img, &avoid))
@@ -335,5 +334,3 @@ unsigned char *choose_kernel_location(unsigned char *input,
 out:
 	return (unsigned char *)choice;
 }
-
-#endif /* CONFIG_RANDOMIZE_BASE */

@@ -319,10 +319,12 @@ static irqreturn_t dma_controller_irq(int irq, void *private_data)
 				channel->status = MUSB_DMA_STATUS_FREE;
 
 				/* completed */
-				if (musb_channel->transmit &&
-					(!channel->desired_mode ||
-					(channel->actual_len %
-					    musb_channel->max_packet_sz))) {
+				if ((devctl & MUSB_DEVCTL_HM)
+					&& (musb_channel->transmit)
+					&& ((channel->desired_mode == 0)
+					    || (channel->actual_len &
+					    (musb_channel->max_packet_sz - 1)))
+				    ) {
 					u8  epnum  = musb_channel->epnum;
 					int offset = MUSB_EP_OFFSET(epnum,
 								    MUSB_TXCSR);
@@ -334,14 +336,11 @@ static irqreturn_t dma_controller_irq(int irq, void *private_data)
 					 */
 					musb_ep_select(mbase, epnum);
 					txcsr = musb_readw(mbase, offset);
-					if (channel->desired_mode == 1) {
-						txcsr &= ~(MUSB_TXCSR_DMAENAB
+					txcsr &= ~(MUSB_TXCSR_DMAENAB
 							| MUSB_TXCSR_AUTOSET);
-						musb_writew(mbase, offset, txcsr);
-						/* Send out the packet */
-						txcsr &= ~MUSB_TXCSR_DMAMODE;
-						txcsr |= MUSB_TXCSR_DMAENAB;
-					}
+					musb_writew(mbase, offset, txcsr);
+					/* Send out the packet */
+					txcsr &= ~MUSB_TXCSR_DMAMODE;
 					txcsr |=  MUSB_TXCSR_TXPKTRDY;
 					musb_writew(mbase, offset, txcsr);
 				}
@@ -396,7 +395,7 @@ struct dma_controller *dma_controller_create(struct musb *musb, void __iomem *ba
 	controller->controller.channel_abort = dma_channel_abort;
 
 	if (request_irq(irq, dma_controller_irq, 0,
-			dev_name(musb->controller), controller)) {
+			dev_name(musb->controller), &controller->controller)) {
 		dev_err(dev, "request_irq %d failed!\n", irq);
 		dma_controller_destroy(&controller->controller);
 

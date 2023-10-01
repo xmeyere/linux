@@ -141,22 +141,23 @@ static int valid_ecryptfs_desc(const char *ecryptfs_desc)
  */
 static int valid_master_desc(const char *new_desc, const char *orig_desc)
 {
-	int prefix_len;
-
-	if (!strncmp(new_desc, KEY_TRUSTED_PREFIX, KEY_TRUSTED_PREFIX_LEN))
-		prefix_len = KEY_TRUSTED_PREFIX_LEN;
-	else if (!strncmp(new_desc, KEY_USER_PREFIX, KEY_USER_PREFIX_LEN))
-		prefix_len = KEY_USER_PREFIX_LEN;
-	else
-		return -EINVAL;
-
-	if (!new_desc[prefix_len])
-		return -EINVAL;
-
-	if (orig_desc && strncmp(new_desc, orig_desc, prefix_len))
-		return -EINVAL;
-
+	if (!memcmp(new_desc, KEY_TRUSTED_PREFIX, KEY_TRUSTED_PREFIX_LEN)) {
+		if (strlen(new_desc) == KEY_TRUSTED_PREFIX_LEN)
+			goto out;
+		if (orig_desc)
+			if (memcmp(new_desc, orig_desc, KEY_TRUSTED_PREFIX_LEN))
+				goto out;
+	} else if (!memcmp(new_desc, KEY_USER_PREFIX, KEY_USER_PREFIX_LEN)) {
+		if (strlen(new_desc) == KEY_USER_PREFIX_LEN)
+			goto out;
+		if (orig_desc)
+			if (memcmp(new_desc, orig_desc, KEY_USER_PREFIX_LEN))
+				goto out;
+	} else
+		goto out;
 	return 0;
+out:
+	return -EINVAL;
 }
 
 /*
@@ -314,13 +315,6 @@ static struct key *request_user_key(const char *master_desc, u8 **master_key,
 
 	down_read(&ukey->sem);
 	upayload = ukey->payload.data;
-	if (!upayload) {
-		/* key was revoked before we acquired its semaphore */
-		up_read(&ukey->sem);
-		key_put(ukey);
-		ukey = ERR_PTR(-EKEYREVOKED);
-		goto error;
-	}
 	*master_key = upayload->data;
 	*master_keylen = upayload->datalen;
 error:
@@ -434,7 +428,7 @@ static int init_blkcipher_desc(struct blkcipher_desc *desc, const u8 *key,
 static struct key *request_master_key(struct encrypted_key_payload *epayload,
 				      u8 **master_key, size_t *master_keylen)
 {
-	struct key *mkey = ERR_PTR(-EINVAL);
+	struct key *mkey = NULL;
 
 	if (!strncmp(epayload->master_desc, KEY_TRUSTED_PREFIX,
 		     KEY_TRUSTED_PREFIX_LEN)) {
@@ -976,7 +970,6 @@ struct key_type key_type_encrypted = {
 	.name = "encrypted",
 	.instantiate = encrypted_instantiate,
 	.update = encrypted_update,
-	.match = user_match,
 	.destroy = encrypted_destroy,
 	.describe = user_describe,
 	.read = encrypted_read,
@@ -1024,13 +1017,10 @@ static int __init init_encrypted(void)
 	ret = encrypted_shash_alloc();
 	if (ret < 0)
 		return ret;
-	ret = aes_get_sizes();
-	if (ret < 0)
-		goto out;
 	ret = register_key_type(&key_type_encrypted);
 	if (ret < 0)
 		goto out;
-	return 0;
+	return aes_get_sizes();
 out:
 	encrypted_shash_release();
 	return ret;

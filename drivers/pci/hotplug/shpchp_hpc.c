@@ -466,7 +466,8 @@ static int hpc_get_adapter_speed(struct slot *slot, enum pci_bus_speed *value)
 	u8 m66_cap  = !!(slot_reg & MHZ66_CAP);
 	u8 pi, pcix_cap;
 
-	if ((retval = hpc_get_prog_int(slot, &pi)))
+	retval = hpc_get_prog_int(slot, &pi);
+	if (retval)
 		return retval;
 
 	switch (pi) {
@@ -798,7 +799,7 @@ static irqreturn_t shpc_isr(int irq, void *dev_id)
 
 	ctrl_dbg(ctrl, "%s: intr_loc = %x\n", __func__, intr_loc);
 
-	if(!shpchp_poll_mode) {
+	if (!shpchp_poll_mode) {
 		/*
 		 * Mask Global Interrupt Mask - see implementation
 		 * note on p. 139 of SHPC spec rev 1.0
@@ -1061,8 +1062,6 @@ int shpc_init(struct controller *ctrl, struct pci_dev *pdev)
 		if (rc) {
 			ctrl_info(ctrl, "Can't get msi for the hotplug controller\n");
 			ctrl_info(ctrl, "Use INTx for the hotplug controller\n");
-		} else {
-			pci_set_master(pdev);
 		}
 
 		rc = request_irq(ctrl->pci_dev->irq, shpc_isr, IRQF_SHARED,

@@ -940,7 +940,7 @@ static int mvebu_pcie_probe(struct platform_device *pdev)
 		pcie->realio.start = PCIBIOS_MIN_IO;
 		pcie->realio.end = min_t(resource_size_t,
 					 IO_SPACE_LIMIT,
-					 resource_size(&pcie->io) - 1);
+					 resource_size(&pcie->io));
 	} else
 		pcie->realio = pcie->io;
 
@@ -1094,4 +1094,4 @@ module_platform_driver(mvebu_pcie_driver);
 
 MODULE_AUTHOR("Thomas Petazzoni <thomas.petazzoni@free-electrons.com>");
 MODULE_DESCRIPTION("Marvell EBU PCIe driver");
-MODULE_LICENSE("GPLv2");
+MODULE_LICENSE("GPL v2");

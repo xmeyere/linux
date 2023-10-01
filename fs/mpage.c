@@ -28,6 +28,7 @@
 #include <linux/backing-dev.h>
 #include <linux/pagevec.h>
 #include <linux/cleancache.h>
+#include "internal.h"
 
 /*
  * I/O completion handler for multipage BIOs.
@@ -57,6 +58,7 @@ static void mpage_end_io(struct bio *bio, int err)
 static struct bio *mpage_bio_submit(int rw, struct bio *bio)
 {
 	bio->bi_end_io = mpage_end_io;
+	guard_bio_eod(rw, bio);
 	submit_bio(rw, bio);
 	return NULL;
 }
@@ -457,16 +459,6 @@ static void clean_buffers(struct page *page, unsigned first_unmapped)
 		try_to_free_buffers(page);
 }
 
-/*
- * For situations where we want to clean all buffers attached to a page.
- * We don't need to calculate how many buffers are attached to the page,
- * we just need to specify a number larger than the maximum number of buffers.
- */
-void clean_page_buffers(struct page *page)
-{
-	clean_buffers(page, ~0U);
-}
-
 static int __mpage_writepage(struct page *page, struct writeback_control *wbc,
 		      void *data)
 {
@@ -604,8 +596,10 @@ alloc_new:
 	if (bio == NULL) {
 		if (first_unmapped == blocks_per_page) {
 			if (!bdev_write_page(bdev, blocks[0] << (blkbits - 9),
-								page, wbc))
+								page, wbc)) {
+				clean_buffers(page, first_unmapped);
 				goto out;
+			}
 		}
 		bio = mpage_alloc(bdev, blocks[0] << (blkbits - 9),
 				bio_get_nr_vecs(bdev), GFP_NOFS|__GFP_HIGH);

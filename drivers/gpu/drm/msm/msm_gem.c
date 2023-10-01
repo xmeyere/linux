@@ -73,7 +73,7 @@ static struct page **get_pages(struct drm_gem_object *obj)
 		int npages = obj->size >> PAGE_SHIFT;
 
 		if (iommu_present(&platform_bus_type))
-			p = drm_gem_get_pages(obj, 0);
+			p = drm_gem_get_pages(obj);
 		else
 			p = get_pages_vram(obj, npages);
 
@@ -83,16 +83,13 @@ static struct page **get_pages(struct drm_gem_object *obj)
 			return p;
 		}
 
-		msm_obj->pages = p;
-
 		msm_obj->sgt = drm_prime_pages_to_sg(p, npages);
 		if (IS_ERR(msm_obj->sgt)) {
-			void *ptr = ERR_CAST(msm_obj->sgt);
-
 			dev_err(dev->dev, "failed to allocate sgt\n");
-			msm_obj->sgt = NULL;
-			return ptr;
+			return ERR_CAST(msm_obj->sgt);
 		}
+
+		msm_obj->pages = p;
 
 		/* For non-cached buffers, ensure the new pages are clean
 		 * because display controller, GPU, etc. are not coherent:
@@ -110,19 +107,14 @@ static void put_pages(struct drm_gem_object *obj)
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
 
 	if (msm_obj->pages) {
-		if (msm_obj->sgt) {
-			/* For non-cached buffers, ensure the new
-			 * pages are clean because display controller,
-			 * GPU, etc. are not coherent:
-			 */
-			if (msm_obj->flags & (MSM_BO_WC|MSM_BO_UNCACHED))
-				dma_unmap_sg(obj->dev->dev, msm_obj->sgt->sgl,
-					     msm_obj->sgt->nents,
-					     DMA_BIDIRECTIONAL);
-
-			sg_free_table(msm_obj->sgt);
-			kfree(msm_obj->sgt);
-		}
+		/* For non-cached buffers, ensure the new pages are clean
+		 * because display controller, GPU, etc. are not coherent:
+		 */
+		if (msm_obj->flags & (MSM_BO_WC|MSM_BO_UNCACHED))
+			dma_unmap_sg(obj->dev->dev, msm_obj->sgt->sgl,
+					msm_obj->sgt->nents, DMA_BIDIRECTIONAL);
+		sg_free_table(msm_obj->sgt);
+		kfree(msm_obj->sgt);
 
 		if (iommu_present(&platform_bus_type))
 			drm_gem_put_pages(obj, msm_obj->pages, true, false);
@@ -196,19 +188,10 @@ int msm_gem_fault(struct vm_area_struct *vma, struct vm_fault *vmf)
 {
 	struct drm_gem_object *obj = vma->vm_private_data;
 	struct drm_device *dev = obj->dev;
-	struct msm_drm_private *priv = dev->dev_private;
 	struct page **pages;
 	unsigned long pfn;
 	pgoff_t pgoff;
 	int ret;
-
-	/* This should only happen if userspace tries to pass a mmap'd
-	 * but unfaulted gem bo vaddr into submit ioctl, triggering
-	 * a page fault while struct_mutex is already held.  This is
-	 * not a valid use-case so just bail.
-	 */
-	if (priv->struct_mutex_task == current)
-		return VM_FAULT_SIGBUS;
 
 	/* Make sure we don't parallel update on a fault, nor move or remove
 	 * something from beneath our feet
@@ -295,24 +278,23 @@ int msm_gem_get_iova_locked(struct drm_gem_object *obj, int id,
 		uint32_t *iova)
 {
 	struct msm_gem_object *msm_obj = to_msm_bo(obj);
-	struct drm_device *dev = obj->dev;
 	int ret = 0;
 
 	if (!msm_obj->domain[id].iova) {
 		struct msm_drm_private *priv = obj->dev->dev_private;
-		struct msm_mmu *mmu = priv->mmus[id];
 		struct page **pages = get_pages(obj);
-
-		if (!mmu) {
-			dev_err(dev->dev, "null MMU pointer\n");
-			return -EINVAL;
-		}
 
 		if (IS_ERR(pages))
 			return PTR_ERR(pages);
 
 		if (iommu_present(&platform_bus_type)) {
-			uint32_t offset = (uint32_t)mmap_offset(obj);
+			struct msm_mmu *mmu = priv->mmus[id];
+			uint32_t offset;
+
+			if (WARN_ON(!mmu))
+				return -EINVAL;
+
+			offset = (uint32_t)mmap_offset(obj);
 			ret = mmu->funcs->map(mmu, offset, msm_obj->sgt,
 					obj->size, IOMMU_READ | IOMMU_WRITE);
 			msm_obj->domain[id].iova = offset;

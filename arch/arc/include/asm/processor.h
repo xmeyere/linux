@@ -14,8 +14,6 @@
 #ifndef __ASM_ARC_PROCESSOR_H
 #define __ASM_ARC_PROCESSOR_H
 
-#ifdef __KERNEL__
-
 #ifndef __ASSEMBLY__
 
 #include <asm/ptrace.h>
@@ -71,23 +69,24 @@ unsigned long thread_saved_pc(struct task_struct *t);
 #define cpu_relax()	do { } while (0)
 #endif
 
+#define cpu_relax_lowlatency() cpu_relax()
+
 #define copy_segments(tsk, mm)      do { } while (0)
 #define release_segments(mm)        do { } while (0)
 
 #define KSTK_EIP(tsk)   (task_pt_regs(tsk)->ret)
-#define KSTK_ESP(tsk)   (task_pt_regs(tsk)->sp)
 
 /*
  * Where abouts of Task's sp, fp, blink when it was last seen in kernel mode.
  * Look in process.c for details of kernel stack layout
  */
-#define TSK_K_ESP(tsk)		(tsk->thread.ksp)
+#define KSTK_ESP(tsk)   (tsk->thread.ksp)
 
-#define TSK_K_REG(tsk, off)	(*((unsigned int *)(TSK_K_ESP(tsk) + \
+#define KSTK_REG(tsk, off)	(*((unsigned int *)(KSTK_ESP(tsk) + \
 					sizeof(struct callee_regs) + off)))
 
-#define TSK_K_BLINK(tsk)	TSK_K_REG(tsk, 4)
-#define TSK_K_FP(tsk)		TSK_K_REG(tsk, 0)
+#define KSTK_BLINK(tsk) KSTK_REG(tsk, 4)
+#define KSTK_FP(tsk)    KSTK_REG(tsk, 0)
 
 extern void start_thread(struct pt_regs * regs, unsigned long pc,
 			 unsigned long usp);
@@ -135,7 +134,5 @@ extern unsigned int get_wchan(struct task_struct *p);
  * space during mmap's.
  */
 #define TASK_UNMAPPED_BASE      (TASK_SIZE / 3)
-
-#endif /* __KERNEL__ */
 
 #endif /* __ASM_ARC_PROCESSOR_H */

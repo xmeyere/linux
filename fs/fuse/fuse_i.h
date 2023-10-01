@@ -663,6 +663,7 @@ void fuse_read_fill(struct fuse_req *req, struct file *file,
 int fuse_open_common(struct inode *inode, struct file *file, bool isdir);
 
 struct fuse_file *fuse_file_alloc(struct fuse_conn *fc);
+struct fuse_file *fuse_file_get(struct fuse_file *ff);
 void fuse_file_free(struct fuse_file *ff);
 void fuse_finish_open(struct inode *inode, struct file *file);
 
@@ -671,7 +672,7 @@ void fuse_sync_release(struct fuse_file *ff, int flags);
 /**
  * Send RELEASE or RELEASEDIR request
  */
-void fuse_release_common(struct file *file, bool isdir);
+void fuse_release_common(struct file *file, int opcode);
 
 /**
  * Send FSYNC or FSYNCDIR request
@@ -803,6 +804,8 @@ void fuse_invalidate_atime(struct inode *inode);
  */
 struct fuse_conn *fuse_conn_get(struct fuse_conn *fc);
 
+void fuse_conn_kill(struct fuse_conn *fc);
+
 /**
  * Initialize fuse_conn
  */
@@ -827,8 +830,6 @@ void fuse_ctl_remove_conn(struct fuse_conn *fc);
  * Is file type valid?
  */
 int fuse_valid_type(int m);
-
-bool fuse_invalid_attr(struct fuse_attr *attr);
 
 /**
  * Is current process allowed to perform filesystem operation?
@@ -893,7 +894,7 @@ bool fuse_write_update_size(struct inode *inode, loff_t pos);
 int fuse_flush_times(struct inode *inode, struct fuse_file *ff);
 int fuse_write_inode(struct inode *inode, struct writeback_control *wbc);
 
-int fuse_do_setattr(struct dentry *dentry, struct iattr *attr,
+int fuse_do_setattr(struct inode *inode, struct iattr *attr,
 		    struct file *file);
 
 #endif /* _FS_FUSE_I_H */

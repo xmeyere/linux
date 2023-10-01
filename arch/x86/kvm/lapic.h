@@ -93,7 +93,6 @@ static inline bool kvm_hv_vapic_assist_page_enabled(struct kvm_vcpu *vcpu)
 
 int kvm_lapic_enable_pv_eoi(struct kvm_vcpu *vcpu, u64 data);
 void kvm_lapic_init(void);
-void kvm_lapic_exit(void);
 
 static inline u32 kvm_apic_get_reg(struct kvm_lapic *apic, int reg_off)
 {
@@ -166,7 +165,7 @@ static inline u16 apic_logical_id(struct kvm_apic_map *map, u32 ldr)
 
 static inline bool kvm_apic_has_events(struct kvm_vcpu *vcpu)
 {
-	return kvm_vcpu_has_lapic(vcpu) && vcpu->arch.apic->pending_events;
+	return vcpu->arch.apic->pending_events;
 }
 
 bool kvm_apic_pending_eoi(struct kvm_vcpu *vcpu, int vector);

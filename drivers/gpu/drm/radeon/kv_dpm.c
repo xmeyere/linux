@@ -1169,19 +1169,6 @@ void kv_dpm_enable_bapm(struct radeon_device *rdev, bool enable)
 	}
 }
 
-static void kv_enable_thermal_int(struct radeon_device *rdev, bool enable)
-{
-	u32 thermal_int;
-
-	thermal_int = RREG32_SMC(CG_THERMAL_INT_CTRL);
-	if (enable)
-		thermal_int |= THERM_INTH_MASK | THERM_INTL_MASK;
-	else
-		thermal_int &= ~(THERM_INTH_MASK | THERM_INTL_MASK);
-	WREG32_SMC(CG_THERMAL_INT_CTRL, thermal_int);
-
-}
-
 int kv_dpm_enable(struct radeon_device *rdev)
 {
 	struct kv_power_info *pi = kv_get_pi(rdev);
@@ -1293,7 +1280,8 @@ int kv_dpm_late_enable(struct radeon_device *rdev)
 			DRM_ERROR("kv_set_thermal_temperature_range failed\n");
 			return ret;
 		}
-		kv_enable_thermal_int(rdev, true);
+		rdev->irq.dpm_thermal = true;
+		radeon_irq_set(rdev);
 	}
 
 	/* powerdown unused blocks for now */
@@ -1324,7 +1312,6 @@ void kv_dpm_disable(struct radeon_device *rdev)
 	kv_stop_dpm(rdev);
 	kv_enable_ulv(rdev, false);
 	kv_reset_am(rdev);
-	kv_enable_thermal_int(rdev, false);
 
 	kv_update_current_ps(rdev, rdev->pm.dpm.boot_ps);
 }
@@ -2758,11 +2745,13 @@ int kv_dpm_init(struct radeon_device *rdev)
 	pi->enable_auto_thermal_throttling = true;
 	pi->disable_nb_ps3_in_battery = false;
 	if (radeon_bapm == -1) {
-		/* only enable bapm on KB, ML by default */
-		if (rdev->family == CHIP_KABINI || rdev->family == CHIP_MULLINS)
-			pi->bapm_enable = true;
-		else
+		/* There are stability issues reported on with
+		 * bapm enabled on an asrock system.
+		 */
+		if (rdev->pdev->subsystem_vendor == 0x1849)
 			pi->bapm_enable = false;
+		else
+			pi->bapm_enable = true;
 	} else if (radeon_bapm == 0) {
 		pi->bapm_enable = false;
 	} else {
@@ -2811,6 +2800,8 @@ void kv_dpm_debugfs_print_current_performance_level(struct radeon_device *rdev,
 		tmp = (RREG32_SMC(SMU_VOLTAGE_STATUS) & SMU_VOLTAGE_CURRENT_LEVEL_MASK) >>
 			SMU_VOLTAGE_CURRENT_LEVEL_SHIFT;
 		vddc = kv_convert_8bit_index_to_voltage(rdev, (u16)tmp);
+		seq_printf(m, "uvd    %sabled\n", pi->uvd_power_gated ? "dis" : "en");
+		seq_printf(m, "vce    %sabled\n", pi->vce_power_gated ? "dis" : "en");
 		seq_printf(m, "power level %d    sclk: %u vddc: %u\n",
 			   current_index, sclk, vddc);
 	}

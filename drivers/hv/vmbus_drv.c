@@ -32,8 +32,6 @@
 #include <linux/completion.h>
 #include <linux/hyperv.h>
 #include <linux/kernel_stat.h>
-#include <linux/cpu.h>
-#include <linux/random.h>
 #include <asm/hyperv.h>
 #include <asm/hypervisor.h>
 #include <asm/mshyperv.h>
@@ -257,16 +255,10 @@ static ssize_t out_intr_mask_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info outbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound,
-					  &outbound);
-	if (ret < 0)
-		return ret;
-
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound, &outbound);
 	return sprintf(buf, "%d\n", outbound.current_interrupt_mask);
 }
 static DEVICE_ATTR_RO(out_intr_mask);
@@ -276,15 +268,10 @@ static ssize_t out_read_index_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info outbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound,
-					  &outbound);
-	if (ret < 0)
-		return ret;
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound, &outbound);
 	return sprintf(buf, "%d\n", outbound.current_read_index);
 }
 static DEVICE_ATTR_RO(out_read_index);
@@ -295,15 +282,10 @@ static ssize_t out_write_index_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info outbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound,
-					  &outbound);
-	if (ret < 0)
-		return ret;
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound, &outbound);
 	return sprintf(buf, "%d\n", outbound.current_write_index);
 }
 static DEVICE_ATTR_RO(out_write_index);
@@ -314,15 +296,10 @@ static ssize_t out_read_bytes_avail_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info outbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound,
-					  &outbound);
-	if (ret < 0)
-		return ret;
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound, &outbound);
 	return sprintf(buf, "%d\n", outbound.bytes_avail_toread);
 }
 static DEVICE_ATTR_RO(out_read_bytes_avail);
@@ -333,15 +310,10 @@ static ssize_t out_write_bytes_avail_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info outbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound,
-					  &outbound);
-	if (ret < 0)
-		return ret;
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->outbound, &outbound);
 	return sprintf(buf, "%d\n", outbound.bytes_avail_towrite);
 }
 static DEVICE_ATTR_RO(out_write_bytes_avail);
@@ -351,15 +323,10 @@ static ssize_t in_intr_mask_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info inbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
-	if (ret < 0)
-		return ret;
-
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
 	return sprintf(buf, "%d\n", inbound.current_interrupt_mask);
 }
 static DEVICE_ATTR_RO(in_intr_mask);
@@ -369,15 +336,10 @@ static ssize_t in_read_index_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info inbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
-	if (ret < 0)
-		return ret;
-
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
 	return sprintf(buf, "%d\n", inbound.current_read_index);
 }
 static DEVICE_ATTR_RO(in_read_index);
@@ -387,15 +349,10 @@ static ssize_t in_write_index_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info inbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
-	if (ret < 0)
-		return ret;
-
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
 	return sprintf(buf, "%d\n", inbound.current_write_index);
 }
 static DEVICE_ATTR_RO(in_write_index);
@@ -406,15 +363,10 @@ static ssize_t in_read_bytes_avail_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info inbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
-	if (ret < 0)
-		return ret;
-
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
 	return sprintf(buf, "%d\n", inbound.bytes_avail_toread);
 }
 static DEVICE_ATTR_RO(in_read_bytes_avail);
@@ -425,15 +377,10 @@ static ssize_t in_write_bytes_avail_show(struct device *dev,
 {
 	struct hv_device *hv_dev = device_to_hv_device(dev);
 	struct hv_ring_buffer_debug_info inbound;
-	int ret;
 
 	if (!hv_dev->channel)
 		return -ENODEV;
-
-	ret = hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
-	if (ret < 0)
-		return ret;
-
+	hv_ringbuffer_get_debuginfo(&hv_dev->channel->inbound, &inbound);
 	return sprintf(buf, "%d\n", inbound.bytes_avail_towrite);
 }
 static DEVICE_ATTR_RO(in_write_bytes_avail);
@@ -724,39 +671,6 @@ static void vmbus_isr(void)
 		tasklet_schedule(&msg_dpc);
 }
 
-#ifdef CONFIG_HOTPLUG_CPU
-static int hyperv_cpu_disable(void)
-{
-	return -ENOSYS;
-}
-
-static void hv_cpu_hotplug_quirk(bool vmbus_loaded)
-{
-	static void *previous_cpu_disable;
-
-	/*
-	 * Offlining a CPU when running on newer hypervisors (WS2012R2, Win8,
-	 * ...) is not supported at this moment as channel interrupts are
-	 * distributed across all of them.
-	 */
-
-	if ((vmbus_proto_version == VERSION_WS2008) ||
-	    (vmbus_proto_version == VERSION_WIN7))
-		return;
-
-	if (vmbus_loaded) {
-		previous_cpu_disable = smp_ops.cpu_disable;
-		smp_ops.cpu_disable = hyperv_cpu_disable;
-		pr_notice("CPU offlining is not supported by hypervisor\n");
-	} else if (previous_cpu_disable)
-		smp_ops.cpu_disable = previous_cpu_disable;
-}
-#else
-static void hv_cpu_hotplug_quirk(bool vmbus_loaded)
-{
-}
-#endif
-
 /*
  * vmbus_bus_init -Main vmbus driver initialization routine.
  *
@@ -797,7 +711,6 @@ static int vmbus_bus_init(int irq)
 	if (ret)
 		goto err_alloc;
 
-	hv_cpu_hotplug_quirk(true);
 	vmbus_request_offers();
 
 	return 0;
@@ -847,8 +760,6 @@ int __vmbus_driver_register(struct hv_driver *hv_driver, struct module *owner, c
 EXPORT_SYMBOL_GPL(__vmbus_driver_register);
 
 /**
-
-	add_interrupt_randomness(HYPERVISOR_CALLBACK_VECTOR, 0);
  * vmbus_driver_unregister() - Unregister a vmbus's driver
  * @drv: Pointer to driver structure you want to un-register
  *
@@ -1053,7 +964,6 @@ static void __exit vmbus_exit(void)
 	bus_unregister(&hv_bus);
 	hv_cleanup();
 	acpi_bus_unregister_driver(&vmbus_acpi_driver);
-	hv_cpu_hotplug_quirk(false);
 }
 
 

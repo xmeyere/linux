@@ -112,6 +112,7 @@ static int pSeries_reconfig_remove_node(struct device_node *np)
 
 	of_detach_node(np);
 	of_node_put(parent);
+	of_node_put(np); /* Must decrement the refcount */
 	return 0;
 }
 
@@ -445,13 +446,10 @@ static int proc_ppc64_create_ofdt(void)
 {
 	struct proc_dir_entry *ent;
 
-	if (!machine_is(pseries))
-		return 0;
-
 	ent = proc_create("powerpc/ofdt", S_IWUSR, NULL, &ofdt_fops);
 	if (ent)
 		proc_set_size(ent, 0);
 
 	return 0;
 }
-__initcall(proc_ppc64_create_ofdt);
+machine_device_initcall(pseries, proc_ppc64_create_ofdt);

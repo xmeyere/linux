@@ -18,7 +18,6 @@
 #include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/spmi.h>
-#include <linux/module.h>
 #include <linux/pm_runtime.h>
 
 #include <dt-bindings/spmi/spmi.h>
@@ -354,23 +353,11 @@ static int spmi_drv_remove(struct device *dev)
 	return 0;
 }
 
-static int spmi_drv_uevent(struct device *dev, struct kobj_uevent_env *env)
-{
-	int ret;
-
-	ret = of_device_uevent_modalias(dev, env);
-	if (ret != -ENODEV)
-		return ret;
-
-	return 0;
-}
-
 static struct bus_type spmi_bus_type = {
 	.name		= "spmi",
 	.match		= spmi_device_match,
 	.probe		= spmi_drv_probe,
 	.remove		= spmi_drv_remove,
-	.uevent		= spmi_drv_uevent,
 };
 
 /**

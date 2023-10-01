@@ -61,30 +61,6 @@ unsigned long thread_saved_pc(struct task_struct *tsk)
 	return sf->gprs[8];
 }
 
-void arch_cpu_idle(void)
-{
-	local_mcck_disable();
-	if (test_cpu_flag(CIF_MCCK_PENDING)) {
-		local_mcck_enable();
-		local_irq_enable();
-		return;
-	}
-	/* Halt the cpu and keep track of cpu time accounting. */
-	vtime_stop_cpu();
-	local_irq_enable();
-}
-
-void arch_cpu_idle_exit(void)
-{
-	if (test_cpu_flag(CIF_MCCK_PENDING))
-		s390_handle_mcck();
-}
-
-void arch_cpu_idle_dead(void)
-{
-	cpu_die();
-}
-
 extern void __kprobes kernel_thread_starter(void);
 
 /*
@@ -123,7 +99,6 @@ int copy_thread(unsigned long clone_flags, unsigned long new_stackp,
 	memset(&p->thread.per_user, 0, sizeof(p->thread.per_user));
 	memset(&p->thread.per_event, 0, sizeof(p->thread.per_event));
 	clear_tsk_thread_flag(p, TIF_SINGLE_STEP);
-	p->thread.per_flags = 0;
 	/* Initialize per thread user and system timer values */
 	ti = task_thread_info(p);
 	ti->user_timer = 0;
@@ -196,7 +171,7 @@ asmlinkage void execve_tail(void)
 {
 	current->thread.fp_regs.fpc = 0;
 	if (MACHINE_HAS_IEEE)
-		asm volatile("sfpc %0" : : "d" (0));
+		asm volatile("sfpc %0,%0" : : "d" (0));
 }
 
 /*

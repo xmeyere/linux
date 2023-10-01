@@ -222,16 +222,6 @@ static inline void usb_ep_set_maxpacket_limit(struct usb_ep *ep,
  */
 static inline int usb_ep_enable(struct usb_ep *ep)
 {
-	/* UDC drivers can't handle endpoints with maxpacket size 0 */
-	if (usb_endpoint_maxp(ep->desc) == 0) {
-		/*
-		 * We should log an error message here, but we can't call
-		 * dev_err() because there's no way to find the gadget
-		 * given only ep.
-		 */
-		return -EINVAL;
-	}
-
 	return ep->ops->enable(ep, ep->desc);
 }
 
@@ -355,12 +345,13 @@ static inline int usb_ep_queue(struct usb_ep *ep,
  * @ep:the endpoint associated with the request
  * @req:the request being canceled
  *
- * if the request is still active on the endpoint, it is dequeued and its
+ * If the request is still active on the endpoint, it is dequeued and its
  * completion routine is called (with status -ECONNRESET); else a negative
- * error code is returned.
+ * error code is returned. This is guaranteed to happen before the call to
+ * usb_ep_dequeue() returns.
  *
- * note that some hardware can't clear out write fifos (to unlink the request
- * at the head of the queue) except as part of disconnecting from usb.  such
+ * Note that some hardware can't clear out write fifos (to unlink the request
+ * at the head of the queue) except as part of disconnecting from usb. Such
  * restrictions prevent drivers from supporting configuration changes,
  * even to configuration zero (a "chapter 9" requirement).
  */
@@ -826,6 +817,8 @@ static inline int usb_gadget_disconnect(struct usb_gadget *gadget)
  *	Called in a context that permits sleeping.
  * @suspend: Invoked on USB suspend.  May be called in_interrupt.
  * @resume: Invoked on USB resume.  May be called in_interrupt.
+ * @reset: Invoked on USB bus reset. It is mandatory for all gadget drivers
+ *	and should be called in_interrupt.
  * @driver: Driver model state for this driver.
  *
  * Devices are disabled till a gadget driver successfully bind()s, which
@@ -883,6 +876,7 @@ struct usb_gadget_driver {
 	void			(*disconnect)(struct usb_gadget *);
 	void			(*suspend)(struct usb_gadget *);
 	void			(*resume)(struct usb_gadget *);
+	void			(*reset)(struct usb_gadget *);
 
 	/* FIXME support safe rmmod */
 	struct device_driver	driver;
@@ -1020,6 +1014,20 @@ extern void usb_gadget_unmap_request(struct usb_gadget *gadget,
 
 extern void usb_gadget_set_state(struct usb_gadget *gadget,
 		enum usb_device_state state);
+
+/*-------------------------------------------------------------------------*/
+
+/* utility to tell udc core that the bus reset occurs */
+extern void usb_gadget_udc_reset(struct usb_gadget *gadget,
+		struct usb_gadget_driver *driver);
+
+/*-------------------------------------------------------------------------*/
+
+/* utility to give requests back to the gadget layer */
+
+extern void usb_gadget_giveback_request(struct usb_ep *ep,
+		struct usb_request *req);
+
 
 /*-------------------------------------------------------------------------*/
 

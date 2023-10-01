@@ -498,7 +498,6 @@ void invert_screen(struct vc_data *vc, int offset, int count, int viewed)
 #endif
 	if (DO_UPDATE(vc))
 		do_update_region(vc, (unsigned long) p, count);
-	notify_update(vc);
 }
 
 /* used by selection: complement pointer position */
@@ -515,7 +514,6 @@ void complement_pos(struct vc_data *vc, int offset)
 		scr_writew(old, screenpos(vc, old_offset, 1));
 		if (DO_UPDATE(vc))
 			vc->vc_sw->con_putc(vc, old, oldy, oldx);
-		notify_update(vc);
 	}
 
 	old_offset = offset;
@@ -533,8 +531,8 @@ void complement_pos(struct vc_data *vc, int offset)
 			oldy = (offset >> 1) / vc->vc_cols;
 			vc->vc_sw->con_putc(vc, new, oldy, oldx);
 		}
-		notify_update(vc);
 	}
+
 }
 
 static void insert_char(struct vc_data *vc, unsigned int nr)
@@ -752,54 +750,50 @@ static void visual_init(struct vc_data *vc, int num, int init)
 
 int vc_allocate(unsigned int currcons)	/* return 0 on success */
 {
-	struct vt_notifier_param param;
-	struct vc_data *vc;
-
 	WARN_CONSOLE_UNLOCKED();
 
 	if (currcons >= MAX_NR_CONSOLES)
 		return -ENXIO;
+	if (!vc_cons[currcons].d) {
+	    struct vc_data *vc;
+	    struct vt_notifier_param param;
 
-	if (vc_cons[currcons].d)
-		return 0;
+	    /* prevent users from taking too much memory */
+	    if (currcons >= MAX_NR_USER_CONSOLES && !capable(CAP_SYS_RESOURCE))
+	      return -EPERM;
 
-	/* due to the granularity of kmalloc, we waste some memory here */
-	/* the alloc is done in two steps, to optimize the common situation
-	   of a 25x80 console (structsize=216, screenbuf_size=4000) */
-	/* although the numbers above are not valid since long ago, the
-	   point is still up-to-date and the comment still has its value
-	   even if only as a historical artifact.  --mj, July 1998 */
-	param.vc = vc = kzalloc(sizeof(struct vc_data), GFP_KERNEL);
-	if (!vc)
+	    /* due to the granularity of kmalloc, we waste some memory here */
+	    /* the alloc is done in two steps, to optimize the common situation
+	       of a 25x80 console (structsize=216, screenbuf_size=4000) */
+	    /* although the numbers above are not valid since long ago, the
+	       point is still up-to-date and the comment still has its value
+	       even if only as a historical artifact.  --mj, July 1998 */
+	    param.vc = vc = kzalloc(sizeof(struct vc_data), GFP_KERNEL);
+	    if (!vc)
 		return -ENOMEM;
-
-	vc_cons[currcons].d = vc;
-	tty_port_init(&vc->port);
-	INIT_WORK(&vc_cons[currcons].SAK_work, vc_SAK);
-
-	visual_init(vc, currcons, 1);
-
-	if (!*vc->vc_uni_pagedir_loc)
+	    vc_cons[currcons].d = vc;
+	    tty_port_init(&vc->port);
+	    INIT_WORK(&vc_cons[currcons].SAK_work, vc_SAK);
+	    visual_init(vc, currcons, 1);
+	    if (!*vc->vc_uni_pagedir_loc)
 		con_set_default_unimap(vc);
+	    vc->vc_screenbuf = kmalloc(vc->vc_screenbuf_size, GFP_KERNEL);
+	    if (!vc->vc_screenbuf) {
+		kfree(vc);
+		vc_cons[currcons].d = NULL;
+		return -ENOMEM;
+	    }
 
-	vc->vc_screenbuf = kzalloc(vc->vc_screenbuf_size, GFP_KERNEL);
-	if (!vc->vc_screenbuf)
-		goto err_free;
+	    /* If no drivers have overridden us and the user didn't pass a
+	       boot option, default to displaying the cursor */
+	    if (global_cursor_default == -1)
+		    global_cursor_default = 1;
 
-	/* If no drivers have overridden us and the user didn't pass a
-	   boot option, default to displaying the cursor */
-	if (global_cursor_default == -1)
-		global_cursor_default = 1;
-
-	vc_init(vc, vc->vc_rows, vc->vc_cols, 1);
-	vcs_make_sysfs(currcons);
-	atomic_notifier_call_chain(&vt_notifier_list, VT_ALLOCATE, &param);
-
+	    vc_init(vc, vc->vc_rows, vc->vc_cols, 1);
+	    vcs_make_sysfs(currcons);
+	    atomic_notifier_call_chain(&vt_notifier_list, VT_ALLOCATE, &param);
+	}
 	return 0;
-err_free:
-	kfree(vc);
-	vc_cons[currcons].d = NULL;
-	return -ENOMEM;
 }
 
 static inline int resize_screen(struct vc_data *vc, int width, int height,
@@ -867,14 +861,9 @@ static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
 	if (new_cols == vc->vc_cols && new_rows == vc->vc_rows)
 		return 0;
 
-	if (new_screen_size > (4 << 20))
-		return -EINVAL;
-	newscreen = kzalloc(new_screen_size, GFP_USER);
+	newscreen = kmalloc(new_screen_size, GFP_USER);
 	if (!newscreen)
 		return -ENOMEM;
-
-	if (vc == sel_cons)
-		clear_selection();
 
 	old_rows = vc->vc_rows;
 	old_row_size = vc->vc_size_row;
@@ -953,7 +942,6 @@ static int vc_do_resize(struct tty_struct *tty, struct vc_data *vc,
 	if (CON_IS_VISIBLE(vc))
 		update_screen(vc);
 	vt_event_post(VT_EVENT_RESIZE, vc->vc_num, vc->vc_num);
-	notify_update(vc);
 	return err;
 }
 
@@ -1174,7 +1162,7 @@ static void csi_J(struct vc_data *vc, int vpar)
 			break;
 		case 3: /* erase scroll-back buffer (and whole display) */
 			scr_memsetw(vc->vc_screenbuf, vc->vc_video_erase_char,
-				    vc->vc_screenbuf_size);
+				    vc->vc_screenbuf_size >> 1);
 			set_origin(vc);
 			if (CON_IS_VISIBLE(vc))
 				update_screen(vc);
@@ -1308,11 +1296,6 @@ static void csi_m(struct vc_data *vc)
 			case 3:
 				vc->vc_italic = 1;
 				break;
-			case 21:
-				/*
-				 * No console drivers support double underline, so
-				 * convert it to a single underline.
-				 */
 			case 4:
 				vc->vc_underline = 1;
 				break;
@@ -1349,6 +1332,7 @@ static void csi_m(struct vc_data *vc)
 				vc->vc_disp_ctrl = 1;
 				vc->vc_toggle_meta = 1;
 				break;
+			case 21:
 			case 22:
 				vc->vc_intensity = 1;
 				break;
@@ -1714,7 +1698,7 @@ static void reset_terminal(struct vc_data *vc, int do_clear)
 	default_attr(vc);
 	update_attr(vc);
 
-	vc->vc_tab_stop[0]	=
+	vc->vc_tab_stop[0]	= 0x01010100;
 	vc->vc_tab_stop[1]	=
 	vc->vc_tab_stop[2]	=
 	vc->vc_tab_stop[3]	=
@@ -1757,7 +1741,7 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, int c)
 		vc->vc_pos -= (vc->vc_x << 1);
 		while (vc->vc_x < vc->vc_cols - 1) {
 			vc->vc_x++;
-			if (vc->vc_tab_stop[7 & (vc->vc_x >> 5)] & (1 << (vc->vc_x & 31)))
+			if (vc->vc_tab_stop[vc->vc_x >> 5] & (1 << (vc->vc_x & 31)))
 				break;
 		}
 		vc->vc_pos += (vc->vc_x << 1);
@@ -1817,7 +1801,7 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, int c)
 			lf(vc);
 			return;
 		case 'H':
-			vc->vc_tab_stop[7 & (vc->vc_x >> 5)] |= (1 << (vc->vc_x & 31));
+			vc->vc_tab_stop[vc->vc_x >> 5] |= (1 << (vc->vc_x & 31));
 			return;
 		case 'Z':
 			respond_ID(tty);
@@ -2010,7 +1994,7 @@ static void do_con_trol(struct tty_struct *tty, struct vc_data *vc, int c)
 			return;
 		case 'g':
 			if (!vc->vc_par[0])
-				vc->vc_tab_stop[7 & (vc->vc_x >> 5)] &= ~(1 << (vc->vc_x & 31));
+				vc->vc_tab_stop[vc->vc_x >> 5] &= ~(1 << (vc->vc_x & 31));
 			else if (vc->vc_par[0] == 3) {
 				vc->vc_tab_stop[0] =
 					vc->vc_tab_stop[1] =
@@ -2416,8 +2400,8 @@ rescan_last_byte:
 	}
 	FLUSH
 	console_conditional_schedule();
-	notify_update(vc);
 	console_unlock();
+	notify_update(vc);
 	return n;
 #undef FLUSH
 }
@@ -2670,7 +2654,9 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
 	switch (type)
 	{
 		case TIOCL_SETSEL:
+			console_lock();
 			ret = set_selection((struct tiocl_selection __user *)(p+1), tty);
+			console_unlock();
 			break;
 		case TIOCL_PASTESEL:
 			ret = paste_selection(tty);
@@ -2694,13 +2680,13 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
 	 * related to the kernel should not use this.
 	 */
 			data = vt_get_shift_state();
-			ret = put_user(data, p);
+			ret = __put_user(data, p);
 			break;
 		case TIOCL_GETMOUSEREPORTING:
 			console_lock();	/* May be overkill */
 			data = mouse_reporting();
 			console_unlock();
-			ret = put_user(data, p);
+			ret = __put_user(data, p);
 			break;
 		case TIOCL_SETVESABLANK:
 			console_lock();
@@ -2709,7 +2695,7 @@ int tioclinux(struct tty_struct *tty, unsigned long arg)
 			break;
 		case TIOCL_GETKMSGREDIRECT:
 			data = vt_get_kmsg_redirect();
-			ret = put_user(data, p);
+			ret = __put_user(data, p);
 			break;
 		case TIOCL_SETKMSGREDIRECT:
 			if (!capable(CAP_SYS_ADMIN)) {
@@ -3603,10 +3589,9 @@ static int do_register_con_driver(const struct consw *csw, int first, int last)
 		goto err;
 
 	desc = csw->con_startup();
-	if (!desc) {
-		retval = -ENODEV;
+
+	if (!desc)
 		goto err;
-	}
 
 	retval = -EINVAL;
 

@@ -258,7 +258,6 @@ static void release_ir_rx(struct kref *ref)
 	/* Don't put_ir_device(rx->ir) here; lock can't be freed yet */
 	ir->rx = NULL;
 	/* Don't do the kfree(rx) here; we still need to kill the poll thread */
-	return;
 }
 
 static int put_ir_rx(struct IR_rx *rx, bool ir_devices_lock_held)
@@ -300,7 +299,7 @@ static void release_ir_tx(struct kref *ref)
 	struct IR_tx *tx = container_of(ref, struct IR_tx, ref);
 	struct IR *ir = tx->ir;
 
-	ir->l.features &= ~LIRC_CAN_SEND_LIRCCODE;
+	ir->l.features &= ~LIRC_CAN_SEND_PULSE;
 	/* Don't put_ir_device(tx->ir) here, so our lock doesn't get freed */
 	ir->tx = NULL;
 	kfree(tx);
@@ -512,7 +511,6 @@ static int set_use_inc(void *data)
 
 static void set_use_dec(void *data)
 {
-	return;
 }
 
 /* safe read of a uint32 (always network byte order) */
@@ -618,6 +616,7 @@ static int get_key_data(unsigned char *buf,
 	for (base = 0, lim = keys - 1; lim; lim >>= 1) {
 		/* Seek to block */
 		unsigned char *key_data;
+
 		pos = base + (lim >> 1);
 		key_data = key_block + (ndiffs + 1) * pos;
 
@@ -628,6 +627,7 @@ static int get_key_data(unsigned char *buf,
 			/* found, so unpack the diffs */
 			for (i = 0; i < ndiffs; ++i) {
 				unsigned char val;
+
 				if (!read_uint8(&key_data, endp, &val) ||
 				    diffs[i] >= TX_BLOCK_SIZE)
 					goto corrupt;
@@ -656,6 +656,7 @@ static int send_data_block(struct IR_tx *tx, unsigned char *data_block)
 
 	for (i = 0; i < TX_BLOCK_SIZE;) {
 		int tosend = TX_BLOCK_SIZE - i;
+
 		if (tosend > 4)
 			tosend = 4;
 		buf[0] = (unsigned char)(i + 1);
@@ -838,6 +839,7 @@ static int fw_load(struct IR_tx *tx)
 		goto corrupt;
 	for (i = 0; i < num_global_fixed; ++i) {
 		unsigned char pos, val;
+
 		if (!read_uint8(&data, tx_data->endp, &pos) ||
 		    !read_uint8(&data, tx_data->endp, &val) ||
 		    pos >= TX_BLOCK_SIZE)
@@ -1271,14 +1273,14 @@ static long ioctl(struct file *filep, unsigned int cmd, unsigned long arg)
 		if (!(features&LIRC_CAN_SEND_MASK))
 			return -ENOSYS;
 
-		result = put_user(LIRC_MODE_LIRCCODE, uptr);
+		result = put_user(LIRC_MODE_PULSE, uptr);
 		break;
 	case LIRC_SET_SEND_MODE:
 		if (!(features&LIRC_CAN_SEND_MASK))
 			return -ENOSYS;
 
 		result = get_user(mode, uptr);
-		if (!result && mode != LIRC_MODE_LIRCCODE)
+		if (!result && mode != LIRC_MODE_PULSE)
 			return -EINVAL;
 		break;
 	default:
@@ -1336,6 +1338,7 @@ static int close(struct inode *node, struct file *filep)
 {
 	/* find our IR struct */
 	struct IR *ir = filep->private_data;
+
 	if (ir == NULL) {
 		zilog_error("close: no private_data attached to the file!\n");
 		return -ENODEV;
@@ -1402,6 +1405,7 @@ static int ir_remove(struct i2c_client *client)
 {
 	if (strncmp("ir_tx_z8", client->name, 8) == 0) {
 		struct IR_tx *tx = i2c_get_clientdata(client);
+
 		if (tx != NULL) {
 			mutex_lock(&tx->client_lock);
 			tx->c = NULL;
@@ -1410,6 +1414,7 @@ static int ir_remove(struct i2c_client *client)
 		}
 	} else if (strncmp("ir_rx_z8", client->name, 8) == 0) {
 		struct IR_rx *rx = i2c_get_clientdata(client);
+
 		if (rx != NULL) {
 			mutex_lock(&rx->client_lock);
 			rx->c = NULL;
@@ -1516,7 +1521,7 @@ static int ir_probe(struct i2c_client *client, const struct i2c_device_id *id)
 		kref_init(&tx->ref);
 		ir->tx = tx;
 
-		ir->l.features |= LIRC_CAN_SEND_LIRCCODE;
+		ir->l.features |= LIRC_CAN_SEND_PULSE;
 		mutex_init(&tx->client_lock);
 		tx->c = client;
 		tx->need_boot = 1;

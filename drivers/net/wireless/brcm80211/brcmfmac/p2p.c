@@ -440,8 +440,11 @@ static int brcmf_p2p_set_firmware(struct brcmf_if *ifp, u8 *p2p_mac)
 
 	/* In case of COB type, firmware has default mac address
 	 * After Initializing firmware, we have to set current mac address to
-	 * firmware for P2P device address
+	 * firmware for P2P device address. This must be done with discovery
+	 * disabled.
 	 */
+	brcmf_fil_iovar_int_set(ifp, "p2p_disc", 0);
+
 	ret = brcmf_fil_iovar_data_set(ifp, "p2p_da_override", p2p_mac,
 				       ETH_ALEN);
 	if (ret)
@@ -457,23 +460,25 @@ static int brcmf_p2p_set_firmware(struct brcmf_if *ifp, u8 *p2p_mac)
  * @dev_addr: optional device address.
  *
  * P2P needs mac addresses for P2P device and interface. If no device
- * address it specified, these are derived from a random ethernet
- * address.
+ * address it specified, these are derived from the primary net device, ie.
+ * the permanent ethernet address of the device.
  */
 static void brcmf_p2p_generate_bss_mac(struct brcmf_p2p_info *p2p, u8 *dev_addr)
 {
-	bool random_addr = false;
+	struct brcmf_if *pri_ifp = p2p->bss_idx[P2PAPI_BSSCFG_PRIMARY].vif->ifp;
+	bool local_admin = false;
 
-	if (!dev_addr || is_zero_ether_addr(dev_addr))
-		random_addr = true;
+	if (!dev_addr || is_zero_ether_addr(dev_addr)) {
+		dev_addr = pri_ifp->mac_addr;
+		local_admin = true;
+	}
 
-	/* Generate the P2P Device Address obtaining a random ethernet
-	 * address with the locally administered bit set.
+	/* Generate the P2P Device Address.  This consists of the device's
+	 * primary MAC address with the locally administered bit set.
 	 */
-	if (random_addr)
-		eth_random_addr(p2p->dev_addr);
-	else
-		memcpy(p2p->dev_addr, dev_addr, ETH_ALEN);
+	memcpy(p2p->dev_addr, dev_addr, ETH_ALEN);
+	if (local_admin)
+		p2p->dev_addr[0] |= 0x02;
 
 	/* Generate the P2P Interface Address.  If the discovery and connection
 	 * BSSCFGs need to simultaneously co-exist, then this address must be
@@ -1361,11 +1366,6 @@ int brcmf_p2p_notify_action_frame_rx(struct brcmf_if *ifp,
 	u16 mgmt_type;
 	u8 action;
 
-	if (e->datalen < sizeof(*rxframe)) {
-		brcmf_dbg(SCAN, "Event data to small. Ignore\n");
-		return 0;
-	}
-
 	ch.chspec = be16_to_cpu(rxframe->chanspec);
 	cfg->d11inf.decchspec(&ch);
 	/* Check if wpa_supplicant has registered for this frame */
@@ -1434,8 +1434,7 @@ int brcmf_p2p_notify_action_frame_rx(struct brcmf_if *ifp,
 					      IEEE80211_BAND_5GHZ);
 
 	wdev = &ifp->vif->wdev;
-	cfg80211_rx_mgmt(wdev, freq, 0, (u8 *)mgmt_frame, mgmt_frame_len, 0,
-			 GFP_ATOMIC);
+	cfg80211_rx_mgmt(wdev, freq, 0, (u8 *)mgmt_frame, mgmt_frame_len, 0);
 
 	kfree(mgmt_frame);
 	return 0;
@@ -1864,11 +1863,6 @@ s32 brcmf_p2p_notify_rx_mgmt_p2p_probereq(struct brcmf_if *ifp,
 	brcmf_dbg(INFO, "Enter: event %d reason %d\n", e->event_code,
 		  e->reason);
 
-	if (e->datalen < sizeof(*rxframe)) {
-		brcmf_dbg(SCAN, "Event data to small. Ignore\n");
-		return 0;
-	}
-
 	ch.chspec = be16_to_cpu(rxframe->chanspec);
 	cfg->d11inf.decchspec(&ch);
 
@@ -1904,8 +1898,7 @@ s32 brcmf_p2p_notify_rx_mgmt_p2p_probereq(struct brcmf_if *ifp,
 					      IEEE80211_BAND_2GHZ :
 					      IEEE80211_BAND_5GHZ);
 
-	cfg80211_rx_mgmt(&vif->wdev, freq, 0, mgmt_frame, mgmt_frame_len, 0,
-			 GFP_ATOMIC);
+	cfg80211_rx_mgmt(&vif->wdev, freq, 0, mgmt_frame, mgmt_frame_len, 0);
 
 	brcmf_dbg(INFO, "mgmt_frame_len (%d) , e->datalen (%d), chanspec (%04x), freq (%d)\n",
 		  mgmt_frame_len, e->datalen, chanspec, freq);
@@ -2372,7 +2365,6 @@ int brcmf_p2p_del_vif(struct wiphy *wiphy, struct wireless_dev *wdev)
 		return 0;
 	default:
 		return -ENOTSUPP;
-		break;
 	}
 
 	clear_bit(BRCMF_P2P_STATUS_GO_NEG_PHASE, &p2p->status);

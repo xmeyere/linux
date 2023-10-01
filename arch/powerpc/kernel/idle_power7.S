@@ -28,7 +28,7 @@
 	std	r0,0(r1);					\
 	ptesync;						\
 	ld	r0,0(r1);					\
-1:	cmpd	cr0,r0,r0;					\
+1:	cmp	cr0,r0,r0;					\
 	bne	1b;						\
 	IDLE_INST;						\
 	b	.
@@ -73,7 +73,7 @@ _GLOBAL(power7_powersave_common)
 
 	/* Check if something happened while soft-disabled */
 	lbz	r0,PACAIRQHAPPENED(r13)
-	cmpwi	cr0,r0,0
+	andi.	r0,r0,~PACA_IRQ_HARD_DIS@l
 	beq	1f
 	cmpwi	cr0,r4,0
 	beq	1f
@@ -101,23 +101,7 @@ _GLOBAL(power7_powersave_common)
 	std	r9,_MSR(r1)
 	std	r1,PACAR1(r13)
 
-	/*
-	 * Go to real mode to do the nap, as required by the architecture.
-	 * Also, we need to be in real mode before setting hwthread_state,
-	 * because as soon as we do that, another thread can switch
-	 * the MMU context to the guest.
-	 */
-	LOAD_REG_IMMEDIATE(r5, MSR_IDLE)
-	li	r6, MSR_RI
-	andc	r6, r9, r6
-	LOAD_REG_ADDR(r7, power7_enter_nap_mode)
-	mtmsrd	r6, 1		/* clear RI before setting SRR0/1 */
-	mtspr	SPRN_SRR0, r7
-	mtspr	SPRN_SRR1, r5
-	rfid
-
-	.globl	power7_enter_nap_mode
-power7_enter_nap_mode:
+_GLOBAL(power7_enter_nap_mode)
 #ifdef CONFIG_KVM_BOOK3S_HV_POSSIBLE
 	/* Tell KVM we're napping */
 	li	r4,KVM_HWTHREAD_IN_NAP
@@ -151,17 +135,68 @@ _GLOBAL(power7_sleep)
 	b	power7_powersave_common
 	/* No return */
 
+/*
+ * Make opal call in realmode. This is a generic function to be called
+ * from realmode from reset vector. It handles endianess.
+ *
+ * r13 - paca pointer
+ * r1  - stack pointer
+ * r3  - opal token
+ */
+opal_call_realmode:
+	mflr	r12
+	std	r12,_LINK(r1)
+	ld	r2,PACATOC(r13)
+	/* Set opal return address */
+	LOAD_REG_ADDR(r0,return_from_opal_call)
+	mtlr	r0
+	/* Handle endian-ness */
+	li	r0,MSR_LE
+	mfmsr	r12
+	andc	r12,r12,r0
+	mtspr	SPRN_HSRR1,r12
+	mr	r0,r3			/* Move opal token to r0 */
+	LOAD_REG_ADDR(r11,opal)
+	ld	r12,8(r11)
+	ld	r2,0(r11)
+	mtspr	SPRN_HSRR0,r12
+	hrfid
+
+return_from_opal_call:
+	FIXUP_ENDIAN
+	ld	r0,_LINK(r1)
+	mtlr	r0
+	blr
+
+#define CHECK_HMI_INTERRUPT						\
+	mfspr	r0,SPRN_SRR1;						\
+BEGIN_FTR_SECTION_NESTED(66);						\
+	rlwinm	r0,r0,45-31,0xf;  /* extract wake reason field (P8) */	\
+FTR_SECTION_ELSE_NESTED(66);						\
+	rlwinm	r0,r0,45-31,0xe;  /* P7 wake reason field is 3 bits */	\
+ALT_FTR_SECTION_END_NESTED_IFSET(CPU_FTR_ARCH_207S, 66);		\
+	cmpwi	r0,0xa;			/* Hypervisor maintenance ? */	\
+	bne	20f;							\
+	/* Invoke opal call to handle hmi */				\
+	ld	r2,PACATOC(r13);					\
+	ld	r1,PACAR1(r13);						\
+	std	r3,ORIG_GPR3(r1);	/* Save original r3 */		\
+	li	r3,OPAL_HANDLE_HMI;	/* Pass opal token argument*/	\
+	bl	opal_call_realmode;					\
+	ld	r3,ORIG_GPR3(r1);	/* Restore original r3 */	\
+20:	nop;
+
+
 _GLOBAL(power7_wakeup_tb_loss)
 	ld	r2,PACATOC(r13);
 	ld	r1,PACAR1(r13)
 
+BEGIN_FTR_SECTION
+	CHECK_HMI_INTERRUPT
+END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	/* Time base re-sync */
-	li	r0,OPAL_RESYNC_TIMEBASE
-	LOAD_REG_ADDR(r11,opal);
-	ld	r12,8(r11);
-	ld	r2,0(r11);
-	mtctr	r12
-	bctrl
+	li	r3,OPAL_RESYNC_TIMEBASE
+	bl	opal_call_realmode;
 
 	/* TODO: Check r3 for failure */
 
@@ -179,6 +214,9 @@ _GLOBAL(power7_wakeup_tb_loss)
 
 _GLOBAL(power7_wakeup_loss)
 	ld	r1,PACAR1(r13)
+BEGIN_FTR_SECTION
+	CHECK_HMI_INTERRUPT
+END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	REST_NVGPRS(r1)
 	REST_GPR(2, r1)
 	ld	r3,_CCR(r1)
@@ -194,6 +232,9 @@ _GLOBAL(power7_wakeup_noloss)
 	lbz	r0,PACA_NAPSTATELOST(r13)
 	cmpwi	r0,0
 	bne	power7_wakeup_loss
+BEGIN_FTR_SECTION
+	CHECK_HMI_INTERRUPT
+END_FTR_SECTION_IFSET(CPU_FTR_HVMODE)
 	ld	r1,PACAR1(r13)
 	ld	r4,_MSR(r1)
 	ld	r5,_NIP(r1)

@@ -132,10 +132,6 @@ ath6kl_usb_alloc_urb_from_pipe(struct ath6kl_usb_pipe *pipe)
 	struct ath6kl_urb_context *urb_context = NULL;
 	unsigned long flags;
 
-	/* bail if this pipe is not initialized */
-	if (!pipe->ar_usb)
-		return NULL;
-
 	spin_lock_irqsave(&pipe->ar_usb->cs_lock, flags);
 	if (!list_empty(&pipe->urb_list_head)) {
 		urb_context =
@@ -153,10 +149,6 @@ static void ath6kl_usb_free_urb_to_pipe(struct ath6kl_usb_pipe *pipe,
 					struct ath6kl_urb_context *urb_context)
 {
 	unsigned long flags;
-
-	/* bail if this pipe is not initialized */
-	if (!pipe->ar_usb)
-		return;
 
 	spin_lock_irqsave(&pipe->ar_usb->cs_lock, flags);
 	pipe->urb_cnt++;
@@ -810,7 +802,8 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
 		break;
 	case WMI_DATA_VI_SVC:
 
-		if (ar->hw.flags & ATH6KL_HW_MAP_LP_ENDPOINT)
+		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
+			     ar->fw_capabilities))
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
 		else
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_MP;
@@ -822,7 +815,8 @@ static int ath6kl_usb_map_service_pipe(struct ath6kl *ar, u16 svc_id,
 		break;
 	case WMI_DATA_VO_SVC:
 
-		if (ar->hw.flags & ATH6KL_HW_MAP_LP_ENDPOINT)
+		if (test_bit(ATH6KL_FW_CAPABILITY_MAP_LP_ENDPOINT,
+			     ar->fw_capabilities))
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_LP;
 		else
 			*ul_pipe = ATH6KL_USB_PIPE_TX_DATA_MP;
@@ -1216,6 +1210,7 @@ static int ath6kl_usb_pm_reset_resume(struct usb_interface *intf)
 
 /* table of devices that work with this driver */
 static struct usb_device_id ath6kl_usb_ids[] = {
+	{USB_DEVICE(0x0cf3, 0x9375)},
 	{USB_DEVICE(0x0cf3, 0x9374)},
 	{ /* Terminating entry */ },
 };
@@ -1234,26 +1229,7 @@ static struct usb_driver ath6kl_usb_driver = {
 	.disable_hub_initiated_lpm = 1,
 };
 
-static int ath6kl_usb_init(void)
-{
-	int ret;
-
-	ret = usb_register(&ath6kl_usb_driver);
-	if (ret) {
-		ath6kl_err("usb registration failed: %d\n", ret);
-		return ret;
-	}
-
-	return 0;
-}
-
-static void ath6kl_usb_exit(void)
-{
-	usb_deregister(&ath6kl_usb_driver);
-}
-
-module_init(ath6kl_usb_init);
-module_exit(ath6kl_usb_exit);
+module_usb_driver(ath6kl_usb_driver);
 
 MODULE_AUTHOR("Atheros Communications, Inc.");
 MODULE_DESCRIPTION("Driver support for Atheros AR600x USB devices");

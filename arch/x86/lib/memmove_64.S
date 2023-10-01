@@ -8,7 +8,7 @@
 #define _STRING_C
 #include <linux/linkage.h>
 #include <asm/dwarf2.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 #include <asm/alternative-asm.h>
 
 #undef memmove
@@ -218,6 +218,6 @@ ENTRY(memmove)
 	altinstruction_entry .Lmemmove_begin_forward,		\
 		.Lmemmove_begin_forward_efs,X86_FEATURE_ERMS,	\
 		.Lmemmove_end_forward-.Lmemmove_begin_forward,	\
-		.Lmemmove_end_forward_efs-.Lmemmove_begin_forward_efs,0
+		.Lmemmove_end_forward_efs-.Lmemmove_begin_forward_efs
 	.previous
 ENDPROC(memmove)

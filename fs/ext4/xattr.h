@@ -67,17 +67,6 @@ struct ext4_xattr_entry {
 		EXT4_I(inode)->i_extra_isize))
 #define IFIRST(hdr) ((struct ext4_xattr_entry *)((hdr)+1))
 
-/*
- * XATTR_SIZE_MAX is currently 64k, but for the purposes of checking
- * for file system consistency errors, we use a somewhat bigger value.
- * This allows XATTR_SIZE_MAX to grow in the future, but by using this
- * instead of INT_MAX for certain consistency checks, we don't need to
- * worry about arithmetic overflows.  (Actually XATTR_SIZE_MAX is
- * defined in include/uapi/linux/limits.h, so changing it is going
- * not going to be trivial....)
- */
-#define EXT4_XATTR_SIZE_MAX (1 << 24)
-
 #define BHDR(bh) ((struct ext4_xattr_header *)((bh)->b_data))
 #define ENTRY(ptr) ((struct ext4_xattr_entry *)(ptr))
 #define BFIRST(bh) ENTRY(BHDR(bh)+1)
@@ -108,38 +97,6 @@ struct ext4_xattr_ibody_find {
 extern const struct xattr_handler ext4_xattr_user_handler;
 extern const struct xattr_handler ext4_xattr_trusted_handler;
 extern const struct xattr_handler ext4_xattr_security_handler;
-
-/*
- * The EXT4_STATE_NO_EXPAND is overloaded and used for two purposes.
- * The first is to signal that there the inline xattrs and data are
- * taking up so much space that we might as well not keep trying to
- * expand it.  The second is that xattr_sem is taken for writing, so
- * we shouldn't try to recurse into the inode expansion.  For this
- * second case, we need to make sure that we take save and restore the
- * NO_EXPAND state flag appropriately.
- */
-static inline void ext4_write_lock_xattr(struct inode *inode, int *save)
-{
-	down_write(&EXT4_I(inode)->xattr_sem);
-	*save = ext4_test_inode_state(inode, EXT4_STATE_NO_EXPAND);
-	ext4_set_inode_state(inode, EXT4_STATE_NO_EXPAND);
-}
-
-static inline int ext4_write_trylock_xattr(struct inode *inode, int *save)
-{
-	if (down_write_trylock(&EXT4_I(inode)->xattr_sem) == 0)
-		return 0;
-	*save = ext4_test_inode_state(inode, EXT4_STATE_NO_EXPAND);
-	ext4_set_inode_state(inode, EXT4_STATE_NO_EXPAND);
-	return 1;
-}
-
-static inline void ext4_write_unlock_xattr(struct inode *inode, int *save)
-{
-	if (*save == 0)
-		ext4_clear_inode_state(inode, EXT4_STATE_NO_EXPAND);
-	up_write(&EXT4_I(inode)->xattr_sem);
-}
 
 extern ssize_t ext4_listxattr(struct dentry *, char *, size_t);
 

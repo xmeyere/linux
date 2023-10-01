@@ -901,7 +901,7 @@ out:
 	ssip_free_data(msg);
 }
 
-void ssip_port_event(struct hsi_client *cl, unsigned long event)
+static void ssip_port_event(struct hsi_client *cl, unsigned long event)
 {
 	switch (event) {
 	case HSI_EVENT_START_RX:
@@ -976,7 +976,7 @@ static int ssip_pn_xmit(struct sk_buff *skb, struct net_device *dev)
 		goto drop;
 	/* Pad to 32-bits - FIXME: Revisit*/
 	if ((skb->len & 3) && skb_pad(skb, 4 - (skb->len & 3)))
-		goto inc_dropped;
+		goto drop;
 
 	/*
 	 * Modem sends Phonet messages over SSI with its own endianess...
@@ -1028,9 +1028,8 @@ static int ssip_pn_xmit(struct sk_buff *skb, struct net_device *dev)
 drop2:
 	hsi_free_msg(msg);
 drop:
-	dev_kfree_skb(skb);
-inc_dropped:
 	dev->stats.tx_dropped++;
+	dev_kfree_skb(skb);
 
 	return 0;
 }
@@ -1116,7 +1115,7 @@ static int ssi_protocol_probe(struct device *dev)
 		goto out;
 	}
 
-	ssi->netdev = alloc_netdev(0, ifname, ssip_pn_setup);
+	ssi->netdev = alloc_netdev(0, ifname, NET_NAME_UNKNOWN, ssip_pn_setup);
 	if (!ssi->netdev) {
 		dev_err(dev, "No memory for netdev\n");
 		err = -ENOMEM;

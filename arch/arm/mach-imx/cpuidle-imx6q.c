@@ -13,24 +13,32 @@
 
 #include "common.h"
 #include "cpuidle.h"
+#include "hardware.h"
 
-static int num_idle_cpus = 0;
-static DEFINE_SPINLOCK(cpuidle_lock);
+static atomic_t master = ATOMIC_INIT(0);
+static DEFINE_SPINLOCK(master_lock);
 
 static int imx6q_enter_wait(struct cpuidle_device *dev,
 			    struct cpuidle_driver *drv, int index)
 {
-	spin_lock(&cpuidle_lock);
-	if (++num_idle_cpus == num_online_cpus())
+	if (atomic_inc_return(&master) == num_online_cpus()) {
+		/*
+		 * With this lock, we prevent other cpu to exit and enter
+		 * this function again and become the master.
+		 */
+		if (!spin_trylock(&master_lock))
+			goto idle;
 		imx6q_set_lpm(WAIT_UNCLOCKED);
-	spin_unlock(&cpuidle_lock);
-
-	cpu_do_idle();
-
-	spin_lock(&cpuidle_lock);
-	if (num_idle_cpus-- == num_online_cpus())
+		cpu_do_idle();
 		imx6q_set_lpm(WAIT_CLOCKED);
-	spin_unlock(&cpuidle_lock);
+		spin_unlock(&master_lock);
+		goto done;
+	}
+
+idle:
+	cpu_do_idle();
+done:
+	atomic_dec(&master);
 
 	return index;
 }
@@ -58,11 +66,8 @@ static struct cpuidle_driver imx6q_cpuidle_driver = {
 
 int __init imx6q_cpuidle_init(void)
 {
-	/* Need to enable SCU standby for entering WAIT modes */
-	imx_scu_standby_enable();
-
 	/* Set INT_MEM_CLK_LPM bit to get a reliable WAIT mode support */
-	imx6q_set_int_mem_clk_lpm();
+	imx6q_set_int_mem_clk_lpm(true);
 
 	return cpuidle_register(&imx6q_cpuidle_driver, NULL);
 }

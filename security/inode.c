@@ -74,7 +74,7 @@ static struct file_system_type fs_type = {
  * pointer must be passed to the securityfs_remove() function when the file is
  * to be removed (no automatic cleanup happens if your module is unloaded,
  * you are responsible here).  If an error occurs, the function will return
- * the erorr value (via ERR_PTR).
+ * the error value (via ERR_PTR).
  *
  * If securityfs is not enabled in the kernel, the value %-ENODEV is
  * returned.
@@ -215,17 +215,19 @@ void securityfs_remove(struct dentry *dentry)
 }
 EXPORT_SYMBOL_GPL(securityfs_remove);
 
+static struct kobject *security_kobj;
+
 static int __init securityfs_init(void)
 {
 	int retval;
 
-	retval = sysfs_create_mount_point(kernel_kobj, "security");
-	if (retval)
-		return retval;
+	security_kobj = kobject_create_and_add("security", kernel_kobj);
+	if (!security_kobj)
+		return -EINVAL;
 
 	retval = register_filesystem(&fs_type);
 	if (retval)
-		sysfs_remove_mount_point(kernel_kobj, "security");
+		kobject_put(security_kobj);
 	return retval;
 }
 

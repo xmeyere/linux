@@ -629,7 +629,7 @@ redo:
 			done = 1;
 			break;
 
-		case SCTP_XMIT_NAGLE_DELAY:
+		case SCTP_XMIT_DELAY:
 			/* Send this packet. */
 			error = sctp_packet_transmit(pkt);
 
@@ -1015,7 +1015,7 @@ static int sctp_outq_flush(struct sctp_outq *q, int rtx_timeout)
 			switch (status) {
 			case SCTP_XMIT_PMTU_FULL:
 			case SCTP_XMIT_RWND_FULL:
-			case SCTP_XMIT_NAGLE_DELAY:
+			case SCTP_XMIT_DELAY:
 				/* We could not append this chunk, so put
 				 * the chunk back on the output queue.
 				 */
@@ -1025,7 +1025,6 @@ static int sctp_outq_flush(struct sctp_outq *q, int rtx_timeout)
 
 				sctp_outq_head_data(q, chunk);
 				goto sctp_flush_out;
-				break;
 
 			case SCTP_XMIT_OK:
 				/* The sender is in the SHUTDOWN-PENDING state,
@@ -1252,7 +1251,6 @@ int sctp_outq_sack(struct sctp_outq *q, struct sctp_chunk *chunk)
 	 */
 
 	sack_a_rwnd = ntohl(sack->a_rwnd);
-	asoc->peer.zero_window_announced = !sack_a_rwnd;
 	outstanding = q->outstanding_bytes;
 
 	if (outstanding < sack_a_rwnd)
@@ -1346,7 +1344,7 @@ static void sctp_check_transmitted(struct sctp_outq *q,
 			 * the outstanding bytes for this chunk, so only
 			 * count bytes associated with a transport.
 			 */
-			if (transport && !tchunk->tsn_gap_acked) {
+			if (transport) {
 				/* If this chunk is being used for RTT
 				 * measurement, calculate the RTT and update
 				 * the RTO using this value.
@@ -1358,33 +1356,13 @@ static void sctp_check_transmitted(struct sctp_outq *q,
 				 * first instance of the packet or a later
 				 * instance).
 				 */
-				if (!tchunk->resent &&
+				if (!tchunk->tsn_gap_acked &&
+				    !tchunk->resent &&
 				    tchunk->rtt_in_progress) {
 					tchunk->rtt_in_progress = 0;
 					rtt = jiffies - tchunk->sent_at;
 					sctp_transport_update_rto(transport,
 								  rtt);
-				}
-
-				if (TSN_lte(tsn, sack_ctsn)) {
-					/*
-					 * SFR-CACC algorithm:
-					 * 2) If the SACK contains gap acks
-					 * and the flag CHANGEOVER_ACTIVE is
-					 * set the receiver of the SACK MUST
-					 * take the following action:
-					 *
-					 * B) For each TSN t being acked that
-					 * has not been acked in any SACK so
-					 * far, set cacc_saw_newack to 1 for
-					 * the destination that the TSN was
-					 * sent to.
-					 */
-					if (sack->num_gap_ack_blocks &&
-					    q->asoc->peer.primary_path->cacc.
-					    changeover_active)
-						transport->cacc.cacc_saw_newack
-							= 1;
 				}
 			}
 
@@ -1416,6 +1394,28 @@ static void sctp_check_transmitted(struct sctp_outq *q,
 				 */
 				restart_timer = 1;
 				forward_progress = true;
+
+				if (!tchunk->tsn_gap_acked) {
+					/*
+					 * SFR-CACC algorithm:
+					 * 2) If the SACK contains gap acks
+					 * and the flag CHANGEOVER_ACTIVE is
+					 * set the receiver of the SACK MUST
+					 * take the following action:
+					 *
+					 * B) For each TSN t being acked that
+					 * has not been acked in any SACK so
+					 * far, set cacc_saw_newack to 1 for
+					 * the destination that the TSN was
+					 * sent to.
+					 */
+					if (transport &&
+					    sack->num_gap_ack_blocks &&
+					    q->asoc->peer.primary_path->cacc.
+					    changeover_active)
+						transport->cacc.cacc_saw_newack
+							= 1;
+				}
 
 				list_add_tail(&tchunk->transmitted_list,
 					      &q->sacked);

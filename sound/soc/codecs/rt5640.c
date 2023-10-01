@@ -361,7 +361,7 @@ static unsigned int bst_tlv[] = {
 
 /* Interface data select */
 static const char * const rt5640_data_select[] = {
-	"Normal", "Swap", "left copy to right", "right copy to left"};
+	"Normal", "left copy to right", "right copy to left", "Swap"};
 
 static SOC_ENUM_SINGLE_DECL(rt5640_if1_dac_enum, RT5640_DIG_INF_DATA,
 			    RT5640_IF1_DAC_SEL_SFT, rt5640_data_select);
@@ -974,36 +974,7 @@ static int rt5640_hp_event(struct snd_soc_dapm_widget *w,
 
 	case SND_SOC_DAPM_PRE_PMD:
 		rt5640->hp_mute = 1;
-		msleep(70);
-		break;
-
-	default:
-		return 0;
-	}
-
-	return 0;
-}
-
-static int rt5640_lout_event(struct snd_soc_dapm_widget *w,
-	struct snd_kcontrol *kcontrol, int event)
-{
-	struct snd_soc_codec *codec = snd_soc_dapm_to_codec(w->dapm);
-
-	switch (event) {
-	case SND_SOC_DAPM_POST_PMU:
-		hp_amp_power_on(codec);
-		snd_soc_update_bits(codec, RT5640_PWR_ANLG1,
-			RT5640_PWR_LM, RT5640_PWR_LM);
-		snd_soc_update_bits(codec, RT5640_OUTPUT,
-			RT5640_L_MUTE | RT5640_R_MUTE, 0);
-		break;
-
-	case SND_SOC_DAPM_PRE_PMD:
-		snd_soc_update_bits(codec, RT5640_OUTPUT,
-			RT5640_L_MUTE | RT5640_R_MUTE,
-			RT5640_L_MUTE | RT5640_R_MUTE);
-		snd_soc_update_bits(codec, RT5640_PWR_ANLG1,
-			RT5640_PWR_LM, 0);
+		usleep_range(70000, 75000);
 		break;
 
 	default:
@@ -1038,7 +1009,7 @@ static int rt5640_hp_post_event(struct snd_soc_dapm_widget *w,
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
 		if (!rt5640->hp_mute)
-			msleep(80);
+			usleep_range(80000, 85000);
 
 		break;
 
@@ -1208,15 +1179,12 @@ static const struct snd_soc_dapm_widget rt5640_dapm_widgets[] = {
 		0, rt5640_spo_l_mix, ARRAY_SIZE(rt5640_spo_l_mix)),
 	SND_SOC_DAPM_MIXER("SPOR MIX", SND_SOC_NOPM, 0,
 		0, rt5640_spo_r_mix, ARRAY_SIZE(rt5640_spo_r_mix)),
-	SND_SOC_DAPM_MIXER("LOUT MIX", SND_SOC_NOPM, 0, 0,
+	SND_SOC_DAPM_MIXER("LOUT MIX", RT5640_PWR_ANLG1, RT5640_PWR_LM_BIT, 0,
 		rt5640_lout_mix, ARRAY_SIZE(rt5640_lout_mix)),
 	SND_SOC_DAPM_SUPPLY_S("Improve HP Amp Drv", 1, SND_SOC_NOPM,
 		0, 0, rt5640_hp_power_event, SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_PGA_S("HP Amp", 1, SND_SOC_NOPM, 0, 0,
 		rt5640_hp_event,
-		SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
-	SND_SOC_DAPM_PGA_S("LOUT amp", 1, SND_SOC_NOPM, 0, 0,
-		rt5640_lout_event,
 		SND_SOC_DAPM_PRE_PMD | SND_SOC_DAPM_POST_PMU),
 	SND_SOC_DAPM_SUPPLY("HP L Amp", RT5640_PWR_ANLG1,
 		RT5640_PWR_HP_L_BIT, 0, NULL, 0),
@@ -1532,10 +1500,8 @@ static const struct snd_soc_dapm_route rt5640_dapm_routes[] = {
 	{"HP R Playback", "Switch", "HP Amp"},
 	{"HPOL", NULL, "HP L Playback"},
 	{"HPOR", NULL, "HP R Playback"},
-
-	{"LOUT amp", NULL, "LOUT MIX"},
-	{"LOUTL", NULL, "LOUT amp"},
-	{"LOUTR", NULL, "LOUT amp"},
+	{"LOUTL", NULL, "LOUT MIX"},
+	{"LOUTR", NULL, "LOUT MIX"},
 };
 
 static const struct snd_soc_dapm_route rt5640_specific_dapm_routes[] = {
@@ -1940,6 +1906,32 @@ static int rt5640_set_bias_level(struct snd_soc_codec *codec,
 	return 0;
 }
 
+int rt5640_dmic_enable(struct snd_soc_codec *codec,
+		       bool dmic1_data_pin, bool dmic2_data_pin)
+{
+	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
+
+	regmap_update_bits(rt5640->regmap, RT5640_GPIO_CTRL1,
+		RT5640_GP2_PIN_MASK, RT5640_GP2_PIN_DMIC1_SCL);
+
+	if (dmic1_data_pin) {
+		regmap_update_bits(rt5640->regmap, RT5640_DMIC,
+			RT5640_DMIC_1_DP_MASK, RT5640_DMIC_1_DP_GPIO3);
+		regmap_update_bits(rt5640->regmap, RT5640_GPIO_CTRL1,
+			RT5640_GP3_PIN_MASK, RT5640_GP3_PIN_DMIC1_SDA);
+	}
+
+	if (dmic2_data_pin) {
+		regmap_update_bits(rt5640->regmap, RT5640_DMIC,
+			RT5640_DMIC_2_DP_MASK, RT5640_DMIC_2_DP_GPIO4);
+		regmap_update_bits(rt5640->regmap, RT5640_GPIO_CTRL1,
+			RT5640_GP4_PIN_MASK, RT5640_GP4_PIN_DMIC2_SDA);
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(rt5640_dmic_enable);
+
 static int rt5640_probe(struct snd_soc_codec *codec)
 {
 	struct rt5640_priv *rt5640 = snd_soc_codec_get_drvdata(codec);
@@ -1978,6 +1970,10 @@ static int rt5640_probe(struct snd_soc_codec *codec)
 			"The driver is for RT5639 RT5640 or RT5642 only\n");
 		return -ENODEV;
 	}
+
+	if (rt5640->pdata.dmic_en)
+		rt5640_dmic_enable(codec, rt5640->pdata.dmic1_data_pin,
+					  rt5640->pdata.dmic2_data_pin);
 
 	return 0;
 }
@@ -2229,35 +2225,10 @@ static int rt5640_i2c_probe(struct i2c_client *i2c,
 		regmap_update_bits(rt5640->regmap, RT5640_IN3_IN4,
 					RT5640_IN_DF2, RT5640_IN_DF2);
 
-	if (rt5640->pdata.dmic_en) {
-		regmap_update_bits(rt5640->regmap, RT5640_GPIO_CTRL1,
-			RT5640_GP2_PIN_MASK, RT5640_GP2_PIN_DMIC1_SCL);
-
-		if (rt5640->pdata.dmic1_data_pin) {
-			regmap_update_bits(rt5640->regmap, RT5640_DMIC,
-				RT5640_DMIC_1_DP_MASK, RT5640_DMIC_1_DP_GPIO3);
-			regmap_update_bits(rt5640->regmap, RT5640_GPIO_CTRL1,
-				RT5640_GP3_PIN_MASK, RT5640_GP3_PIN_DMIC1_SDA);
-		}
-
-		if (rt5640->pdata.dmic2_data_pin) {
-			regmap_update_bits(rt5640->regmap, RT5640_DMIC,
-				RT5640_DMIC_2_DP_MASK, RT5640_DMIC_2_DP_GPIO4);
-			regmap_update_bits(rt5640->regmap, RT5640_GPIO_CTRL1,
-				RT5640_GP4_PIN_MASK, RT5640_GP4_PIN_DMIC2_SDA);
-		}
-	}
-
 	rt5640->hp_mute = 1;
 
-	ret = snd_soc_register_codec(&i2c->dev, &soc_codec_dev_rt5640,
-			rt5640_dai, ARRAY_SIZE(rt5640_dai));
-	if (ret < 0)
-		goto err;
-
-	return 0;
-err:
-	return ret;
+	return snd_soc_register_codec(&i2c->dev, &soc_codec_dev_rt5640,
+				      rt5640_dai, ARRAY_SIZE(rt5640_dai));
 }
 
 static int rt5640_i2c_remove(struct i2c_client *i2c)

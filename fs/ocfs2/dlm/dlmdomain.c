@@ -460,19 +460,6 @@ redo_bucket:
 		cond_resched_lock(&dlm->spinlock);
 		num += n;
 	}
-
-	if (!num) {
-		if (dlm->reco.state & DLM_RECO_STATE_ACTIVE) {
-			mlog(0, "%s: perhaps there are more lock resources "
-			     "need to be migrated after dlm recovery\n", dlm->name);
-			ret = -EAGAIN;
-		} else {
-			mlog(0, "%s: we won't do dlm recovery after migrating "
-			     "all lock resources\n", dlm->name);
-			dlm->migrate_done = 1;
-		}
-	}
-
 	spin_unlock(&dlm->spinlock);
 	wake_up(&dlm->dlm_thread_wq);
 
@@ -852,7 +839,7 @@ static int dlm_query_join_handler(struct o2net_msg *msg, u32 len, void *data,
 	 * to back off and try again.  This gives heartbeat a chance
 	 * to catch up.
 	 */
-	if (!o2hb_check_node_heartbeating(query->node_idx)) {
+	if (!o2hb_check_node_heartbeating_no_sem(query->node_idx)) {
 		mlog(0, "node %u is not in our live map yet\n",
 		     query->node_idx);
 
@@ -1936,12 +1923,11 @@ static int dlm_join_domain(struct dlm_ctxt *dlm)
 				goto bail;
 			}
 
-			if (total_backoff >
-			    msecs_to_jiffies(DLM_JOIN_TIMEOUT_MSECS)) {
+			if (total_backoff > DLM_JOIN_TIMEOUT_MSECS) {
 				status = -ERESTARTSYS;
 				mlog(ML_NOTICE, "Timed out joining dlm domain "
 				     "%s after %u msecs\n", dlm->name,
-				     jiffies_to_msecs(total_backoff));
+				     total_backoff);
 				goto bail;
 			}
 
@@ -1989,24 +1975,22 @@ static struct dlm_ctxt *dlm_alloc_ctxt(const char *domain,
 
 	dlm = kzalloc(sizeof(*dlm), GFP_KERNEL);
 	if (!dlm) {
-		mlog_errno(-ENOMEM);
+		ret = -ENOMEM;
+		mlog_errno(ret);
 		goto leave;
 	}
 
 	dlm->name = kstrdup(domain, GFP_KERNEL);
 	if (dlm->name == NULL) {
-		mlog_errno(-ENOMEM);
-		kfree(dlm);
-		dlm = NULL;
+		ret = -ENOMEM;
+		mlog_errno(ret);
 		goto leave;
 	}
 
 	dlm->lockres_hash = (struct hlist_head **)dlm_alloc_pagevec(DLM_HASH_PAGES);
 	if (!dlm->lockres_hash) {
-		mlog_errno(-ENOMEM);
-		kfree(dlm->name);
-		kfree(dlm);
-		dlm = NULL;
+		ret = -ENOMEM;
+		mlog_errno(ret);
 		goto leave;
 	}
 
@@ -2016,11 +2000,8 @@ static struct dlm_ctxt *dlm_alloc_ctxt(const char *domain,
 	dlm->master_hash = (struct hlist_head **)
 				dlm_alloc_pagevec(DLM_HASH_PAGES);
 	if (!dlm->master_hash) {
-		mlog_errno(-ENOMEM);
-		dlm_free_pagevec((void **)dlm->lockres_hash, DLM_HASH_PAGES);
-		kfree(dlm->name);
-		kfree(dlm);
-		dlm = NULL;
+		ret = -ENOMEM;
+		mlog_errno(ret);
 		goto leave;
 	}
 
@@ -2031,14 +2012,8 @@ static struct dlm_ctxt *dlm_alloc_ctxt(const char *domain,
 	dlm->node_num = o2nm_this_node();
 
 	ret = dlm_create_debugfs_subroot(dlm);
-	if (ret < 0) {
-		dlm_free_pagevec((void **)dlm->master_hash, DLM_HASH_PAGES);
-		dlm_free_pagevec((void **)dlm->lockres_hash, DLM_HASH_PAGES);
-		kfree(dlm->name);
-		kfree(dlm);
-		dlm = NULL;
+	if (ret < 0)
 		goto leave;
-	}
 
 	spin_lock_init(&dlm->spinlock);
 	spin_lock_init(&dlm->master_lock);
@@ -2076,8 +2051,6 @@ static struct dlm_ctxt *dlm_alloc_ctxt(const char *domain,
 	dlm->joining_node = DLM_LOCK_RES_OWNER_UNKNOWN;
 	init_waitqueue_head(&dlm->dlm_join_events);
 
-	dlm->migrate_done = 0;
-
 	dlm->reco.new_master = O2NM_INVALID_NODE_NUM;
 	dlm->reco.dead_node = O2NM_INVALID_NODE_NUM;
 
@@ -2101,6 +2074,19 @@ static struct dlm_ctxt *dlm_alloc_ctxt(const char *domain,
 		  atomic_read(&dlm->dlm_refs.refcount));
 
 leave:
+	if (ret < 0 && dlm) {
+		if (dlm->master_hash)
+			dlm_free_pagevec((void **)dlm->master_hash,
+					DLM_HASH_PAGES);
+
+		if (dlm->lockres_hash)
+			dlm_free_pagevec((void **)dlm->lockres_hash,
+					DLM_HASH_PAGES);
+
+		kfree(dlm->name);
+		kfree(dlm);
+		dlm = NULL;
+	}
 	return dlm;
 }
 

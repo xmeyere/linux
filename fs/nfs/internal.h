@@ -218,13 +218,6 @@ static inline void nfs_fs_proc_exit(void)
 int nfs_sockaddr_match_ipaddr(const struct sockaddr *, const struct sockaddr *);
 #endif
 
-/* nfs3client.c */
-#if IS_ENABLED(CONFIG_NFS_V3)
-struct nfs_server *nfs3_create_server(struct nfs_mount_info *, struct nfs_subversion *);
-struct nfs_server *nfs3_clone_server(struct nfs_server *, struct nfs_fh *,
-				     struct nfs_fattr *, rpc_authflavor_t);
-#endif
-
 /* callback_xdr.c */
 extern struct svc_version nfs4_callback_version1;
 extern struct svc_version nfs4_callback_version4;
@@ -249,6 +242,7 @@ int nfs_iocounter_wait(struct nfs_io_counter *c);
 extern const struct nfs_pageio_ops nfs_pgio_rw_ops;
 struct nfs_pgio_header *nfs_pgio_header_alloc(const struct nfs_rw_ops *);
 void nfs_pgio_header_free(struct nfs_pgio_header *);
+void nfs_pgio_data_destroy(struct nfs_pgio_header *);
 int nfs_generic_pgio(struct nfs_pageio_descriptor *, struct nfs_pgio_header *);
 int nfs_initiate_pgio(struct rpc_clnt *, struct nfs_pgio_header *,
 		      const struct rpc_call_ops *, int, int);
@@ -345,7 +339,6 @@ int nfs_file_release(struct inode *, struct file *);
 int nfs_lock(struct file *, int, struct file_lock *);
 int nfs_flock(struct file *, int, struct file_lock *);
 int nfs_check_flags(int);
-int nfs_setlease(struct file *, long, struct file_lock **);
 
 /* inode.c */
 extern struct workqueue_struct *nfsiod_workqueue;
@@ -356,7 +349,7 @@ extern int nfs_drop_inode(struct inode *);
 extern void nfs_clear_inode(struct inode *);
 extern void nfs_evict_inode(struct inode *);
 void nfs_zap_acl_cache(struct inode *inode);
-extern int nfs_wait_bit_killable(void *word);
+extern int nfs_wait_bit_killable(struct wait_bit_key *key);
 
 /* super.c */
 extern const struct super_operations nfs_sops;
@@ -450,6 +443,7 @@ int nfs_scan_commit(struct inode *inode, struct list_head *dst,
 void nfs_mark_request_commit(struct nfs_page *req,
 			     struct pnfs_layout_segment *lseg,
 			     struct nfs_commit_info *cinfo);
+int nfs_write_need_commit(struct nfs_pgio_header *);
 int nfs_generic_commit_list(struct inode *inode, struct list_head *head,
 			    int how, struct nfs_commit_info *cinfo);
 void nfs_retry_commit(struct list_head *page_list,

@@ -150,8 +150,6 @@ void snd_ctl_notify(struct snd_card *card, unsigned int mask,
 	
 	if (snd_BUG_ON(!card || !id))
 		return;
-	if (card->shutdown)
-		return;
 	read_lock(&card->ctl_files_rwlock);
 #if IS_ENABLED(CONFIG_SND_MIXER_OSS)
 	card->mixer_oss_change_count++;
@@ -318,40 +316,6 @@ static int snd_ctl_find_hole(struct snd_card *card, unsigned int count)
 	return 0;
 }
 
-/* add a new kcontrol object; call with card->controls_rwsem locked */
-static int __snd_ctl_add(struct snd_card *card, struct snd_kcontrol *kcontrol)
-{
-	struct snd_ctl_elem_id id;
-	unsigned int idx;
-	unsigned int count;
-
-	id = kcontrol->id;
-	if (id.index > UINT_MAX - kcontrol->count)
-		return -EINVAL;
-
-	if (snd_ctl_find_id(card, &id)) {
-		dev_err(card->dev,
-			"control %i:%i:%i:%s:%i is already present\n",
-			id.iface, id.device, id.subdevice, id.name, id.index);
-		return -EBUSY;
-	}
-
-	if (snd_ctl_find_hole(card, kcontrol->count) < 0)
-		return -ENOMEM;
-
-	list_add_tail(&kcontrol->list, &card->controls);
-	card->controls_count += kcontrol->count;
-	kcontrol->id.numid = card->last_numid + 1;
-	card->last_numid += kcontrol->count;
-
-	id = kcontrol->id;
-	count = kcontrol->count;
-	for (idx = 0; idx < count; idx++, id.index++, id.numid++)
-		snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_ADD, &id);
-
-	return 0;
-}
-
 /**
  * snd_ctl_add - add the control instance to the card
  * @card: the card instance
@@ -368,18 +332,44 @@ static int __snd_ctl_add(struct snd_card *card, struct snd_kcontrol *kcontrol)
  */
 int snd_ctl_add(struct snd_card *card, struct snd_kcontrol *kcontrol)
 {
+	struct snd_ctl_elem_id id;
+	unsigned int idx;
+	unsigned int count;
 	int err = -EINVAL;
 
 	if (! kcontrol)
 		return err;
 	if (snd_BUG_ON(!card || !kcontrol->info))
 		goto error;
+	id = kcontrol->id;
+	if (id.index > UINT_MAX - kcontrol->count)
+		goto error;
 
 	down_write(&card->controls_rwsem);
-	err = __snd_ctl_add(card, kcontrol);
-	up_write(&card->controls_rwsem);
-	if (err < 0)
+	if (snd_ctl_find_id(card, &id)) {
+		up_write(&card->controls_rwsem);
+		dev_err(card->dev, "control %i:%i:%i:%s:%i is already present\n",
+					id.iface,
+					id.device,
+					id.subdevice,
+					id.name,
+					id.index);
+		err = -EBUSY;
 		goto error;
+	}
+	if (snd_ctl_find_hole(card, kcontrol->count) < 0) {
+		up_write(&card->controls_rwsem);
+		err = -ENOMEM;
+		goto error;
+	}
+	list_add_tail(&kcontrol->list, &card->controls);
+	card->controls_count += kcontrol->count;
+	kcontrol->id.numid = card->last_numid + 1;
+	card->last_numid += kcontrol->count;
+	count = kcontrol->count;
+	up_write(&card->controls_rwsem);
+	for (idx = 0; idx < count; idx++, id.index++, id.numid++)
+		snd_ctl_notify(card, SNDRV_CTL_EVENT_MASK_ADD, &id);
 	return 0;
 
  error:
@@ -1095,7 +1085,7 @@ static int snd_ctl_elem_user_tlv(struct snd_kcontrol *kcontrol,
 		mutex_lock(&ue->card->user_ctl_lock);
 		change = ue->tlv_data_size != size;
 		if (!change)
-			change = memcmp(ue->tlv_data, new_data, size) != 0;
+			change = memcmp(ue->tlv_data, new_data, size);
 		kfree(ue->tlv_data);
 		ue->tlv_data = new_data;
 		ue->tlv_data_size = size;
@@ -1176,10 +1166,6 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 	int idx, err;
 
 	if (info->count < 1)
-		return -EINVAL;
-	if (!*info->id.name)
-		return -EINVAL;
-	if (strnlen(info->id.name, sizeof(info->id.name)) >= sizeof(info->id.name))
 		return -EINVAL;
 	access = info->access == 0 ? SNDRV_CTL_ELEM_ACCESS_READWRITE :
 		(info->access & (SNDRV_CTL_ELEM_ACCESS_READWRITE|
@@ -1268,17 +1254,14 @@ static int snd_ctl_elem_add(struct snd_ctl_file *file,
 	_kctl->private_data = ue;
 	for (idx = 0; idx < _kctl->count; idx++)
 		_kctl->vd[idx].owner = file;
+	err = snd_ctl_add(card, _kctl);
+	if (err < 0)
+		return err;
+
 	down_write(&card->controls_rwsem);
-	err = __snd_ctl_add(card, _kctl);
-	if (err < 0) {
-		snd_ctl_free_one(_kctl);
-		goto unlock;
-	}
-
 	card->user_ctl_count++;
-
- unlock:
 	up_write(&card->controls_rwsem);
+
 	return 0;
 }
 
@@ -1336,8 +1319,6 @@ static int snd_ctl_tlv_ioctl(struct snd_ctl_file *file,
 	if (copy_from_user(&tlv, _tlv, sizeof(tlv)))
 		return -EFAULT;
 	if (tlv.length < sizeof(unsigned int) * 2)
-		return -EINVAL;
-	if (!tlv.numid)
 		return -EINVAL;
 	down_read(&card->controls_rwsem);
 	kctl = snd_ctl_find_numid(card, tlv.numid);
@@ -1425,11 +1406,11 @@ static long snd_ctl_ioctl(struct file *file, unsigned int cmd, unsigned long arg
 	case SNDRV_CTL_IOCTL_SUBSCRIBE_EVENTS:
 		return snd_ctl_subscribe_events(ctl, ip);
 	case SNDRV_CTL_IOCTL_TLV_READ:
-		return snd_ctl_tlv_ioctl(ctl, argp, 0);
+		return snd_ctl_tlv_ioctl(ctl, argp, SNDRV_CTL_TLV_OP_READ);
 	case SNDRV_CTL_IOCTL_TLV_WRITE:
-		return snd_ctl_tlv_ioctl(ctl, argp, 1);
+		return snd_ctl_tlv_ioctl(ctl, argp, SNDRV_CTL_TLV_OP_WRITE);
 	case SNDRV_CTL_IOCTL_TLV_COMMAND:
-		return snd_ctl_tlv_ioctl(ctl, argp, -1);
+		return snd_ctl_tlv_ioctl(ctl, argp, SNDRV_CTL_TLV_OP_CMD);
 	case SNDRV_CTL_IOCTL_POWER:
 		return -ENOPROTOOPT;
 	case SNDRV_CTL_IOCTL_POWER_STATE:

@@ -174,8 +174,8 @@ int arch_validate_hwbkpt_settings(struct perf_event *bp)
 	if (cpu_has_feature(CPU_FTR_DAWR)) {
 		length_max = 512 ; /* 64 doublewords */
 		/* DAWR region can't cross 512 boundary */
-		if ((bp->attr.bp_addr >> 9) !=
-		    ((bp->attr.bp_addr + bp->attr.bp_len - 1) >> 9))
+		if ((bp->attr.bp_addr >> 10) != 
+		    ((bp->attr.bp_addr + bp->attr.bp_len - 1) >> 10))
 			return -EINVAL;
 	}
 	if (info->len >
@@ -227,10 +227,8 @@ int __kprobes hw_breakpoint_handler(struct die_args *args)
 	rcu_read_lock();
 
 	bp = __get_cpu_var(bp_per_reg);
-	if (!bp) {
-		rc = NOTIFY_DONE;
+	if (!bp)
 		goto out;
-	}
 	info = counter_arch_bp(bp);
 
 	/*
@@ -295,7 +293,7 @@ out:
 /*
  * Handle single-step exceptions following a DABR hit.
  */
-int __kprobes single_step_dabr_instruction(struct die_args *args)
+static int __kprobes single_step_dabr_instruction(struct die_args *args)
 {
 	struct pt_regs *regs = args->regs;
 	struct perf_event *bp = NULL;

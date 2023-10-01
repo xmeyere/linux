@@ -159,8 +159,7 @@ int stmmac_mdio_reset(struct mii_bus *bus)
 		reset_gpio = data->reset_gpio;
 		active_low = data->active_low;
 
-		if (!devm_gpio_request(priv->device, reset_gpio,
-				      "mdio-reset")) {
+		if (!gpio_request(reset_gpio, "mdio-reset")) {
 			gpio_direction_output(reset_gpio, active_low ? 1 : 0);
 			udelay(data->delays[0]);
 			gpio_set_value(reset_gpio, active_low ? 0 : 1);
@@ -254,7 +253,7 @@ int stmmac_mdio_register(struct net_device *ndev)
 			}
 
 			/*
-			 * If we're  going to bind the MAC to this PHY bus,
+			 * If we're going to bind the MAC to this PHY bus,
 			 * and no PHY number was provided to the MAC,
 			 * use the one probed here.
 			 */
@@ -283,7 +282,7 @@ int stmmac_mdio_register(struct net_device *ndev)
 	}
 
 	if (!found) {
-		pr_warning("%s: No PHY found\n", ndev->name);
+		pr_warn("%s: No PHY found\n", ndev->name);
 		mdiobus_unregister(new_bus);
 		mdiobus_free(new_bus);
 		return -ENODEV;

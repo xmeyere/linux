@@ -12,11 +12,11 @@
 #include <linux/compiler.h>
 #include <linux/errno.h>
 #include <linux/filter.h>
-#include <linux/moduleloader.h>
 #include <linux/netdevice.h>
 #include <linux/string.h>
 #include <linux/slab.h>
 #include <linux/if_vlan.h>
+
 #include <asm/cacheflush.h>
 #include <asm/hwcap.h>
 #include <asm/opcodes.h>
@@ -56,7 +56,7 @@
 #define FLAG_NEED_X_RESET	(1 << 0)
 
 struct jit_ctx {
-	const struct sk_filter *skf;
+	const struct bpf_prog *skf;
 	unsigned idx;
 	unsigned prologue_bytes;
 	int ret0_fp_idx;
@@ -161,9 +161,31 @@ static inline int mem_words_used(struct jit_ctx *ctx)
 	return fls(ctx->seen & SEEN_MEM);
 }
 
+static inline bool is_load_to_a(u16 inst)
+{
+	switch (inst) {
+	case BPF_LD | BPF_W | BPF_LEN:
+	case BPF_LD | BPF_W | BPF_ABS:
+	case BPF_LD | BPF_H | BPF_ABS:
+	case BPF_LD | BPF_B | BPF_ABS:
+		return true;
+	default:
+		return false;
+	}
+}
+
+static void jit_fill_hole(void *area, unsigned int size)
+{
+	u32 *ptr;
+	/* We are guaranteed to have aligned memory. */
+	for (ptr = area; size >= sizeof(u32); size -= sizeof(u32))
+		*ptr++ = __opcode_to_mem_arm(ARM_INST_UDF);
+}
+
 static void build_prologue(struct jit_ctx *ctx)
 {
 	u16 reg_set = saved_regs(ctx);
+	u16 first_inst = ctx->skf->insns[0].code;
 	u16 off;
 
 #ifdef CONFIG_FRAME_POINTER
@@ -193,7 +215,7 @@ static void build_prologue(struct jit_ctx *ctx)
 		emit(ARM_MOV_I(r_X, 0), ctx);
 
 	/* do not leak kernel data to userspace */
-	if (bpf_needs_clear_a(&ctx->skf->insns[0]))
+	if ((first_inst != (BPF_RET | BPF_K)) && !(is_load_to_a(first_inst)))
 		emit(ARM_MOV_I(r_A, 0), ctx);
 
 	/* stack space for the BPF_MEM words */
@@ -427,21 +449,10 @@ static inline void emit_udiv(u8 rd, u8 rm, u8 rn, struct jit_ctx *ctx)
 		return;
 	}
 #endif
-
-	/*
-	 * For BPF_ALU | BPF_DIV | BPF_K instructions, rm is ARM_R4
-	 * (r_A) and rn is ARM_R0 (r_scratch) so load rn first into
-	 * ARM_R1 to avoid accidentally overwriting ARM_R0 with rm
-	 * before using it as a source for ARM_R1.
-	 *
-	 * For BPF_ALU | BPF_DIV | BPF_X rm is ARM_R4 (r_A) and rn is
-	 * ARM_R5 (r_X) so there is no particular register overlap
-	 * issues.
-	 */
-	if (rn != ARM_R1)
-		emit(ARM_MOV_R(ARM_R1, rn), ctx);
 	if (rm != ARM_R0)
 		emit(ARM_MOV_R(ARM_R0, rm), ctx);
+	if (rn != ARM_R1)
+		emit(ARM_MOV_R(ARM_R1, rn), ctx);
 
 	ctx->seen |= SEEN_CALL;
 	emit_mov_i(ARM_R3, (u32)jit_udiv, ctx);
@@ -462,7 +473,7 @@ static inline void update_on_xread(struct jit_ctx *ctx)
 static int build_body(struct jit_ctx *ctx)
 {
 	void *load_func[] = {jit_get_skb_b, jit_get_skb_h, jit_get_skb_w};
-	const struct sk_filter *prog = ctx->skf;
+	const struct bpf_prog *prog = ctx->skf;
 	const struct sock_filter *inst;
 	unsigned i, load_order, off, condt;
 	int imm12;
@@ -854,11 +865,13 @@ b_epilogue:
 }
 
 
-void bpf_jit_compile(struct sk_filter *fp)
+void bpf_jit_compile(struct bpf_prog *fp)
 {
+	struct bpf_binary_header *header;
 	struct jit_ctx ctx;
 	unsigned tmp_idx;
 	unsigned alloc_size;
+	u8 *target_ptr;
 
 	if (!bpf_jit_enable)
 		return;
@@ -894,13 +907,15 @@ void bpf_jit_compile(struct sk_filter *fp)
 	/* there's nothing after the epilogue on ARMv7 */
 	build_epilogue(&ctx);
 #endif
-
 	alloc_size = 4 * ctx.idx;
-	ctx.target = module_alloc(alloc_size);
-	if (unlikely(ctx.target == NULL))
+	header = bpf_jit_binary_alloc(alloc_size, &target_ptr,
+				      4, jit_fill_hole);
+	if (header == NULL)
 		goto out;
 
+	ctx.target = (u32 *) target_ptr;
 	ctx.idx = 0;
+
 	build_prologue(&ctx);
 	build_body(&ctx);
 	build_epilogue(&ctx);
@@ -916,16 +931,25 @@ void bpf_jit_compile(struct sk_filter *fp)
 		/* there are 2 passes here */
 		bpf_jit_dump(fp->len, alloc_size, 2, ctx.target);
 
+	set_memory_ro((unsigned long)header, header->pages);
 	fp->bpf_func = (void *)ctx.target;
-	fp->jited = 1;
+	fp->jited = true;
 out:
 	kfree(ctx.offsets);
 	return;
 }
 
-void bpf_jit_free(struct sk_filter *fp)
+void bpf_jit_free(struct bpf_prog *fp)
 {
-	if (fp->jited)
-		module_free(NULL, fp->bpf_func);
-	kfree(fp);
+	unsigned long addr = (unsigned long)fp->bpf_func & PAGE_MASK;
+	struct bpf_binary_header *header = (void *)addr;
+
+	if (!fp->jited)
+		goto free_filter;
+
+	set_memory_rw(addr, header->pages);
+	bpf_jit_binary_free(header);
+
+free_filter:
+	bpf_prog_unlock_free(fp);
 }

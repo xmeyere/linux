@@ -24,7 +24,6 @@
 #include <linux/netdevice.h>
 #include <linux/if_arp.h>
 #include <linux/crc-ccitt.h>
-#include <asm/unaligned.h>
 
 #include <net/ieee802154_netdev.h>
 #include <net/mac802154.h>
@@ -96,21 +95,11 @@ netdev_tx_t mac802154_tx(struct mac802154_priv *priv, struct sk_buff *skb,
 	mac802154_monitors_rx(mac802154_to_priv(&priv->hw), skb);
 
 	if (!(priv->hw.flags & IEEE802154_HW_OMIT_CKSUM)) {
-		struct sk_buff *nskb;
-		u16 crc;
+		u16 crc = crc_ccitt(0, skb->data, skb->len);
+		u8 *data = skb_put(skb, 2);
 
-		if (unlikely(skb_tailroom(skb) < 2)) {
-			nskb = skb_copy_expand(skb, 0, 2, GFP_ATOMIC);
-			if (likely(nskb)) {
-				consume_skb(skb);
-				skb = nskb;
-			} else {
-				goto err_tx;
-			}
-		}
-
-		crc = crc_ccitt(0, skb->data, skb->len);
-		put_unaligned_le16(crc, skb_put(skb, 2));
+		data[0] = crc & 0xff;
+		data[1] = crc >> 8;
 	}
 
 	if (skb_cow_head(skb, priv->hw.extra_tx_headroom))

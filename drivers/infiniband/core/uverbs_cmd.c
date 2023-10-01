@@ -1002,6 +1002,99 @@ err_free:
 	return ret;
 }
 
+ssize_t ib_uverbs_rereg_mr(struct ib_uverbs_file *file,
+			   const char __user *buf, int in_len,
+			   int out_len)
+{
+	struct ib_uverbs_rereg_mr      cmd;
+	struct ib_uverbs_rereg_mr_resp resp;
+	struct ib_udata              udata;
+	struct ib_pd                *pd = NULL;
+	struct ib_mr                *mr;
+	struct ib_pd		    *old_pd;
+	int                          ret;
+	struct ib_uobject	    *uobj;
+
+	if (out_len < sizeof(resp))
+		return -ENOSPC;
+
+	if (copy_from_user(&cmd, buf, sizeof(cmd)))
+		return -EFAULT;
+
+	INIT_UDATA(&udata, buf + sizeof(cmd),
+		   (unsigned long) cmd.response + sizeof(resp),
+		   in_len - sizeof(cmd), out_len - sizeof(resp));
+
+	if (cmd.flags & ~IB_MR_REREG_SUPPORTED || !cmd.flags)
+		return -EINVAL;
+
+	if ((cmd.flags & IB_MR_REREG_TRANS) &&
+	    (!cmd.start || !cmd.hca_va || 0 >= cmd.length ||
+	     (cmd.start & ~PAGE_MASK) != (cmd.hca_va & ~PAGE_MASK)))
+			return -EINVAL;
+
+	uobj = idr_write_uobj(&ib_uverbs_mr_idr, cmd.mr_handle,
+			      file->ucontext);
+
+	if (!uobj)
+		return -EINVAL;
+
+	mr = uobj->object;
+
+	if (cmd.flags & IB_MR_REREG_ACCESS) {
+		ret = ib_check_mr_access(cmd.access_flags);
+		if (ret)
+			goto put_uobjs;
+	}
+
+	if (cmd.flags & IB_MR_REREG_PD) {
+		pd = idr_read_pd(cmd.pd_handle, file->ucontext);
+		if (!pd) {
+			ret = -EINVAL;
+			goto put_uobjs;
+		}
+	}
+
+	if (atomic_read(&mr->usecnt)) {
+		ret = -EBUSY;
+		goto put_uobj_pd;
+	}
+
+	old_pd = mr->pd;
+	ret = mr->device->rereg_user_mr(mr, cmd.flags, cmd.start,
+					cmd.length, cmd.hca_va,
+					cmd.access_flags, pd, &udata);
+	if (!ret) {
+		if (cmd.flags & IB_MR_REREG_PD) {
+			atomic_inc(&pd->usecnt);
+			mr->pd = pd;
+			atomic_dec(&old_pd->usecnt);
+		}
+	} else {
+		goto put_uobj_pd;
+	}
+
+	memset(&resp, 0, sizeof(resp));
+	resp.lkey      = mr->lkey;
+	resp.rkey      = mr->rkey;
+
+	if (copy_to_user((void __user *)(unsigned long)cmd.response,
+			 &resp, sizeof(resp)))
+		ret = -EFAULT;
+	else
+		ret = in_len;
+
+put_uobj_pd:
+	if (cmd.flags & IB_MR_REREG_PD)
+		put_pd_read(pd);
+
+put_uobjs:
+
+	put_uobj_write(mr->uobject);
+
+	return ret;
+}
+
 ssize_t ib_uverbs_dereg_mr(struct ib_uverbs_file *file,
 			   const char __user *buf, int in_len,
 			   int out_len)
@@ -1303,7 +1396,7 @@ ssize_t ib_uverbs_resize_cq(struct ib_uverbs_file *file,
 			    int out_len)
 {
 	struct ib_uverbs_resize_cq	cmd;
-	struct ib_uverbs_resize_cq_resp	resp = {};
+	struct ib_uverbs_resize_cq_resp	resp;
 	struct ib_udata                 udata;
 	struct ib_cq			*cq;
 	int				ret = -EINVAL;
@@ -1915,12 +2008,6 @@ ssize_t ib_uverbs_modify_qp(struct ib_uverbs_file *file,
 		goto out;
 	}
 
-	if ((cmd.attr_mask & IB_QP_PORT) &&
-	    !rdma_is_port_valid(qp->device, cmd.port_num)) {
-		ret = -EINVAL;
-		goto release_qp;
-	}
-
 	attr->qp_state 		  = cmd.qp_state;
 	attr->cur_qp_state 	  = cmd.cur_qp_state;
 	attr->path_mtu 		  = cmd.path_mtu;
@@ -1970,20 +2057,19 @@ ssize_t ib_uverbs_modify_qp(struct ib_uverbs_file *file,
 	if (qp->real_qp == qp) {
 		ret = ib_resolve_eth_l2_attrs(qp, attr, &cmd.attr_mask);
 		if (ret)
-			goto release_qp;
+			goto out;
 		ret = qp->device->modify_qp(qp, attr,
 			modify_qp_mask(qp->qp_type, cmd.attr_mask), &udata);
 	} else {
 		ret = ib_modify_qp(qp, attr, modify_qp_mask(qp->qp_type, cmd.attr_mask));
 	}
 
+	put_qp_read(qp);
+
 	if (ret)
-		goto release_qp;
+		goto out;
 
 	ret = in_len;
-
-release_qp:
-	put_qp_read(qp);
 
 out:
 	kfree(attr);
@@ -2117,12 +2203,6 @@ ssize_t ib_uverbs_post_send(struct ib_uverbs_file *file,
 		next->send_flags = user_wr->send_flags;
 
 		if (is_ud) {
-			if (next->opcode != IB_WR_SEND &&
-			    next->opcode != IB_WR_SEND_WITH_IMM) {
-				ret = -EINVAL;
-				goto out_put;
-			}
-
 			next->wr.ud.ah = idr_read_ah(user_wr->wr.ud.ah,
 						     file->ucontext);
 			if (!next->wr.ud.ah) {
@@ -2162,11 +2242,9 @@ ssize_t ib_uverbs_post_send(struct ib_uverbs_file *file,
 					user_wr->wr.atomic.compare_add;
 				next->wr.atomic.swap = user_wr->wr.atomic.swap;
 				next->wr.atomic.rkey = user_wr->wr.atomic.rkey;
-			case IB_WR_SEND:
 				break;
 			default:
-				ret = -EINVAL;
-				goto out_put;
+				break;
 			}
 		}
 
@@ -2403,7 +2481,6 @@ ssize_t ib_uverbs_create_ah(struct ib_uverbs_file *file,
 			    const char __user *buf, int in_len,
 			    int out_len)
 {
-	struct ib_device		*ib_dev = file->device->ib_dev;
 	struct ib_uverbs_create_ah	 cmd;
 	struct ib_uverbs_create_ah_resp	 resp;
 	struct ib_uobject		*uobj;
@@ -2417,9 +2494,6 @@ ssize_t ib_uverbs_create_ah(struct ib_uverbs_file *file,
 
 	if (copy_from_user(&cmd, buf, sizeof cmd))
 		return -EFAULT;
-
-	if (!rdma_is_port_valid(ib_dev, cmd.attr.port_num))
-		return -EINVAL;
 
 	uobj = kmalloc(sizeof *uobj, GFP_KERNEL);
 	if (!uobj)
@@ -2587,7 +2661,6 @@ ssize_t ib_uverbs_detach_mcast(struct ib_uverbs_file *file,
 	struct ib_qp                 *qp;
 	struct ib_uverbs_mcast_entry *mcast;
 	int                           ret = -EINVAL;
-	bool                          found = false;
 
 	if (copy_from_user(&cmd, buf, sizeof cmd))
 		return -EFAULT;
@@ -2596,6 +2669,10 @@ ssize_t ib_uverbs_detach_mcast(struct ib_uverbs_file *file,
 	if (!qp)
 		return -EINVAL;
 
+	ret = ib_detach_mcast(qp, (union ib_gid *) cmd.gid, cmd.mlid);
+	if (ret)
+		goto out_put;
+
 	obj = container_of(qp->uobject, struct ib_uqp_object, uevent.uobject);
 
 	list_for_each_entry(mcast, &obj->mcast_list, list)
@@ -2603,16 +2680,8 @@ ssize_t ib_uverbs_detach_mcast(struct ib_uverbs_file *file,
 		    !memcmp(cmd.gid, mcast->gid.raw, sizeof mcast->gid.raw)) {
 			list_del(&mcast->list);
 			kfree(mcast);
-			found = true;
 			break;
 		}
-
-	if (!found) {
-		ret = -EINVAL;
-		goto out_put;
-	}
-
-	ret = ib_detach_mcast(qp, (union ib_gid *)cmd.gid, cmd.mlid);
 
 out_put:
 	put_qp_write(qp);
@@ -2674,8 +2743,8 @@ int ib_uverbs_ex_create_flow(struct ib_uverbs_file *file,
 	struct ib_uverbs_flow_attr	  *kern_flow_attr;
 	struct ib_flow_attr		  *flow_attr;
 	struct ib_qp			  *qp;
-	struct ib_uverbs_flow_spec_hdr	  *kern_spec;
 	int err = 0;
+	void *kern_spec;
 	void *ib_spec;
 	int i;
 
@@ -2717,8 +2786,8 @@ int ib_uverbs_ex_create_flow(struct ib_uverbs_file *file,
 		if (!kern_flow_attr)
 			return -ENOMEM;
 
-		*kern_flow_attr = cmd.flow_attr;
-		err = ib_copy_from_udata(&kern_flow_attr->flow_specs, ucore,
+		memcpy(kern_flow_attr, &cmd.flow_attr, sizeof(*kern_flow_attr));
+		err = ib_copy_from_udata(kern_flow_attr + 1, ucore,
 					 cmd.flow_attr.size);
 		if (err)
 			goto err_free_attr;
@@ -2740,11 +2809,6 @@ int ib_uverbs_ex_create_flow(struct ib_uverbs_file *file,
 		goto err_uobj;
 	}
 
-	if (qp->qp_type != IB_QPT_UD && qp->qp_type != IB_QPT_RAW_PACKET) {
-		err = -EINVAL;
-		goto err_put;
-	}
-
 	flow_attr = kmalloc(sizeof(*flow_attr) + cmd.flow_attr.size, GFP_KERNEL);
 	if (!flow_attr) {
 		err = -ENOMEM;
@@ -2758,21 +2822,19 @@ int ib_uverbs_ex_create_flow(struct ib_uverbs_file *file,
 	flow_attr->flags = kern_flow_attr->flags;
 	flow_attr->size = sizeof(*flow_attr);
 
-	kern_spec = kern_flow_attr->flow_specs;
+	kern_spec = kern_flow_attr + 1;
 	ib_spec = flow_attr + 1;
 	for (i = 0; i < flow_attr->num_of_specs &&
-			cmd.flow_attr.size >= sizeof(*kern_spec) &&
-			cmd.flow_attr.size >= kern_spec->size;
-	     i++) {
-		err = kern_spec_to_ib_spec(
-				(struct ib_uverbs_flow_spec *)kern_spec,
-				ib_spec);
+	     cmd.flow_attr.size > offsetof(struct ib_uverbs_flow_spec, reserved) &&
+	     cmd.flow_attr.size >=
+	     ((struct ib_uverbs_flow_spec *)kern_spec)->size; i++) {
+		err = kern_spec_to_ib_spec(kern_spec, ib_spec);
 		if (err)
 			goto err_free;
 		flow_attr->size +=
 			((union ib_flow_spec *) ib_spec)->size;
-		cmd.flow_attr.size -= kern_spec->size;
-		kern_spec = ((void *)kern_spec) + kern_spec->size;
+		cmd.flow_attr.size -= ((struct ib_uverbs_flow_spec *)kern_spec)->size;
+		kern_spec += ((struct ib_uverbs_flow_spec *) kern_spec)->size;
 		ib_spec += ((union ib_flow_spec *) ib_spec)->size;
 	}
 	if (cmd.flow_attr.size || (i != flow_attr->num_of_specs)) {
@@ -2786,6 +2848,7 @@ int ib_uverbs_ex_create_flow(struct ib_uverbs_file *file,
 		err = PTR_ERR(flow_id);
 		goto err_free;
 	}
+	flow_id->qp = qp;
 	flow_id->uobject = uobj;
 	uobj->object = flow_id;
 

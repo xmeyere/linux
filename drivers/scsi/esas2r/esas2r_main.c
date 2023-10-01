@@ -1057,7 +1057,7 @@ int esas2r_eh_abort(struct scsi_cmnd *cmd)
 
 		cmd->scsi_done(cmd);
 
-		return SUCCESS;
+		return 0;
 	}
 
 	spin_lock_irqsave(&a->queue_lock, flags);

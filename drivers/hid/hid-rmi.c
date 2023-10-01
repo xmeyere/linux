@@ -29,9 +29,9 @@
 #define RMI_SET_RMI_MODE_REPORT_ID	0x0f /* Feature Report */
 
 /* flags */
-#define RMI_READ_REQUEST_PENDING	0
-#define RMI_READ_DATA_PENDING		1
-#define RMI_STARTED			2
+#define RMI_READ_REQUEST_PENDING	BIT(0)
+#define RMI_READ_DATA_PENDING		BIT(1)
+#define RMI_STARTED			BIT(2)
 
 enum rmi_mode_type {
 	RMI_MODE_OFF			= 0,
@@ -389,7 +389,7 @@ static int rmi_input_event(struct hid_device *hdev, u8 *data, int size)
 	irq_mask |= hdata->f30.irq_mask;
 
 	if (data[1] & ~irq_mask)
-		hid_warn(hdev, "unknown intr source:%02lx %s:%d\n",
+		hid_dbg(hdev, "unknown intr source:%02lx %s:%d\n",
 			data[1] & ~irq_mask, __FILE__, __LINE__);
 
 	if (hdata->f11.interrupt_base < hdata->f30.interrupt_base) {
@@ -412,7 +412,7 @@ static int rmi_read_data_event(struct hid_device *hdev, u8 *data, int size)
 	struct rmi_data *hdata = hid_get_drvdata(hdev);
 
 	if (!test_bit(RMI_READ_REQUEST_PENDING, &hdata->flags)) {
-		hid_err(hdev, "no read request pending\n");
+		hid_dbg(hdev, "no read request pending\n");
 		return 0;
 	}
 
@@ -584,15 +584,11 @@ static int rmi_populate_f11(struct hid_device *hdev)
 	bool has_query10 = false;
 	bool has_query11;
 	bool has_query12;
-	bool has_query27;
-	bool has_query28;
-	bool has_query36 = false;
 	bool has_physical_props;
 	bool has_gestures;
 	bool has_rel;
-	bool has_data40 = false;
 	unsigned x_size, y_size;
-	u16 query_offset;
+	u16 query12_offset;
 
 	if (!data->f11.query_base_addr) {
 		hid_err(hdev, "No 2D sensor found, giving up.\n");
@@ -608,8 +604,6 @@ static int rmi_populate_f11(struct hid_device *hdev)
 	has_query9 = !!(buf[0] & BIT(3));
 	has_query11 = !!(buf[0] & BIT(4));
 	has_query12 = !!(buf[0] & BIT(5));
-	has_query27 = !!(buf[0] & BIT(6));
-	has_query28 = !!(buf[0] & BIT(7));
 
 	/* query 1 to get the max number of fingers */
 	ret = rmi_read(hdev, data->f11.query_base_addr + 1, buf);
@@ -648,27 +642,27 @@ static int rmi_populate_f11(struct hid_device *hdev)
 	 * +1 for query 5 which is present since absolute events are
 	 * reported and +1 for query 12.
 	 */
-	query_offset = 6;
+	query12_offset = 6;
 
 	if (has_rel)
-		++query_offset; /* query 6 is present */
+		++query12_offset; /* query 6 is present */
 
 	if (has_gestures)
-		query_offset += 2; /* query 7 and 8 are present */
+		query12_offset += 2; /* query 7 and 8 are present */
 
 	if (has_query9)
-		++query_offset;
+		++query12_offset;
 
 	if (has_query10)
-		++query_offset;
+		++query12_offset;
 
 	if (has_query11)
-		++query_offset;
+		++query12_offset;
 
 	/* query 12 to know if the physical properties are reported */
 	if (has_query12) {
 		ret = rmi_read(hdev, data->f11.query_base_addr
-				+ query_offset, buf);
+				+ query12_offset, buf);
 		if (ret) {
 			hid_err(hdev, "can not get query 12: %d.\n", ret);
 			return ret;
@@ -676,10 +670,9 @@ static int rmi_populate_f11(struct hid_device *hdev)
 		has_physical_props = !!(buf[0] & BIT(5));
 
 		if (has_physical_props) {
-			query_offset += 1;
 			ret = rmi_read_block(hdev,
 					data->f11.query_base_addr
-						+ query_offset, buf, 4);
+						+ query12_offset + 1, buf, 4);
 			if (ret) {
 				hid_err(hdev, "can not read query 15-18: %d.\n",
 					ret);
@@ -694,44 +687,8 @@ static int rmi_populate_f11(struct hid_device *hdev)
 
 			hid_info(hdev, "%s: size in mm: %d x %d\n",
 				 __func__, data->x_size_mm, data->y_size_mm);
-
-			/*
-			 * query 15 - 18 contain the size of the sensor
-			 * and query 19 - 26 contain bezel dimensions
-			 */
-			query_offset += 12;
 		}
 	}
-
-	if (has_query27)
-		++query_offset;
-
-	if (has_query28) {
-		ret = rmi_read(hdev, data->f11.query_base_addr
-				+ query_offset, buf);
-		if (ret) {
-			hid_err(hdev, "can not get query 28: %d.\n", ret);
-			return ret;
-		}
-
-		has_query36 = !!(buf[0] & BIT(6));
-	}
-
-	if (has_query36) {
-		query_offset += 2;
-		ret = rmi_read(hdev, data->f11.query_base_addr
-				+ query_offset, buf);
-		if (ret) {
-			hid_err(hdev, "can not get query 36: %d.\n", ret);
-			return ret;
-		}
-
-		has_data40 = !!(buf[0] & BIT(5));
-	}
-
-
-	if (has_data40)
-		data->f11.report_size += data->max_fingers * 2;
 
 	/*
 	 * retrieve the ctrl registers
@@ -923,6 +880,8 @@ static int rmi_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	struct rmi_data *data = NULL;
 	int ret;
 	size_t alloc_size;
+	struct hid_report *input_report;
+	struct hid_report *output_report;
 
 	data = devm_kzalloc(&hdev->dev, sizeof(struct rmi_data), GFP_KERNEL);
 	if (!data)
@@ -941,12 +900,26 @@ static int rmi_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
-	data->input_report_size = (hdev->report_enum[HID_INPUT_REPORT]
-		.report_id_hash[RMI_ATTN_REPORT_ID]->size >> 3)
-		+ 1 /* report id */;
-	data->output_report_size = (hdev->report_enum[HID_OUTPUT_REPORT]
-		.report_id_hash[RMI_WRITE_REPORT_ID]->size >> 3)
-		+ 1 /* report id */;
+	input_report = hdev->report_enum[HID_INPUT_REPORT]
+			.report_id_hash[RMI_ATTN_REPORT_ID];
+	if (!input_report) {
+		hid_err(hdev, "device does not have expected input report\n");
+		ret = -ENODEV;
+		return ret;
+	}
+
+	data->input_report_size = (input_report->size >> 3) + 1 /* report id */;
+
+	output_report = hdev->report_enum[HID_OUTPUT_REPORT]
+			.report_id_hash[RMI_WRITE_REPORT_ID];
+	if (!output_report) {
+		hid_err(hdev, "device does not have expected output report\n");
+		ret = -ENODEV;
+		return ret;
+	}
+
+	data->output_report_size = (output_report->size >> 3)
+					+ 1 /* report id */;
 
 	alloc_size = data->output_report_size + data->input_report_size;
 
@@ -968,10 +941,15 @@ static int rmi_probe(struct hid_device *hdev, const struct hid_device_id *id)
 		return ret;
 	}
 
-	if (!test_bit(RMI_STARTED, &data->flags)) {
-		hid_hw_stop(hdev);
-		return -EIO;
-	}
+	if (!test_bit(RMI_STARTED, &data->flags))
+		/*
+		 * The device maybe in the bootloader if rmi_input_configured
+		 * failed to find F11 in the PDT. Print an error, but don't
+		 * return an error from rmi_probe so that hidraw will be
+		 * accessible from userspace. That way a userspace tool
+		 * can be used to reload working firmware on the touchpad.
+		 */
+		hid_err(hdev, "Device failed to be properly configured\n");
 
 	return 0;
 }

@@ -116,6 +116,7 @@ enum {
 	/* special QP and management commands */
 	MLX4_CMD_CONF_SPECIAL_QP = 0x23,
 	MLX4_CMD_MAD_IFC	 = 0x24,
+	MLX4_CMD_MAD_DEMUX	 = 0x203,
 
 	/* multicast commands */
 	MLX4_CMD_READ_MCG	 = 0x25,
@@ -186,6 +187,12 @@ enum {
 };
 
 enum {
+	MLX4_CMD_MAD_DEMUX_CONFIG	= 0,
+	MLX4_CMD_MAD_DEMUX_QUERY_STATE	= 1,
+	MLX4_CMD_MAD_DEMUX_QUERY_RESTR	= 2, /* Query mad demux restrictions */
+};
+
+enum {
 	MLX4_CMD_WRAPPED,
 	MLX4_CMD_NATIVE
 };
@@ -236,7 +243,7 @@ struct mlx4_cmd_mailbox *mlx4_alloc_cmd_mailbox(struct mlx4_dev *dev);
 void mlx4_free_cmd_mailbox(struct mlx4_dev *dev, struct mlx4_cmd_mailbox *mailbox);
 
 u32 mlx4_comm_get_version(void);
-int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u8 *mac);
+int mlx4_set_vf_mac(struct mlx4_dev *dev, int port, int vf, u64 mac);
 int mlx4_set_vf_vlan(struct mlx4_dev *dev, int port, int vf, u16 vlan, u8 qos);
 int mlx4_set_vf_spoofchk(struct mlx4_dev *dev, int port, int vf, bool setting);
 int mlx4_get_vf_config(struct mlx4_dev *dev, int port, int vf, struct ifla_vf_info *ivf);

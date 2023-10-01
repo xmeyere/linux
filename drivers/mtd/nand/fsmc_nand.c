@@ -605,7 +605,7 @@ static int dma_xfer(struct fsmc_nand_data *host, void *buffer, int len,
 	wait_for_completion_timeout(&host->dma_access_complete,
 				msecs_to_jiffies(3000));
 	if (ret <= 0) {
-		chan->device->device_control(chan, DMA_TERMINATE_ALL, 0);
+		dmaengine_terminate_all(chan);
 		dev_err(host->dev, "wait_for_completion_timeout\n");
 		if (!ret)
 			ret = -ETIMEDOUT;
@@ -874,19 +874,18 @@ static int fsmc_nand_probe_config_dt(struct platform_device *pdev,
 	struct fsmc_nand_platform_data *pdata = dev_get_platdata(&pdev->dev);
 	u32 val;
 
-	pdata->options = 0;
-
+	/* Set default NAND width to 8 bits */
+	pdata->width = 8;
 	if (!of_property_read_u32(np, "bank-width", &val)) {
 		if (val == 2) {
-			pdata->options |= NAND_BUSWIDTH_16;
+			pdata->width = 16;
 		} else if (val != 1) {
 			dev_err(&pdev->dev, "invalid bank-width %u\n", val);
 			return -EINVAL;
 		}
 	}
-
 	if (of_get_property(np, "nand-skip-bbtscan", NULL))
-		pdata->options |= NAND_SKIP_BBTSCAN;
+		pdata->options = NAND_SKIP_BBTSCAN;
 
 	pdata->nand_timings = devm_kzalloc(&pdev->dev,
 				sizeof(*pdata->nand_timings), GFP_KERNEL);

@@ -492,16 +492,22 @@ UNUSUAL_DEV(  0x04e6, 0x000a, 0x0200, 0x0200,
 		"eUSB CompactFlash Adapter",
 		USB_SC_8020, USB_PR_CB, NULL, 0),
 
-UNUSUAL_DEV(  0x04e6, 0x000B, 0x0100, 0x0100,
+UNUSUAL_DEV(  0x04e6, 0x000b, 0x0100, 0x0100,
 		"Shuttle",
 		"eUSCSI Bridge",
 		USB_SC_SCSI, USB_PR_BULK, usb_stor_euscsi_init,
 		US_FL_SCM_MULT_TARG ), 
 
-UNUSUAL_DEV(  0x04e6, 0x000C, 0x0100, 0x0100,
+UNUSUAL_DEV(  0x04e6, 0x000c, 0x0100, 0x0100,
 		"Shuttle",
 		"eUSCSI Bridge",
 		USB_SC_SCSI, USB_PR_BULK, usb_stor_euscsi_init,
+		US_FL_SCM_MULT_TARG ),
+
+UNUSUAL_DEV(  0x04e6, 0x000f, 0x0000, 0x9999,
+		"SCM Microsystems",
+		"eUSB SCSI Adapter (Bus Powered)",
+		USB_SC_DEVICE, USB_PR_DEVICE, usb_stor_euscsi_init,
 		US_FL_SCM_MULT_TARG ),
 
 UNUSUAL_DEV(  0x04e6, 0x0101, 0x0200, 0x0200,
@@ -760,13 +766,6 @@ UNUSUAL_DEV(  0x059f, 0x0643, 0x0000, 0x0000,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_GO_SLOW ),
 
-/* Reported by Christian Schaller <cschalle@redhat.com> */
-UNUSUAL_DEV(  0x059f, 0x0651, 0x0000, 0x0000,
-		"LaCie",
-		"External HDD",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_NO_WP_DETECT ),
-
 /* Submitted by Joel Bourquard <numlock@freesurf.ch>
  * Some versions of this device need the SubClass and Protocol overrides
  * while others don't.
@@ -941,6 +940,12 @@ UNUSUAL_DEV(  0x069b, 0x3004, 0x0001, 0x0001,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_FIX_CAPACITY ),
 
+UNUSUAL_DEV(  0x06ca, 0x2003, 0x0100, 0x0100,
+		"Newer Technology",
+		"uSCSI",
+		USB_SC_DEVICE, USB_PR_DEVICE, usb_stor_euscsi_init,
+		US_FL_SCM_MULT_TARG ),
+
 /* Reported by Adrian Pilchowiec <adi1981@epf.pl> */
 UNUSUAL_DEV(  0x071b, 0x3203, 0x0000, 0x0000,
 		"RockChip",
@@ -1100,6 +1105,13 @@ UNUSUAL_DEV( 0x0840, 0x0085, 0x0001, 0x0001,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_FIX_CAPACITY),
 
+/* Supplied with some Castlewood ORB removable drives */
+UNUSUAL_DEV(  0x084b, 0xa001, 0x0000, 0x9999,
+		"Castlewood Systems",
+		"USB to SCSI cable",
+		USB_SC_DEVICE, USB_PR_DEVICE, usb_stor_euscsi_init,
+		US_FL_SCM_MULT_TARG ),
+
 /* Entry and supporting patch by Theodore Kilgore <kilgota@auburn.edu>.
  * Flag will support Bulk devices which use a standards-violating 32-byte
  * Command Block Wrapper. Here, the "DC2MEGA" cameras (several brands) with
@@ -1193,18 +1205,6 @@ UNUSUAL_DEV( 0x090c, 0x1132, 0x0000, 0xffff,
 		"5-in-1 Card Reader",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_FIX_CAPACITY ),
-
-/*
- * Reported by Icenowy Zheng <icenowy@aosc.io>
- * The SMI SM3350 USB-UFS bridge controller will enter a wrong state
- * that do not process read/write command if a long sense is requested,
- * so force to use 18-byte sense.
- */
-UNUSUAL_DEV(  0x090c, 0x3350, 0x0000, 0xffff,
-		"SMI",
-		"SM3350 UFS-to-USB-Mass-Storage bridge",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_BAD_SENSE ),
 
 /* Reported by Paul Hartman <paul.hartman+linux@gmail.com>
  * This card reader returns "Illegal Request, Logical Block Address
@@ -1371,13 +1371,6 @@ UNUSUAL_DEV( 0x0bc2, 0x3010, 0x0000, 0x0000,
 		"FreeAgent Pro",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_SANE_SENSE ),
-
-/* Reported by Kris Lindgren <kris.lindgren@gmail.com> */
-UNUSUAL_DEV( 0x0bc2, 0x3332, 0x0000, 0x9999,
-		"Seagate",
-		"External",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_NO_WP_DETECT ),
 
 UNUSUAL_DEV(  0x0d49, 0x7310, 0x0000, 0x9999,
 		"Maxtor",
@@ -1987,18 +1980,11 @@ UNUSUAL_DEV(  0x14cd, 0x6600, 0x0201, 0x0201,
 		US_FL_IGNORE_RESIDUE ),
 
 /* Reported by Michael Büsch <m@bues.ch> */
-UNUSUAL_DEV(  0x152d, 0x0567, 0x0114, 0x0117,
+UNUSUAL_DEV(  0x152d, 0x0567, 0x0114, 0x0114,
 		"JMicron",
 		"USB to ATA/ATAPI Bridge",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_BROKEN_FUA ),
-
-/* Reported by David Kozub <zub@linux.fjfi.cvut.cz> */
-UNUSUAL_DEV(0x152d, 0x0578, 0x0000, 0x9999,
-		"JMicron",
-		"JMS567",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_BROKEN_FUA),
 
 /* Reported by Alexandre Oliva <oliva@lsd.ic.unicamp.br>
  * JMicron responds to USN and several other SCSI ioctls with a
@@ -2008,27 +1994,6 @@ UNUSUAL_DEV(  0x152d, 0x2329, 0x0100, 0x0100,
 		"USB to ATA/ATAPI Bridge",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_IGNORE_RESIDUE | US_FL_SANE_SENSE ),
-
-/* Reported by Dmitry Nezhevenko <dion@dion.org.ua> */
-UNUSUAL_DEV(  0x152d, 0x2566, 0x0114, 0x0114,
-		"JMicron",
-		"USB to ATA/ATAPI Bridge",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_BROKEN_FUA ),
-
-/* Reported by Teijo Kinnunen <teijo.kinnunen@code-q.fi> */
-UNUSUAL_DEV(  0x152d, 0x2567, 0x0117, 0x0117,
-		"JMicron",
-		"USB to ATA/ATAPI Bridge",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_BROKEN_FUA ),
-
-/* Reported-by George Cherian <george.cherian@cavium.com> */
-UNUSUAL_DEV(0x152d, 0x9561, 0x0000, 0x9999,
-		"JMicron",
-		"JMS56x",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_NO_REPORT_OPCODES),
 
 /* Entrega Technologies U1-SC25 (later Xircom PortGear PGSCSI)
  * and Mac USB Dock USB-SCSI */
@@ -2086,18 +2051,6 @@ UNUSUAL_DEV( 0x1908, 0x3335, 0x0200, 0x0200,
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_NO_READ_DISC_INFO ),
 
-/* Reported by Oliver Neukum <oneukum@suse.com>
- * This device morphes spontaneously into another device if the access
- * pattern of Windows isn't followed. Thus writable media would be dirty
- * if the initial instance is used. So the device is limited to its
- * virtual CD.
- * And yes, the concept that BCD goes up to 9 is not heeded */
-UNUSUAL_DEV( 0x19d2, 0x1225, 0x0000, 0xffff,
-		"ZTE,Incorporated",
-		"ZTE WCDMA Technologies MSM",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_SINGLE_LUN ),
-
 /* Reported by Sven Geggus <sven-usbst@geggus.net>
  * This encrypted pen drive returns bogus data for the initial READ(10).
  */
@@ -2122,6 +2075,13 @@ UNUSUAL_DEV( 0x1e74, 0x4621, 0x0000, 0x0000,
 		"MP3 Player",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_BULK_IGNORE_TAG | US_FL_MAX_SECTORS_64 ),
+
+/* Supplied with some Castlewood ORB removable drives */
+UNUSUAL_DEV(  0x2027, 0xa001, 0x0000, 0x9999,
+		"Double-H Technology",
+		"USB to SCSI Intelligent Cable",
+		USB_SC_DEVICE, USB_PR_DEVICE, usb_stor_euscsi_init,
+		US_FL_SCM_MULT_TARG ),
 
 UNUSUAL_DEV( 0x2116, 0x0320, 0x0001, 0x0001,
 		"ST",
@@ -2155,13 +2115,6 @@ UNUSUAL_DEV(  0x2735, 0x100b, 0x0000, 0x9999,
 		"HS200",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_GO_SLOW ),
-
-/* Reported-by: Tim Anderson <tsa@biglakesoftware.com> */
-UNUSUAL_DEV(  0x2ca3, 0x0031, 0x0000, 0x9999,
-		"DJI",
-		"CineSSD",
-		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
-		US_FL_NO_ATA_1X),
 
 /* Reported by Frederic Marchal <frederic.marchal@wowcompany.com>
  * Mio Moov 330

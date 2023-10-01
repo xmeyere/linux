@@ -883,7 +883,7 @@ static u8 qlcnic_dcb_get_capability(struct net_device *netdev, int capid,
 	struct qlcnic_adapter *adapter = netdev_priv(netdev);
 
 	if (!test_bit(QLCNIC_DCB_STATE, &adapter->dcb->state))
-		return 1;
+		return 0;
 
 	switch (capid) {
 	case DCB_CAP_ATTR_PG:
@@ -926,7 +926,7 @@ static int qlcnic_dcb_get_num_tcs(struct net_device *netdev, int attr, u8 *num)
 	}
 }
 
-static u8 qlcnic_dcb_get_app(struct net_device *netdev, u8 idtype, u16 id)
+static int qlcnic_dcb_get_app(struct net_device *netdev, u8 idtype, u16 id)
 {
 	struct qlcnic_adapter *adapter = netdev_priv(netdev);
 	struct dcb_app app = {
@@ -935,7 +935,7 @@ static u8 qlcnic_dcb_get_app(struct net_device *netdev, u8 idtype, u16 id)
 			     };
 
 	if (!test_bit(QLCNIC_DCB_STATE, &adapter->dcb->state))
-		return 0;
+		return -EINVAL;
 
 	return dcb_getapp(netdev, &app);
 }

@@ -36,7 +36,7 @@ char vmxnet3_driver_name[] = "vmxnet3";
  * PCI Device ID Table
  * Last entry must be all 0s
  */
-static DEFINE_PCI_DEVICE_TABLE(vmxnet3_pciid_table) = {
+static const struct pci_device_id vmxnet3_pciid_table[] = {
 	{PCI_VDEVICE(VMWARE, PCI_DEVICE_ID_VMWARE_VMXNET3)},
 	{0}
 };
@@ -587,12 +587,6 @@ vmxnet3_rq_alloc_rx_buf(struct vmxnet3_rx_queue *rq, u32 ring_idx,
 						&adapter->pdev->dev,
 						rbi->skb->data, rbi->len,
 						PCI_DMA_FROMDEVICE);
-				if (dma_mapping_error(&adapter->pdev->dev,
-						      rbi->dma_addr)) {
-					dev_kfree_skb_any(rbi->skb);
-					rq->stats.rx_buf_alloc_failure++;
-					break;
-				}
 			} else {
 				/* rx buffer skipped by the device */
 			}
@@ -611,18 +605,13 @@ vmxnet3_rq_alloc_rx_buf(struct vmxnet3_rx_queue *rq, u32 ring_idx,
 						&adapter->pdev->dev,
 						rbi->page, 0, PAGE_SIZE,
 						PCI_DMA_FROMDEVICE);
-				if (dma_mapping_error(&adapter->pdev->dev,
-						      rbi->dma_addr)) {
-					put_page(rbi->page);
-					rq->stats.rx_buf_alloc_failure++;
-					break;
-				}
 			} else {
 				/* rx buffers skipped by the device */
 			}
 			val = VMXNET3_RXD_BTYPE_BODY << VMXNET3_RXD_BTYPE_SHIFT;
 		}
 
+		BUG_ON(rbi->dma_addr == 0);
 		gd->rxd.addr = cpu_to_le64(rbi->dma_addr);
 		gd->dword[2] = cpu_to_le32((!ring->gen << VMXNET3_RXD_GEN_SHIFT)
 					   | val | rbi->len);
@@ -666,7 +655,7 @@ vmxnet3_append_frag(struct sk_buff *skb, struct Vmxnet3_RxCompDesc *rcd,
 }
 
 
-static int
+static void
 vmxnet3_map_pkt(struct sk_buff *skb, struct vmxnet3_tx_ctx *ctx,
 		struct vmxnet3_tx_queue *tq, struct pci_dev *pdev,
 		struct vmxnet3_adapter *adapter)
@@ -726,8 +715,6 @@ vmxnet3_map_pkt(struct sk_buff *skb, struct vmxnet3_tx_ctx *ctx,
 		tbi->dma_addr = dma_map_single(&adapter->pdev->dev,
 				skb->data + buf_offset, buf_size,
 				PCI_DMA_TODEVICE);
-		if (dma_mapping_error(&adapter->pdev->dev, tbi->dma_addr))
-			return -EFAULT;
 
 		tbi->len = buf_size;
 
@@ -768,8 +755,6 @@ vmxnet3_map_pkt(struct sk_buff *skb, struct vmxnet3_tx_ctx *ctx,
 			tbi->dma_addr = skb_frag_dma_map(&adapter->pdev->dev, frag,
 							 buf_offset, buf_size,
 							 DMA_TO_DEVICE);
-			if (dma_mapping_error(&adapter->pdev->dev, tbi->dma_addr))
-				return -EFAULT;
 
 			tbi->len = buf_size;
 
@@ -781,7 +766,7 @@ vmxnet3_map_pkt(struct sk_buff *skb, struct vmxnet3_tx_ctx *ctx,
 			gdesc->dword[3] = 0;
 
 			netdev_dbg(adapter->netdev,
-				"txd[%u]: 0x%llu %u %u\n",
+				"txd[%u]: 0x%llx %u %u\n",
 				tq->tx_ring.next2fill, le64_to_cpu(gdesc->txd.addr),
 				le32_to_cpu(gdesc->dword[2]), gdesc->dword[3]);
 			vmxnet3_cmd_ring_adv_next2fill(&tq->tx_ring);
@@ -797,8 +782,6 @@ vmxnet3_map_pkt(struct sk_buff *skb, struct vmxnet3_tx_ctx *ctx,
 	/* set the last buf_info for the pkt */
 	tbi->skb = skb;
 	tbi->sop_idx = ctx->sop_txd - tq->tx_ring.base;
-
-	return 0;
 }
 
 
@@ -1023,8 +1006,7 @@ vmxnet3_tq_xmit(struct sk_buff *skb, struct vmxnet3_tx_queue *tq,
 	}
 
 	/* fill tx descs related to addr & len */
-	if (vmxnet3_map_pkt(skb, &ctx, tq, adapter->pdev, adapter))
-		goto unlock_drop_pkt;
+	vmxnet3_map_pkt(skb, &ctx, tq, adapter->pdev, adapter);
 
 	/* setup the EOP desc */
 	ctx.eop_txd->dword[3] = cpu_to_le32(VMXNET3_TXD_CQ | VMXNET3_TXD_EOP);
@@ -1188,7 +1170,6 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 		struct vmxnet3_rx_buf_info *rbi;
 		struct sk_buff *skb, *new_skb = NULL;
 		struct page *new_page = NULL;
-		dma_addr_t new_dma_addr;
 		int num_to_alloc;
 		struct Vmxnet3_RxDesc *rxd;
 		u32 idx, ring_idx;
@@ -1246,21 +1227,6 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 				skip_page_frags = true;
 				goto rcd_done;
 			}
-			new_dma_addr = dma_map_single(&adapter->pdev->dev,
-						      new_skb->data, rbi->len,
-						      PCI_DMA_FROMDEVICE);
-			if (dma_mapping_error(&adapter->pdev->dev,
-					      new_dma_addr)) {
-				dev_kfree_skb(new_skb);
-				/* Skb allocation failed, do not handover this
-				 * skb to stack. Reuse it. Drop the existing pkt
-				 */
-				rq->stats.rx_buf_alloc_failure++;
-				ctx->skb = NULL;
-				rq->stats.drop_total++;
-				skip_page_frags = true;
-				goto rcd_done;
-			}
 
 			dma_unmap_single(&adapter->pdev->dev, rbi->dma_addr,
 					 rbi->len,
@@ -1277,7 +1243,9 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 
 			/* Immediate refill */
 			rbi->skb = new_skb;
-			rbi->dma_addr = new_dma_addr;
+			rbi->dma_addr = dma_map_single(&adapter->pdev->dev,
+						       rbi->skb->data, rbi->len,
+						       PCI_DMA_FROMDEVICE);
 			rxd->addr = cpu_to_le64(rbi->dma_addr);
 			rxd->len = rbi->len;
 
@@ -1307,19 +1275,6 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 				skip_page_frags = true;
 				goto rcd_done;
 			}
-			new_dma_addr = dma_map_page(&adapter->pdev->dev,
-						    new_page,
-						    0, PAGE_SIZE,
-						    PCI_DMA_FROMDEVICE);
-			if (dma_mapping_error(&adapter->pdev->dev,
-					      new_dma_addr)) {
-				put_page(new_page);
-				rq->stats.rx_buf_alloc_failure++;
-				dev_kfree_skb(ctx->skb);
-				ctx->skb = NULL;
-				skip_page_frags = true;
-				goto rcd_done;
-			}
 
 			if (rcd->len) {
 				dma_unmap_page(&adapter->pdev->dev,
@@ -1331,7 +1286,10 @@ vmxnet3_rq_rx_complete(struct vmxnet3_rx_queue *rq,
 
 			/* Immediate refill */
 			rbi->page = new_page;
-			rbi->dma_addr = new_dma_addr;
+			rbi->dma_addr = dma_map_page(&adapter->pdev->dev,
+						     rbi->page,
+						     0, PAGE_SIZE,
+						     PCI_DMA_FROMDEVICE);
 			rxd->addr = cpu_to_le64(rbi->dma_addr);
 			rxd->len = rbi->len;
 		}
@@ -2078,7 +2036,6 @@ vmxnet3_set_mc(struct net_device *netdev)
 					&adapter->shared->devRead.rxFilterConf;
 	u8 *new_table = NULL;
 	dma_addr_t new_table_pa = 0;
-	bool new_table_pa_valid = false;
 	u32 new_mode = VMXNET3_RXM_UCAST;
 
 	if (netdev->flags & IFF_PROMISC) {
@@ -2106,15 +2063,12 @@ vmxnet3_set_mc(struct net_device *netdev)
 							new_table,
 							rxConf->mfTableLen,
 							PCI_DMA_TODEVICE);
-				if (!dma_mapping_error(&adapter->pdev->dev,
-						       new_table_pa)) {
-					new_mode |= VMXNET3_RXM_MCAST;
-					new_table_pa_valid = true;
-					rxConf->mfTablePA = cpu_to_le64(
-								new_table_pa);
-				}
 			}
-			if (!new_table_pa_valid) {
+
+			if (new_table_pa) {
+				new_mode |= VMXNET3_RXM_MCAST;
+				rxConf->mfTablePA = cpu_to_le64(new_table_pa);
+			} else {
 				netdev_info(netdev,
 					    "failed to copy mcast list, setting ALL_MULTI\n");
 				new_mode |= VMXNET3_RXM_ALL_MULTI;
@@ -2139,7 +2093,7 @@ vmxnet3_set_mc(struct net_device *netdev)
 			       VMXNET3_CMD_UPDATE_MAC_FILTERS);
 	spin_unlock_irqrestore(&adapter->cmd_lock, flags);
 
-	if (new_table_pa_valid)
+	if (new_table_pa)
 		dma_unmap_single(&adapter->pdev->dev, new_table_pa,
 				 rxConf->mfTableLen, PCI_DMA_TODEVICE);
 	kfree(new_table);
@@ -2445,7 +2399,7 @@ vmxnet3_set_mac_addr(struct net_device *netdev, void *p)
 /* ==================== initialization and cleanup routines ============ */
 
 static int
-vmxnet3_alloc_pci_resources(struct vmxnet3_adapter *adapter)
+vmxnet3_alloc_pci_resources(struct vmxnet3_adapter *adapter, bool *dma64)
 {
 	int err;
 	unsigned long mmio_start, mmio_len;
@@ -2457,12 +2411,30 @@ vmxnet3_alloc_pci_resources(struct vmxnet3_adapter *adapter)
 		return err;
 	}
 
+	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(64)) == 0) {
+		if (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)) != 0) {
+			dev_err(&pdev->dev,
+				"pci_set_consistent_dma_mask failed\n");
+			err = -EIO;
+			goto err_set_mask;
+		}
+		*dma64 = true;
+	} else {
+		if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) != 0) {
+			dev_err(&pdev->dev,
+				"pci_set_dma_mask failed\n");
+			err = -EIO;
+			goto err_set_mask;
+		}
+		*dma64 = false;
+	}
+
 	err = pci_request_selected_regions(pdev, (1 << 2) - 1,
 					   vmxnet3_driver_name);
 	if (err) {
 		dev_err(&pdev->dev,
 			"Failed to request region for adapter: error %d\n", err);
-		goto err_enable_device;
+		goto err_set_mask;
 	}
 
 	pci_set_master(pdev);
@@ -2490,7 +2462,7 @@ err_bar1:
 	iounmap(adapter->hw_addr0);
 err_ioremap:
 	pci_release_selected_regions(pdev, (1 << 2) - 1);
-err_enable_device:
+err_set_mask:
 	pci_disable_device(pdev);
 	return err;
 }
@@ -2955,7 +2927,7 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 #endif
 	};
 	int err;
-	bool dma64;
+	bool dma64 = false; /* stupid gcc */
 	u32 ver;
 	struct net_device *netdev;
 	struct vmxnet3_adapter *adapter;
@@ -3000,33 +2972,10 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 	adapter->tx_ring_size = VMXNET3_DEF_TX_RING_SIZE;
 	adapter->rx_ring_size = VMXNET3_DEF_RX_RING_SIZE;
 
-	if (pci_set_dma_mask(pdev, DMA_BIT_MASK(64)) == 0) {
-		if (pci_set_consistent_dma_mask(pdev, DMA_BIT_MASK(64)) != 0) {
-			dev_err(&pdev->dev,
-				"pci_set_consistent_dma_mask failed\n");
-			err = -EIO;
-			goto err_set_mask;
-		}
-		dma64 = true;
-	} else {
-		if (pci_set_dma_mask(pdev, DMA_BIT_MASK(32)) != 0) {
-			dev_err(&pdev->dev,
-				"pci_set_dma_mask failed\n");
-			err = -EIO;
-			goto err_set_mask;
-		}
-		dma64 = false;
-	}
-
 	spin_lock_init(&adapter->cmd_lock);
 	adapter->adapter_pa = dma_map_single(&adapter->pdev->dev, adapter,
 					     sizeof(struct vmxnet3_adapter),
 					     PCI_DMA_TODEVICE);
-	if (dma_mapping_error(&adapter->pdev->dev, adapter->adapter_pa)) {
-		dev_err(&pdev->dev, "Failed to map dma\n");
-		err = -EFAULT;
-		goto err_set_mask;
-	}
 	adapter->shared = dma_alloc_coherent(
 				&adapter->pdev->dev,
 				sizeof(struct Vmxnet3_DriverShared),
@@ -3076,7 +3025,7 @@ vmxnet3_probe_device(struct pci_dev *pdev,
 	}
 #endif /* VMXNET3_RSS */
 
-	err = vmxnet3_alloc_pci_resources(adapter);
+	err = vmxnet3_alloc_pci_resources(adapter, &dma64);
 	if (err < 0)
 		goto err_alloc_pci;
 
@@ -3180,7 +3129,6 @@ err_alloc_queue_desc:
 err_alloc_shared:
 	dma_unmap_single(&adapter->pdev->dev, adapter->adapter_pa,
 			 sizeof(struct vmxnet3_adapter), PCI_DMA_TODEVICE);
-err_set_mask:
 	free_netdev(netdev);
 	return err;
 }

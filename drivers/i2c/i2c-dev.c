@@ -14,11 +14,6 @@
     but WITHOUT ANY WARRANTY; without even the implied warranty of
     MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
     GNU General Public License for more details.
-
-    You should have received a copy of the GNU General Public License
-    along with this program; if not, write to the Free Software
-    Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
-    MA 02110-1301 USA.
 */
 
 /* Note that this is a complete rewrite of Simon Vogl's i2c-dev module.
@@ -300,7 +295,6 @@ static noinline int i2cdev_ioctl_rdrw(struct i2c_client *client,
 			    rdwr_pa[i].buf[0] < 1 ||
 			    rdwr_pa[i].len < rdwr_pa[i].buf[0] +
 					     I2C_SMBUS_BLOCK_MAX) {
-				i++;
 				res = -EINVAL;
 				break;
 			}
@@ -335,7 +329,7 @@ static noinline int i2cdev_ioctl_smbus(struct i2c_client *client,
 		unsigned long arg)
 {
 	struct i2c_smbus_ioctl_data data_arg;
-	union i2c_smbus_data temp = {};
+	union i2c_smbus_data temp;
 	int datasize, res;
 
 	if (copy_from_user(&data_arg,
@@ -468,15 +462,9 @@ static long i2cdev_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 		return i2cdev_ioctl_smbus(client, arg);
 
 	case I2C_RETRIES:
-		if (arg > INT_MAX)
-			return -EINVAL;
-
 		client->adapter->retries = arg;
 		break;
 	case I2C_TIMEOUT:
-		if (arg > INT_MAX)
-			return -EINVAL;
-
 		/* For historical reasons, user-space sets the timeout
 		 * value in units of 10 ms.
 		 */

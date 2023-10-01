@@ -135,8 +135,6 @@ enum {
 #define CS421X_IDX_DAC_CFG	0x03
 #define CS421X_IDX_SPK_CTL	0x04
 
-#define SPDIF_EVENT		0x04
-
 /* Cirrus Logic CS4213 is like CS4210 but does not have SPDIF input/output */
 #define CS4213_VENDOR_NID	0x09
 
@@ -176,12 +174,8 @@ static void cs_automute(struct hda_codec *codec)
 	snd_hda_gen_update_outputs(codec);
 
 	if (spec->gpio_eapd_hp || spec->gpio_eapd_speaker) {
-		if (spec->gen.automute_speaker)
-			spec->gpio_data = spec->gen.hp_jack_present ?
-				spec->gpio_eapd_hp : spec->gpio_eapd_speaker;
-		else
-			spec->gpio_data =
-				spec->gpio_eapd_hp | spec->gpio_eapd_speaker;
+		spec->gpio_data = spec->gen.hp_jack_present ?
+			spec->gpio_eapd_hp : spec->gpio_eapd_speaker;
 		snd_hda_codec_write(codec, 0x01, 0,
 				    AC_VERB_SET_GPIO_DATA, spec->gpio_data);
 	}
@@ -396,11 +390,9 @@ static const struct snd_pci_quirk cs420x_fixup_tbl[] = {
 	/*SND_PCI_QUIRK(0x8086, 0x7270, "IMac 27 Inch", CS420X_IMAC27),*/
 
 	/* codec SSID */
-	SND_PCI_QUIRK(0x106b, 0x0600, "iMac 14,1", CS420X_IMAC27_122),
 	SND_PCI_QUIRK(0x106b, 0x1c00, "MacBookPro 8,1", CS420X_MBP81),
 	SND_PCI_QUIRK(0x106b, 0x2000, "iMac 12,2", CS420X_IMAC27_122),
 	SND_PCI_QUIRK(0x106b, 0x2800, "MacBookPro 10,1", CS420X_MBP101),
-	SND_PCI_QUIRK(0x106b, 0x5600, "MacBookAir 5,2", CS420X_MBP81),
 	SND_PCI_QUIRK(0x106b, 0x5b00, "MacBookAir 4,2", CS420X_MBA42),
 	SND_PCI_QUIRK_VENDOR(0x106b, "Apple", CS420X_APPLE),
 	{} /* terminator */
@@ -592,7 +584,6 @@ static int patch_cs420x(struct hda_codec *codec)
 		return -ENOMEM;
 
 	spec->gen.automute_hook = cs_automute;
-	codec->single_adc_amp = 1;
 
 	snd_hda_pick_fixup(codec, cs420x_models, cs420x_fixup_tbl,
 			   cs420x_fixups);
@@ -621,7 +612,6 @@ enum {
 	CS4208_MAC_AUTO,
 	CS4208_MBA6,
 	CS4208_MBP11,
-	CS4208_MACMINI,
 	CS4208_GPIO0,
 };
 
@@ -629,7 +619,6 @@ static const struct hda_model_fixup cs4208_models[] = {
 	{ .id = CS4208_GPIO0, .name = "gpio0" },
 	{ .id = CS4208_MBA6, .name = "mba6" },
 	{ .id = CS4208_MBP11, .name = "mbp11" },
-	{ .id = CS4208_MACMINI, .name = "macmini" },
 	{}
 };
 
@@ -641,10 +630,8 @@ static const struct snd_pci_quirk cs4208_fixup_tbl[] = {
 /* codec SSID matching */
 static const struct snd_pci_quirk cs4208_mac_fixup_tbl[] = {
 	SND_PCI_QUIRK(0x106b, 0x5e00, "MacBookPro 11,2", CS4208_MBP11),
-	SND_PCI_QUIRK(0x106b, 0x6c00, "MacMini 7,1", CS4208_MACMINI),
 	SND_PCI_QUIRK(0x106b, 0x7100, "MacBookAir 6,1", CS4208_MBA6),
 	SND_PCI_QUIRK(0x106b, 0x7200, "MacBookAir 6,2", CS4208_MBA6),
-	SND_PCI_QUIRK(0x106b, 0x7b00, "MacBookPro 12,1", CS4208_MBP11),
 	{} /* terminator */
 };
 
@@ -668,28 +655,12 @@ static void cs4208_fixup_mac(struct hda_codec *codec,
 {
 	if (action != HDA_FIXUP_ACT_PRE_PROBE)
 		return;
+
+	codec->fixup_id = HDA_FIXUP_ID_NOT_SET;
 	snd_hda_pick_fixup(codec, NULL, cs4208_mac_fixup_tbl, cs4208_fixups);
-	if (codec->fixup_id < 0 || codec->fixup_id == CS4208_MAC_AUTO)
+	if (codec->fixup_id == HDA_FIXUP_ID_NOT_SET)
 		codec->fixup_id = CS4208_GPIO0; /* default fixup */
 	snd_hda_apply_fixup(codec, action);
-}
-
-/* MacMini 7,1 has the inverted jack detection */
-static void cs4208_fixup_macmini(struct hda_codec *codec,
-				 const struct hda_fixup *fix, int action)
-{
-	static const struct hda_pintbl pincfgs[] = {
-		{ 0x18, 0x00ab9150 }, /* mic (audio-in) jack: disable detect */
-		{ 0x21, 0x004be140 }, /* SPDIF: disable detect */
-		{ }
-	};
-
-	if (action == HDA_FIXUP_ACT_PRE_PROBE) {
-		/* HP pin (0x10) has an inverted detection */
-		codec->inv_jack_detect = 1;
-		/* disable the bogus Mic and SPDIF jack detections */
-		snd_hda_apply_pincfgs(codec, pincfgs);
-	}
 }
 
 static int cs4208_spdif_sw_put(struct snd_kcontrol *kcontrol,
@@ -732,12 +703,6 @@ static const struct hda_fixup cs4208_fixups[] = {
 	[CS4208_MBP11] = {
 		.type = HDA_FIXUP_FUNC,
 		.v.func = cs4208_fixup_spdif_switch,
-		.chained = true,
-		.chain_id = CS4208_GPIO0,
-	},
-	[CS4208_MACMINI] = {
-		.type = HDA_FIXUP_FUNC,
-		.v.func = cs4208_fixup_macmini,
 		.chained = true,
 		.chain_id = CS4208_GPIO0,
 	},
@@ -1017,7 +982,7 @@ static void cs4210_pinmux_init(struct hda_codec *codec)
 }
 
 static void cs4210_spdif_automute(struct hda_codec *codec,
-				  struct hda_jack_tbl *tbl)
+				  struct hda_jack_callback *tbl)
 {
 	struct cs_spec *spec = codec->spec;
 	bool spdif_present = false;
@@ -1034,7 +999,9 @@ static void cs4210_spdif_automute(struct hda_codec *codec,
 
 	spec->spdif_present = spdif_present;
 	/* SPDIF TX on/off */
-	snd_hda_set_pin_ctl(codec, spdif_pin, spdif_present ? PIN_OUT : 0);
+	if (spdif_present)
+		snd_hda_set_pin_ctl(codec, spdif_pin,
+				    spdif_present ? PIN_OUT : 0);
 
 	cs_automute(codec);
 }
@@ -1050,7 +1017,6 @@ static void parse_cs421x_digital(struct hda_codec *codec)
 		if (get_wcaps(codec, nid) & AC_WCAP_UNSOL_CAP) {
 			spec->spdif_detect = 1;
 			snd_hda_jack_detect_enable_callback(codec, nid,
-							    SPDIF_EVENT,
 							    cs4210_spdif_automute);
 		}
 	}

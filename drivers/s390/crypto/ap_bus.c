@@ -44,7 +44,6 @@
 #include <linux/hrtimer.h>
 #include <linux/ktime.h>
 #include <asm/facility.h>
-#include <linux/crypto.h>
 
 #include "ap_bus.h"
 
@@ -72,7 +71,7 @@ MODULE_AUTHOR("IBM Corporation");
 MODULE_DESCRIPTION("Adjunct Processor Bus driver, " \
 		   "Copyright IBM Corp. 2006, 2012");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS_CRYPTO("z90crypt");
+MODULE_ALIAS("z90crypt");
 
 /*
  * Module parameter
@@ -665,6 +664,17 @@ static ssize_t ap_hwtype_show(struct device *dev,
 }
 
 static DEVICE_ATTR(hwtype, 0444, ap_hwtype_show, NULL);
+
+static ssize_t ap_raw_hwtype_show(struct device *dev,
+			      struct device_attribute *attr, char *buf)
+{
+	struct ap_device *ap_dev = to_ap_dev(dev);
+
+	return snprintf(buf, PAGE_SIZE, "%d\n", ap_dev->raw_hwtype);
+}
+
+static DEVICE_ATTR(raw_hwtype, 0444, ap_raw_hwtype_show, NULL);
+
 static ssize_t ap_depth_show(struct device *dev, struct device_attribute *attr,
 			     char *buf)
 {
@@ -735,6 +745,7 @@ static DEVICE_ATTR(ap_functions, 0444, ap_functions_show, NULL);
 
 static struct attribute *ap_dev_attrs[] = {
 	&dev_attr_hwtype.attr,
+	&dev_attr_raw_hwtype.attr,
 	&dev_attr_depth.attr,
 	&dev_attr_request_count.attr,
 	&dev_attr_requestq_count.attr,
@@ -1189,6 +1200,10 @@ static int ap_select_domain(void)
 	ap_qid_t qid;
 	int rc, i, j;
 
+	/* IF APXA isn't installed, only 16 domains could be defined */
+	if (!ap_configuration->ap_extended && (ap_domain_index > 15))
+		return -EINVAL;
+
 	/*
 	 * We want to use a single domain. Either the one specified with
 	 * the "domain=" parameter or the domain with the maximum number
@@ -1414,9 +1429,13 @@ static void ap_scan_bus(struct work_struct *unused)
 				continue;
 			}
 			break;
+		case 11:
+			ap_dev->device_type = 10;
+			break;
 		default:
 			ap_dev->device_type = device_type;
 		}
+		ap_dev->raw_hwtype = device_type;
 
 		rc = ap_query_functions(qid, &device_functions);
 		if (!rc)
@@ -1901,9 +1920,15 @@ static void ap_reset_all(void)
 {
 	int i, j;
 
-	for (i = 0; i < AP_DOMAINS; i++)
-		for (j = 0; j < AP_DEVICES; j++)
+	for (i = 0; i < AP_DOMAINS; i++) {
+		if (!ap_test_config_domain(i))
+			continue;
+		for (j = 0; j < AP_DEVICES; j++) {
+			if (!ap_test_config_card_id(j))
+				continue;
 			ap_reset_queue(AP_MKQID(j, i));
+		}
+	}
 }
 
 static struct reset_call ap_reset_call = {

@@ -11,10 +11,6 @@
  * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
  * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
  * more details.
- *
- * You should have received a copy of the GNU General Public License along with
- * this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #include <linux/dma-mapping.h>
@@ -59,22 +55,20 @@ struct chip_data {
 
 #ifdef CONFIG_DEBUG_FS
 #define SPI_REGS_BUFSIZE	1024
-static ssize_t  spi_show_regs(struct file *file, char __user *user_buf,
-				size_t count, loff_t *ppos)
+static ssize_t dw_spi_show_regs(struct file *file, char __user *user_buf,
+		size_t count, loff_t *ppos)
 {
-	struct dw_spi *dws;
+	struct dw_spi *dws = file->private_data;
 	char *buf;
 	u32 len = 0;
 	ssize_t ret;
-
-	dws = file->private_data;
 
 	buf = kzalloc(SPI_REGS_BUFSIZE, GFP_KERNEL);
 	if (!buf)
 		return 0;
 
 	len += snprintf(buf + len, SPI_REGS_BUFSIZE - len,
-			"MRST SPI0 registers:\n");
+			"%s registers:\n", dev_name(&dws->master->dev));
 	len += snprintf(buf + len, SPI_REGS_BUFSIZE - len,
 			"=================================\n");
 	len += snprintf(buf + len, SPI_REGS_BUFSIZE - len,
@@ -110,42 +104,41 @@ static ssize_t  spi_show_regs(struct file *file, char __user *user_buf,
 	len += snprintf(buf + len, SPI_REGS_BUFSIZE - len,
 			"=================================\n");
 
-	ret =  simple_read_from_buffer(user_buf, count, ppos, buf, len);
+	ret = simple_read_from_buffer(user_buf, count, ppos, buf, len);
 	kfree(buf);
 	return ret;
 }
 
-static const struct file_operations mrst_spi_regs_ops = {
+static const struct file_operations dw_spi_regs_ops = {
 	.owner		= THIS_MODULE,
 	.open		= simple_open,
-	.read		= spi_show_regs,
+	.read		= dw_spi_show_regs,
 	.llseek		= default_llseek,
 };
 
-static int mrst_spi_debugfs_init(struct dw_spi *dws)
+static int dw_spi_debugfs_init(struct dw_spi *dws)
 {
-	dws->debugfs = debugfs_create_dir("mrst_spi", NULL);
+	dws->debugfs = debugfs_create_dir("dw_spi", NULL);
 	if (!dws->debugfs)
 		return -ENOMEM;
 
 	debugfs_create_file("registers", S_IFREG | S_IRUGO,
-		dws->debugfs, (void *)dws, &mrst_spi_regs_ops);
+		dws->debugfs, (void *)dws, &dw_spi_regs_ops);
 	return 0;
 }
 
-static void mrst_spi_debugfs_remove(struct dw_spi *dws)
+static void dw_spi_debugfs_remove(struct dw_spi *dws)
 {
-	if (dws->debugfs)
-		debugfs_remove_recursive(dws->debugfs);
+	debugfs_remove_recursive(dws->debugfs);
 }
 
 #else
-static inline int mrst_spi_debugfs_init(struct dw_spi *dws)
+static inline int dw_spi_debugfs_init(struct dw_spi *dws)
 {
 	return 0;
 }
 
-static inline void mrst_spi_debugfs_remove(struct dw_spi *dws)
+static inline void dw_spi_debugfs_remove(struct dw_spi *dws)
 {
 }
 #endif /* CONFIG_DEBUG_FS */
@@ -177,16 +170,14 @@ static inline u32 rx_max(struct dw_spi *dws)
 {
 	u32 rx_left = (dws->rx_end - dws->rx) / dws->n_bytes;
 
-	return min(rx_left, (u32)dw_readw(dws, DW_SPI_RXFLR));
+	return min_t(u32, rx_left, dw_readw(dws, DW_SPI_RXFLR));
 }
 
 static void dw_writer(struct dw_spi *dws)
 {
-	u32 max;
+	u32 max = tx_max(dws);
 	u16 txw = 0;
 
-	spin_lock(&dws->buf_lock);
-	max = tx_max(dws);
 	while (max--) {
 		/* Set the tx word if the transfer's original "tx" is not null */
 		if (dws->tx_end - dws->len) {
@@ -198,16 +189,13 @@ static void dw_writer(struct dw_spi *dws)
 		dw_writew(dws, DW_SPI_DR, txw);
 		dws->tx += dws->n_bytes;
 	}
-	spin_unlock(&dws->buf_lock);
 }
 
 static void dw_reader(struct dw_spi *dws)
 {
-	u32 max;
+	u32 max = rx_max(dws);
 	u16 rxw;
 
-	spin_lock(&dws->buf_lock);
-	max = rx_max(dws);
 	while (max--) {
 		rxw = dw_readw(dws, DW_SPI_DR);
 		/* Care rx only if the transfer's original "rx" is not null */
@@ -219,7 +207,6 @@ static void dw_reader(struct dw_spi *dws)
 		}
 		dws->rx += dws->n_bytes;
 	}
-	spin_unlock(&dws->buf_lock);
 }
 
 static void *next_transfer(struct dw_spi *dws)
@@ -234,8 +221,9 @@ static void *next_transfer(struct dw_spi *dws)
 					struct spi_transfer,
 					transfer_list);
 		return RUNNING_STATE;
-	} else
-		return DONE_STATE;
+	}
+
+	return DONE_STATE;
 }
 
 /*
@@ -374,7 +362,6 @@ static void pump_transfers(unsigned long data)
 	struct spi_transfer *previous = NULL;
 	struct spi_device *spi = NULL;
 	struct chip_data *chip = NULL;
-	unsigned long flags;
 	u8 bits = 0;
 	u8 imask = 0;
 	u8 cs_change = 0;
@@ -400,7 +387,7 @@ static void pump_transfers(unsigned long data)
 		goto early_exit;
 	}
 
-	/* Delay if requested at end of transfer*/
+	/* Delay if requested at end of transfer */
 	if (message->state == RUNNING_STATE) {
 		previous = list_entry(transfer->transfer_list.prev,
 					struct spi_transfer,
@@ -413,7 +400,6 @@ static void pump_transfers(unsigned long data)
 	dws->dma_width = chip->dma_width;
 	dws->cs_control = chip->cs_control;
 
-	spin_lock_irqsave(&dws->buf_lock, flags);
 	dws->rx_dma = transfer->rx_dma;
 	dws->tx_dma = transfer->tx_dma;
 	dws->tx = (void *)transfer->tx_buf;
@@ -423,7 +409,6 @@ static void pump_transfers(unsigned long data)
 	dws->len = dws->cur_transfer->len;
 	if (chip != dws->prev_chip)
 		cs_change = 1;
-	spin_unlock_irqrestore(&dws->buf_lock, flags);
 
 	cr0 = chip->cr0;
 
@@ -477,10 +462,12 @@ static void pump_transfers(unsigned long data)
 	 */
 	if (!dws->dma_mapped && !chip->poll_mode) {
 		int templen = dws->len / dws->n_bytes;
+
 		txint_level = dws->fifo_len / 2;
 		txint_level = (templen > txint_level) ? txint_level : templen;
 
-		imask |= SPI_INT_TXEI | SPI_INT_TXOI | SPI_INT_RXUI | SPI_INT_RXOI;
+		imask |= SPI_INT_TXEI | SPI_INT_TXOI |
+			 SPI_INT_RXUI | SPI_INT_RXOI;
 		dws->transfer_handler = interrupt_transfer;
 	}
 
@@ -521,7 +508,6 @@ static void pump_transfers(unsigned long data)
 
 early_exit:
 	giveback(dws);
-	return;
 }
 
 static int dw_spi_transfer_one_message(struct spi_master *master,
@@ -530,7 +516,7 @@ static int dw_spi_transfer_one_message(struct spi_master *master,
 	struct dw_spi *dws = spi_master_get_devdata(master);
 
 	dws->cur_msg = msg;
-	/* Initial message state*/
+	/* Initial message state */
 	dws->cur_msg->state = START_STATE;
 	dws->cur_transfer = list_entry(dws->cur_msg->transfers.next,
 						struct spi_transfer,
@@ -600,6 +586,9 @@ static int dw_spi_setup(struct spi_device *spi)
 			| (spi->mode  << SPI_MODE_OFFSET)
 			| (chip->tmode << SPI_TMOD_OFFSET);
 
+	if (spi->mode & SPI_LOOP)
+		chip->cr0 |= 1 << SPI_SRL_OFFSET;
+
 	if (gpio_is_valid(spi->cs_gpio)) {
 		ret = gpio_direction_output(spi->cs_gpio,
 				!(spi->mode & SPI_CS_HIGH));
@@ -631,13 +620,14 @@ static void spi_hw_init(struct dw_spi *dws)
 	 */
 	if (!dws->fifo_len) {
 		u32 fifo;
-		for (fifo = 1; fifo < 256; fifo++) {
+
+		for (fifo = 2; fifo <= 257; fifo++) {
 			dw_writew(dws, DW_SPI_TXFLTR, fifo);
 			if (fifo != dw_readw(dws, DW_SPI_TXFLTR))
 				break;
 		}
 
-		dws->fifo_len = (fifo == 1) ? 0 : fifo;
+		dws->fifo_len = (fifo == 257) ? 0 : fifo;
 		dw_writew(dws, DW_SPI_TXFLTR, 0);
 	}
 }
@@ -658,17 +648,16 @@ int dw_spi_add_host(struct device *dev, struct dw_spi *dws)
 	dws->prev_chip = NULL;
 	dws->dma_inited = 0;
 	dws->dma_addr = (dma_addr_t)(dws->paddr + 0x60);
-	snprintf(dws->name, sizeof(dws->name), "dw_spi%d",
-			dws->bus_num);
-	spin_lock_init(&dws->buf_lock);
+	snprintf(dws->name, sizeof(dws->name), "dw_spi%d", dws->bus_num);
 
-	ret = request_irq(dws->irq, dw_spi_irq, IRQF_SHARED, dws->name, dws);
+	ret = devm_request_irq(dev, dws->irq, dw_spi_irq, IRQF_SHARED,
+			dws->name, dws);
 	if (ret < 0) {
 		dev_err(&master->dev, "can not get IRQ\n");
 		goto err_free_master;
 	}
 
-	master->mode_bits = SPI_CPOL | SPI_CPHA;
+	master->mode_bits = SPI_CPOL | SPI_CPHA | SPI_LOOP;
 	master->bits_per_word_mask = SPI_BPW_MASK(8) | SPI_BPW_MASK(16);
 	master->bus_num = dws->bus_num;
 	master->num_chipselect = dws->num_cs;
@@ -676,6 +665,7 @@ int dw_spi_add_host(struct device *dev, struct dw_spi *dws)
 	master->cleanup = dw_spi_cleanup;
 	master->transfer_one_message = dw_spi_transfer_one_message;
 	master->max_speed_hz = dws->max_freq;
+	master->dev.of_node = dev->of_node;
 
 	/* Basic HW init */
 	spi_hw_init(dws);
@@ -697,14 +687,13 @@ int dw_spi_add_host(struct device *dev, struct dw_spi *dws)
 		goto err_dma_exit;
 	}
 
-	mrst_spi_debugfs_init(dws);
+	dw_spi_debugfs_init(dws);
 	return 0;
 
 err_dma_exit:
 	if (dws->dma_ops && dws->dma_ops->dma_exit)
 		dws->dma_ops->dma_exit(dws);
 	spi_enable_chip(dws, 0);
-	free_irq(dws->irq, master);
 err_free_master:
 	spi_master_put(master);
 	return ret;
@@ -715,15 +704,13 @@ void dw_spi_remove_host(struct dw_spi *dws)
 {
 	if (!dws)
 		return;
-	mrst_spi_debugfs_remove(dws);
+	dw_spi_debugfs_remove(dws);
 
 	if (dws->dma_ops && dws->dma_ops->dma_exit)
 		dws->dma_ops->dma_exit(dws);
 	spi_enable_chip(dws, 0);
 	/* Disable clk */
 	spi_set_clk(dws, 0);
-
-	free_irq(dws->irq, dws->master);
 }
 EXPORT_SYMBOL_GPL(dw_spi_remove_host);
 

@@ -47,10 +47,6 @@
 
 #include <asm/irq.h>
 
-#ifdef CONFIG_SAMSUNG_CLOCK
-#include <plat/clock.h>
-#endif
-
 #include "samsung.h"
 
 #if	defined(CONFIG_SERIAL_SAMSUNG_DEBUG) &&	\
@@ -201,10 +197,6 @@ static void s3c24xx_serial_stop_rx(struct uart_port *port)
 			disable_irq_nosync(ourport->rx_irq);
 		rx_enabled(port) = 0;
 	}
-}
-
-static void s3c24xx_serial_enable_ms(struct uart_port *port)
-{
 }
 
 static inline struct s3c24xx_uart_info *s3c24xx_port_to_info(struct uart_port *port)
@@ -567,15 +559,11 @@ static void s3c24xx_serial_pm(struct uart_port *port, unsigned int level,
 			      unsigned int old)
 {
 	struct s3c24xx_uart_port *ourport = to_ourport(port);
-	int timeout = 10000;
 
 	ourport->pm_level = level;
 
 	switch (level) {
 	case 3:
-		while (--timeout && !s3c24xx_serial_txempty_nofifo(port))
-			udelay(100);
-
 		if (!IS_ERR(ourport->baudclk))
 			clk_disable_unprepare(ourport->baudclk);
 
@@ -757,14 +745,14 @@ static void s3c24xx_serial_set_termios(struct uart_port *port,
 	/* check to see if we need  to change clock source */
 
 	if (ourport->baudclk != clk) {
-		clk_prepare_enable(clk);
-
 		s3c24xx_serial_setsource(port, clk_sel);
 
 		if (!IS_ERR(ourport->baudclk)) {
 			clk_disable_unprepare(ourport->baudclk);
 			ourport->baudclk = ERR_PTR(-EINVAL);
 		}
+
+		clk_prepare_enable(clk);
 
 		ourport->baudclk = clk;
 		ourport->baudclk_rate = clk ? clk_get_rate(clk) : 0;
@@ -956,7 +944,6 @@ static struct uart_ops s3c24xx_serial_ops = {
 	.stop_tx	= s3c24xx_serial_stop_tx,
 	.start_tx	= s3c24xx_serial_start_tx,
 	.stop_rx	= s3c24xx_serial_stop_rx,
-	.enable_ms	= s3c24xx_serial_enable_ms,
 	.break_ctl	= s3c24xx_serial_break_ctl,
 	.startup	= s3c24xx_serial_startup,
 	.shutdown	= s3c24xx_serial_shutdown,
@@ -1163,7 +1150,7 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 		return -ENODEV;
 
 	if (port->mapbase != 0)
-		return -EINVAL;
+		return 0;
 
 	/* setup info for port */
 	port->dev	= &platdev->dev;
@@ -1213,15 +1200,14 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 	if (IS_ERR(ourport->clk)) {
 		pr_err("%s: Controller clock not found\n",
 				dev_name(&platdev->dev));
-		ret = PTR_ERR(ourport->clk);
-		goto err;
+		return PTR_ERR(ourport->clk);
 	}
 
 	ret = clk_prepare_enable(ourport->clk);
 	if (ret) {
 		pr_err("uart: clock failed to prepare+enable: %d\n", ret);
 		clk_put(ourport->clk);
-		goto err;
+		return ret;
 	}
 
 	/* Keep all interrupts masked and cleared */
@@ -1237,12 +1223,7 @@ static int s3c24xx_serial_init_port(struct s3c24xx_uart_port *ourport,
 
 	/* reset the fifos (and setup the uart) */
 	s3c24xx_serial_resetport(port, cfg);
-
 	return 0;
-
-err:
-	port->mapbase = 0;
-	return ret;
 }
 
 #ifdef CONFIG_SAMSUNG_CLOCK
@@ -1284,12 +1265,20 @@ static inline struct s3c24xx_serial_drv_data *s3c24xx_get_driver_data(
 
 static int s3c24xx_serial_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
 	struct s3c24xx_uart_port *ourport;
+	int index = probe_index;
 	int ret;
 
-	dbg("s3c24xx_serial_probe(%p) %d\n", pdev, probe_index);
+	if (np) {
+		ret = of_alias_get_id(np, "serial");
+		if (ret >= 0)
+			index = ret;
+	}
 
-	ourport = &s3c24xx_serial_ports[probe_index];
+	dbg("s3c24xx_serial_probe(%p) %d\n", pdev, index);
+
+	ourport = &s3c24xx_serial_ports[index];
 
 	ourport->drv_data = s3c24xx_get_driver_data(pdev);
 	if (!ourport->drv_data) {
@@ -1303,15 +1292,23 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 			dev_get_platdata(&pdev->dev) :
 			ourport->drv_data->def_cfg;
 
-	ourport->port.fifosize = (ourport->info->fifosize) ?
-		ourport->info->fifosize :
-		ourport->drv_data->fifosize[probe_index];
+	if (np)
+		of_property_read_u32(np,
+			"samsung,uart-fifosize", &ourport->port.fifosize);
+
+	if (!ourport->port.fifosize) {
+		ourport->port.fifosize = (ourport->info->fifosize) ?
+			ourport->info->fifosize :
+			ourport->drv_data->fifosize[index];
+	}
+
+	probe_index++;
 
 	dbg("%s: initialising port %p...\n", __func__, ourport);
 
 	ret = s3c24xx_serial_init_port(ourport, pdev);
 	if (ret < 0)
-		goto probe_err;
+		return ret;
 
 	if (!s3c24xx_uart_drv.state) {
 		ret = uart_register_driver(&s3c24xx_uart_drv);
@@ -1342,12 +1339,7 @@ static int s3c24xx_serial_probe(struct platform_device *pdev)
 	if (ret < 0)
 		dev_err(&pdev->dev, "failed to add cpufreq notifier\n");
 
-	probe_index++;
-
 	return 0;
-
- probe_err:
-	return ret;
 }
 
 static int s3c24xx_serial_remove(struct platform_device *dev)
@@ -1547,8 +1539,8 @@ s3c24xx_serial_get_options(struct uart_port *port, int *baud,
 		case S3C2410_LCON_CS7:
 			*bits = 7;
 			break;
-		default:
 		case S3C2410_LCON_CS8:
+		default:
 			*bits = 8;
 			break;
 		}
@@ -1722,9 +1714,7 @@ static struct s3c24xx_serial_drv_data s3c2440_serial_drv_data = {
 #define S3C2440_SERIAL_DRV_DATA (kernel_ulong_t)NULL
 #endif
 
-#if defined(CONFIG_CPU_S3C6400) || defined(CONFIG_CPU_S3C6410) || \
-	defined(CONFIG_CPU_S5P6440) || defined(CONFIG_CPU_S5P6450) || \
-	defined(CONFIG_CPU_S5PC100)
+#if defined(CONFIG_CPU_S3C6400) || defined(CONFIG_CPU_S3C6410)
 static struct s3c24xx_serial_drv_data s3c6400_serial_drv_data = {
 	.info = &(struct s3c24xx_uart_info) {
 		.name		= "Samsung S3C6400 UART",

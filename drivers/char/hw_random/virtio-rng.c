@@ -28,14 +28,13 @@
 static DEFINE_IDA(rng_index_ida);
 
 struct virtrng_info {
-	struct virtio_device *vdev;
 	struct hwrng hwrng;
 	struct virtqueue *vq;
-	unsigned int data_avail;
 	struct completion have_data;
-	bool busy;
 	char name[25];
+	unsigned int data_avail;
 	int index;
+	bool busy;
 	bool hwrng_register_done;
 	bool hwrng_removed;
 };
@@ -110,8 +109,8 @@ static int probe_common(struct virtio_device *vdev)
 
 	vi->index = index = ida_simple_get(&rng_index_ida, 0, 0, GFP_KERNEL);
 	if (index < 0) {
-		kfree(vi);
-		return index;
+		err = index;
+		goto err_ida;
 	}
 	sprintf(vi->name, "virtio_rng.%d", index);
 	init_completion(&vi->have_data);
@@ -121,6 +120,7 @@ static int probe_common(struct virtio_device *vdev)
 		.cleanup = virtio_cleanup,
 		.priv = (unsigned long)vi,
 		.name = vi->name,
+		.quality = 1000,
 	};
 	vdev->priv = vi;
 
@@ -128,13 +128,16 @@ static int probe_common(struct virtio_device *vdev)
 	vi->vq = virtio_find_single_vq(vdev, random_recv_done, "input");
 	if (IS_ERR(vi->vq)) {
 		err = PTR_ERR(vi->vq);
-		vi->vq = NULL;
-		kfree(vi);
-		ida_simple_remove(&rng_index_ida, index);
-		return err;
+		goto err_find;
 	}
 
 	return 0;
+
+err_find:
+	ida_simple_remove(&rng_index_ida, index);
+err_ida:
+	kfree(vi);
+	return err;
 }
 
 static void remove_common(struct virtio_device *vdev)

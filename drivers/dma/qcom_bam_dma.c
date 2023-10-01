@@ -61,12 +61,17 @@ struct bam_desc_hw {
 #define DESC_FLAG_INT BIT(15)
 #define DESC_FLAG_EOT BIT(14)
 #define DESC_FLAG_EOB BIT(13)
+#define DESC_FLAG_NWD BIT(12)
 
 struct bam_async_desc {
 	struct virt_dma_desc vd;
 
 	u32 num_desc;
 	u32 xfer_len;
+
+	/* transaction flags, EOT|EOB|NWD */
+	u16 flags;
+
 	struct bam_desc_hw *curr_desc;
 
 	enum dma_transfer_direction dir;
@@ -490,6 +495,14 @@ static struct dma_async_tx_descriptor *bam_prep_slave_sg(struct dma_chan *chan,
 	if (!async_desc)
 		goto err_out;
 
+	if (flags & DMA_PREP_FENCE)
+		async_desc->flags |= DESC_FLAG_NWD;
+
+	if (flags & DMA_PREP_INTERRUPT)
+		async_desc->flags |= DESC_FLAG_EOT;
+	else
+		async_desc->flags |= DESC_FLAG_INT;
+
 	async_desc->num_desc = num_alloc;
 	async_desc->curr_desc = async_desc->desc;
 	async_desc->dir = direction;
@@ -539,21 +552,7 @@ static void bam_dma_terminate_all(struct bam_chan *bchan)
 
 	/* remove all transactions, including active transaction */
 	spin_lock_irqsave(&bchan->vc.lock, flag);
-	/*
-	 * If we have transactions queued, then some might be committed to the
-	 * hardware in the desc fifo.  The only way to reset the desc fifo is
-	 * to do a hardware reset (either by pipe or the entire block).
-	 * bam_chan_init_hw() will trigger a pipe reset, and also reinit the
-	 * pipe.  If the pipe is left disabled (default state after pipe reset)
-	 * and is accessed by a connected hardware engine, a fatal error in
-	 * the BAM will occur.  There is a small window where this could happen
-	 * with bam_chan_init_hw(), but it is assumed that the caller has
-	 * stopped activity on any attached hardware engine.  Make sure to do
-	 * this first so that the BAM hardware doesn't cause memory corruption
-	 * by accessing freed resources.
-	 */
 	if (bchan->curr_txd) {
-		bam_chan_init_hw(bchan, bchan->curr_txd->dir);
 		list_add(&bchan->curr_txd->vd.node, &bchan->vc.desc_issued);
 		bchan->curr_txd = NULL;
 	}
@@ -807,8 +806,11 @@ static void bam_start_dma(struct bam_chan *bchan)
 	else
 		async_desc->xfer_len = async_desc->num_desc;
 
-	/* set INT on last descriptor */
-	desc[async_desc->xfer_len - 1].flags |= DESC_FLAG_INT;
+	/* set any special flags on the last descriptor */
+	if (async_desc->num_desc == async_desc->xfer_len)
+		desc[async_desc->xfer_len - 1].flags = async_desc->flags;
+	else
+		desc[async_desc->xfer_len - 1].flags |= DESC_FLAG_INT;
 
 	if (bchan->tail + async_desc->xfer_len > MAX_DESCRIPTORS) {
 		u32 partial = MAX_DESCRIPTORS - bchan->tail;

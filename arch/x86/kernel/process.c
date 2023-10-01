@@ -24,15 +24,10 @@
 #include <asm/syscalls.h>
 #include <asm/idle.h>
 #include <asm/uaccess.h>
-#include <asm/mwait.h>
 #include <asm/i387.h>
 #include <asm/fpu-internal.h>
 #include <asm/debugreg.h>
 #include <asm/nmi.h>
-#include <asm/tlbflush.h>
-#include <asm/spec-ctrl.h>
-
-#include "process.h"
 
 /*
  * per-CPU TSS segments. Threads are completely 'soft' on Linux,
@@ -41,7 +36,7 @@
  * section. Since TSS's are completely CPU-local, we want them
  * on exact cacheline boundaries, to eliminate cacheline ping-pong.
  */
-__visible DEFINE_PER_CPU_SHARED_ALIGNED_USER_MAPPED(struct tss_struct, init_tss) = INIT_TSS;
+__visible DEFINE_PER_CPU_SHARED_ALIGNED(struct tss_struct, init_tss) = INIT_TSS;
 
 #ifdef CONFIG_X86_64
 static DEFINE_PER_CPU(unsigned char, is_idle);
@@ -69,14 +64,16 @@ EXPORT_SYMBOL_GPL(task_xstate_cachep);
  */
 int arch_dup_task_struct(struct task_struct *dst, struct task_struct *src)
 {
-	int ret;
-
 	*dst = *src;
-	if (fpu_allocated(&src->thread.fpu)) {
-		memset(&dst->thread.fpu, 0, sizeof(dst->thread.fpu));
-		ret = fpu_alloc(&dst->thread.fpu);
-		if (ret)
-			return ret;
+
+	dst->thread.fpu_counter = 0;
+	dst->thread.fpu.has_fpu = 0;
+	dst->thread.fpu.last_cpu = ~0;
+	dst->thread.fpu.state = NULL;
+	if (tsk_used_math(src)) {
+		int err = fpu_alloc(&dst->thread.fpu);
+		if (err)
+			return err;
 		fpu_copy(dst, src);
 	}
 	return 0;
@@ -98,6 +95,7 @@ void arch_task_cache_init(void)
         	kmem_cache_create("task_xstate", xstate_size,
 				  __alignof__(union thread_xstate),
 				  SLAB_PANIC | SLAB_NOTRACK, NULL);
+	setup_xstate_comp();
 }
 
 /*
@@ -143,7 +141,7 @@ void flush_thread(void)
 
 static void hard_disable_TSC(void)
 {
-	cr4_set_bits(X86_CR4_TSD);
+	write_cr4(read_cr4() | X86_CR4_TSD);
 }
 
 void disable_TSC(void)
@@ -160,7 +158,7 @@ void disable_TSC(void)
 
 static void hard_enable_TSC(void)
 {
-	cr4_clear_bits(X86_CR4_TSD);
+	write_cr4(read_cr4() & ~X86_CR4_TSD);
 }
 
 static void enable_TSC(void)
@@ -199,268 +197,48 @@ int set_tsc_mode(unsigned int val)
 	return 0;
 }
 
-static inline void switch_to_bitmap(struct thread_struct *prev,
-				    struct thread_struct *next,
-				    unsigned long tifp, unsigned long tifn)
+void __switch_to_xtra(struct task_struct *prev_p, struct task_struct *next_p,
+		      struct tss_struct *tss)
 {
-	struct tss_struct *tss = this_cpu_ptr(&init_tss);
+	struct thread_struct *prev, *next;
 
-	if (tifn & _TIF_IO_BITMAP) {
+	prev = &prev_p->thread;
+	next = &next_p->thread;
+
+	if (test_tsk_thread_flag(prev_p, TIF_BLOCKSTEP) ^
+	    test_tsk_thread_flag(next_p, TIF_BLOCKSTEP)) {
+		unsigned long debugctl = get_debugctlmsr();
+
+		debugctl &= ~DEBUGCTLMSR_BTF;
+		if (test_tsk_thread_flag(next_p, TIF_BLOCKSTEP))
+			debugctl |= DEBUGCTLMSR_BTF;
+
+		update_debugctlmsr(debugctl);
+	}
+
+	if (test_tsk_thread_flag(prev_p, TIF_NOTSC) ^
+	    test_tsk_thread_flag(next_p, TIF_NOTSC)) {
+		/* prev and next are different */
+		if (test_tsk_thread_flag(next_p, TIF_NOTSC))
+			hard_disable_TSC();
+		else
+			hard_enable_TSC();
+	}
+
+	if (test_tsk_thread_flag(next_p, TIF_IO_BITMAP)) {
 		/*
 		 * Copy the relevant range of the IO bitmap.
 		 * Normally this is 128 bytes or less:
 		 */
 		memcpy(tss->io_bitmap, next->io_bitmap_ptr,
 		       max(prev->io_bitmap_max, next->io_bitmap_max));
-	} else if (tifp & _TIF_IO_BITMAP) {
+	} else if (test_tsk_thread_flag(prev_p, TIF_IO_BITMAP)) {
 		/*
 		 * Clear any possible leftover bits:
 		 */
 		memset(tss->io_bitmap, 0xff, prev->io_bitmap_max);
 	}
-}
-
-#ifdef CONFIG_SMP
-
-struct ssb_state {
-	struct ssb_state	*shared_state;
-	raw_spinlock_t		lock;
-	unsigned int		disable_state;
-	unsigned long		local_state;
-};
-
-#define LSTATE_SSB	0
-
-static DEFINE_PER_CPU(struct ssb_state, ssb_state);
-
-void speculative_store_bypass_ht_init(void)
-{
-	struct ssb_state *st = this_cpu_ptr(&ssb_state);
-	unsigned int this_cpu = smp_processor_id();
-	unsigned int cpu;
-
-	st->local_state = 0;
-
-	/*
-	 * Shared state setup happens once on the first bringup
-	 * of the CPU. It's not destroyed on CPU hotunplug.
-	 */
-	if (st->shared_state)
-		return;
-
-	raw_spin_lock_init(&st->lock);
-
-	/*
-	 * Go over HT siblings and check whether one of them has set up the
-	 * shared state pointer already.
-	 */
-	for_each_cpu(cpu, topology_thread_cpumask(this_cpu)) {
-		if (cpu == this_cpu)
-			continue;
-
-		if (!per_cpu(ssb_state, cpu).shared_state)
-			continue;
-
-		/* Link it to the state of the sibling: */
-		st->shared_state = per_cpu(ssb_state, cpu).shared_state;
-		return;
-	}
-
-	/*
-	 * First HT sibling to come up on the core.  Link shared state of
-	 * the first HT sibling to itself. The siblings on the same core
-	 * which come up later will see the shared state pointer and link
-	 * themself to the state of this CPU.
-	 */
-	st->shared_state = st;
-}
-
-/*
- * Logic is: First HT sibling enables SSBD for both siblings in the core
- * and last sibling to disable it, disables it for the whole core. This how
- * MSR_SPEC_CTRL works in "hardware":
- *
- *  CORE_SPEC_CTRL = THREAD0_SPEC_CTRL | THREAD1_SPEC_CTRL
- */
-static __always_inline void amd_set_core_ssb_state(unsigned long tifn)
-{
-	struct ssb_state *st = this_cpu_ptr(&ssb_state);
-	u64 msr = x86_amd_ls_cfg_base;
-
-	if (!static_cpu_has(X86_FEATURE_ZEN)) {
-		msr |= ssbd_tif_to_amd_ls_cfg(tifn);
-		wrmsrl(MSR_AMD64_LS_CFG, msr);
-		return;
-	}
-
-	if (tifn & _TIF_SSBD) {
-		/*
-		 * Since this can race with prctl(), block reentry on the
-		 * same CPU.
-		 */
-		if (__test_and_set_bit(LSTATE_SSB, &st->local_state))
-			return;
-
-		msr |= x86_amd_ls_cfg_ssbd_mask;
-
-		raw_spin_lock(&st->shared_state->lock);
-		/* First sibling enables SSBD: */
-		if (!st->shared_state->disable_state)
-			wrmsrl(MSR_AMD64_LS_CFG, msr);
-		st->shared_state->disable_state++;
-		raw_spin_unlock(&st->shared_state->lock);
-	} else {
-		if (!__test_and_clear_bit(LSTATE_SSB, &st->local_state))
-			return;
-
-		raw_spin_lock(&st->shared_state->lock);
-		st->shared_state->disable_state--;
-		if (!st->shared_state->disable_state)
-			wrmsrl(MSR_AMD64_LS_CFG, msr);
-		raw_spin_unlock(&st->shared_state->lock);
-	}
-}
-#else
-static __always_inline void amd_set_core_ssb_state(unsigned long tifn)
-{
-	u64 msr = x86_amd_ls_cfg_base | ssbd_tif_to_amd_ls_cfg(tifn);
-
-	wrmsrl(MSR_AMD64_LS_CFG, msr);
-}
-#endif
-
-static __always_inline void amd_set_ssb_virt_state(unsigned long tifn)
-{
-	/*
-	 * SSBD has the same definition in SPEC_CTRL and VIRT_SPEC_CTRL,
-	 * so ssbd_tif_to_spec_ctrl() just works.
-	 */
-	wrmsrl(MSR_AMD64_VIRT_SPEC_CTRL, ssbd_tif_to_spec_ctrl(tifn));
-}
-
-/*
- * Update the MSRs managing speculation control, during context switch.
- *
- * tifp: Previous task's thread flags
- * tifn: Next task's thread flags
- */
-static __always_inline void __speculation_ctrl_update(unsigned long tifp,
-						      unsigned long tifn)
-{
-	unsigned long tif_diff = tifp ^ tifn;
-	u64 msr = x86_spec_ctrl_base;
-	bool updmsr = false;
-
-	lockdep_assert_irqs_disabled();
-
-	/*
-	 * If TIF_SSBD is different, select the proper mitigation
-	 * method. Note that if SSBD mitigation is disabled or permanentely
-	 * enabled this branch can't be taken because nothing can set
-	 * TIF_SSBD.
-	 */
-	if (tif_diff & _TIF_SSBD) {
-		if (static_cpu_has(X86_FEATURE_VIRT_SSBD)) {
-			amd_set_ssb_virt_state(tifn);
-		} else if (static_cpu_has(X86_FEATURE_LS_CFG_SSBD)) {
-			amd_set_core_ssb_state(tifn);
-		} else if (static_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
-			   static_cpu_has(X86_FEATURE_AMD_SSBD)) {
-			msr |= ssbd_tif_to_spec_ctrl(tifn);
-			updmsr  = true;
-		}
-	}
-
-	/*
-	 * Only evaluate TIF_SPEC_IB if conditional STIBP is enabled,
-	 * otherwise avoid the MSR write.
-	 */
-	if (IS_ENABLED(CONFIG_SMP) &&
-	    static_branch_unlikely(&switch_to_cond_stibp)) {
-		updmsr |= !!(tif_diff & _TIF_SPEC_IB);
-		msr |= stibp_tif_to_spec_ctrl(tifn);
-	}
-
-	if (updmsr)
-		wrmsrl(MSR_IA32_SPEC_CTRL, msr);
-}
-
-static unsigned long speculation_ctrl_update_tif(struct task_struct *tsk)
-{
-	if (test_and_clear_tsk_thread_flag(tsk, TIF_SPEC_FORCE_UPDATE)) {
-		if (task_spec_ssb_disable(tsk))
-			set_tsk_thread_flag(tsk, TIF_SSBD);
-		else
-			clear_tsk_thread_flag(tsk, TIF_SSBD);
-
-		if (task_spec_ib_disable(tsk))
-			set_tsk_thread_flag(tsk, TIF_SPEC_IB);
-		else
-			clear_tsk_thread_flag(tsk, TIF_SPEC_IB);
-	}
-	/* Return the updated threadinfo flags*/
-	return task_thread_info(tsk)->flags;
-}
-
-void speculation_ctrl_update(unsigned long tif)
-{
-	unsigned long flags;
-
-	/* Forced update. Make sure all relevant TIF flags are different */
-	local_irq_save(flags);
-	__speculation_ctrl_update(~tif, tif);
-	local_irq_restore(flags);
-}
-
-/* Called from seccomp/prctl update */
-void speculation_ctrl_update_current(void)
-{
-	preempt_disable();
-	speculation_ctrl_update(speculation_ctrl_update_tif(current));
-	preempt_enable();
-}
-
-void __switch_to_xtra(struct task_struct *prev_p, struct task_struct *next_p)
-{
-	struct thread_struct *prev, *next;
-	unsigned long tifp, tifn;
-
-	prev = &prev_p->thread;
-	next = &next_p->thread;
-
-	tifn = ACCESS_ONCE(task_thread_info(next_p)->flags);
-	tifp = ACCESS_ONCE(task_thread_info(prev_p)->flags);
-	switch_to_bitmap(prev, next, tifp, tifn);
-
 	propagate_user_return_notify(prev_p, next_p);
-
-	if ((tifp & _TIF_BLOCKSTEP || tifn & _TIF_BLOCKSTEP) &&
-	    arch_has_block_step()) {
-		unsigned long debugctl, msk;
-
-		rdmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
-		debugctl &= ~DEBUGCTLMSR_BTF;
-		msk = tifn & _TIF_BLOCKSTEP;
-		debugctl |= (msk >> TIF_BLOCKSTEP) << DEBUGCTLMSR_BTF_SHIFT;
-		wrmsrl(MSR_IA32_DEBUGCTLMSR, debugctl);
-	}
-
-	if ((tifp ^ tifn) & _TIF_NOTSC) {
-		if (tifn & _TIF_NOTSC)
-			hard_disable_TSC();
-		else
-			hard_enable_TSC();
-	}
-
-	if (likely(!((tifp | tifn) & _TIF_SPEC_FORCE_UPDATE))) {
-		__speculation_ctrl_update(tifp, tifn);
-	} else {
-		speculation_ctrl_update_tif(prev_p);
-		tifn = speculation_ctrl_update_tif(next_p);
-
-		/* Enforce MSR update to ensure consistent state */
-		__speculation_ctrl_update(~tifn, tifn);
-	}
 }
 
 /*
@@ -620,52 +398,6 @@ static void amd_e400_idle(void)
 		default_idle();
 }
 
-/*
- * Intel Core2 and older machines prefer MWAIT over HALT for C1.
- * We can't rely on cpuidle installing MWAIT, because it will not load
- * on systems that support only C1 -- so the boot default must be MWAIT.
- *
- * Some AMD machines are the opposite, they depend on using HALT.
- *
- * So for default C1, which is used during boot until cpuidle loads,
- * use MWAIT-C1 on Intel HW that has it, else use HALT.
- */
-static int prefer_mwait_c1_over_halt(const struct cpuinfo_x86 *c)
-{
-	if (c->x86_vendor != X86_VENDOR_INTEL)
-		return 0;
-
-	if (!cpu_has(c, X86_FEATURE_MWAIT))
-		return 0;
-
-	return 1;
-}
-
-/*
- * MONITOR/MWAIT with no hints, used for default default C1 state.
- * This invokes MWAIT with interrutps enabled and no flags,
- * which is backwards compatible with the original MWAIT implementation.
- */
-
-static void mwait_idle(void)
-{
-	if (!current_set_polling_and_test()) {
-		if (static_cpu_has(X86_FEATURE_CLFLUSH_MONITOR)) {
-			mb();
-			clflush((void *)&current_thread_info()->flags);
-			mb();
-		}
-
-		__monitor((void *)&current_thread_info()->flags, 0, 0);
-		if (!need_resched())
-			__sti_mwait(0, 0);
-		else
-			local_irq_enable();
-	} else
-		local_irq_enable();
-	current_clr_polling();
-}
-
 void select_idle_routine(const struct cpuinfo_x86 *c)
 {
 #ifdef CONFIG_SMP
@@ -679,9 +411,6 @@ void select_idle_routine(const struct cpuinfo_x86 *c)
 		/* E400: APIC timer interrupt does not wake up CPU from C1e */
 		pr_info("using AMD E400 aware idle routine\n");
 		x86_idle = amd_e400_idle;
-	} else if (prefer_mwait_c1_over_halt(c)) {
-		pr_info("using mwait in idle threads\n");
-		x86_idle = mwait_idle;
 	} else
 		x86_idle = default_idle;
 }

@@ -697,6 +697,25 @@ static void i40e_dbg_dump_vsi_seid(struct i40e_pf *pf, int seid)
 			 vsi->bw_ets_limit_credits[i],
 			 vsi->bw_ets_max_quanta[i]);
 	}
+#ifdef I40E_FCOE
+	if (vsi->type == I40E_VSI_FCOE) {
+		dev_info(&pf->pdev->dev,
+			 "    fcoe_stats: rx_packets = %llu, rx_dwords = %llu, rx_dropped = %llu\n",
+			 vsi->fcoe_stats.rx_fcoe_packets,
+			 vsi->fcoe_stats.rx_fcoe_dwords,
+			 vsi->fcoe_stats.rx_fcoe_dropped);
+		dev_info(&pf->pdev->dev,
+			 "    fcoe_stats: tx_packets = %llu, tx_dwords = %llu\n",
+			 vsi->fcoe_stats.tx_fcoe_packets,
+			 vsi->fcoe_stats.tx_fcoe_dwords);
+		dev_info(&pf->pdev->dev,
+			 "    fcoe_stats: bad_crc = %llu, last_error = %llu\n",
+			 vsi->fcoe_stats.fcoe_bad_fccrc,
+			 vsi->fcoe_stats.fcoe_last_error);
+		dev_info(&pf->pdev->dev, "    fcoe_stats: ddp_count = %llu\n",
+			 vsi->fcoe_stats.fcoe_ddp_count);
+	}
+#endif
 }
 
 /**
@@ -754,7 +773,7 @@ static void i40e_dbg_dump_desc(int cnt, int vsi_seid, int ring_id, int desc_n,
 {
 	struct i40e_tx_desc *txd;
 	union i40e_rx_desc *rxd;
-	struct i40e_ring *ring;
+	struct i40e_ring ring;
 	struct i40e_vsi *vsi;
 	int i;
 
@@ -773,32 +792,29 @@ static void i40e_dbg_dump_desc(int cnt, int vsi_seid, int ring_id, int desc_n,
 			 vsi_seid);
 		return;
 	}
-
-	ring = kmemdup(is_rx_ring
-		       ? vsi->rx_rings[ring_id] : vsi->tx_rings[ring_id],
-		       sizeof(*ring), GFP_KERNEL);
-	if (!ring)
-		return;
-
+	if (is_rx_ring)
+		ring = *vsi->rx_rings[ring_id];
+	else
+		ring = *vsi->tx_rings[ring_id];
 	if (cnt == 2) {
 		dev_info(&pf->pdev->dev, "vsi = %02i %s ring = %02i\n",
 			 vsi_seid, is_rx_ring ? "rx" : "tx", ring_id);
-		for (i = 0; i < ring->count; i++) {
+		for (i = 0; i < ring.count; i++) {
 			if (!is_rx_ring) {
-				txd = I40E_TX_DESC(ring, i);
+				txd = I40E_TX_DESC(&ring, i);
 				dev_info(&pf->pdev->dev,
 					 "   d[%03i] = 0x%016llx 0x%016llx\n",
 					 i, txd->buffer_addr,
 					 txd->cmd_type_offset_bsz);
 			} else if (sizeof(union i40e_rx_desc) ==
 				   sizeof(union i40e_16byte_rx_desc)) {
-				rxd = I40E_RX_DESC(ring, i);
+				rxd = I40E_RX_DESC(&ring, i);
 				dev_info(&pf->pdev->dev,
 					 "   d[%03i] = 0x%016llx 0x%016llx\n",
 					 i, rxd->read.pkt_addr,
 					 rxd->read.hdr_addr);
 			} else {
-				rxd = I40E_RX_DESC(ring, i);
+				rxd = I40E_RX_DESC(&ring, i);
 				dev_info(&pf->pdev->dev,
 					 "   d[%03i] = 0x%016llx 0x%016llx 0x%016llx 0x%016llx\n",
 					 i, rxd->read.pkt_addr,
@@ -807,26 +823,26 @@ static void i40e_dbg_dump_desc(int cnt, int vsi_seid, int ring_id, int desc_n,
 			}
 		}
 	} else if (cnt == 3) {
-		if (desc_n >= ring->count || desc_n < 0) {
+		if (desc_n >= ring.count || desc_n < 0) {
 			dev_info(&pf->pdev->dev,
 				 "descriptor %d not found\n", desc_n);
 			return;
 		}
 		if (!is_rx_ring) {
-			txd = I40E_TX_DESC(ring, desc_n);
+			txd = I40E_TX_DESC(&ring, desc_n);
 			dev_info(&pf->pdev->dev,
 				 "vsi = %02i tx ring = %02i d[%03i] = 0x%016llx 0x%016llx\n",
 				 vsi_seid, ring_id, desc_n,
 				 txd->buffer_addr, txd->cmd_type_offset_bsz);
 		} else if (sizeof(union i40e_rx_desc) ==
 			   sizeof(union i40e_16byte_rx_desc)) {
-			rxd = I40E_RX_DESC(ring, desc_n);
+			rxd = I40E_RX_DESC(&ring, desc_n);
 			dev_info(&pf->pdev->dev,
 				 "vsi = %02i rx ring = %02i d[%03i] = 0x%016llx 0x%016llx\n",
 				 vsi_seid, ring_id, desc_n,
 				 rxd->read.pkt_addr, rxd->read.hdr_addr);
 		} else {
-			rxd = I40E_RX_DESC(ring, desc_n);
+			rxd = I40E_RX_DESC(&ring, desc_n);
 			dev_info(&pf->pdev->dev,
 				 "vsi = %02i rx ring = %02i d[%03i] = 0x%016llx 0x%016llx 0x%016llx 0x%016llx\n",
 				 vsi_seid, ring_id, desc_n,
@@ -836,7 +852,6 @@ static void i40e_dbg_dump_desc(int cnt, int vsi_seid, int ring_id, int desc_n,
 	} else {
 		dev_info(&pf->pdev->dev, "dump desc rx/tx <vsi_seid> <ring_id> [<desc_n>]\n");
 	}
-	kfree(ring);
 }
 
 /**
@@ -1242,7 +1257,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 	} else if (strncmp(cmd_buf, "add pvid", 8) == 0) {
 		i40e_status ret;
 		u16 vid;
-		int v;
+		unsigned int v;
 
 		cnt = sscanf(&cmd_buf[8], "%i %u", &vsi_seid, &v);
 		if (cnt != 2) {
@@ -1258,7 +1273,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 			goto command_write_done;
 		}
 
-		vid = (unsigned)v;
+		vid = v;
 		ret = i40e_vsi_add_pvid(vsi, vid);
 		if (!ret)
 			dev_info(&pf->pdev->dev,
@@ -1341,6 +1356,9 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 				 "emp reset count: %d\n", pf->empr_count);
 			dev_info(&pf->pdev->dev,
 				 "pf reset count: %d\n", pf->pfr_count);
+			dev_info(&pf->pdev->dev,
+				 "pf tx sluggish count: %d\n",
+				 pf->tx_sluggish_count);
 		} else if (strncmp(&cmd_buf[5], "port", 4) == 0) {
 			struct i40e_aqc_query_port_ets_config_resp *bw_data;
 			struct i40e_dcbx_config *cfg =
@@ -1747,6 +1765,9 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 		i40e_dbg_cmd_fd_ctrl(pf, I40E_FLAG_FD_ATR_ENABLED, false);
 	} else if (strncmp(cmd_buf, "fd-atr on", 9) == 0) {
 		i40e_dbg_cmd_fd_ctrl(pf, I40E_FLAG_FD_ATR_ENABLED, true);
+	} else if (strncmp(cmd_buf, "fd current cnt", 14) == 0) {
+		dev_info(&pf->pdev->dev, "FD current total filter count for this interface: %d\n",
+			 i40e_get_current_fd_count(pf));
 	} else if (strncmp(cmd_buf, "lldp", 4) == 0) {
 		if (strncmp(&cmd_buf[5], "stop", 4) == 0) {
 			int ret;
@@ -1834,7 +1855,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 
 			ret = i40e_aq_get_lldp_mib(&pf->hw,
 					I40E_AQ_LLDP_BRIDGE_TYPE_NEAREST_BRIDGE,
-					I40E_AQ_LLDP_MIB_LOCAL,
+					I40E_AQ_LLDP_MIB_REMOTE,
 					buff, I40E_LLDPDU_SIZE,
 					&llen, &rlen, NULL);
 			if (ret) {
@@ -1966,6 +1987,7 @@ static ssize_t i40e_dbg_command_write(struct file *filp,
 		dev_info(&pf->pdev->dev, "  rem fd_filter <dest q_index> <flex_off> <pctype> <dest_vsi> <dest_ctl> <fd_status> <cnt_index> <fd_id> <packet_len> <packet>\n");
 		dev_info(&pf->pdev->dev, "  fd-atr off\n");
 		dev_info(&pf->pdev->dev, "  fd-atr on\n");
+		dev_info(&pf->pdev->dev, "  fd current cnt");
 		dev_info(&pf->pdev->dev, "  lldp start\n");
 		dev_info(&pf->pdev->dev, "  lldp stop\n");
 		dev_info(&pf->pdev->dev, "  lldp get local\n");

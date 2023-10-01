@@ -14,7 +14,7 @@
 #include <asm/current.h>
 #include <asm/asm-offsets.h>
 #include <asm/thread_info.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 #include <asm/alternative-asm.h>
 #include <asm/asm.h>
 #include <asm/smap.h>
@@ -28,18 +28,19 @@
  */
 	.macro ALTERNATIVE_JUMP feature1,feature2,orig,alt1,alt2
 0:
-	jmp \orig
+	.byte 0xe9	/* 32bit jump */
+	.long \orig-1f	/* by default jump to orig */
 1:
 	.section .altinstr_replacement,"ax"
-2:
-	jmp \alt1
-3:
-	jmp \alt2
+2:	.byte 0xe9			/* near jump with 32bit immediate */
+	.long \alt1-1b /* offset */   /* or alternatively to alt1 */
+3:	.byte 0xe9			/* near jump with 32bit immediate */
+	.long \alt2-1b /* offset */   /* or alternatively to alt2 */
 	.previous
 
 	.section .altinstructions,"a"
-	altinstruction_entry 0b,2b,\feature1,5,5,0
-	altinstruction_entry 0b,3b,\feature2,5,5,0
+	altinstruction_entry 0b,2b,\feature1,5,5
+	altinstruction_entry 0b,3b,\feature2,5,5
 	.previous
 	.endm
 

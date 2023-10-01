@@ -148,7 +148,7 @@ static int hwpoison_filter_task(struct page *p)
 	ino = cgroup_ino(css->cgroup);
 	css_put(css);
 
-	if (!ino || ino != hwpoison_filter_memcg)
+	if (ino != hwpoison_filter_memcg)
 		return -EINVAL;
 
 	return 0;
@@ -360,8 +360,7 @@ static void kill_procs(struct list_head *to_kill, int forcekill, int trapno,
 				printk(KERN_ERR
 		"MCE %#lx: forcibly killing %s:%d because of failure to unmap corrupted page\n",
 					pfn, tk->tsk->comm, tk->tsk->pid);
-				do_send_sig_info(SIGKILL, SEND_SIG_PRIV,
-						 tk->tsk, PIDTYPE_PID);
+				force_sig(SIGKILL, tk->tsk);
 			}
 
 			/*
@@ -1154,10 +1153,10 @@ int memory_failure(unsigned long pfn, int trapno, int flags)
 	 * The check (unnecessarily) ignores LRU pages being isolated and
 	 * walked by the page reclaim code, however that's not a big loss.
 	 */
-	if (!PageHuge(p)) {
-		if (!PageLRU(hpage))
-			shake_page(hpage, 0);
-		if (!PageLRU(hpage)) {
+	if (!PageHuge(p) && !PageTransTail(p)) {
+		if (!PageLRU(p))
+			shake_page(p, 0);
+		if (!PageLRU(p)) {
 			/*
 			 * shake_page could have turned it free.
 			 */
@@ -1174,16 +1173,23 @@ int memory_failure(unsigned long pfn, int trapno, int flags)
 	lock_page(hpage);
 
 	/*
+	 * The page could have changed compound pages during the locking.
+	 * If this happens just bail out.
+	 */
+	if (compound_head(p) != hpage) {
+		action_result(pfn, "different compound page after locking", IGNORED);
+		res = -EBUSY;
+		goto out;
+	}
+
+	/*
 	 * We use page flags to determine what action should be taken, but
 	 * the flags can be modified by the error containment action.  One
 	 * example is an mlocked page, where PG_mlocked is cleared by
 	 * page_remove_rmap() in try_to_unmap_one(). So to determine page status
 	 * correctly, we save a copy of the page flags at this time.
 	 */
-	if (PageHuge(p))
-		page_flags = hpage->flags;
-	else
-		page_flags = p->flags;
+	page_flags = p->flags;
 
 	/*
 	 * unpoison always clear PG_hwpoison inside page lock
@@ -1517,9 +1523,7 @@ static int get_any_page(struct page *page, unsigned long pfn, int flags)
 		 * Did it turn free?
 		 */
 		ret = __get_any_page(page, pfn, 0);
-		if (ret == 1 && !PageLRU(page)) {
-			/* Drop page reference which is from __get_any_page() */
-			put_page(page);
+		if (!PageLRU(page)) {
 			pr_info("soft_offline: %#lx: unknown non LRU page type %lx\n",
 				pfn, page->flags);
 			return -EIO;
@@ -1555,8 +1559,12 @@ static int soft_offline_huge_page(struct page *page, int flags)
 	if (ret) {
 		pr_info("soft offline: %#lx: migration failed %d, type %lx\n",
 			pfn, ret, page->flags);
-		if (!list_empty(&pagelist))
-			putback_movable_pages(&pagelist);
+		/*
+		 * We know that soft_offline_huge_page() tries to migrate
+		 * only one hugepage pointed to by hpage, so we need not
+		 * run through the pagelist here.
+		 */
+		putback_active_hugepage(hpage);
 		if (ret > 0)
 			ret = -EIO;
 	} else {
@@ -1651,6 +1659,8 @@ static int __soft_offline_page(struct page *page, int flags)
 			 * setting PG_hwpoison.
 			 */
 			if (!is_free_buddy_page(page))
+				lru_add_drain_all();
+			if (!is_free_buddy_page(page))
 				drain_all_pages();
 			SetPageHWPoison(page);
 			if (!is_free_buddy_page(page))
@@ -1725,12 +1735,12 @@ int soft_offline_page(struct page *page, int flags)
 	} else if (ret == 0) { /* for free pages */
 		if (PageHuge(page)) {
 			set_page_hwpoison_huge_page(hpage);
-			if (!dequeue_hwpoisoned_huge_page(hpage))
-				atomic_long_add(1 << compound_order(hpage),
+			dequeue_hwpoisoned_huge_page(hpage);
+			atomic_long_add(1 << compound_order(hpage),
 					&num_poisoned_pages);
 		} else {
-			if (!TestSetPageHWPoison(page))
-				atomic_long_inc(&num_poisoned_pages);
+			SetPageHWPoison(page);
+			atomic_long_inc(&num_poisoned_pages);
 		}
 	}
 	unset_migratetype_isolate(page, MIGRATE_MOVABLE);

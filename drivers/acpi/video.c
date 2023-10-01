@@ -204,6 +204,8 @@ struct acpi_video_device {
 	struct acpi_video_device_flags flags;
 	struct acpi_video_device_cap cap;
 	struct list_head entry;
+	struct delayed_work switch_brightness_work;
+	int switch_brightness_event;
 	struct acpi_video_bus *video;
 	struct acpi_device *dev;
 	struct acpi_video_device_brightness *brightness;
@@ -230,8 +232,7 @@ static int acpi_video_device_lcd_get_level_current(
 			unsigned long long *level, bool raw);
 static int acpi_video_get_next_level(struct acpi_video_device *device,
 				     u32 level_current, u32 event);
-static int acpi_video_switch_brightness(struct acpi_video_device *device,
-					 int event);
+static void acpi_video_switch_brightness(struct work_struct *work);
 
 static bool acpi_video_use_native_backlight(void)
 {
@@ -275,6 +276,7 @@ static int acpi_video_set_brightness(struct backlight_device *bd)
 	int request_level = bd->props.brightness + 2;
 	struct acpi_video_device *vd = bl_get_data(bd);
 
+	cancel_delayed_work(&vd->switch_brightness_work);
 	return acpi_video_device_lcd_set_level(vd,
 				vd->brightness->levels[request_level]);
 }
@@ -409,12 +411,6 @@ static int __init video_set_bqc_offset(const struct dmi_system_id *d)
 	return 0;
 }
 
-static int __init video_set_use_native_backlight(const struct dmi_system_id *d)
-{
-	use_native_backlight_dmi = true;
-	return 0;
-}
-
 static int __init video_disable_native_backlight(const struct dmi_system_id *d)
 {
 	use_native_backlight_dmi = false;
@@ -465,192 +461,6 @@ static struct dmi_system_id video_dmi_table[] __initdata = {
 		DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 7720"),
 		},
 	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "ThinkPad T430 and T430s",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad T430"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "ThinkPad X230",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad X230"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "ThinkPad W530",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad W530"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	.ident = "ThinkPad X1 Carbon",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad X1 Carbon"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Lenovo Yoga 13",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo IdeaPad Yoga 13"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Lenovo Yoga 2 11",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo Yoga 2 11"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "Thinkpad Helix",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "ThinkPad Helix"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Dell Inspiron 7520",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Inspiron 7520"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Acer Aspire 5733Z",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 5733Z"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Acer Aspire 5742G",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Aspire 5742G"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Acer Aspire V5-171",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "V5-171"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Acer Aspire V5-431",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Aspire V5-431"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Acer Aspire V5-471G",
-	 .matches = {
-		DMI_MATCH(DMI_BOARD_VENDOR, "Acer"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "Aspire V5-471G"),
-		},
-	},
-	{
-	 .callback = video_set_use_native_backlight,
-	 .ident = "Acer TravelMate B113",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Acer"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "TravelMate B113"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP ProBook 4340s",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "HP ProBook 4340s"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP ProBook 4540s",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_VERSION, "HP ProBook 4540s"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP ProBook 2013 models",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP ProBook "),
-		DMI_MATCH(DMI_PRODUCT_NAME, " G1"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP EliteBook 2013 models",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP EliteBook "),
-		DMI_MATCH(DMI_PRODUCT_NAME, " G1"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP ZBook 14",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP ZBook 14"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP ZBook 15",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP ZBook 15"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP ZBook 17",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP ZBook 17"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP EliteBook 8470p",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP EliteBook 8470p"),
-		},
-	},
-	{
-	.callback = video_set_use_native_backlight,
-	.ident = "HP EliteBook 8780w",
-	.matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
-		DMI_MATCH(DMI_PRODUCT_NAME, "HP EliteBook 8780w"),
-		},
-	},
 
 	/*
 	 * These models have a working acpi_video backlight control, and using
@@ -692,51 +502,6 @@ static struct dmi_system_id video_dmi_table[] __initdata = {
 	 .matches = {
 		DMI_MATCH(DMI_SYS_VENDOR, "Hewlett-Packard"),
 		DMI_MATCH(DMI_PRODUCT_NAME, "HP ENVY 15 Notebook PC"),
-		},
-	},
-
-	{
-	 .callback = video_disable_native_backlight,
-	 .ident = "SAMSUNG 870Z5E/880Z5E/680Z5E",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "870Z5E/880Z5E/680Z5E"),
-		},
-	},
-	{
-	 .callback = video_disable_native_backlight,
-	 .ident = "SAMSUNG 370R4E/370R4V/370R5E/3570RE/370R5V",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "370R4E/370R4V/370R5E/3570RE/370R5V"),
-		},
-	},
-	{
-	 /* https://bugzilla.redhat.com/show_bug.cgi?id=1186097 */
-	 .callback = video_disable_native_backlight,
-	 .ident = "SAMSUNG 3570R/370R/470R/450R/510R/4450RV",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "3570R/370R/470R/450R/510R/4450RV"),
-		},
-	},
-	{
-	 /* https://bugzilla.redhat.com/show_bug.cgi?id=1094948 */
-	 .callback = video_disable_native_backlight,
-	 .ident = "SAMSUNG 730U3E/740U3E",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "SAMSUNG ELECTRONICS CO., LTD."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "730U3E/740U3E"),
-		},
-	},
-
-	{
-	 /* https://bugzilla.redhat.com/show_bug.cgi?id=1163574 */
-	 .callback = video_disable_native_backlight,
-	 .ident = "Dell XPS15 L521X",
-	 .matches = {
-		DMI_MATCH(DMI_SYS_VENDOR, "Dell Inc."),
-		DMI_MATCH(DMI_PRODUCT_NAME, "XPS L521X"),
 		},
 	},
 	{}
@@ -1282,6 +1047,8 @@ acpi_video_bus_get_one_device(struct acpi_device *device,
 	data->device_id = device_id;
 	data->video = video;
 	data->dev = device;
+	INIT_DELAYED_WORK(&data->switch_brightness_work,
+			  acpi_video_switch_brightness);
 
 	attribute = acpi_video_get_device_attr(video, device_id);
 
@@ -1385,6 +1152,24 @@ acpi_video_device_bind(struct acpi_video_bus *video,
 			ACPI_DEBUG_PRINT((ACPI_DB_INFO, "device_bind %d\n", i));
 		}
 	}
+}
+
+static bool acpi_video_device_in_dod(struct acpi_video_device *device)
+{
+	struct acpi_video_bus *video = device->video;
+	int i;
+
+	/* If we have a broken _DOD, no need to test */
+	if (!video->attached_count)
+		return true;
+
+	for (i = 0; i < video->attached_count; i++) {
+		if ((video->attached_array[i].value.int_val & 0xfff) ==
+		    (device->device_id & 0xfff))
+			return true;
+	}
+
+	return false;
 }
 
 /*
@@ -1504,15 +1289,18 @@ acpi_video_get_next_level(struct acpi_video_device *device,
 	}
 }
 
-static int
-acpi_video_switch_brightness(struct acpi_video_device *device, int event)
+static void
+acpi_video_switch_brightness(struct work_struct *work)
 {
+	struct acpi_video_device *device = container_of(to_delayed_work(work),
+			     struct acpi_video_device, switch_brightness_work);
 	unsigned long long level_current, level_next;
+	int event = device->switch_brightness_event;
 	int result = -EINVAL;
 
 	/* no warning message if acpi_backlight=vendor or a quirk is used */
 	if (!acpi_video_verify_backlight_support())
-		return 0;
+		return;
 
 	if (!device->brightness)
 		goto out;
@@ -1534,8 +1322,6 @@ acpi_video_switch_brightness(struct acpi_video_device *device, int event)
 out:
 	if (result)
 		printk(KERN_ERR PREFIX "Failed to switch the brightness\n");
-
-	return result;
 }
 
 int acpi_video_get_edid(struct acpi_device *device, int type, int device_id,
@@ -1703,6 +1489,16 @@ static void acpi_video_bus_notify(struct acpi_device *device, u32 event)
 	return;
 }
 
+static void brightness_switch_event(struct acpi_video_device *video_device,
+				    u32 event)
+{
+	if (!brightness_switch_enabled)
+		return;
+
+	video_device->switch_brightness_event = event;
+	schedule_delayed_work(&video_device->switch_brightness_work, HZ / 10);
+}
+
 static void acpi_video_device_notify(acpi_handle handle, u32 event, void *data)
 {
 	struct acpi_video_device *video_device = data;
@@ -1720,28 +1516,23 @@ static void acpi_video_device_notify(acpi_handle handle, u32 event, void *data)
 
 	switch (event) {
 	case ACPI_VIDEO_NOTIFY_CYCLE_BRIGHTNESS:	/* Cycle brightness */
-		if (brightness_switch_enabled)
-			acpi_video_switch_brightness(video_device, event);
+		brightness_switch_event(video_device, event);
 		keycode = KEY_BRIGHTNESS_CYCLE;
 		break;
 	case ACPI_VIDEO_NOTIFY_INC_BRIGHTNESS:	/* Increase brightness */
-		if (brightness_switch_enabled)
-			acpi_video_switch_brightness(video_device, event);
+		brightness_switch_event(video_device, event);
 		keycode = KEY_BRIGHTNESSUP;
 		break;
 	case ACPI_VIDEO_NOTIFY_DEC_BRIGHTNESS:	/* Decrease brightness */
-		if (brightness_switch_enabled)
-			acpi_video_switch_brightness(video_device, event);
+		brightness_switch_event(video_device, event);
 		keycode = KEY_BRIGHTNESSDOWN;
 		break;
 	case ACPI_VIDEO_NOTIFY_ZERO_BRIGHTNESS:	/* zero brightness */
-		if (brightness_switch_enabled)
-			acpi_video_switch_brightness(video_device, event);
+		brightness_switch_event(video_device, event);
 		keycode = KEY_BRIGHTNESS_ZERO;
 		break;
 	case ACPI_VIDEO_NOTIFY_DISPLAY_OFF:	/* display device off */
-		if (brightness_switch_enabled)
-			acpi_video_switch_brightness(video_device, event);
+		brightness_switch_event(video_device, event);
 		keycode = KEY_DISPLAY_OFF;
 		break;
 	default:
@@ -1819,6 +1610,15 @@ static void acpi_video_dev_register_backlight(struct acpi_video_device *device)
 	int result;
 	static int count;
 	char *name;
+
+	/*
+	 * Do not create backlight device for video output
+	 * device that is not in the enumerated list.
+	 */
+	if (!acpi_video_device_in_dod(device)) {
+		dev_dbg(&device->dev->dev, "not in _DOD list, ignore\n");
+		return;
+	}
 
 	result = acpi_video_init_brightness(device);
 	if (result)
@@ -2301,17 +2101,6 @@ EXPORT_SYMBOL(acpi_video_unregister_backlight);
 
 static int __init acpi_video_init(void)
 {
-	/*
-	 * Let the module load even if ACPI is disabled (e.g. due to
-	 * a broken BIOS) so that i915.ko can still be loaded on such
-	 * old systems without an AcpiOpRegion.
-	 *
-	 * acpi_video_register() will report -ENODEV later as well due
-	 * to acpi_disabled when i915.ko tries to register itself afterwards.
-	 */
-	if (acpi_disabled)
-		return 0;
-
 	dmi_check_system(video_dmi_table);
 
 	if (intel_opregion_present())

@@ -87,9 +87,6 @@ MODULE_DESCRIPTION("Microcode Update Driver");
 MODULE_AUTHOR("Tigran Aivazian <tigran@aivazian.fsnet.co.uk>");
 MODULE_LICENSE("GPL");
 
-/* last level cache size per core */
-static int llc_size_per_core;
-
 static int collect_cpu_info(int cpu_num, struct cpu_signature *csig)
 {
 	struct cpuinfo_x86 *c = &cpu_data(cpu_num);
@@ -130,13 +127,13 @@ static int get_matching_mc(struct microcode_intel *mc_intel, int cpu)
 	return get_matching_microcode(csig, cpf, mc_intel, crev);
 }
 
-int apply_microcode(int cpu)
+static int apply_microcode_intel(int cpu)
 {
 	struct microcode_intel *mc_intel;
 	struct ucode_cpu_info *uci;
+	unsigned int val[2];
 	int cpu_num = raw_smp_processor_id();
 	struct cpuinfo_x86 *c = &cpu_data(cpu_num);
-	u32 rev;
 
 	uci = ucode_cpu_info + cpu;
 	mc_intel = uci->mc;
@@ -155,40 +152,31 @@ int apply_microcode(int cpu)
 	if (get_matching_mc(mc_intel, cpu) == 0)
 		return 0;
 
-	/*
-	 * Save us the MSR write below - which is a particular expensive
-	 * operation - when the other hyperthread has updated the microcode
-	 * already.
-	 */
-	rev = intel_get_microcode_revision();
-	if (rev >= mc_intel->hdr.rev)
-		goto out;
-
 	/* write microcode via MSR 0x79 */
 	wrmsr(MSR_IA32_UCODE_WRITE,
 	      (unsigned long) mc_intel->bits,
 	      (unsigned long) mc_intel->bits >> 16 >> 16);
+	wrmsr(MSR_IA32_UCODE_REV, 0, 0);
 
-	rev = intel_get_microcode_revision();
+	/* As documented in the SDM: Do a CPUID 1 here */
+	sync_core();
 
-	if (rev != mc_intel->hdr.rev) {
+	/* get the current revision from MSR 0x8B */
+	rdmsr(MSR_IA32_UCODE_REV, val[0], val[1]);
+
+	if (val[1] != mc_intel->hdr.rev) {
 		pr_err("CPU%d update to revision 0x%x failed\n",
 		       cpu_num, mc_intel->hdr.rev);
 		return -1;
 	}
 	pr_info("CPU%d updated to revision 0x%x, date = %04x-%02x-%02x\n",
-		cpu_num, rev,
+		cpu_num, val[1],
 		mc_intel->hdr.date & 0xffff,
 		mc_intel->hdr.date >> 24,
 		(mc_intel->hdr.date >> 16) & 0xff);
 
-out:
-	uci->cpu_sig.rev = rev;
-	c->microcode	 = rev;
-
-	/* Update boot_cpu_data's revision too, if we're on the BSP: */
-	if (c->cpu_index == boot_cpu_data.cpu_index)
-		boot_cpu_data.microcode = rev;
+	uci->cpu_sig.rev = val[1];
+	c->microcode = val[1];
 
 	return 0;
 }
@@ -279,29 +267,6 @@ static int get_ucode_fw(void *to, const void *from, size_t n)
 	return 0;
 }
 
-static bool is_blacklisted(unsigned int cpu)
-{
-	struct cpuinfo_x86 *c = &cpu_data(cpu);
-
-	/*
-	 * Late loading on model 79 with microcode revision less than 0x0b000021
-	 * and LLC size per core bigger than 2.5MB may result in a system hang.
-	 * This behavior is documented in item BDF90, #334165 (Intel Xeon
-	 * Processor E7-8800/4800 v4 Product Family).
-	 */
-	if (c->x86 == 6 &&
-	    c->x86_model == 0x4F &&
-	    c->x86_stepping == 0x01 &&
-	    llc_size_per_core > 2621440 &&
-	    c->microcode < 0x0b000021) {
-		pr_err_once("Erratum BDF90: late loading with revision < 0x0b000021 (0x%x) disabled.\n", c->microcode);
-		pr_err_once("Please consider either early loading through initrd/built-in or a potential BIOS update.\n");
-		return true;
-	}
-
-	return false;
-}
-
 static enum ucode_state request_microcode_fw(int cpu, struct device *device,
 					     bool refresh_fw)
 {
@@ -310,11 +275,8 @@ static enum ucode_state request_microcode_fw(int cpu, struct device *device,
 	const struct firmware *firmware;
 	enum ucode_state ret;
 
-	if (is_blacklisted(cpu))
-		return UCODE_NFOUND;
-
 	sprintf(name, "intel-ucode/%02x-%02x-%02x",
-		c->x86, c->x86_model, c->x86_stepping);
+		c->x86, c->x86_model, c->x86_mask);
 
 	if (request_firmware_direct(&firmware, name, device)) {
 		pr_debug("data file %s load failed\n", name);
@@ -337,9 +299,6 @@ static int get_ucode_user(void *to, const void *from, size_t n)
 static enum ucode_state
 request_microcode_user(int cpu, const void __user *buf, size_t size)
 {
-	if (is_blacklisted(cpu))
-		return UCODE_NFOUND;
-
 	return generic_load_microcode(cpu, (void *)buf, size, &get_ucode_user);
 }
 
@@ -355,18 +314,9 @@ static struct microcode_ops microcode_intel_ops = {
 	.request_microcode_user		  = request_microcode_user,
 	.request_microcode_fw             = request_microcode_fw,
 	.collect_cpu_info                 = collect_cpu_info,
-	.apply_microcode                  = apply_microcode,
+	.apply_microcode                  = apply_microcode_intel,
 	.microcode_fini_cpu               = microcode_fini_cpu,
 };
-
-static int __init calc_llc_size_per_core(struct cpuinfo_x86 *c)
-{
-	u64 llc_size = c->x86_cache_size * 1024ULL;
-
-	do_div(llc_size, c->x86_max_cores);
-
-	return (int)llc_size;
-}
 
 struct microcode_ops * __init init_intel_microcode(void)
 {
@@ -377,8 +327,6 @@ struct microcode_ops * __init init_intel_microcode(void)
 		pr_err("Intel CPU family 0x%x not supported\n", c->x86);
 		return NULL;
 	}
-
-	llc_size_per_core = calc_llc_size_per_core(c);
 
 	return &microcode_intel_ops;
 }

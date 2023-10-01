@@ -380,9 +380,6 @@ static void __unflatten_device_tree(void *blob,
 
 	/* Allocate memory for the expanded device tree */
 	mem = dt_alloc(size + 4, __alignof__(struct device_node));
-	if (!mem)
-		return;
-
 	memset(mem, 0, size);
 
 	*(__be32 *)(mem + size) = cpu_to_be32(0xdeadbeef);
@@ -777,15 +774,14 @@ int __init early_init_dt_scan_chosen_serial(void)
 		return -ENODEV;
 
 	while (match->compatible[0]) {
-		u64 addr;
-
+		unsigned long addr;
 		if (fdt_node_check_compatible(fdt, offset, match->compatible)) {
 			match++;
 			continue;
 		}
 
 		addr = fdt_translate_address(fdt, offset);
-		if (addr == OF_BAD_ADDR)
+		if (!addr)
 			return -ENXIO;
 
 		of_setup_earlycon(addr, match->data);
@@ -927,24 +923,28 @@ int __init early_init_dt_scan_chosen(unsigned long node, const char *uname,
 }
 
 #ifdef CONFIG_HAVE_MEMBLOCK
+#define MAX_PHYS_ADDR	((phys_addr_t)~0)
+
 void __init __weak early_init_dt_add_memory_arch(u64 base, u64 size)
 {
 	const u64 phys_offset = __pa(PAGE_OFFSET);
-	base &= PAGE_MASK;
+
+	if (!PAGE_ALIGNED(base)) {
+		size -= PAGE_SIZE - (base & ~PAGE_MASK);
+		base = PAGE_ALIGN(base);
+	}
 	size &= PAGE_MASK;
 
-	if (sizeof(phys_addr_t) < sizeof(u64)) {
-		if (base > ULONG_MAX) {
-			pr_warning("Ignoring memory block 0x%llx - 0x%llx\n",
-					base, base + size);
-			return;
-		}
+	if (base > MAX_PHYS_ADDR) {
+		pr_warning("Ignoring memory block 0x%llx - 0x%llx\n",
+				base, base + size);
+		return;
+	}
 
-		if (base + size > ULONG_MAX) {
-			pr_warning("Ignoring memory range 0x%lx - 0x%llx\n",
-					ULONG_MAX, base + size);
-			size = ULONG_MAX - base;
-		}
+	if (base + size - 1 > MAX_PHYS_ADDR) {
+		pr_warning("Ignoring memory range 0x%llx - 0x%llx\n",
+				((u64)MAX_PHYS_ADDR) + 1, base + size);
+		size = MAX_PHYS_ADDR - base + 1;
 	}
 
 	if (base + size < phys_offset) {

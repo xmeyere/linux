@@ -39,24 +39,6 @@ extern void cpu_remove_dev_attr(struct device_attribute *attr);
 extern int cpu_add_dev_attr_group(struct attribute_group *attrs);
 extern void cpu_remove_dev_attr_group(struct attribute_group *attrs);
 
-extern ssize_t cpu_show_meltdown(struct device *dev,
-				 struct device_attribute *attr, char *buf);
-extern ssize_t cpu_show_spectre_v1(struct device *dev,
-				   struct device_attribute *attr, char *buf);
-extern ssize_t cpu_show_spectre_v2(struct device *dev,
-				   struct device_attribute *attr, char *buf);
-extern ssize_t cpu_show_spec_store_bypass(struct device *dev,
-					  struct device_attribute *attr, char *buf);
-extern ssize_t cpu_show_l1tf(struct device *dev,
-			     struct device_attribute *attr, char *buf);
-extern ssize_t cpu_show_mds(struct device *dev,
-			    struct device_attribute *attr, char *buf);
-extern ssize_t cpu_show_tsx_async_abort(struct device *dev,
-					struct device_attribute *attr,
-					char *buf);
-extern ssize_t cpu_show_itlb_multihit(struct device *dev,
-				      struct device_attribute *attr, char *buf);
-
 #ifdef CONFIG_HOTPLUG_CPU
 extern void unregister_cpu(struct cpu *cpu);
 extern ssize_t arch_cpu_probe(const char *, size_t);
@@ -87,7 +69,6 @@ enum {
 	/* migration should happen before other stuff but after perf */
 	CPU_PRI_PERF		= 20,
 	CPU_PRI_MIGRATION	= 10,
-	CPU_PRI_SMPBOOT		= 9,
 	/* bring up workqueues before normal notifiers and down after */
 	CPU_PRI_WORKQUEUE_UP	= 5,
 	CPU_PRI_WORKQUEUE_DOWN	= -5,
@@ -140,16 +121,22 @@ enum {
 		{ .notifier_call = fn, .priority = pri };	\
 	__register_cpu_notifier(&fn##_nb);			\
 }
+#else /* #if defined(CONFIG_HOTPLUG_CPU) || !defined(MODULE) */
+#define cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
+#define __cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
+#endif /* #else #if defined(CONFIG_HOTPLUG_CPU) || !defined(MODULE) */
 
+#ifdef CONFIG_HOTPLUG_CPU
 extern int register_cpu_notifier(struct notifier_block *nb);
 extern int __register_cpu_notifier(struct notifier_block *nb);
 extern void unregister_cpu_notifier(struct notifier_block *nb);
 extern void __unregister_cpu_notifier(struct notifier_block *nb);
+#else
 
-#else /* #if defined(CONFIG_HOTPLUG_CPU) || !defined(MODULE) */
-#define cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
-#define __cpu_notifier(fn, pri)	do { (void)(fn); } while (0)
-
+#ifndef MODULE
+extern int register_cpu_notifier(struct notifier_block *nb);
+extern int __register_cpu_notifier(struct notifier_block *nb);
+#else
 static inline int register_cpu_notifier(struct notifier_block *nb)
 {
 	return 0;
@@ -159,6 +146,7 @@ static inline int __register_cpu_notifier(struct notifier_block *nb)
 {
 	return 0;
 }
+#endif
 
 static inline void unregister_cpu_notifier(struct notifier_block *nb)
 {
@@ -169,7 +157,6 @@ static inline void __unregister_cpu_notifier(struct notifier_block *nb)
 }
 #endif
 
-void smpboot_thread_init(void);
 int cpu_up(unsigned int cpu);
 void notify_cpu_starting(unsigned int cpu);
 extern void cpu_maps_update_begin(void);
@@ -217,10 +204,6 @@ static inline void cpu_notifier_register_done(void)
 {
 }
 
-static inline void smpboot_thread_init(void)
-{
-}
-
 #endif /* CONFIG_SMP */
 extern struct bus_type cpu_subsys;
 
@@ -230,6 +213,7 @@ extern struct bus_type cpu_subsys;
 extern void cpu_hotplug_begin(void);
 extern void cpu_hotplug_done(void);
 extern void get_online_cpus(void);
+extern bool try_get_online_cpus(void);
 extern void put_online_cpus(void);
 extern void cpu_hotplug_disable(void);
 extern void cpu_hotplug_enable(void);
@@ -247,6 +231,7 @@ int cpu_down(unsigned int cpu);
 static inline void cpu_hotplug_begin(void) {}
 static inline void cpu_hotplug_done(void) {}
 #define get_online_cpus()	do { } while (0)
+#define try_get_online_cpus()	true
 #define put_online_cpus()	do { } while (0)
 #define cpu_hotplug_disable()	do { } while (0)
 #define cpu_hotplug_enable()	do { } while (0)
@@ -281,22 +266,5 @@ void arch_cpu_idle_prepare(void);
 void arch_cpu_idle_enter(void);
 void arch_cpu_idle_exit(void);
 void arch_cpu_idle_dead(void);
-
-/*
- * These are used for a global "mitigations=" cmdline option for toggling
- * optional CPU mitigations.
- */
-enum cpu_mitigations {
-	CPU_MITIGATIONS_OFF,
-	CPU_MITIGATIONS_AUTO,
-};
-
-extern enum cpu_mitigations cpu_mitigations;
-
-/* mitigations=off */
-static inline bool cpu_mitigations_off(void)
-{
-	return cpu_mitigations == CPU_MITIGATIONS_OFF;
-}
 
 #endif /* _LINUX_CPU_H_ */

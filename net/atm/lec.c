@@ -41,9 +41,6 @@ static unsigned char bridge_ula_lec[] = { 0x01, 0x80, 0xc2, 0x00, 0x00 };
 #include <linux/module.h>
 #include <linux/init.h>
 
-/* Hardening for Spectre-v1 */
-#include <linux/nospec.h>
-
 #include "lec.h"
 #include "lec_arpc.h"
 #include "resources.h"
@@ -413,9 +410,11 @@ static int lec_atm_send(struct atm_vcc *vcc, struct sk_buff *skb)
 		priv->lane2_ops = NULL;
 		if (priv->lane_version > 1)
 			priv->lane2_ops = &lane2_ops;
+		rtnl_lock();
 		if (dev_set_mtu(dev, mesg->content.config.mtu))
 			pr_info("%s: change_mtu to %d failed\n",
 				dev->name, mesg->content.config.mtu);
+		rtnl_unlock();
 		priv->is_proxy = mesg->content.config.is_proxy;
 		break;
 	case l_flush_tran_id:
@@ -698,10 +697,8 @@ static int lec_vcc_attach(struct atm_vcc *vcc, void __user *arg)
 	bytes_left = copy_from_user(&ioc_data, arg, sizeof(struct atmlec_ioc));
 	if (bytes_left != 0)
 		pr_info("copy from user failed for %d bytes\n", bytes_left);
-	if (ioc_data.dev_num < 0 || ioc_data.dev_num >= MAX_LEC_ITF)
-		return -EINVAL;
-	ioc_data.dev_num = array_index_nospec(ioc_data.dev_num, MAX_LEC_ITF);
-	if (!dev_lec[ioc_data.dev_num])
+	if (ioc_data.dev_num < 0 || ioc_data.dev_num >= MAX_LEC_ITF ||
+	    !dev_lec[ioc_data.dev_num])
 		return -EINVAL;
 	vpriv = kmalloc(sizeof(struct lec_vcc_priv), GFP_KERNEL);
 	if (!vpriv)
@@ -838,7 +835,6 @@ static void *lec_tbl_walk(struct lec_state *state, struct hlist_head *tbl,
 			  loff_t *l)
 {
 	struct hlist_node *e = state->node;
-	struct lec_arp_table *tmp;
 
 	if (!e)
 		e = tbl->first;
@@ -847,9 +843,7 @@ static void *lec_tbl_walk(struct lec_state *state, struct hlist_head *tbl,
 		--*l;
 	}
 
-	tmp = container_of(e, struct lec_arp_table, next);
-
-	hlist_for_each_entry_from(tmp, next) {
+	for (; e; e = e->next) {
 		if (--*l < 0)
 			break;
 	}

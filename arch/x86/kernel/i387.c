@@ -13,7 +13,6 @@
 #include <asm/sigcontext.h>
 #include <asm/processor.h>
 #include <asm/math_emu.h>
-#include <asm/tlbflush.h>
 #include <asm/uaccess.h>
 #include <asm/ptrace.h>
 #include <asm/i387.h>
@@ -116,7 +115,6 @@ void unlazy_fpu(struct task_struct *tsk)
 EXPORT_SYMBOL(unlazy_fpu);
 
 unsigned int mxcsr_feature_mask __read_mostly = 0xffffffffu;
-EXPORT_SYMBOL_GPL(mxcsr_feature_mask);
 unsigned int xstate_size;
 EXPORT_SYMBOL_GPL(xstate_size);
 static struct i387_fxsave_struct fx_scratch;
@@ -159,19 +157,6 @@ static void init_thread_xstate(void)
 		xstate_size = sizeof(struct i387_fsave_struct);
 }
 
-static enum { AUTO, ENABLE, DISABLE } eagerfpu = AUTO;
-static int __init eager_fpu_setup(char *s)
-{
-	if (!strcmp(s, "on"))
-		eagerfpu = ENABLE;
-	else if (!strcmp(s, "off"))
-		eagerfpu = DISABLE;
-	else if (!strcmp(s, "auto"))
-		eagerfpu = AUTO;
-	return 1;
-}
-__setup("eagerfpu=", eager_fpu_setup);
-
 /*
  * Called at bootup to set up the initial FPU state that is later cloned
  * into all processes.
@@ -195,7 +180,7 @@ void fpu_init(void)
 	if (cpu_has_xmm)
 		cr4_mask |= X86_CR4_OSXMMEXCPT;
 	if (cr4_mask)
-		cr4_set_bits(cr4_mask);
+		set_in_cr4(cr4_mask);
 
 	cr0 = read_cr0();
 	cr0 &= ~(X86_CR0_TS|X86_CR0_EM); /* clear TS and EM */
@@ -209,17 +194,6 @@ void fpu_init(void)
 	 */
 	if (xstate_size == 0)
 		init_thread_xstate();
-
-	/*
-	 * We should always enable eagerfpu, but it doesn't work properly
-	 * here without fpu and fxsr.
-	 */
-	if (eagerfpu == AUTO)
-		eagerfpu = (boot_cpu_has(X86_FEATURE_FPU) &&
-			    boot_cpu_has(X86_FEATURE_FXSR)) ?
-			ENABLE : DISABLE;
-	if (eagerfpu == ENABLE)
-		setup_force_cpu_cap(X86_FEATURE_EAGER_FPU);
 
 	mxcsr_feature_mask_init();
 	xsave_init();
@@ -401,7 +375,7 @@ int xstateregs_set(struct task_struct *target, const struct user_regset *regset,
 	/*
 	 * These bits must be zero.
 	 */
-	xsave_hdr->reserved1[0] = xsave_hdr->reserved1[1] = 0;
+	memset(xsave_hdr->reserved, 0, 48);
 
 	return ret;
 }

@@ -1,7 +1,7 @@
 /*
  * Marvell Wireless LAN device driver: scan ioctl and command handling
  *
- * Copyright (C) 2011, Marvell International Ltd.
+ * Copyright (C) 2011-2014, Marvell International Ltd.
  *
  * This software file (the "File") is distributed by Marvell International
  * Ltd. under the terms of the GNU General Public License Version 2, June 1991
@@ -151,8 +151,7 @@ mwifiex_is_wpa_oui_present(struct mwifiex_bssdescriptor *bss_desc, u32 cipher)
 	if (((bss_desc->bcn_wpa_ie) &&
 	     ((*(bss_desc->bcn_wpa_ie)).vend_hdr.element_id ==
 	      WLAN_EID_VENDOR_SPECIFIC))) {
-		iebody = (struct ie_body *)((u8 *)bss_desc->bcn_wpa_ie->data +
-					    WPA_GTK_OUI_OFFSET);
+		iebody = (struct ie_body *) bss_desc->bcn_wpa_ie->data;
 		oui = &mwifiex_wpa_oui[cipher][0];
 		ret = mwifiex_search_oui_in_ie(iebody, oui);
 		if (ret)
@@ -800,6 +799,7 @@ mwifiex_config_scan(struct mwifiex_private *priv,
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
 	struct mwifiex_ie_types_num_probes *num_probes_tlv;
+	struct mwifiex_ie_types_scan_chan_gap *chan_gap_tlv;
 	struct mwifiex_ie_types_wildcard_ssid_params *wildcard_ssid_tlv;
 	struct mwifiex_ie_types_bssid_list *bssid_tlv;
 	u8 *tlv_pos;
@@ -926,6 +926,23 @@ mwifiex_config_scan(struct mwifiex_private *priv,
 		if ((i && ssid_filter) ||
 		    !is_zero_ether_addr(scan_cfg_out->specific_bssid))
 			*filtered_scan = true;
+
+		if (user_scan_in->scan_chan_gap) {
+			dev_dbg(adapter->dev, "info: scan: channel gap = %d\n",
+				user_scan_in->scan_chan_gap);
+			*max_chan_per_scan =
+					MWIFIEX_MAX_CHANNELS_PER_SPECIFIC_SCAN;
+
+			chan_gap_tlv = (void *)tlv_pos;
+			chan_gap_tlv->header.type =
+					 cpu_to_le16(TLV_TYPE_SCAN_CHANNEL_GAP);
+			chan_gap_tlv->header.len =
+				    cpu_to_le16(sizeof(chan_gap_tlv->chan_gap));
+			chan_gap_tlv->chan_gap =
+				     cpu_to_le16((user_scan_in->scan_chan_gap));
+			tlv_pos +=
+				  sizeof(struct mwifiex_ie_types_scan_chan_gap);
+		}
 	} else {
 		scan_cfg_out->bss_mode = (u8) adapter->scan_mode;
 		num_probes = adapter->scan_probes;
@@ -1051,12 +1068,6 @@ mwifiex_config_scan(struct mwifiex_private *priv,
 							    *filtered_scan);
 	}
 
-	/*
-	 * In associated state we will reduce the number of channels scanned per
-	 * scan command to 1 to avoid any traffic delay/loss.
-	 */
-	if (priv->media_connected)
-			*max_chan_per_scan = 1;
 }
 
 /*
@@ -1172,8 +1183,6 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 		}
 		switch (element_id) {
 		case WLAN_EID_SSID:
-			if (element_len > IEEE80211_MAX_SSID_LEN)
-				return -EINVAL;
 			bss_entry->ssid.ssid_len = element_len;
 			memcpy(bss_entry->ssid.ssid, (current_ptr + 2),
 			       element_len);
@@ -1183,8 +1192,6 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			break;
 
 		case WLAN_EID_SUPP_RATES:
-			if (element_len > MWIFIEX_SUPPORTED_RATES)
-				return -EINVAL;
 			memcpy(bss_entry->data_rates, current_ptr + 2,
 			       element_len);
 			memcpy(bss_entry->supported_rates, current_ptr + 2,
@@ -1194,8 +1201,6 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			break;
 
 		case WLAN_EID_FH_PARAMS:
-			if (element_len + 2 < sizeof(*fh_param_set))
-				return -EINVAL;
 			fh_param_set =
 				(struct ieee_types_fh_param_set *) current_ptr;
 			memcpy(&bss_entry->phy_param_set.fh_param_set,
@@ -1204,8 +1209,6 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			break;
 
 		case WLAN_EID_DS_PARAMS:
-			if (element_len + 2 < sizeof(*ds_param_set))
-				return -EINVAL;
 			ds_param_set =
 				(struct ieee_types_ds_param_set *) current_ptr;
 
@@ -1217,8 +1220,6 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			break;
 
 		case WLAN_EID_CF_PARAMS:
-			if (element_len + 2 < sizeof(*cf_param_set))
-				return -EINVAL;
 			cf_param_set =
 				(struct ieee_types_cf_param_set *) current_ptr;
 			memcpy(&bss_entry->ss_param_set.cf_param_set,
@@ -1227,8 +1228,6 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			break;
 
 		case WLAN_EID_IBSS_PARAMS:
-			if (element_len + 2 < sizeof(*ibss_param_set))
-				return -EINVAL;
 			ibss_param_set =
 				(struct ieee_types_ibss_param_set *)
 				current_ptr;
@@ -1238,14 +1237,10 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			break;
 
 		case WLAN_EID_ERP_INFO:
-			if (!element_len)
-				return -EINVAL;
 			bss_entry->erp_flags = *(current_ptr + 2);
 			break;
 
 		case WLAN_EID_PWR_CONSTRAINT:
-			if (!element_len)
-				return -EINVAL;
 			bss_entry->local_constraint = *(current_ptr + 2);
 			bss_entry->sensed_11h = true;
 			break;
@@ -1288,22 +1283,15 @@ int mwifiex_update_bss_desc_with_ie(struct mwifiex_adapter *adapter,
 			vendor_ie = (struct ieee_types_vendor_specific *)
 					current_ptr;
 
-			/* 802.11 requires at least 3-byte OUI. */
-			if (element_len < sizeof(vendor_ie->vend_hdr.oui.oui))
-				return -EINVAL;
-
-			/* Not long enough for a match? Skip it. */
-			if (element_len < sizeof(wpa_oui))
-				break;
-
-			if (!memcmp(&vendor_ie->vend_hdr.oui, wpa_oui,
-				    sizeof(wpa_oui))) {
+			if (!memcmp
+			    (vendor_ie->vend_hdr.oui, wpa_oui,
+			     sizeof(wpa_oui))) {
 				bss_entry->bcn_wpa_ie =
 					(struct ieee_types_vendor_specific *)
 					current_ptr;
 				bss_entry->wpa_offset = (u16)
 					(current_ptr - bss_entry->beacon_buf);
-			} else if (!memcmp(&vendor_ie->vend_hdr.oui, wmm_oui,
+			} else if (!memcmp(vendor_ie->vend_hdr.oui, wmm_oui,
 				    sizeof(wmm_oui))) {
 				if (total_ie_len ==
 				    sizeof(struct ieee_types_wmm_parameter) ||
@@ -1743,7 +1731,8 @@ mwifiex_parse_single_response_buf(struct mwifiex_private *priv, u8 **bss_info,
 
 		if (chan && !(chan->flags & IEEE80211_CHAN_DISABLED)) {
 			bss = cfg80211_inform_bss(priv->wdev->wiphy,
-					    chan, bssid, timestamp,
+					    chan, CFG80211_BSS_FTYPE_UNKNOWN,
+					    bssid, timestamp,
 					    cap_info_bitmap, beacon_period,
 					    ie_buf, ie_len, rssi, GFP_KERNEL);
 			bss_priv = (struct mwifiex_bss_priv *)bss->priv;
@@ -1778,7 +1767,7 @@ static void mwifiex_complete_scan(struct mwifiex_private *priv)
 static void mwifiex_check_next_scan_command(struct mwifiex_private *priv)
 {
 	struct mwifiex_adapter *adapter = priv->adapter;
-	struct cmd_ctrl_node *cmd_node;
+	struct cmd_ctrl_node *cmd_node, *tmp_node;
 	unsigned long flags;
 
 	spin_lock_irqsave(&adapter->scan_pending_q_lock, flags);
@@ -1791,9 +1780,6 @@ static void mwifiex_check_next_scan_command(struct mwifiex_private *priv)
 		if (!adapter->ext_scan)
 			mwifiex_complete_scan(priv);
 
-		if (priv->report_scan_result)
-			priv->report_scan_result = false;
-
 		if (priv->scan_request) {
 			dev_dbg(adapter->dev, "info: notifying scan done\n");
 			cfg80211_scan_done(priv->scan_request, 0);
@@ -1802,37 +1788,36 @@ static void mwifiex_check_next_scan_command(struct mwifiex_private *priv)
 			priv->scan_aborting = false;
 			dev_dbg(adapter->dev, "info: scan already aborted\n");
 		}
-	} else {
-		if ((priv->scan_aborting && !priv->scan_request) ||
-		    priv->scan_block) {
-			spin_unlock_irqrestore(&adapter->scan_pending_q_lock,
-					       flags);
-			adapter->scan_delay_cnt = MWIFIEX_MAX_SCAN_DELAY_CNT;
-			mod_timer(&priv->scan_delay_timer, jiffies);
-			dev_dbg(priv->adapter->dev,
-				"info: %s: triggerring scan abort\n", __func__);
-		} else if (!mwifiex_wmm_lists_empty(adapter) &&
-			   (priv->scan_request && (priv->scan_request->flags &
-					    NL80211_SCAN_FLAG_LOW_PRIORITY))) {
-			spin_unlock_irqrestore(&adapter->scan_pending_q_lock,
-					       flags);
-			adapter->scan_delay_cnt = 1;
-			mod_timer(&priv->scan_delay_timer, jiffies +
-				  msecs_to_jiffies(MWIFIEX_SCAN_DELAY_MSEC));
-			dev_dbg(priv->adapter->dev,
-				"info: %s: deferring scan\n", __func__);
-		} else {
-			/* Get scan command from scan_pending_q and put to
-			 * cmd_pending_q
-			 */
-			cmd_node = list_first_entry(&adapter->scan_pending_q,
-						    struct cmd_ctrl_node, list);
+	} else if ((priv->scan_aborting && !priv->scan_request) ||
+		   priv->scan_block) {
+		list_for_each_entry_safe(cmd_node, tmp_node,
+					 &adapter->scan_pending_q, list) {
 			list_del(&cmd_node->list);
-			spin_unlock_irqrestore(&adapter->scan_pending_q_lock,
-					       flags);
-			mwifiex_insert_cmd_to_pending_q(adapter, cmd_node,
-							true);
+			mwifiex_insert_cmd_to_free_q(adapter, cmd_node);
 		}
+		spin_unlock_irqrestore(&adapter->scan_pending_q_lock, flags);
+
+		spin_lock_irqsave(&adapter->mwifiex_cmd_lock, flags);
+		adapter->scan_processing = false;
+		spin_unlock_irqrestore(&adapter->mwifiex_cmd_lock, flags);
+
+		if (priv->scan_request) {
+			dev_dbg(adapter->dev, "info: aborting scan\n");
+			cfg80211_scan_done(priv->scan_request, 1);
+			priv->scan_request = NULL;
+		} else {
+			priv->scan_aborting = false;
+			dev_dbg(adapter->dev, "info: scan already aborted\n");
+		}
+	} else {
+		/* Get scan command from scan_pending_q and put to
+		 * cmd_pending_q
+		 */
+		cmd_node = list_first_entry(&adapter->scan_pending_q,
+					    struct cmd_ctrl_node, list);
+		list_del(&cmd_node->list);
+		spin_unlock_irqrestore(&adapter->scan_pending_q_lock, flags);
+		mwifiex_insert_cmd_to_pending_q(adapter, cmd_node, true);
 	}
 
 	return;
@@ -1994,9 +1979,34 @@ int mwifiex_cmd_802_11_scan_ext(struct mwifiex_private *priv,
 /* This function handles the command response of extended scan */
 int mwifiex_ret_802_11_scan_ext(struct mwifiex_private *priv)
 {
+	struct mwifiex_adapter *adapter = priv->adapter;
+	struct host_cmd_ds_command *cmd_ptr;
+	struct cmd_ctrl_node *cmd_node;
+	unsigned long cmd_flags, scan_flags;
+	bool complete_scan = false;
+
 	dev_dbg(priv->adapter->dev, "info: EXT scan returns successfully\n");
 
-	mwifiex_complete_scan(priv);
+	spin_lock_irqsave(&adapter->cmd_pending_q_lock, cmd_flags);
+	spin_lock_irqsave(&adapter->scan_pending_q_lock, scan_flags);
+	if (list_empty(&adapter->scan_pending_q)) {
+		complete_scan = true;
+		list_for_each_entry(cmd_node, &adapter->cmd_pending_q, list) {
+			cmd_ptr = (void *)cmd_node->cmd_skb->data;
+			if (le16_to_cpu(cmd_ptr->command) ==
+			    HostCmd_CMD_802_11_SCAN_EXT) {
+				dev_dbg(priv->adapter->dev,
+					"Scan pending in command pending list");
+				complete_scan = false;
+				break;
+			}
+		}
+	}
+	spin_unlock_irqrestore(&adapter->scan_pending_q_lock, scan_flags);
+	spin_unlock_irqrestore(&adapter->cmd_pending_q_lock, cmd_flags);
+
+	if (complete_scan)
+		mwifiex_complete_scan(priv);
 
 	return 0;
 }
@@ -2267,13 +2277,6 @@ mwifiex_cmd_append_vsie_tlv(struct mwifiex_private *priv,
 			vs_param_set->header.len =
 				cpu_to_le16((((u16) priv->vs_ie[id].ie[1])
 				& 0x00FF) + 2);
-			if (le16_to_cpu(vs_param_set->header.len) >
-				MWIFIEX_MAX_VSIE_LEN) {
-				dev_info(priv->adapter->dev,
-					 "Invalid param length!\n");
-				break;
-			}
-
 			memcpy(vs_param_set->ie, priv->vs_ie[id].ie,
 			       le16_to_cpu(vs_param_set->header.len));
 			*buffer += le16_to_cpu(vs_param_set->header.len) +

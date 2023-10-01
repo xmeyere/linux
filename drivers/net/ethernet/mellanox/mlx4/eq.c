@@ -101,21 +101,24 @@ static void eq_set_ci(struct mlx4_eq *eq, int req_not)
 	mb();
 }
 
-static struct mlx4_eqe *get_eqe(struct mlx4_eq *eq, u32 entry, u8 eqe_factor)
+static struct mlx4_eqe *get_eqe(struct mlx4_eq *eq, u32 entry, u8 eqe_factor,
+				u8 eqe_size)
 {
 	/* (entry & (eq->nent - 1)) gives us a cyclic array */
-	unsigned long offset = (entry & (eq->nent - 1)) * (MLX4_EQ_ENTRY_SIZE << eqe_factor);
-	/* CX3 is capable of extending the EQE from 32 to 64 bytes.
-	 * When this feature is enabled, the first (in the lower addresses)
+	unsigned long offset = (entry & (eq->nent - 1)) * eqe_size;
+	/* CX3 is capable of extending the EQE from 32 to 64 bytes with
+	 * strides of 64B,128B and 256B.
+	 * When 64B EQE is used, the first (in the lower addresses)
 	 * 32 bytes in the 64 byte EQE are reserved and the next 32 bytes
 	 * contain the legacy EQE information.
+	 * In all other cases, the first 32B contains the legacy EQE info.
 	 */
 	return eq->page_list[offset / PAGE_SIZE].buf + (offset + (eqe_factor ? MLX4_EQ_ENTRY_SIZE : 0)) % PAGE_SIZE;
 }
 
-static struct mlx4_eqe *next_eqe_sw(struct mlx4_eq *eq, u8 eqe_factor)
+static struct mlx4_eqe *next_eqe_sw(struct mlx4_eq *eq, u8 eqe_factor, u8 size)
 {
-	struct mlx4_eqe *eqe = get_eqe(eq, eq->cons_index, eqe_factor);
+	struct mlx4_eqe *eqe = get_eqe(eq, eq->cons_index, eqe_factor, size);
 	return !!(eqe->owner & 0x80) ^ !!(eq->cons_index & eq->nent) ? NULL : eqe;
 }
 
@@ -182,7 +185,7 @@ static void slave_event(struct mlx4_dev *dev, u8 slave, struct mlx4_eqe *eqe)
 		return;
 	}
 
-	memcpy(s_eqe, eqe, sizeof(struct mlx4_eqe) - 1);
+	memcpy(s_eqe, eqe, dev->caps.eqe_size - 1);
 	s_eqe->slave_id = slave;
 	/* ensure all information is written before setting the ownersip bit */
 	wmb();
@@ -459,8 +462,9 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 	enum slave_port_gen_event gen_event;
 	unsigned long flags;
 	struct mlx4_vport_state *s_info;
+	int eqe_size = dev->caps.eqe_size;
 
-	while ((eqe = next_eqe_sw(eq, dev->caps.eqe_factor))) {
+	while ((eqe = next_eqe_sw(eq, dev->caps.eqe_factor, eqe_size))) {
 		/*
 		 * Make sure we read EQ entry contents after we've
 		 * checked the ownership bit.
@@ -506,9 +510,8 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 			break;
 
 		case MLX4_EVENT_TYPE_SRQ_LIMIT:
-			mlx4_dbg(dev, "%s: MLX4_EVENT_TYPE_SRQ_LIMIT. srq_no=0x%x, eq 0x%x\n",
-				 __func__, be32_to_cpu(eqe->event.srq.srqn),
-				 eq->eqn);
+			mlx4_dbg(dev, "%s: MLX4_EVENT_TYPE_SRQ_LIMIT\n",
+				 __func__);
 		case MLX4_EVENT_TYPE_SRQ_CATAS_ERROR:
 			if (mlx4_is_master(dev)) {
 				/* forward only to slave owning the SRQ */
@@ -523,19 +526,15 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 						  eq->eqn, eq->cons_index, ret);
 					break;
 				}
-				if (eqe->type ==
-				    MLX4_EVENT_TYPE_SRQ_CATAS_ERROR)
-					mlx4_warn(dev, "%s: slave:%d, srq_no:0x%x, event: %02x(%02x)\n",
-						  __func__, slave,
-						  be32_to_cpu(eqe->event.srq.srqn),
-						  eqe->type, eqe->subtype);
+				mlx4_warn(dev, "%s: slave:%d, srq_no:0x%x, event: %02x(%02x)\n",
+					  __func__, slave,
+					  be32_to_cpu(eqe->event.srq.srqn),
+					  eqe->type, eqe->subtype);
 
 				if (!ret && slave != dev->caps.function) {
-					if (eqe->type ==
-					    MLX4_EVENT_TYPE_SRQ_CATAS_ERROR)
-						mlx4_warn(dev, "%s: sending event %02x(%02x) to slave:%d\n",
-							  __func__, eqe->type,
-							  eqe->subtype, slave);
+					mlx4_warn(dev, "%s: sending event %02x(%02x) to slave:%d\n",
+						  __func__, eqe->type,
+						  eqe->subtype, slave);
 					mlx4_slave_event(dev, slave, eqe);
 					break;
 				}
@@ -569,7 +568,7 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 							continue;
 						mlx4_dbg(dev, "%s: Sending MLX4_PORT_CHANGE_SUBTYPE_DOWN to slave: %d, port:%d\n",
 							 __func__, i, port);
-						s_info = &priv->mfunc.master.vf_oper[i].vport[port].state;
+						s_info = &priv->mfunc.master.vf_oper[slave].vport[port].state;
 						if (IFLA_VF_LINK_STATE_AUTO == s_info->link_state) {
 							eqe->event.port_change.port =
 								cpu_to_be32(
@@ -602,7 +601,7 @@ static int mlx4_eq_int(struct mlx4_dev *dev, struct mlx4_eq *eq)
 							continue;
 						if (i == mlx4_master_func_num(dev))
 							continue;
-						s_info = &priv->mfunc.master.vf_oper[i].vport[port].state;
+						s_info = &priv->mfunc.master.vf_oper[slave].vport[port].state;
 						if (IFLA_VF_LINK_STATE_AUTO == s_info->link_state) {
 							eqe->event.port_change.port =
 								cpu_to_be32(
@@ -899,8 +898,10 @@ static int mlx4_create_eq(struct mlx4_dev *dev, int nent,
 
 	eq->dev   = dev;
 	eq->nent  = roundup_pow_of_two(max(nent, 2));
-	/* CX3 is capable of extending the CQE/EQE from 32 to 64 bytes */
-	npages = PAGE_ALIGN(eq->nent * (MLX4_EQ_ENTRY_SIZE << dev->caps.eqe_factor)) / PAGE_SIZE;
+	/* CX3 is capable of extending the CQE/EQE from 32 to 64 bytes, with
+	 * strides of 64B,128B and 256B.
+	 */
+	npages = PAGE_ALIGN(eq->nent * dev->caps.eqe_size) / PAGE_SIZE;
 
 	eq->page_list = kmalloc(npages * sizeof *eq->page_list,
 				GFP_KERNEL);
@@ -1002,8 +1003,10 @@ static void mlx4_free_eq(struct mlx4_dev *dev,
 	struct mlx4_cmd_mailbox *mailbox;
 	int err;
 	int i;
-	/* CX3 is capable of extending the CQE/EQE from 32 to 64 bytes */
-	int npages = PAGE_ALIGN((MLX4_EQ_ENTRY_SIZE << dev->caps.eqe_factor) * eq->nent) / PAGE_SIZE;
+	/* CX3 is capable of extending the CQE/EQE from 32 to 64 bytes, with
+	 * strides of 64B,128B and 256B
+	 */
+	int npages = PAGE_ALIGN(dev->caps.eqe_size  * eq->nent) / PAGE_SIZE;
 
 	mailbox = mlx4_alloc_cmd_mailbox(dev);
 	if (IS_ERR(mailbox))
@@ -1023,6 +1026,7 @@ static void mlx4_free_eq(struct mlx4_dev *dev,
 				pr_cont("\n");
 		}
 	}
+	synchronize_irq(eq->irq);
 
 	mlx4_mtt_cleanup(dev, &eq->mtt);
 	for (i = 0; i < npages; ++i)

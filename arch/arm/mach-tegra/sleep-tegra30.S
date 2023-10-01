@@ -16,14 +16,15 @@
 
 #include <linux/linkage.h>
 
-#include <asm/assembler.h>
+#include <soc/tegra/fuse.h>
+
 #include <asm/asm-offsets.h>
+#include <asm/assembler.h>
 #include <asm/cache.h>
 
-#include "irammap.h"
-#include "fuse.h"
-#include "sleep.h"
 #include "flowctrl.h"
+#include "irammap.h"
+#include "sleep.h"
 
 #define EMC_CFG				0xc
 #define EMC_ADR_CFG			0x10
@@ -142,7 +143,7 @@ ENTRY(tegra30_hotplug_shutdown)
 	/* Powergate this CPU */
 	mov	r0, #TEGRA30_POWER_HOTPLUG_SHUTDOWN
 	bl	tegra30_cpu_shutdown
-	mov	pc, lr			@ should never get here
+	ret	lr			@ should never get here
 ENDPROC(tegra30_hotplug_shutdown)
 
 /*
@@ -161,7 +162,7 @@ ENTRY(tegra30_cpu_shutdown)
 	bne	_no_cpu0_chk	@ It's not Tegra30
 
 	cmp	r3, #0
-	moveq	pc, lr		@ Must never be called for CPU 0
+	reteq	lr		@ Must never be called for CPU 0
 _no_cpu0_chk:
 
 	ldr	r12, =TEGRA_FLOW_CTRL_VIRT
@@ -266,7 +267,7 @@ ENTRY(tegra30_sleep_core_finish)
 	mov32	r1, TEGRA_IRAM_LPx_RESUME_AREA
 	add	r0, r0, r1
 
-	mov	pc, r3
+	ret	r3
 ENDPROC(tegra30_sleep_core_finish)
 
 /*
@@ -285,7 +286,7 @@ ENTRY(tegra30_sleep_cpu_secondary_finish)
 	mov	r0, #0                          @ power mode flags (!hotplug)
 	bl	tegra30_cpu_shutdown
 	mov	r0, #1                          @ never return here
-	mov	pc, r7
+	ret	r7
 ENDPROC(tegra30_sleep_cpu_secondary_finish)
 
 /*
@@ -377,14 +378,6 @@ _pll_m_c_x_done:
 	pll_locked r1, r0, CLK_RESET_PLLA_BASE
 	pll_locked r1, r0, CLK_RESET_PLLC_BASE
 	pll_locked r1, r0, CLK_RESET_PLLX_BASE
-
-	tegra_get_soc_id TEGRA_APB_MISC_BASE, r1
-	cmp	r1, #TEGRA30
-	beq	1f
-	ldr	r1, [r0, #CLK_RESET_PLLP_BASE]
-	bic	r1, r1, #(1<<31)	@ disable PllP bypass
-	str	r1, [r0, #CLK_RESET_PLLP_BASE]
-1:
 
 	mov32	r7, TEGRA_TMRUS_BASE
 	ldr	r1, [r7]
@@ -537,7 +530,7 @@ __no_dual_emc_chanl:
 
 	mov32	r0, TEGRA_PMC_BASE
 	ldr	r0, [r0, #PMC_SCRATCH41]
-	mov	pc, r0			@ jump to tegra_resume
+	ret	r0			@ jump to tegra_resume
 ENDPROC(tegra30_lp1_reset)
 
 	.align	L1_CACHE_SHIFT
@@ -645,10 +638,7 @@ tegra30_switch_cpu_to_clk32k:
 	str	r0, [r4, #PMC_PLLP_WB0_OVERRIDE]
 
 	/* disable PLLP, PLLA, PLLC and PLLX */
-	tegra_get_soc_id TEGRA_APB_MISC_BASE, r1
-	cmp	r1, #TEGRA30
 	ldr	r0, [r5, #CLK_RESET_PLLP_BASE]
-	orrne	r0, r0, #(1 << 31)	@ enable PllP bypass on fast cluster
 	bic	r0, r0, #(1 << 30)
 	str	r0, [r5, #CLK_RESET_PLLP_BASE]
 	ldr	r0, [r5, #CLK_RESET_PLLA_BASE]
@@ -670,7 +660,7 @@ _no_pll_in_iddq:
 	mov	r0, #0	/* brust policy = 32KHz */
 	str	r0, [r5, #CLK_RESET_SCLK_BURST]
 
-	mov	pc, lr
+	ret	lr
 
 /*
  * tegra30_enter_sleep
@@ -830,7 +820,7 @@ pmc_io_dpd_skip:
 
 	dsb
 
-	mov	pc, lr
+	ret	lr
 
 	.ltorg
 /* dummy symbol for end of IRAM */

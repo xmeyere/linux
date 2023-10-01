@@ -102,8 +102,7 @@ static int wm831x_fll_prepare(struct clk_hw *hw)
 	if (ret != 0)
 		dev_crit(wm831x->dev, "Failed to enable FLL: %d\n", ret);
 
-	/* wait 2-3 ms for new frequency taking effect */
-	usleep_range(2000, 3000);
+	usleep_range(2000, 2000);
 
 	return ret;
 }
@@ -249,7 +248,7 @@ static int wm831x_clkout_is_prepared(struct clk_hw *hw)
 	if (ret < 0) {
 		dev_err(wm831x->dev, "Unable to read CLOCK_CONTROL_1: %d\n",
 			ret);
-		return false;
+		return true;
 	}
 
 	return (ret & WM831X_CLKOUT_ENA) != 0;
@@ -396,7 +395,6 @@ static struct platform_driver wm831x_clk_driver = {
 	.probe = wm831x_clk_probe,
 	.driver		= {
 		.name	= "wm831x-clk",
-		.owner	= THIS_MODULE,
 	},
 };
 

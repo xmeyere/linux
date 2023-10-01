@@ -264,9 +264,7 @@ static int __init tort_init(void)
 		int i;
 		void *patt;
 
-		err = mtdtest_erase_good_eraseblocks(mtd, bad_ebs, eb, ebcnt);
-		if (err)
-			goto out;
+		mtdtest_erase_good_eraseblocks(mtd, bad_ebs, eb, ebcnt);
 
 		/* Check if the eraseblocks contain only 0xFF bytes */
 		if (check) {

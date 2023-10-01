@@ -78,27 +78,24 @@ MLX4_EN_PARM_INT(inline_thold, MAX_INLINE,
 #define MAX_PFC_TX     0xff
 #define MAX_PFC_RX     0xff
 
-int en_print(const char *level, const struct mlx4_en_priv *priv,
-	     const char *format, ...)
+void en_print(const char *level, const struct mlx4_en_priv *priv,
+	      const char *format, ...)
 {
 	va_list args;
 	struct va_format vaf;
-	int i;
 
 	va_start(args, format);
 
 	vaf.fmt = format;
 	vaf.va = &args;
 	if (priv->registered)
-		i = printk("%s%s: %s: %pV",
-			   level, DRV_NAME, priv->dev->name, &vaf);
+		printk("%s%s: %s: %pV",
+		       level, DRV_NAME, priv->dev->name, &vaf);
 	else
-		i = printk("%s%s: %s: Port %d: %pV",
-			   level, DRV_NAME, dev_name(&priv->mdev->pdev->dev),
-			   priv->port, &vaf);
+		printk("%s%s: %s: Port %d: %pV",
+		       level, DRV_NAME, dev_name(&priv->mdev->pdev->dev),
+		       priv->port, &vaf);
 	va_end(args);
-
-	return i;
 }
 
 void mlx4_en_update_loopback_state(struct net_device *dev,
@@ -129,17 +126,19 @@ static int mlx4_en_get_profile(struct mlx4_en_dev *mdev)
 	int i;
 
 	params->udp_rss = udp_rss;
-	params->num_tx_rings_p_up = min_t(int, num_online_cpus(),
-			MLX4_EN_MAX_TX_RING_P_UP);
+	params->num_tx_rings_p_up = mlx4_low_memory_profile() ?
+		MLX4_EN_MIN_TX_RING_P_UP :
+		min_t(int, num_online_cpus(), MLX4_EN_MAX_TX_RING_P_UP);
+
 	if (params->udp_rss && !(mdev->dev->caps.flags
 					& MLX4_DEV_CAP_FLAG_UDP_RSS)) {
 		mlx4_warn(mdev, "UDP RSS is not supported on this device\n");
 		params->udp_rss = 0;
 	}
 	for (i = 1; i <= MLX4_MAX_PORTS; i++) {
-		params->prof[i].rx_pause = !(pfcrx || pfctx);
+		params->prof[i].rx_pause = 1;
 		params->prof[i].rx_ppp = pfcrx;
-		params->prof[i].tx_pause = !(pfcrx || pfctx);
+		params->prof[i].tx_pause = 1;
 		params->prof[i].tx_ppp = pfctx;
 		params->prof[i].tx_ring_size = MLX4_EN_DEF_TX_RING_SIZE;
 		params->prof[i].rx_ring_size = MLX4_EN_DEF_RX_RING_SIZE;
@@ -205,6 +204,9 @@ static void mlx4_en_remove(struct mlx4_dev *dev, void *endev_ptr)
 	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_ETH)
 		if (mdev->pndev[i])
 			mlx4_en_destroy_netdev(mdev->pndev[i]);
+
+	if (mdev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_TS)
+		mlx4_en_remove_timestamp(mdev);
 
 	flush_workqueue(mdev->workqueue);
 	destroy_workqueue(mdev->workqueue);
@@ -272,6 +274,10 @@ static void *mlx4_en_add(struct mlx4_dev *dev)
 	mdev->port_cnt = 0;
 	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_ETH)
 		mdev->port_cnt++;
+
+	/* Initialize time stamp mechanism */
+	if (mdev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_TS)
+		mlx4_en_init_timestamp(mdev);
 
 	/* Set default number of RX rings*/
 	mlx4_en_set_num_rx_rings(mdev);

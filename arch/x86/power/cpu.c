@@ -23,7 +23,6 @@
 #include <asm/debugreg.h>
 #include <asm/fpu-internal.h> /* pcntxt_mask */
 #include <asm/cpu.h>
-#include <asm/mmu_context.h>
 
 #ifdef CONFIG_X86_32
 __visible unsigned long saved_context_ebx;
@@ -158,7 +157,7 @@ static void fix_processor_context(void)
 	syscall_init();				/* This sets MSR_*STAR and related */
 #endif
 	load_TR_desc();				/* This does ltr */
-	load_mm_ldt(current->active_mm);	/* This does lldt */
+	load_LDT(&current->active_mm->context);	/* This does lldt */
 }
 
 /**
@@ -166,7 +165,7 @@ static void fix_processor_context(void)
  *		by __save_processor_state()
  *	@ctxt - structure to load the registers contents from
  */
-static void __restore_processor_state(struct saved_context *ctxt)
+static void notrace __restore_processor_state(struct saved_context *ctxt)
 {
 	if (ctxt->misc_enable_saved)
 		wrmsrl(MSR_IA32_MISC_ENABLE, ctxt->misc_enable);
@@ -240,7 +239,7 @@ static void __restore_processor_state(struct saved_context *ctxt)
 }
 
 /* Needed by apm.c */
-void restore_processor_state(void)
+void notrace restore_processor_state(void)
 {
 	__restore_processor_state(&saved_context);
 }

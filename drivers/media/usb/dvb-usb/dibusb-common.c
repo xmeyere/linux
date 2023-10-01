@@ -179,20 +179,8 @@ EXPORT_SYMBOL(dibusb_i2c_algo);
 
 int dibusb_read_eeprom_byte(struct dvb_usb_device *d, u8 offs, u8 *val)
 {
-	u8 *buf;
-	int rc;
-
-	buf = kmalloc(2, GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	buf[0] = offs;
-
-	rc = dibusb_i2c_msg(d, 0x50, &buf[0], 1, &buf[1], 1);
-	*val = buf[1];
-	kfree(buf);
-
-	return rc;
+	u8 wbuf[1] = { offs };
+	return dibusb_i2c_msg(d, 0x50, wbuf, 1, val, 1);
 }
 EXPORT_SYMBOL(dibusb_read_eeprom_byte);
 
@@ -270,8 +258,8 @@ static struct dib3000mc_config mod3000p_dib3000p_config = {
 
 int dibusb_dib3000mc_frontend_attach(struct dvb_usb_adapter *adap)
 {
-	if (adap->dev->udev->descriptor.idVendor  == USB_VID_LITEON &&
-			adap->dev->udev->descriptor.idProduct ==
+	if (le16_to_cpu(adap->dev->udev->descriptor.idVendor) == USB_VID_LITEON &&
+	    le16_to_cpu(adap->dev->udev->descriptor.idProduct) ==
 			USB_PID_LITEON_DVB_T_WARM) {
 		msleep(1000);
 	}
@@ -309,8 +297,8 @@ int dibusb_dib3000mc_tuner_attach(struct dvb_usb_adapter *adap)
 	struct i2c_adapter *tun_i2c;
 
 	// First IF calibration for Liteon Sticks
-	if (adap->dev->udev->descriptor.idVendor  == USB_VID_LITEON &&
-		adap->dev->udev->descriptor.idProduct == USB_PID_LITEON_DVB_T_WARM) {
+	if (le16_to_cpu(adap->dev->udev->descriptor.idVendor) == USB_VID_LITEON &&
+	    le16_to_cpu(adap->dev->udev->descriptor.idProduct) == USB_PID_LITEON_DVB_T_WARM) {
 
 		dibusb_read_eeprom_byte(adap->dev,0x7E,&a);
 		dibusb_read_eeprom_byte(adap->dev,0x7F,&b);
@@ -322,8 +310,8 @@ int dibusb_dib3000mc_tuner_attach(struct dvb_usb_adapter *adap)
 		else
 			warn("LITE-ON DVB-T: Strange IF1 calibration :%2X %2X\n", a, b);
 
-	} else if (adap->dev->udev->descriptor.idVendor  == USB_VID_DIBCOM &&
-		   adap->dev->udev->descriptor.idProduct == USB_PID_DIBCOM_MOD3001_WARM) {
+	} else if (le16_to_cpu(adap->dev->udev->descriptor.idVendor) == USB_VID_DIBCOM &&
+		   le16_to_cpu(adap->dev->udev->descriptor.idProduct) == USB_PID_DIBCOM_MOD3001_WARM) {
 		u8 desc;
 		dibusb_read_eeprom_byte(adap->dev, 7, &desc);
 		if (desc == 2) {

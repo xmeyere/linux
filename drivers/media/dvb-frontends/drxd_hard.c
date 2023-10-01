@@ -2831,17 +2831,11 @@ static int drxd_read_status(struct dvb_frontend *fe, fe_status_t * status)
 static int drxd_init(struct dvb_frontend *fe)
 {
 	struct drxd_state *state = fe->demodulator_priv;
-	int err = 0;
 
-/*	if (request_firmware(&state->fw, "drxd.fw", state->dev)<0) */
 	return DRXD_init(state, NULL, 0);
-
-	err = DRXD_init(state, state->fw->data, state->fw->size);
-	release_firmware(state->fw);
-	return err;
 }
 
-int drxd_config_i2c(struct dvb_frontend *fe, int onoff)
+static int drxd_config_i2c(struct dvb_frontend *fe, int onoff)
 {
 	struct drxd_state *state = fe->demodulator_priv;
 
@@ -2850,7 +2844,6 @@ int drxd_config_i2c(struct dvb_frontend *fe, int onoff)
 
 	return DRX_ConfigureI2CBridge(state, onoff);
 }
-EXPORT_SYMBOL(drxd_config_i2c);
 
 static int drxd_get_tune_settings(struct dvb_frontend *fe,
 				  struct dvb_frontend_tune_settings *sets)

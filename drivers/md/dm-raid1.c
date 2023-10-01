@@ -604,15 +604,6 @@ static void write_callback(unsigned long error, void *context)
 		return;
 	}
 
-	/*
-	 * If the bio is discard, return an error, but do not
-	 * degrade the array.
-	 */
-	if (bio->bi_rw & REQ_DISCARD) {
-		bio_endio(bio, -EOPNOTSUPP);
-		return;
-	}
-
 	for (i = 0; i < ms->nr_mirrors; i++)
 		if (test_bit(i, &error))
 			fail_mirror(ms->mirror + i, DM_RAID1_WRITE_ERROR);
@@ -923,18 +914,16 @@ static int get_mirror(struct mirror_set *ms, struct dm_target *ti,
 {
 	unsigned long long offset;
 	char dummy;
-	int ret;
 
 	if (sscanf(argv[1], "%llu%c", &offset, &dummy) != 1) {
 		ti->error = "Invalid offset";
 		return -EINVAL;
 	}
 
-	ret = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table),
-			    &ms->mirror[mirror].dev);
-	if (ret) {
+	if (dm_get_device(ti, argv[0], dm_table_get_mode(ti->table),
+			  &ms->mirror[mirror].dev)) {
 		ti->error = "Device lookup failure";
-		return ret;
+		return -ENXIO;
 	}
 
 	ms->mirror[mirror].ms = ms;

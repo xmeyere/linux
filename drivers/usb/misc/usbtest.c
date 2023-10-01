@@ -54,6 +54,7 @@ struct usbtest_info {
 	unsigned		autoconf:1;
 	unsigned		ctrl_out:1;
 	unsigned		iso:1;		/* try iso in/out */
+	unsigned		intr:1;		/* try interrupt in/out */
 	int			alt;
 };
 
@@ -70,7 +71,10 @@ struct usbtest_dev {
 	int			out_pipe;
 	int			in_iso_pipe;
 	int			out_iso_pipe;
+	int			in_int_pipe;
+	int			out_int_pipe;
 	struct usb_endpoint_descriptor	*iso_in, *iso_out;
+	struct usb_endpoint_descriptor	*int_in, *int_out;
 	struct mutex		lock;
 
 #define TBUF_SIZE	256
@@ -101,6 +105,7 @@ get_endpoints(struct usbtest_dev *dev, struct usb_interface *intf)
 	struct usb_host_interface	*alt;
 	struct usb_host_endpoint	*in, *out;
 	struct usb_host_endpoint	*iso_in, *iso_out;
+	struct usb_host_endpoint	*int_in, *int_out;
 	struct usb_device		*udev;
 
 	for (tmp = 0; tmp < intf->num_altsetting; tmp++) {
@@ -108,6 +113,7 @@ get_endpoints(struct usbtest_dev *dev, struct usb_interface *intf)
 
 		in = out = NULL;
 		iso_in = iso_out = NULL;
+		int_in = int_out = NULL;
 		alt = intf->altsetting + tmp;
 
 		if (override_alt >= 0 &&
@@ -124,6 +130,9 @@ get_endpoints(struct usbtest_dev *dev, struct usb_interface *intf)
 			switch (usb_endpoint_type(&e->desc)) {
 			case USB_ENDPOINT_XFER_BULK:
 				break;
+			case USB_ENDPOINT_XFER_INT:
+				if (dev->info->intr)
+					goto try_intr;
 			case USB_ENDPOINT_XFER_ISOC:
 				if (dev->info->iso)
 					goto try_iso;
@@ -139,6 +148,15 @@ get_endpoints(struct usbtest_dev *dev, struct usb_interface *intf)
 					out = e;
 			}
 			continue;
+try_intr:
+			if (usb_endpoint_dir_in(&e->desc)) {
+				if (!int_in)
+					int_in = e;
+			} else {
+				if (!int_out)
+					int_out = e;
+			}
+			continue;
 try_iso:
 			if (usb_endpoint_dir_in(&e->desc)) {
 				if (!iso_in)
@@ -148,7 +166,7 @@ try_iso:
 					iso_out = e;
 			}
 		}
-		if ((in && out)  ||  iso_in || iso_out)
+		if ((in && out)  ||  iso_in || iso_out || int_in || int_out)
 			goto found;
 	}
 	return -EINVAL;
@@ -164,13 +182,12 @@ found:
 			return tmp;
 	}
 
-	if (in)
+	if (in) {
 		dev->in_pipe = usb_rcvbulkpipe(udev,
 			in->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);
-	if (out)
 		dev->out_pipe = usb_sndbulkpipe(udev,
 			out->desc.bEndpointAddress & USB_ENDPOINT_NUMBER_MASK);
-
+	}
 	if (iso_in) {
 		dev->iso_in = &iso_in->desc;
 		dev->in_iso_pipe = usb_rcvisocpipe(udev,
@@ -182,6 +199,20 @@ found:
 		dev->iso_out = &iso_out->desc;
 		dev->out_iso_pipe = usb_sndisocpipe(udev,
 				iso_out->desc.bEndpointAddress
+					& USB_ENDPOINT_NUMBER_MASK);
+	}
+
+	if (int_in) {
+		dev->int_in = &int_in->desc;
+		dev->in_int_pipe = usb_rcvintpipe(udev,
+				int_in->desc.bEndpointAddress
+					& USB_ENDPOINT_NUMBER_MASK);
+	}
+
+	if (int_out) {
+		dev->int_out = &int_out->desc;
+		dev->out_int_pipe = usb_sndintpipe(udev,
+				int_out->desc.bEndpointAddress
 					& USB_ENDPOINT_NUMBER_MASK);
 	}
 	return 0;
@@ -206,14 +237,22 @@ static struct urb *usbtest_alloc_urb(
 	int			pipe,
 	unsigned long		bytes,
 	unsigned		transfer_flags,
-	unsigned		offset)
+	unsigned		offset,
+	u8			bInterval)
 {
 	struct urb		*urb;
 
 	urb = usb_alloc_urb(0, GFP_KERNEL);
 	if (!urb)
 		return urb;
-	usb_fill_bulk_urb(urb, udev, pipe, NULL, bytes, simple_callback, NULL);
+
+	if (bInterval)
+		usb_fill_int_urb(urb, udev, pipe, NULL, bytes, simple_callback,
+				NULL, bInterval);
+	else
+		usb_fill_bulk_urb(urb, udev, pipe, NULL, bytes, simple_callback,
+				NULL);
+
 	urb->interval = (udev->speed == USB_SPEED_HIGH)
 			? (INTERRUPT_RATE << 3)
 			: INTERRUPT_RATE;
@@ -252,9 +291,11 @@ static struct urb *usbtest_alloc_urb(
 static struct urb *simple_alloc_urb(
 	struct usb_device	*udev,
 	int			pipe,
-	unsigned long		bytes)
+	unsigned long		bytes,
+	u8			bInterval)
 {
-	return usbtest_alloc_urb(udev, pipe, bytes, URB_NO_TRANSFER_DMA_MAP, 0);
+	return usbtest_alloc_urb(udev, pipe, bytes, URB_NO_TRANSFER_DMA_MAP, 0,
+			bInterval);
 }
 
 static unsigned pattern;
@@ -489,6 +530,7 @@ static void sg_timeout(unsigned long _req)
 {
 	struct usb_sg_request	*req = (struct usb_sg_request *) _req;
 
+	req->status = -ETIMEDOUT;
 	usb_sg_cancel(req);
 }
 
@@ -519,10 +561,8 @@ static int perform_sglist(
 		mod_timer(&sg_timer, jiffies +
 				msecs_to_jiffies(SIMPLE_IO_TIMEOUT));
 		usb_sg_wait(req);
-		if (!del_timer_sync(&sg_timer))
-			retval = -ETIMEDOUT;
-		else
-			retval = req->status;
+		del_timer_sync(&sg_timer);
+		retval = req->status;
 
 		/* FIXME check resulting data pattern */
 
@@ -1257,7 +1297,7 @@ test_ctrl_queue(struct usbtest_dev *dev, struct usbtest_param *param)
 			goto cleanup;
 		}
 		req.wLength = cpu_to_le16(len);
-		urb[i] = u = simple_alloc_urb(udev, pipe, len);
+		urb[i] = u = simple_alloc_urb(udev, pipe, len, 0);
 		if (!u)
 			goto cleanup;
 
@@ -1330,7 +1370,7 @@ static int unlink1(struct usbtest_dev *dev, int pipe, int size, int async)
 	int			retval = 0;
 
 	init_completion(&completion);
-	urb = simple_alloc_urb(testdev_to_usbdev(dev), pipe, size);
+	urb = simple_alloc_urb(testdev_to_usbdev(dev), pipe, size, 0);
 	if (!urb)
 		return -ENOMEM;
 	urb->context = &completion;
@@ -1618,9 +1658,9 @@ static int halt_simple(struct usbtest_dev *dev)
 	struct usb_device	*udev = testdev_to_usbdev(dev);
 
 	if (udev->speed == USB_SPEED_SUPER)
-		urb = simple_alloc_urb(udev, 0, 1024);
+		urb = simple_alloc_urb(udev, 0, 1024, 0);
 	else
-		urb = simple_alloc_urb(udev, 0, 512);
+		urb = simple_alloc_urb(udev, 0, 512, 0);
 	if (urb == NULL)
 		return -ENOMEM;
 
@@ -1964,7 +2004,7 @@ static int test_unaligned_bulk(
 {
 	int retval;
 	struct urb *urb = usbtest_alloc_urb(
-		testdev_to_usbdev(tdev), pipe, length, transfer_flags, 1);
+		testdev_to_usbdev(tdev), pipe, length, transfer_flags, 1, 0);
 
 	if (!urb)
 		return -ENOMEM;
@@ -1991,7 +2031,7 @@ static int test_unaligned_bulk(
  *
  * WARNING:  Because usbfs grabs udev->dev.sem before calling this ioctl(),
  * it locks out usbcore in certain code paths.  Notably, if you disconnect
- * the device-under-test, khubd will wait block forever waiting for the
+ * the device-under-test, hub_wq will wait block forever waiting for the
  * ioctl to complete ... so that usb_disconnect() can abort the pending
  * urbs and then call usbtest_disconnect().  To abort a test, you're best
  * off just killing the userspace task and waiting for it to exit.
@@ -2070,7 +2110,7 @@ usbtest_ioctl(struct usb_interface *intf, unsigned int code, void *buf)
 		dev_info(&intf->dev,
 				"TEST 1:  write %d bytes %u times\n",
 				param->length, param->iterations);
-		urb = simple_alloc_urb(udev, dev->out_pipe, param->length);
+		urb = simple_alloc_urb(udev, dev->out_pipe, param->length, 0);
 		if (!urb) {
 			retval = -ENOMEM;
 			break;
@@ -2085,7 +2125,7 @@ usbtest_ioctl(struct usb_interface *intf, unsigned int code, void *buf)
 		dev_info(&intf->dev,
 				"TEST 2:  read %d bytes %u times\n",
 				param->length, param->iterations);
-		urb = simple_alloc_urb(udev, dev->in_pipe, param->length);
+		urb = simple_alloc_urb(udev, dev->in_pipe, param->length, 0);
 		if (!urb) {
 			retval = -ENOMEM;
 			break;
@@ -2100,7 +2140,7 @@ usbtest_ioctl(struct usb_interface *intf, unsigned int code, void *buf)
 		dev_info(&intf->dev,
 				"TEST 3:  write/%d 0..%d bytes %u times\n",
 				param->vary, param->length, param->iterations);
-		urb = simple_alloc_urb(udev, dev->out_pipe, param->length);
+		urb = simple_alloc_urb(udev, dev->out_pipe, param->length, 0);
 		if (!urb) {
 			retval = -ENOMEM;
 			break;
@@ -2116,7 +2156,7 @@ usbtest_ioctl(struct usb_interface *intf, unsigned int code, void *buf)
 		dev_info(&intf->dev,
 				"TEST 4:  read/%d 0..%d bytes %u times\n",
 				param->vary, param->length, param->iterations);
-		urb = simple_alloc_urb(udev, dev->in_pipe, param->length);
+		urb = simple_alloc_urb(udev, dev->in_pipe, param->length, 0);
 		if (!urb) {
 			retval = -ENOMEM;
 			break;
@@ -2413,6 +2453,39 @@ usbtest_ioctl(struct usb_interface *intf, unsigned int code, void *buf)
 		}
 		break;
 
+	/* Simple non-queued interrupt I/O tests */
+	case 25:
+		if (dev->out_int_pipe == 0)
+			break;
+		dev_info(&intf->dev,
+				"TEST 25: write %d bytes %u times\n",
+				param->length, param->iterations);
+		urb = simple_alloc_urb(udev, dev->out_int_pipe, param->length,
+				dev->int_out->bInterval);
+		if (!urb) {
+			retval = -ENOMEM;
+			break;
+		}
+		/* FIRMWARE: interrupt sink (maybe accepts short writes) */
+		retval = simple_io(dev, urb, param->iterations, 0, 0, "test25");
+		simple_free_urb(urb);
+		break;
+	case 26:
+		if (dev->in_int_pipe == 0)
+			break;
+		dev_info(&intf->dev,
+				"TEST 26: read %d bytes %u times\n",
+				param->length, param->iterations);
+		urb = simple_alloc_urb(udev, dev->in_int_pipe, param->length,
+				dev->int_in->bInterval);
+		if (!urb) {
+			retval = -ENOMEM;
+			break;
+		}
+		/* FIRMWARE: interrupt source (maybe generates short writes) */
+		retval = simple_io(dev, urb, param->iterations, 0, 0, "test26");
+		simple_free_urb(urb);
+		break;
 	}
 	do_gettimeofday(&param->duration);
 	param->duration.tv_sec -= start.tv_sec;
@@ -2449,6 +2522,7 @@ usbtest_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	struct usbtest_info	*info;
 	char			*rtest, *wtest;
 	char			*irtest, *iwtest;
+	char			*intrtest, *intwtest;
 
 	udev = interface_to_usbdev(intf);
 
@@ -2489,6 +2563,7 @@ usbtest_probe(struct usb_interface *intf, const struct usb_device_id *id)
 	 */
 	rtest = wtest = "";
 	irtest = iwtest = "";
+	intrtest = intwtest = "";
 	if (force_interrupt || udev->speed == USB_SPEED_LOW) {
 		if (info->ep_in) {
 			dev->in_pipe = usb_rcvintpipe(udev, info->ep_in);
@@ -2527,15 +2602,20 @@ usbtest_probe(struct usb_interface *intf, const struct usb_device_id *id)
 			irtest = " iso-in";
 		if (dev->out_iso_pipe)
 			iwtest = " iso-out";
+		if (dev->in_int_pipe)
+			intrtest = " int-in";
+		if (dev->out_int_pipe)
+			intwtest = " int-out";
 	}
 
 	usb_set_intfdata(intf, dev);
 	dev_info(&intf->dev, "%s\n", info->name);
-	dev_info(&intf->dev, "%s {control%s%s%s%s%s} tests%s\n",
+	dev_info(&intf->dev, "%s {control%s%s%s%s%s%s%s} tests%s\n",
 			usb_speed_string(udev->speed),
 			info->ctrl_out ? " in/out" : "",
 			rtest, wtest,
 			irtest, iwtest,
+			intrtest, intwtest,
 			info->alt >= 0 ? " (+alt)" : "");
 	return 0;
 }
@@ -2609,6 +2689,7 @@ static struct usbtest_info gz_info = {
 	.autoconf	= 1,
 	.ctrl_out	= 1,
 	.iso		= 1,
+	.intr		= 1,
 	.alt		= 0,
 };
 

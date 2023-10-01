@@ -85,21 +85,11 @@ stext:
 
 	; Uboot - kernel ABI
 	;    r0 = [0] No uboot interaction, [1] cmdline in r2, [2] DTB in r2
-	;    r1 = magic number (always zero as of now)
+	;    r1 = magic number (board identity, unused as of now
 	;    r2 = pointer to uboot provided cmdline or external DTB in mem
-	; These are handled later in handle_uboot_args()
+	; These are handled later in setup_arch()
 	st	r0, [@uboot_tag]
 	st	r2, [@uboot_arg]
-
-	; Identify if running on ISS vs Silicon
-	; 	IDENTITY Reg [ 3  2  1  0 ]
-	;	(chip-id)      ^^^^^		==> 0xffff for ISS
-	lr	r0, [identity]
-	lsr	r3, r0, 16
-	cmp	r3, 0xffff
-	mov.z	r4, 0
-	mov.nz	r4, 1
-	st	r4, [@running_on_hw]
 
 	; setup "current" tsk and optionally cache it in dedicated r25
 	mov	r9, @init_task

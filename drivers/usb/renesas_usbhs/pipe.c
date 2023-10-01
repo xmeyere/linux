@@ -263,21 +263,6 @@ int usbhs_pipe_is_accessible(struct usbhs_pipe *pipe)
 	return -EBUSY;
 }
 
-bool usbhs_pipe_contains_transmittable_data(struct usbhs_pipe *pipe)
-{
-	u16 val;
-
-	/* Do not support for DCP pipe */
-	if (usbhs_pipe_is_dcp(pipe))
-		return false;
-
-	val = usbhsp_pipectrl_get(pipe);
-	if (val & INBUFM)
-		return true;
-
-	return false;
-}
-
 /*
  *		PID ctrl
  */
@@ -593,6 +578,19 @@ int usbhs_pipe_is_dir_host(struct usbhs_pipe *pipe)
 	return usbhsp_flags_has(pipe, IS_DIR_HOST);
 }
 
+int usbhs_pipe_is_running(struct usbhs_pipe *pipe)
+{
+	return usbhsp_flags_has(pipe, IS_RUNNING);
+}
+
+void usbhs_pipe_running(struct usbhs_pipe *pipe, int running)
+{
+	if (running)
+		usbhsp_flags_set(pipe, IS_RUNNING);
+	else
+		usbhsp_flags_clr(pipe, IS_RUNNING);
+}
+
 void usbhs_pipe_data_sequence(struct usbhs_pipe *pipe, int sequence)
 {
 	u16 mask = (SQCLR | SQSET);
@@ -730,6 +728,7 @@ struct usbhs_pipe *usbhs_pipe_malloc(struct usbhs_priv *priv,
 	usbhsp_pipe_select(pipe);
 	usbhsp_pipe_cfg_set(pipe, 0xFFFF, pipecfg);
 	usbhsp_pipe_buf_set(pipe, 0xFFFF, pipebuf);
+	usbhs_pipe_clear(pipe);
 
 	usbhs_pipe_sequence_data0(pipe);
 

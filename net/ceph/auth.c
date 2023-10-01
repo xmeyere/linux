@@ -293,9 +293,13 @@ int ceph_auth_create_authorizer(struct ceph_auth_client *ac,
 }
 EXPORT_SYMBOL(ceph_auth_create_authorizer);
 
-void ceph_auth_destroy_authorizer(struct ceph_authorizer *a)
+void ceph_auth_destroy_authorizer(struct ceph_auth_client *ac,
+				  struct ceph_authorizer *a)
 {
-	a->destroy(a);
+	mutex_lock(&ac->mutex);
+	if (ac->ops && ac->ops->destroy_authorizer)
+		ac->ops->destroy_authorizer(ac, a);
+	mutex_unlock(&ac->mutex);
 }
 EXPORT_SYMBOL(ceph_auth_destroy_authorizer);
 

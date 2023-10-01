@@ -75,6 +75,11 @@ convert_ip_to_linear(struct task_struct *child, struct pt_regs *regs);
 extern void send_sigtrap(struct task_struct *tsk, struct pt_regs *regs,
 			 int error_code, int si_code);
 
+
+extern unsigned long syscall_trace_enter_phase1(struct pt_regs *, u32 arch);
+extern long syscall_trace_enter_phase2(struct pt_regs *, u32 arch,
+				       unsigned long phase1_result);
+
 extern long syscall_trace_enter(struct pt_regs *);
 extern void syscall_trace_leave(struct pt_regs *);
 
@@ -118,9 +123,9 @@ static inline int v8086_mode(struct pt_regs *regs)
 #endif
 }
 
+#ifdef CONFIG_X86_64
 static inline bool user_64bit_mode(struct pt_regs *regs)
 {
-#ifdef CONFIG_X86_64
 #ifndef CONFIG_PARAVIRT
 	/*
 	 * On non-paravirt systems, this is the only long mode CPL 3
@@ -131,12 +136,8 @@ static inline bool user_64bit_mode(struct pt_regs *regs)
 	/* Headers are too twisted for this to go in paravirt.h. */
 	return regs->cs == __USER_CS || regs->cs == pv_info.extra_user_64bit_cs;
 #endif
-#else /* !CONFIG_X86_64 */
-	return false;
-#endif
 }
 
-#ifdef CONFIG_X86_64
 #define current_user_stack_pointer()	this_cpu_read(old_rsp)
 /* ia32 vs. x32 difference */
 #define compat_user_stack_pointer()	\

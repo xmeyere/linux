@@ -127,12 +127,13 @@ static void vmw_resource_release(struct kref *kref)
 	if (res->backup) {
 		struct ttm_buffer_object *bo = &res->backup->base;
 
-		ttm_bo_reserve(bo, false, false, false, 0);
+		ttm_bo_reserve(bo, false, false, false, NULL);
 		if (!list_empty(&res->mob_head) &&
 		    res->func->unbind != NULL) {
 			struct ttm_validate_buffer val_buf;
 
 			val_buf.bo = bo;
+			val_buf.shared = false;
 			res->func->unbind(res, false, &val_buf);
 		}
 		res->backup_dirty = false;
@@ -355,7 +356,7 @@ int vmw_user_lookup_handle(struct vmw_private *dev_priv,
 	}
 
 	*out_surf = NULL;
-	ret = vmw_user_dmabuf_lookup(tfile, handle, out_buf, NULL);
+	ret = vmw_user_dmabuf_lookup(tfile, handle, out_buf);
 	return ret;
 }
 
@@ -429,7 +430,7 @@ int vmw_dmabuf_init(struct vmw_private *dev_priv,
 	ret = ttm_bo_init(bdev, &vmw_bo->base, size,
 			  ttm_bo_type_device, placement,
 			  0, interruptible,
-			  NULL, acc_size, NULL, bo_free);
+			  NULL, acc_size, NULL, NULL, bo_free);
 	return ret;
 }
 
@@ -482,8 +483,7 @@ int vmw_user_dmabuf_alloc(struct vmw_private *dev_priv,
 			  uint32_t size,
 			  bool shareable,
 			  uint32_t *handle,
-			  struct vmw_dma_buffer **p_dma_buf,
-			  struct ttm_base_object **p_base)
+			  struct vmw_dma_buffer **p_dma_buf)
 {
 	struct vmw_user_dma_buffer *user_bo;
 	struct ttm_buffer_object *tmp;
@@ -517,10 +517,6 @@ int vmw_user_dmabuf_alloc(struct vmw_private *dev_priv,
 	}
 
 	*p_dma_buf = &user_bo->dma;
-	if (p_base) {
-		*p_base = &user_bo->prime.base;
-		kref_get(&(*p_base)->refcount);
-	}
 	*handle = user_bo->prime.base.hash.key;
 
 out_no_base_object:
@@ -572,13 +568,18 @@ static int vmw_user_dmabuf_synccpu_grab(struct vmw_user_dma_buffer *user_bo,
 	int ret;
 
 	if (flags & drm_vmw_synccpu_allow_cs) {
-		struct ttm_bo_device *bdev = bo->bdev;
+		bool nonblock = !!(flags & drm_vmw_synccpu_dontblock);
+		long lret;
 
-		spin_lock(&bdev->fence_lock);
-		ret = ttm_bo_wait(bo, false, true,
-				  !!(flags & drm_vmw_synccpu_dontblock));
-		spin_unlock(&bdev->fence_lock);
-		return ret;
+		if (nonblock)
+			return reservation_object_test_signaled_rcu(bo->resv, true) ? 0 : -EBUSY;
+
+		lret = reservation_object_wait_timeout_rcu(bo->resv, true, true, MAX_SCHEDULE_TIMEOUT);
+		if (!lret)
+			return -EBUSY;
+		else if (lret < 0)
+			return lret;
+		return 0;
 	}
 
 	ret = ttm_bo_synccpu_write_grab
@@ -587,7 +588,7 @@ static int vmw_user_dmabuf_synccpu_grab(struct vmw_user_dma_buffer *user_bo,
 		return ret;
 
 	ret = ttm_ref_object_add(tfile, &user_bo->prime.base,
-				 TTM_REF_SYNCCPU_WRITE, &existed, false);
+				 TTM_REF_SYNCCPU_WRITE, &existed);
 	if (ret != 0 || existed)
 		ttm_bo_synccpu_write_release(&user_bo->dma.base);
 
@@ -632,7 +633,6 @@ int vmw_user_dmabuf_synccpu_ioctl(struct drm_device *dev, void *data,
 	struct vmw_dma_buffer *dma_buf;
 	struct vmw_user_dma_buffer *user_bo;
 	struct ttm_object_file *tfile = vmw_fpriv(file_priv)->tfile;
-	struct ttm_base_object *buffer_base;
 	int ret;
 
 	if ((arg->flags & (drm_vmw_synccpu_read | drm_vmw_synccpu_write)) == 0
@@ -645,8 +645,7 @@ int vmw_user_dmabuf_synccpu_ioctl(struct drm_device *dev, void *data,
 
 	switch (arg->op) {
 	case drm_vmw_synccpu_grab:
-		ret = vmw_user_dmabuf_lookup(tfile, arg->handle, &dma_buf,
-					     &buffer_base);
+		ret = vmw_user_dmabuf_lookup(tfile, arg->handle, &dma_buf);
 		if (unlikely(ret != 0))
 			return ret;
 
@@ -654,7 +653,6 @@ int vmw_user_dmabuf_synccpu_ioctl(struct drm_device *dev, void *data,
 				       dma);
 		ret = vmw_user_dmabuf_synccpu_grab(user_bo, tfile, arg->flags);
 		vmw_dmabuf_unreference(&dma_buf);
-		ttm_base_object_unref(&buffer_base);
 		if (unlikely(ret != 0 && ret != -ERESTARTSYS &&
 			     ret != -EBUSY)) {
 			DRM_ERROR("Failed synccpu grab on handle 0x%08x.\n",
@@ -696,8 +694,7 @@ int vmw_dmabuf_alloc_ioctl(struct drm_device *dev, void *data,
 		return ret;
 
 	ret = vmw_user_dmabuf_alloc(dev_priv, vmw_fpriv(file_priv)->tfile,
-				    req->size, false, &handle, &dma_buf,
-				    NULL);
+				    req->size, false, &handle, &dma_buf);
 	if (unlikely(ret != 0))
 		goto out_no_dmabuf;
 
@@ -726,8 +723,7 @@ int vmw_dmabuf_unref_ioctl(struct drm_device *dev, void *data,
 }
 
 int vmw_user_dmabuf_lookup(struct ttm_object_file *tfile,
-			   uint32_t handle, struct vmw_dma_buffer **out,
-			   struct ttm_base_object **p_base)
+			   uint32_t handle, struct vmw_dma_buffer **out)
 {
 	struct vmw_user_dma_buffer *vmw_user_bo;
 	struct ttm_base_object *base;
@@ -749,10 +745,7 @@ int vmw_user_dmabuf_lookup(struct ttm_object_file *tfile,
 	vmw_user_bo = container_of(base, struct vmw_user_dma_buffer,
 				   prime.base);
 	(void)ttm_bo_reference(&vmw_user_bo->dma.base);
-	if (p_base)
-		*p_base = base;
-	else
-		ttm_base_object_unref(&base);
+	ttm_base_object_unref(&base);
 	*out = &vmw_user_bo->dma;
 
 	return 0;
@@ -771,7 +764,7 @@ int vmw_user_dmabuf_reference(struct ttm_object_file *tfile,
 
 	*handle = user_bo->prime.base.hash.key;
 	return ttm_ref_object_add(tfile, &user_bo->prime.base,
-				  TTM_REF_USAGE, NULL, false);
+				  TTM_REF_USAGE, NULL);
 }
 
 /*
@@ -1013,7 +1006,7 @@ int vmw_dumb_create(struct drm_file *file_priv,
 
 	ret = vmw_user_dmabuf_alloc(dev_priv, vmw_fpriv(file_priv)->tfile,
 				    args->size, false, &args->handle,
-				    &dma_buf, NULL);
+				    &dma_buf);
 	if (unlikely(ret != 0))
 		goto out_no_dmabuf;
 
@@ -1041,7 +1034,7 @@ int vmw_dumb_map_offset(struct drm_file *file_priv,
 	struct vmw_dma_buffer *out_buf;
 	int ret;
 
-	ret = vmw_user_dmabuf_lookup(tfile, handle, &out_buf, NULL);
+	ret = vmw_user_dmabuf_lookup(tfile, handle, &out_buf);
 	if (ret != 0)
 		return -EINVAL;
 
@@ -1227,8 +1220,9 @@ vmw_resource_check_buffer(struct vmw_resource *res,
 
 	INIT_LIST_HEAD(&val_list);
 	val_buf->bo = ttm_bo_reference(&res->backup->base);
+	val_buf->shared = false;
 	list_add_tail(&val_buf->head, &val_list);
-	ret = ttm_eu_reserve_buffers(NULL, &val_list);
+	ret = ttm_eu_reserve_buffers(NULL, &val_list, interruptible);
 	if (unlikely(ret != 0))
 		goto out_no_reserve;
 
@@ -1320,6 +1314,7 @@ int vmw_resource_do_evict(struct vmw_resource *res, bool interruptible)
 	BUG_ON(!func->may_evict);
 
 	val_buf.bo = NULL;
+	val_buf.shared = false;
 	ret = vmw_resource_check_buffer(res, interruptible, &val_buf);
 	if (unlikely(ret != 0))
 		return ret;
@@ -1365,6 +1360,7 @@ int vmw_resource_validate(struct vmw_resource *res)
 		return 0;
 
 	val_buf.bo = NULL;
+	val_buf.shared = false;
 	if (res->backup)
 		val_buf.bo = &res->backup->base;
 	do {
@@ -1432,25 +1428,16 @@ void vmw_fence_single_bo(struct ttm_buffer_object *bo,
 			 struct vmw_fence_obj *fence)
 {
 	struct ttm_bo_device *bdev = bo->bdev;
-	struct ttm_bo_driver *driver = bdev->driver;
-	struct vmw_fence_obj *old_fence_obj;
+
 	struct vmw_private *dev_priv =
 		container_of(bdev, struct vmw_private, bdev);
 
-	if (fence == NULL)
+	if (fence == NULL) {
 		vmw_execbuf_fence_commands(NULL, dev_priv, &fence, NULL);
-	else
-		driver->sync_obj_ref(fence);
-
-	spin_lock(&bdev->fence_lock);
-
-	old_fence_obj = bo->sync_obj;
-	bo->sync_obj = fence;
-
-	spin_unlock(&bdev->fence_lock);
-
-	if (old_fence_obj)
-		vmw_fence_obj_unreference(&old_fence_obj);
+		reservation_object_add_excl_fence(bo->resv, &fence->base);
+		fence_put(&fence->base);
+	} else
+		reservation_object_add_excl_fence(bo->resv, &fence->base);
 }
 
 /**
@@ -1488,10 +1475,10 @@ void vmw_resource_move_notify(struct ttm_buffer_object *bo,
 
 	if (mem->mem_type != VMW_PL_MOB) {
 		struct vmw_resource *res, *n;
-		struct ttm_bo_device *bdev = bo->bdev;
 		struct ttm_validate_buffer val_buf;
 
 		val_buf.bo = bo;
+		val_buf.shared = false;
 
 		list_for_each_entry_safe(res, n, &dma_buf->res_list, mob_head) {
 
@@ -1504,9 +1491,7 @@ void vmw_resource_move_notify(struct ttm_buffer_object *bo,
 			list_del_init(&res->mob_head);
 		}
 
-		spin_lock(&bdev->fence_lock);
 		(void) ttm_bo_wait(bo, false, false, false);
-		spin_unlock(&bdev->fence_lock);
 	}
 }
 

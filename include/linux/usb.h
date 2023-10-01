@@ -125,6 +125,7 @@ enum usb_interface_condition {
  * @dev: driver model's view of this device
  * @usb_dev: if an interface is bound to the USB major, this will point
  *	to the sysfs representation for that device.
+ * @pm_usage_cnt: PM usage counter for this interface
  * @reset_ws: Used for scheduling resets from atomic context.
  * @reset_running: set to 1 if the interface is currently running a
  *      queued reset so that usb_cancel_queued_reset() doesn't try to
@@ -185,6 +186,7 @@ struct usb_interface {
 
 	struct device dev;		/* interface specific device info */
 	struct device *usb_dev;
+	atomic_t pm_usage_cnt;		/* usage counter for autosuspend */
 	struct work_struct reset_ws;	/* for resets in atomic context */
 };
 #define	to_usb_interface(d) container_of(d, struct usb_interface, dev)
@@ -207,32 +209,6 @@ void usb_put_intf(struct usb_interface *intf);
 /* this maximum is arbitrary */
 #define USB_MAXINTERFACES	32
 #define USB_MAXIADS		(USB_MAXINTERFACES/2)
-
-/*
- * USB Resume Timer: Every Host controller driver should drive the resume
- * signalling on the bus for the amount of time defined by this macro.
- *
- * That way we will have a 'stable' behavior among all HCDs supported by Linux.
- *
- * Note that the USB Specification states we should drive resume for *at least*
- * 20 ms, but it doesn't give an upper bound. This creates two possible
- * situations which we want to avoid:
- *
- * (a) sometimes an msleep(20) might expire slightly before 20 ms, which causes
- * us to fail USB Electrical Tests, thus failing Certification
- *
- * (b) Some (many) devices actually need more than 20 ms of resume signalling,
- * and while we can argue that's against the USB Specification, we don't have
- * control over which devices a certification laboratory will be using for
- * certification. If CertLab uses a device which was tested against Windows and
- * that happens to have relaxed resume signalling rules, we might fall into
- * situations where we fail interoperability and electrical tests.
- *
- * In order to avoid both conditions, we're using a 40 ms resume timeout, which
- * should cope with both LPJ calibration errors and devices not following every
- * detail of the USB Specification.
- */
-#define USB_RESUME_TIMEOUT	40 /* ms */
 
 /**
  * struct usb_interface_cache - long-term representation of a device interface
@@ -332,11 +308,11 @@ struct usb_host_bos {
 };
 
 int __usb_get_extra_descriptor(char *buffer, unsigned size,
-	unsigned char type, void **ptr, size_t min);
+	unsigned char type, void **ptr);
 #define usb_get_extra_descriptor(ifpoint, type, ptr) \
 				__usb_get_extra_descriptor((ifpoint)->extra, \
 				(ifpoint)->extralen, \
-				type, (void **)ptr, sizeof(**(ptr)))
+				type, (void **)ptr)
 
 /* ----------------------------------------------------------------------- */
 
@@ -1063,7 +1039,7 @@ struct usbdrv_wrap {
  *	for interfaces bound to this driver.
  * @soft_unbind: if set to 1, the USB core will not kill URBs and disable
  *	endpoints before calling the driver's disconnect method.
- * @disable_hub_initiated_lpm: if set to 1, the USB core will not allow hubs
+ * @disable_hub_initiated_lpm: if set to 0, the USB core will not allow hubs
  *	to initiate lower power link state transitions when an idle timeout
  *	occurs.  Device-initiated USB 3.0 link PM will still be allowed.
  *
@@ -1885,6 +1861,18 @@ extern void usb_unregister_notify(struct notifier_block *nb);
 
 /* debugfs stuff */
 extern struct dentry *usb_debug_root;
+
+/* LED triggers */
+enum usb_led_event {
+	USB_LED_EVENT_HOST = 0,
+	USB_LED_EVENT_GADGET = 1,
+};
+
+#ifdef CONFIG_USB_LED_TRIG
+extern void usb_led_activity(enum usb_led_event ev);
+#else
+static inline void usb_led_activity(enum usb_led_event ev) {}
+#endif
 
 #endif  /* __KERNEL__ */
 

@@ -86,7 +86,6 @@ extern mempool_t *cifs_req_poolp;
 extern mempool_t *cifs_mid_poolp;
 
 struct workqueue_struct	*cifsiod_wq;
-struct workqueue_struct	*cifsoplockd_wq;
 
 /*
  * Bumps refcount for cifs super block.
@@ -190,18 +189,14 @@ cifs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 	xid = get_xid();
 
-	if (le32_to_cpu(tcon->fsAttrInfo.MaxPathNameComponentLength) > 0)
-		buf->f_namelen =
-		       le32_to_cpu(tcon->fsAttrInfo.MaxPathNameComponentLength);
-	else
-		buf->f_namelen = PATH_MAX;
-
-#ifdef CONFIG_CIFS_SMB2
-	buf->f_fsid.val[0] = tcon->vol_serial_number;
-	/* are using part of create time for more randomness, see man statfs */
-	buf->f_fsid.val[1] =  (int)le64_to_cpu(tcon->vol_create_time);
-#endif
-
+	/*
+	 * PATH_MAX may be too long - it would presumably be total path,
+	 * but note that some servers (includinng Samba 3) have a shorter
+	 * maximum path.
+	 *
+	 * Instead could get the real value via SMB_QUERY_FS_ATTRIBUTE_INFO.
+	 */
+	buf->f_namelen = PATH_MAX;
 	buf->f_files = 0;	/* undefined */
 	buf->f_ffree = 0;	/* unlimited */
 
@@ -210,6 +205,19 @@ cifs_statfs(struct dentry *dentry, struct kstatfs *buf)
 
 	free_xid(xid);
 	return 0;
+}
+
+static long cifs_fallocate(struct file *file, int mode, loff_t off, loff_t len)
+{
+	struct super_block *sb = file->f_path.dentry->d_sb;
+	struct cifs_sb_info *cifs_sb = CIFS_SB(sb);
+	struct cifs_tcon *tcon = cifs_sb_master_tcon(cifs_sb);
+	struct TCP_Server_Info *server = tcon->ses->server;
+
+	if (server->ops->fallocate)
+		return server->ops->fallocate(file, tcon, mode, off, len);
+
+	return -EOPNOTSUPP;
 }
 
 static int cifs_permission(struct inode *inode, int mask)
@@ -260,9 +268,8 @@ cifs_alloc_inode(struct super_block *sb)
 	cifs_inode->uniqueid = 0;
 	cifs_inode->createtime = 0;
 	cifs_inode->epoch = 0;
-	spin_lock_init(&cifs_inode->open_file_lock);
 #ifdef CONFIG_CIFS_SMB2
-	generate_random_uuid(cifs_inode->lease_key);
+	get_random_bytes(cifs_inode->lease_key, SMB2_LEASE_KEY_SIZE);
 #endif
 	/*
 	 * Can not set i_flags here - they get immediately overwritten to zero
@@ -388,17 +395,17 @@ cifs_show_options(struct seq_file *s, struct dentry *root)
 	struct sockaddr *srcaddr;
 	srcaddr = (struct sockaddr *)&tcon->ses->server->srcaddr;
 
-	seq_show_option(s, "vers", tcon->ses->server->vals->version_string);
+	seq_printf(s, ",vers=%s", tcon->ses->server->vals->version_string);
 	cifs_show_security(s, tcon->ses);
 	cifs_show_cache_flavor(s, cifs_sb);
 
 	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MULTIUSER)
 		seq_puts(s, ",multiuser");
 	else if (tcon->ses->user_name)
-		seq_show_option(s, "username", tcon->ses->user_name);
+		seq_printf(s, ",username=%s", tcon->ses->user_name);
 
 	if (tcon->ses->domainName)
-		seq_show_option(s, "domain", tcon->ses->domainName);
+		seq_printf(s, ",domain=%s", tcon->ses->domainName);
 
 	if (srcaddr->sa_family != AF_UNSPEC) {
 		struct sockaddr_in *saddr4;
@@ -589,9 +596,6 @@ cifs_get_root(struct smb_vol *vol, struct super_block *sb)
 	char *s, *p;
 	char sep;
 
-	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_USE_PREFIX_PATH)
-		return dget(sb->s_root);
-
 	full_path = cifs_build_path_to_root(vol, cifs_sb,
 					    cifs_sb_master_tcon(cifs_sb));
 	if (full_path == NULL)
@@ -671,14 +675,10 @@ cifs_do_mount(struct file_system_type *fs_type,
 	cifs_sb->mountdata = kstrndup(data, PAGE_SIZE, GFP_KERNEL);
 	if (cifs_sb->mountdata == NULL) {
 		root = ERR_PTR(-ENOMEM);
-		goto out_free;
+		goto out_cifs_sb;
 	}
 
-	rc = cifs_setup_cifs_sb(volume_info, cifs_sb);
-	if (rc) {
-		root = ERR_PTR(rc);
-		goto out_free;
-	}
+	cifs_setup_cifs_sb(volume_info, cifs_sb);
 
 	rc = cifs_mount(cifs_sb, volume_info);
 	if (rc) {
@@ -686,7 +686,7 @@ cifs_do_mount(struct file_system_type *fs_type,
 			cifs_dbg(VFS, "cifs_mount failed w/return code = %d\n",
 				 rc);
 		root = ERR_PTR(rc);
-		goto out_free;
+		goto out_mountdata;
 	}
 
 	mnt_data.vol = volume_info;
@@ -729,9 +729,9 @@ out:
 	cifs_cleanup_volume_info(volume_info);
 	return root;
 
-out_free:
-	kfree(cifs_sb->prepath);
+out_mountdata:
 	kfree(cifs_sb->mountdata);
+out_cifs_sb:
 	kfree(cifs_sb);
 out_nls:
 	unload_nls(volume_info->local_nls);
@@ -813,7 +813,8 @@ static loff_t cifs_llseek(struct file *file, loff_t offset, int whence)
 	return generic_file_llseek(file, offset, whence);
 }
 
-static int cifs_setlease(struct file *file, long arg, struct file_lock **lease)
+static int
+cifs_setlease(struct file *file, long arg, struct file_lock **lease, void **priv)
 {
 	/*
 	 * Note that this is called by vfs setlease with i_lock held to
@@ -825,10 +826,11 @@ static int cifs_setlease(struct file *file, long arg, struct file_lock **lease)
 	if (!(S_ISREG(inode->i_mode)))
 		return -EINVAL;
 
-	/* check if file is oplocked */
-	if (((arg == F_RDLCK) && CIFS_CACHE_READ(CIFS_I(inode))) ||
+	/* Check if file is oplocked if this is request for new lease */
+	if (arg == F_UNLCK ||
+	    ((arg == F_RDLCK) && CIFS_CACHE_READ(CIFS_I(inode))) ||
 	    ((arg == F_WRLCK) && CIFS_CACHE_WRITE(CIFS_I(inode))))
-		return generic_setlease(file, arg, lease);
+		return generic_setlease(file, arg, lease, priv);
 	else if (tlink_tcon(cfile->tlink)->local_lease &&
 		 !CIFS_CACHE_READ(CIFS_I(inode)))
 		/*
@@ -839,7 +841,7 @@ static int cifs_setlease(struct file *file, long arg, struct file_lock **lease)
 		 * knows that the file won't be changed on the server by anyone
 		 * else.
 		 */
-		return generic_setlease(file, arg, lease);
+		return generic_setlease(file, arg, lease, priv);
 	else
 		return -EAGAIN;
 }
@@ -861,7 +863,7 @@ const struct inode_operations cifs_dir_inode_ops = {
 	.link = cifs_hardlink,
 	.mkdir = cifs_mkdir,
 	.rmdir = cifs_rmdir,
-	.rename = cifs_rename,
+	.rename2 = cifs_rename2,
 	.permission = cifs_permission,
 /*	revalidate:cifs_revalidate,   */
 	.setattr = cifs_setattr,
@@ -904,18 +906,6 @@ const struct inode_operations cifs_symlink_inode_ops = {
 #endif
 };
 
-/*
- * Directory operations under CIFS/SMB2/SMB3 are synchronous, so fsync()
- * is a dummy operation.
- */
-static int cifs_dir_fsync(struct file *file, loff_t start, loff_t end, int datasync)
-{
-	cifs_dbg(FYI, "Sync directory - name: %pD datasync: 0x%x\n",
-		 file, datasync);
-
-	return 0;
-}
-
 const struct file_operations cifs_file_ops = {
 	.read = new_sync_read,
 	.write = new_sync_write,
@@ -933,6 +923,7 @@ const struct file_operations cifs_file_ops = {
 	.unlocked_ioctl	= cifs_ioctl,
 #endif /* CONFIG_CIFS_POSIX */
 	.setlease = cifs_setlease,
+	.fallocate = cifs_fallocate,
 };
 
 const struct file_operations cifs_file_strict_ops = {
@@ -952,6 +943,7 @@ const struct file_operations cifs_file_strict_ops = {
 	.unlocked_ioctl	= cifs_ioctl,
 #endif /* CONFIG_CIFS_POSIX */
 	.setlease = cifs_setlease,
+	.fallocate = cifs_fallocate,
 };
 
 const struct file_operations cifs_file_direct_ops = {
@@ -972,6 +964,7 @@ const struct file_operations cifs_file_direct_ops = {
 #endif /* CONFIG_CIFS_POSIX */
 	.llseek = cifs_llseek,
 	.setlease = cifs_setlease,
+	.fallocate = cifs_fallocate,
 };
 
 const struct file_operations cifs_file_nobrl_ops = {
@@ -990,6 +983,7 @@ const struct file_operations cifs_file_nobrl_ops = {
 	.unlocked_ioctl	= cifs_ioctl,
 #endif /* CONFIG_CIFS_POSIX */
 	.setlease = cifs_setlease,
+	.fallocate = cifs_fallocate,
 };
 
 const struct file_operations cifs_file_strict_nobrl_ops = {
@@ -1008,6 +1002,7 @@ const struct file_operations cifs_file_strict_nobrl_ops = {
 	.unlocked_ioctl	= cifs_ioctl,
 #endif /* CONFIG_CIFS_POSIX */
 	.setlease = cifs_setlease,
+	.fallocate = cifs_fallocate,
 };
 
 const struct file_operations cifs_file_direct_nobrl_ops = {
@@ -1027,6 +1022,7 @@ const struct file_operations cifs_file_direct_nobrl_ops = {
 #endif /* CONFIG_CIFS_POSIX */
 	.llseek = cifs_llseek,
 	.setlease = cifs_setlease,
+	.fallocate = cifs_fallocate,
 };
 
 const struct file_operations cifs_dir_ops = {
@@ -1035,7 +1031,6 @@ const struct file_operations cifs_dir_ops = {
 	.read    = generic_read_dir,
 	.unlocked_ioctl  = cifs_ioctl,
 	.llseek = generic_file_llseek,
-	.fsync = cifs_dir_fsync,
 };
 
 static void
@@ -1219,6 +1214,7 @@ init_cifs(void)
 	GlobalTotalActiveXid = 0;
 	GlobalMaxActiveXid = 0;
 	spin_lock_init(&cifs_tcp_ses_lock);
+	spin_lock_init(&cifs_file_list_lock);
 	spin_lock_init(&GlobalMid_Lock);
 
 	if (cifs_max_pending < 2) {
@@ -1236,16 +1232,9 @@ init_cifs(void)
 		goto out_clean_proc;
 	}
 
-	cifsoplockd_wq = alloc_workqueue("cifsoplockd",
-					 WQ_FREEZABLE|WQ_MEM_RECLAIM, 0);
-	if (!cifsoplockd_wq) {
-		rc = -ENOMEM;
-		goto out_destroy_cifsiod_wq;
-	}
-
 	rc = cifs_fscache_register();
 	if (rc)
-		goto out_destroy_cifsoplockd_wq;
+		goto out_destroy_wq;
 
 	rc = cifs_init_inodecache();
 	if (rc)
@@ -1260,7 +1249,7 @@ init_cifs(void)
 		goto out_destroy_mids;
 
 #ifdef CONFIG_CIFS_UPCALL
-	rc = init_cifs_spnego();
+	rc = register_key_type(&cifs_spnego_key_type);
 	if (rc)
 		goto out_destroy_request_bufs;
 #endif /* CONFIG_CIFS_UPCALL */
@@ -1283,7 +1272,7 @@ out_init_cifs_idmap:
 out_register_key_type:
 #endif
 #ifdef CONFIG_CIFS_UPCALL
-	exit_cifs_spnego();
+	unregister_key_type(&cifs_spnego_key_type);
 out_destroy_request_bufs:
 #endif
 	cifs_destroy_request_bufs();
@@ -1293,9 +1282,7 @@ out_destroy_inodecache:
 	cifs_destroy_inodecache();
 out_unreg_fscache:
 	cifs_fscache_unregister();
-out_destroy_cifsoplockd_wq:
-	destroy_workqueue(cifsoplockd_wq);
-out_destroy_cifsiod_wq:
+out_destroy_wq:
 	destroy_workqueue(cifsiod_wq);
 out_clean_proc:
 	cifs_proc_clean();
@@ -1312,13 +1299,12 @@ exit_cifs(void)
 	exit_cifs_idmap();
 #endif
 #ifdef CONFIG_CIFS_UPCALL
-	exit_cifs_spnego();
+	unregister_key_type(&cifs_spnego_key_type);
 #endif
 	cifs_destroy_request_bufs();
 	cifs_destroy_mids();
 	cifs_destroy_inodecache();
 	cifs_fscache_unregister();
-	destroy_workqueue(cifsoplockd_wq);
 	destroy_workqueue(cifsiod_wq);
 	cifs_proc_clean();
 }

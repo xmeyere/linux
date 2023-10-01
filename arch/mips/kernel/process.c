@@ -21,7 +21,6 @@
 #include <linux/mman.h>
 #include <linux/personality.h>
 #include <linux/sys.h>
-#include <linux/user.h>
 #include <linux/init.h>
 #include <linux/completion.h>
 #include <linux/kallsyms.h>
@@ -36,6 +35,7 @@
 #include <asm/pgtable.h>
 #include <asm/mipsregs.h>
 #include <asm/processor.h>
+#include <asm/reg.h>
 #include <asm/uaccess.h>
 #include <asm/io.h>
 #include <asm/elf.h>
@@ -66,6 +66,7 @@ void start_thread(struct pt_regs * regs, unsigned long pc, unsigned long sp)
 	clear_used_math();
 	clear_fpu_owner();
 	init_dsp();
+	clear_thread_flag(TIF_USEDMSA);
 	clear_thread_flag(TIF_MSA_CTX_LIVE);
 	disable_msa();
 	regs->cp0_epc = pc;
@@ -141,6 +142,8 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 	childregs->cp0_status &= ~(ST0_CU2|ST0_CU1);
 
 	clear_tsk_thread_flag(p, TIF_USEDFPU);
+	clear_tsk_thread_flag(p, TIF_USEDMSA);
+	clear_tsk_thread_flag(p, TIF_MSA_CTX_LIVE);
 
 #ifdef CONFIG_MIPS_MT_FPAFF
 	clear_tsk_thread_flag(p, TIF_FPUBOUND);
@@ -150,61 +153,6 @@ int copy_thread(unsigned long clone_flags, unsigned long usp,
 		ti->tp_value = regs->regs[7];
 
 	return 0;
-}
-
-/* Fill in the fpu structure for a core dump.. */
-int dump_fpu(struct pt_regs *regs, elf_fpregset_t *r)
-{
-	int i;
-
-	for (i = 0; i < NUM_FPU_REGS; i++)
-		memcpy(&r[i], &current->thread.fpu.fpr[i], sizeof(*r));
-
-	memcpy(&r[NUM_FPU_REGS], &current->thread.fpu.fcr31,
-	       sizeof(current->thread.fpu.fcr31));
-
-	return 1;
-}
-
-void elf_dump_regs(elf_greg_t *gp, struct pt_regs *regs)
-{
-	int i;
-
-	for (i = 0; i < EF_R0; i++)
-		gp[i] = 0;
-	gp[EF_R0] = 0;
-	for (i = 1; i <= 31; i++)
-		gp[EF_R0 + i] = regs->regs[i];
-	gp[EF_R26] = 0;
-	gp[EF_R27] = 0;
-	gp[EF_LO] = regs->lo;
-	gp[EF_HI] = regs->hi;
-	gp[EF_CP0_EPC] = regs->cp0_epc;
-	gp[EF_CP0_BADVADDR] = regs->cp0_badvaddr;
-	gp[EF_CP0_STATUS] = regs->cp0_status;
-	gp[EF_CP0_CAUSE] = regs->cp0_cause;
-#ifdef EF_UNUSED0
-	gp[EF_UNUSED0] = 0;
-#endif
-}
-
-int dump_task_regs(struct task_struct *tsk, elf_gregset_t *regs)
-{
-	elf_dump_regs(*regs, task_pt_regs(tsk));
-	return 1;
-}
-
-int dump_task_fpu(struct task_struct *t, elf_fpregset_t *fpr)
-{
-	int i;
-
-	for (i = 0; i < NUM_FPU_REGS; i++)
-		memcpy(&fpr[i], &t->thread.fpu.fpr[i], sizeof(*fpr));
-
-	memcpy(&fpr[NUM_FPU_REGS], &t->thread.fpu.fcr31,
-	       sizeof(t->thread.fpu.fcr31));
-
-	return 1;
 }
 
 #ifdef CONFIG_CC_STACKPROTECTOR
@@ -223,9 +171,11 @@ struct mips_frame_info {
 #define J_TARGET(pc,target)	\
 		(((unsigned long)(pc) & 0xf0000000) | ((target) << 2))
 
-static inline int is_ra_save_ins(union mips_instruction *ip, int *poff)
+static inline int is_ra_save_ins(union mips_instruction *ip)
 {
 #ifdef CONFIG_CPU_MICROMIPS
+	union mips_instruction mmi;
+
 	/*
 	 * swsp ra,offset
 	 * swm16 reglist,offset(sp)
@@ -235,71 +185,29 @@ static inline int is_ra_save_ins(union mips_instruction *ip, int *poff)
 	 *
 	 * microMIPS is way more fun...
 	 */
-	if (mm_insn_16bit(ip->word >> 16)) {
-		switch (ip->mm16_r5_format.opcode) {
-		case mm_swsp16_op:
-			if (ip->mm16_r5_format.rt != 31)
-				return 0;
-
-			*poff = ip->mm16_r5_format.imm;
-			*poff = (*poff << 2) / sizeof(ulong);
-			return 1;
-
-		case mm_pool16c_op:
-			switch (ip->mm16_m_format.func) {
-			case mm_swm16_op:
-				*poff = ip->mm16_m_format.imm;
-				*poff += 1 + ip->mm16_m_format.rlist;
-				*poff = (*poff << 2) / sizeof(ulong);
-				return 1;
-
-			default:
-				return 0;
-			}
-
-		default:
-			return 0;
-		}
+	if (mm_insn_16bit(ip->halfword[0])) {
+		mmi.word = (ip->halfword[0] << 16);
+		return ((mmi.mm16_r5_format.opcode == mm_swsp16_op &&
+			 mmi.mm16_r5_format.rt == 31) ||
+			(mmi.mm16_m_format.opcode == mm_pool16c_op &&
+			 mmi.mm16_m_format.func == mm_swm16_op));
 	}
-
-	switch (ip->i_format.opcode) {
-	case mm_sw32_op:
-		if (ip->i_format.rs != 29)
-			return 0;
-		if (ip->i_format.rt != 31)
-			return 0;
-
-		*poff = ip->i_format.simmediate / sizeof(ulong);
-		return 1;
-
-	case mm_pool32b_op:
-		switch (ip->mm_m_format.func) {
-		case mm_swm32_func:
-			if (ip->mm_m_format.rd < 0x10)
-				return 0;
-			if (ip->mm_m_format.base != 29)
-				return 0;
-
-			*poff = ip->mm_m_format.simmediate;
-			*poff += (ip->mm_m_format.rd & 0xf) * sizeof(u32);
-			*poff /= sizeof(ulong);
-			return 1;
-		default:
-			return 0;
-		}
-
-	default:
-		return 0;
+	else {
+		mmi.halfword[0] = ip->halfword[1];
+		mmi.halfword[1] = ip->halfword[0];
+		return ((mmi.mm_m_format.opcode == mm_pool32b_op &&
+			 mmi.mm_m_format.rd > 9 &&
+			 mmi.mm_m_format.base == 29 &&
+			 mmi.mm_m_format.func == mm_swm32_func) ||
+			(mmi.i_format.opcode == mm_sw32_op &&
+			 mmi.i_format.rs == 29 &&
+			 mmi.i_format.rt == 31));
 	}
 #else
 	/* sw / sd $ra, offset($sp) */
-	if ((ip->i_format.opcode == sw_op || ip->i_format.opcode == sd_op) &&
-		ip->i_format.rs == 29 && ip->i_format.rt == 31) {
-		*poff = ip->i_format.simmediate / sizeof(ulong);
-		return 1;
-	}
-
-	return 0;
+	return (ip->i_format.opcode == sw_op || ip->i_format.opcode == sd_op) &&
+		ip->i_format.rs == 29 &&
+		ip->i_format.rt == 31;
 #endif
 }
 
@@ -314,16 +222,13 @@ static inline int is_jump_ins(union mips_instruction *ip)
 	 *
 	 * microMIPS is kind of more fun...
 	 */
-	if (mm_insn_16bit(ip->word >> 16)) {
-		if ((ip->mm16_r5_format.opcode == mm_pool16c_op &&
-		    (ip->mm16_r5_format.rt & mm_jr16_op) == mm_jr16_op))
-			return 1;
-		return 0;
-	}
+	union mips_instruction mmi;
 
-	if (ip->j_format.opcode == mm_j32_op)
-		return 1;
-	if (ip->j_format.opcode == mm_jal32_op)
+	mmi.word = (ip->halfword[0] << 16);
+
+	if ((mmi.mm16_r5_format.opcode == mm_pool16c_op &&
+	    (mmi.mm16_r5_format.rt & mm_jr16_op) == mm_jr16_op) ||
+	    ip->j_format.opcode == mm_jal32_op)
 		return 1;
 	if (ip->r_format.opcode != mm_pool32a_op ||
 			ip->r_format.func != mm_pool32axf_op)
@@ -351,13 +256,15 @@ static inline int is_sp_move_ins(union mips_instruction *ip)
 	 *
 	 * microMIPS is not more fun...
 	 */
-	if (mm_insn_16bit(ip->word >> 16)) {
-		return (ip->mm16_r3_format.opcode == mm_pool16d_op &&
-			ip->mm16_r3_format.simmediate & mm_addiusp_func) ||
-		       (ip->mm16_r5_format.opcode == mm_pool16d_op &&
-			ip->mm16_r5_format.rt == 29);
-	}
+	if (mm_insn_16bit(ip->halfword[0])) {
+		union mips_instruction mmi;
 
+		mmi.word = (ip->halfword[0] << 16);
+		return ((mmi.mm16_r3_format.opcode == mm_pool16d_op &&
+			 mmi.mm16_r3_format.simmediate && mm_addiusp_func) ||
+			(mmi.mm16_r5_format.opcode == mm_pool16d_op &&
+			 mmi.mm16_r5_format.rt == 29));
+	}
 	return (ip->mm_i_format.opcode == mm_addiu32_op &&
 		 ip->mm_i_format.rt == 29 && ip->mm_i_format.rs == 29);
 #else
@@ -372,65 +279,57 @@ static inline int is_sp_move_ins(union mips_instruction *ip)
 
 static int get_frame_info(struct mips_frame_info *info)
 {
-	bool is_mmips = IS_ENABLED(CONFIG_CPU_MICROMIPS);
-	union mips_instruction insn, *ip;
-	const unsigned int max_insns = 128;
-	unsigned int last_insn_size = 0;
-	unsigned int i;
+#ifdef CONFIG_CPU_MICROMIPS
+	union mips_instruction *ip = (void *) (((char *) info->func) - 1);
+#else
+	union mips_instruction *ip = info->func;
+#endif
+	unsigned max_insns = info->func_size / sizeof(union mips_instruction);
+	unsigned i;
 
 	info->pc_offset = -1;
 	info->frame_size = 0;
 
-	ip = (void *)msk_isa16_mode((ulong)info->func);
 	if (!ip)
 		goto err;
 
-	for (i = 0; i < max_insns; i++) {
-		ip = (void *)ip + last_insn_size;
+	if (max_insns == 0)
+		max_insns = 128U;	/* unknown function size */
+	max_insns = min(128U, max_insns);
 
-		if (is_mmips && mm_insn_16bit(ip->halfword[0])) {
-			insn.word = ip->halfword[0] << 16;
-			last_insn_size = 2;
-		} else if (is_mmips) {
-			insn.word = ip->halfword[0] << 16 | ip->halfword[1];
-			last_insn_size = 4;
-		} else {
-			insn.word = ip->word;
-			last_insn_size = 4;
-		}
+	for (i = 0; i < max_insns; i++, ip++) {
 
-		if (is_jump_ins(&insn))
+		if (is_jump_ins(ip))
 			break;
-
 		if (!info->frame_size) {
-			if (is_sp_move_ins(&insn))
+			if (is_sp_move_ins(ip))
 			{
 #ifdef CONFIG_CPU_MICROMIPS
-				if (mm_insn_16bit(insn.word >> 16))
+				if (mm_insn_16bit(ip->halfword[0]))
 				{
 					unsigned short tmp;
 
-					if (ip->mm16_r3_format.simmediate & mm_addiusp_func)
+					if (ip->halfword[0] & mm_addiusp_func)
 					{
-						tmp = ip->mm_b0_format.simmediate >> 1;
-						tmp = ((tmp & 0x1ff) ^ 0x100) - 0x100;
-						/* 0x0,0x1,0x1fe,0x1ff are special */
-						if ((tmp + 2) < 4)
-							tmp ^= 0x100;
-						info->frame_size = -(signed short)(tmp << 2);
+						tmp = (((ip->halfword[0] >> 1) & 0x1ff) << 2);
+						info->frame_size = -(signed short)(tmp | ((tmp & 0x100) ? 0xfe00 : 0));
 					} else {
-						tmp = (ip->mm16_r5_format.imm >> 1);
+						tmp = (ip->halfword[0] >> 1);
 						info->frame_size = -(signed short)(tmp & 0xf);
 					}
+					ip = (void *) &ip->halfword[1];
+					ip--;
 				} else
 #endif
 				info->frame_size = - ip->i_format.simmediate;
 			}
 			continue;
 		}
-		if (info->pc_offset == -1 &&
-		    is_ra_save_ins(&insn, &info->pc_offset))
+		if (info->pc_offset == -1 && is_ra_save_ins(ip)) {
+			info->pc_offset =
+				ip->i_format.simmediate / sizeof(long);
 			break;
+		}
 	}
 	if (info->frame_size && info->pc_offset >= 0) /* nested */
 		return 0;
@@ -538,7 +437,7 @@ unsigned long notrace unwind_stack_by_address(unsigned long stack_page,
 		    *sp + sizeof(*regs) <= stack_page + THREAD_SIZE - 32) {
 			regs = (struct pt_regs *)*sp;
 			pc = regs->cp0_epc;
-			if (!user_mode(regs) && __kernel_text_address(pc)) {
+			if (__kernel_text_address(pc)) {
 				*sp = regs->regs[29];
 				*ra = regs->regs[31];
 				return pc;

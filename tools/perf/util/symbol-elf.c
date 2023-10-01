@@ -6,6 +6,7 @@
 #include <inttypes.h>
 
 #include "symbol.h"
+#include "machine.h"
 #include "vdso.h"
 #include <symbol/kallsyms.h>
 #include "debug.h"
@@ -49,7 +50,8 @@ static inline uint8_t elf_sym__type(const GElf_Sym *sym)
 
 static inline int elf_sym__is_function(const GElf_Sym *sym)
 {
-	return elf_sym__type(sym) == STT_FUNC &&
+	return (elf_sym__type(sym) == STT_FUNC ||
+		elf_sym__type(sym) == STT_GNU_IFUNC) &&
 	       sym->st_name != 0 &&
 	       sym->st_shndx != SHN_UNDEF;
 }
@@ -598,6 +600,8 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 			goto out_elf_end;
 	}
 
+	ss->is_64_bit = (gelf_getclass(elf) == ELFCLASS64);
+
 	ss->symtab = elf_section_by_name(elf, &ehdr, &ss->symshdr, ".symtab",
 			NULL);
 	if (ss->symshdr.sh_type != SHT_SYMTAB)
@@ -619,7 +623,7 @@ int symsrc__init(struct symsrc *ss, struct dso *dso, const char *name,
 		GElf_Shdr shdr;
 		ss->adjust_symbols = (ehdr.e_type == ET_EXEC ||
 				ehdr.e_type == ET_REL ||
-				is_vdso_map(dso->short_name) ||
+				dso__is_vdso(dso) ||
 				elf_section_by_name(elf, &ehdr, &shdr,
 						     ".gnu.prelink_undo",
 						     NULL) != NULL);
@@ -677,6 +681,11 @@ static u64 ref_reloc(struct kmap *kmap)
 	return 0;
 }
 
+static bool want_demangle(bool is_kernel_sym)
+{
+	return is_kernel_sym ? symbol_conf.demangle_kernel : symbol_conf.demangle;
+}
+
 int dso__load_sym(struct dso *dso, struct map *map,
 		  struct symsrc *syms_ss, struct symsrc *runtime_ss,
 		  symbol_filter_t filter, int kmodule)
@@ -698,6 +707,7 @@ int dso__load_sym(struct dso *dso, struct map *map,
 	bool remap_kernel = false, adjust_kernel_syms = false;
 
 	dso->symtab_type = syms_ss->type;
+	dso->is_64_bit = syms_ss->is_64_bit;
 	dso->rel = syms_ss->ehdr.e_type == ET_REL;
 
 	/*
@@ -708,6 +718,14 @@ int dso__load_sym(struct dso *dso, struct map *map,
 		symbols__delete(&dso->symbols[map->type]);
 
 	if (!syms_ss->symtab) {
+		/*
+		 * If the vmlinux is stripped, fail so we will fall back
+		 * to using kallsyms. The vmlinux runtime symbols aren't
+		 * of much use.
+		 */
+		if (dso->kernel)
+			goto out_elf_end;
+
 		syms_ss->symtab  = syms_ss->dynsym;
 		syms_ss->symshdr = syms_ss->dynshdr;
 	}
@@ -732,7 +750,7 @@ int dso__load_sym(struct dso *dso, struct map *map,
 	if (symstrs == NULL)
 		goto out_elf_end;
 
-	sec_strndx = elf_getscn(elf, ehdr.e_shstrndx);
+	sec_strndx = elf_getscn(runtime_ss->elf, runtime_ss->ehdr.e_shstrndx);
 	if (sec_strndx == NULL)
 		goto out_elf_end;
 
@@ -912,7 +930,11 @@ int dso__load_sym(struct dso *dso, struct map *map,
 				}
 				curr_dso->symtab_type = dso->symtab_type;
 				map_groups__insert(kmap->kmaps, curr_map);
-				dsos__add(&dso->node, curr_dso);
+				/*
+				 * The new DSO should go to the kernel DSOS
+				 */
+				dsos__add(&map->groups->machine->kernel_dsos,
+					  curr_dso);
 				dso__set_loaded(curr_dso, map->type);
 			} else
 				curr_dso = curr_map->dso;
@@ -934,9 +956,12 @@ new_symbol:
 		 * DWARF DW_compile_unit has this, but we don't always have access
 		 * to it...
 		 */
-		if (symbol_conf.demangle) {
-			demangled = bfd_demangle(NULL, elf_name,
-						 DMGL_PARAMS | DMGL_ANSI);
+		if (want_demangle(dso->kernel || kmodule)) {
+			int demangle_flags = DMGL_NO_OPTS;
+			if (verbose)
+				demangle_flags = DMGL_PARAMS | DMGL_ANSI;
+
+			demangled = bfd_demangle(NULL, elf_name, demangle_flags);
 			if (demangled != NULL)
 				elf_name = demangled;
 		}
@@ -958,8 +983,8 @@ new_symbol:
 	 * For misannotated, zeroed, ASM function sizes.
 	 */
 	if (nr > 0) {
-		symbols__fixup_end(&dso->symbols[map->type]);
 		symbols__fixup_duplicate(&dso->symbols[map->type]);
+		symbols__fixup_end(&dso->symbols[map->type]);
 		if (kmap) {
 			/*
 			 * We need to fixup this here too because we create new
@@ -1022,6 +1047,39 @@ int file__read_maps(int fd, bool exe, mapfn_t mapfn, void *data,
 
 	elf_end(elf);
 	return err;
+}
+
+enum dso_type dso__type_fd(int fd)
+{
+	enum dso_type dso_type = DSO__TYPE_UNKNOWN;
+	GElf_Ehdr ehdr;
+	Elf_Kind ek;
+	Elf *elf;
+
+	elf = elf_begin(fd, PERF_ELF_C_READ_MMAP, NULL);
+	if (elf == NULL)
+		goto out;
+
+	ek = elf_kind(elf);
+	if (ek != ELF_K_ELF)
+		goto out_end;
+
+	if (gelf_getclass(elf) == ELFCLASS64) {
+		dso_type = DSO__TYPE_64BIT;
+		goto out_end;
+	}
+
+	if (gelf_getehdr(elf, &ehdr) == NULL)
+		goto out_end;
+
+	if (ehdr.e_machine == EM_X86_64)
+		dso_type = DSO__TYPE_X32BIT;
+	else
+		dso_type = DSO__TYPE_32BIT;
+out_end:
+	elf_end(elf);
+out:
+	return dso_type;
 }
 
 static int copy_bytes(int from, off_t from_offs, int to, off_t to_offs, u64 len)
@@ -1104,6 +1162,8 @@ out_close:
 static int kcore__init(struct kcore *kcore, char *filename, int elfclass,
 		       bool temp)
 {
+	GElf_Ehdr *ehdr;
+
 	kcore->elfclass = elfclass;
 
 	if (temp)
@@ -1120,7 +1180,9 @@ static int kcore__init(struct kcore *kcore, char *filename, int elfclass,
 	if (!gelf_newehdr(kcore->elf, elfclass))
 		goto out_end;
 
-	memset(&kcore->ehdr, 0, sizeof(GElf_Ehdr));
+	ehdr = gelf_getehdr(kcore->elf, &kcore->ehdr);
+	if (!ehdr)
+		goto out_end;
 
 	return 0;
 
@@ -1177,18 +1239,23 @@ static int kcore__copy_hdr(struct kcore *from, struct kcore *to, size_t count)
 static int kcore__add_phdr(struct kcore *kcore, int idx, off_t offset,
 			   u64 addr, u64 len)
 {
-	GElf_Phdr phdr = {
-		.p_type		= PT_LOAD,
-		.p_flags	= PF_R | PF_W | PF_X,
-		.p_offset	= offset,
-		.p_vaddr	= addr,
-		.p_paddr	= 0,
-		.p_filesz	= len,
-		.p_memsz	= len,
-		.p_align	= page_size,
-	};
+	GElf_Phdr gphdr;
+	GElf_Phdr *phdr;
 
-	if (!gelf_update_phdr(kcore->elf, idx, &phdr))
+	phdr = gelf_getphdr(kcore->elf, idx, &gphdr);
+	if (!phdr)
+		return -1;
+
+	phdr->p_type	= PT_LOAD;
+	phdr->p_flags	= PF_R | PF_W | PF_X;
+	phdr->p_offset	= offset;
+	phdr->p_vaddr	= addr;
+	phdr->p_paddr	= 0;
+	phdr->p_filesz	= len;
+	phdr->p_memsz	= len;
+	phdr->p_align	= page_size;
+
+	if (!gelf_update_phdr(kcore->elf, idx, phdr))
 		return -1;
 
 	return 0;

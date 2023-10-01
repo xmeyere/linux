@@ -18,9 +18,9 @@
 unsigned long *crst_table_alloc(struct mm_struct *);
 void crst_table_free(struct mm_struct *, unsigned long *);
 
-unsigned long *page_table_alloc(struct mm_struct *, unsigned long);
+unsigned long *page_table_alloc(struct mm_struct *);
 void page_table_free(struct mm_struct *, unsigned long *);
-void page_table_free_rcu(struct mmu_gather *, unsigned long *);
+void page_table_free_rcu(struct mmu_gather *, unsigned long *, unsigned long);
 
 void page_table_reset_pgste(struct mm_struct *, unsigned long, unsigned long,
 			    bool init_skey);
@@ -124,26 +124,12 @@ static inline void pud_populate(struct mm_struct *mm, pud_t *pud, pmd_t *pmd)
 
 static inline pgd_t *pgd_alloc(struct mm_struct *mm)
 {
-	unsigned long *table = crst_table_alloc(mm);
-
-	if (!table)
-		return NULL;
-	if (mm->context.asce_limit == (1UL << 31)) {
-		/* Forking a compat process with 2 page table levels */
-		if (!pgtable_pmd_page_ctor(virt_to_page(table))) {
-			crst_table_free(mm, table);
-			return NULL;
-		}
-	}
-	return (pgd_t *) table;
+	spin_lock_init(&mm->context.list_lock);
+	INIT_LIST_HEAD(&mm->context.pgtable_list);
+	INIT_LIST_HEAD(&mm->context.gmap_list);
+	return (pgd_t *) crst_table_alloc(mm);
 }
-
-static inline void pgd_free(struct mm_struct *mm, pgd_t *pgd)
-{
-	if (mm->context.asce_limit == (1UL << 31))
-		pgtable_pmd_page_dtor(virt_to_page(pgd));
-	crst_table_free(mm, (unsigned long *) pgd);
-}
+#define pgd_free(mm, pgd) crst_table_free(mm, (unsigned long *) pgd)
 
 static inline void pmd_populate(struct mm_struct *mm,
 				pmd_t *pmd, pgtable_t pte)
@@ -159,8 +145,8 @@ static inline void pmd_populate(struct mm_struct *mm,
 /*
  * page table entry allocation/free routines.
  */
-#define pte_alloc_one_kernel(mm, vmaddr) ((pte_t *) page_table_alloc(mm, vmaddr))
-#define pte_alloc_one(mm, vmaddr) ((pte_t *) page_table_alloc(mm, vmaddr))
+#define pte_alloc_one_kernel(mm, vmaddr) ((pte_t *) page_table_alloc(mm))
+#define pte_alloc_one(mm, vmaddr) ((pte_t *) page_table_alloc(mm))
 
 #define pte_free_kernel(mm, pte) page_table_free(mm, (unsigned long *) pte)
 #define pte_free(mm, pte) page_table_free(mm, (unsigned long *) pte)

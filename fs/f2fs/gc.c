@@ -35,14 +35,13 @@ static int gc_thread_func(void *data)
 
 	wait_ms = gc_th->min_sleep_time;
 
-	set_freezable();
 	do {
-		wait_event_interruptible_timeout(*wq,
-				kthread_should_stop() || freezing(current),
-				msecs_to_jiffies(wait_ms));
-
 		if (try_to_freeze())
 			continue;
+		else
+			wait_event_interruptible_timeout(*wq,
+						kthread_should_stop(),
+						msecs_to_jiffies(wait_ms));
 		if (kthread_should_stop())
 			break;
 
@@ -59,7 +58,7 @@ static int gc_thread_func(void *data)
 		 * 3. IO subsystem is idle by checking the # of requests in
 		 *    bdev's request list.
 		 *
-		 * Note) We have to avoid triggering GCs too much frequently.
+		 * Note) We have to avoid triggering GCs frequently.
 		 * Because it is possible that some segments can be
 		 * invalidated soon after by user update or deletion.
 		 * So, I'd like to wait some time to collect dirty segments.
@@ -164,8 +163,7 @@ static void select_policy(struct f2fs_sb_info *sbi, int gc_type,
 		p->ofs_unit = sbi->segs_per_sec;
 	}
 
-	/* we need to check every dirty segments in the FG_GC case */
-	if (gc_type != FG_GC && p->max_search > sbi->max_victim_search)
+	if (p->max_search > sbi->max_victim_search)
 		p->max_search = sbi->max_victim_search;
 
 	p->offset = sbi->last_victim[p->gc_mode];
@@ -195,13 +193,9 @@ static unsigned int check_bg_victims(struct f2fs_sb_info *sbi)
 	 * selected by background GC before.
 	 * Those segments guarantee they have small valid blocks.
 	 */
-	for_each_set_bit(secno, dirty_i->victim_secmap, TOTAL_SECS(sbi)) {
+	for_each_set_bit(secno, dirty_i->victim_secmap, MAIN_SECS(sbi)) {
 		if (sec_usage_check(sbi, secno))
 			continue;
-
-		if (no_fggc_candidate(sbi, secno))
-			continue;
-
 		clear_bit(secno, dirty_i->victim_secmap);
 		return secno * sbi->segs_per_sec;
 	}
@@ -228,7 +222,7 @@ static unsigned int get_cb_cost(struct f2fs_sb_info *sbi, unsigned int segno)
 
 	u = (vblocks * 100) >> sbi->log_blocks_per_seg;
 
-	/* Handle if the system time is changed by user */
+	/* Handle if the system time has changed by the user */
 	if (mtime < sit_i->min_mtime)
 		sit_i->min_mtime = mtime;
 	if (mtime > sit_i->max_mtime)
@@ -269,13 +263,13 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 	unsigned int secno, max_cost;
 	int nsearched = 0;
 
+	mutex_lock(&dirty_i->seglist_lock);
+
 	p.alloc_mode = alloc_mode;
 	select_policy(sbi, gc_type, type, &p);
 
 	p.min_segno = NULL_SEGNO;
 	p.min_cost = max_cost = get_max_cost(sbi, &p);
-
-	mutex_lock(&dirty_i->seglist_lock);
 
 	if (p.alloc_mode == LFS && gc_type == FG_GC) {
 		p.min_segno = check_bg_victims(sbi);
@@ -287,9 +281,8 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 		unsigned long cost;
 		unsigned int segno;
 
-		segno = find_next_bit(p.dirty_segmap,
-						TOTAL_SEGS(sbi), p.offset);
-		if (segno >= TOTAL_SEGS(sbi)) {
+		segno = find_next_bit(p.dirty_segmap, MAIN_SEGS(sbi), p.offset);
+		if (segno >= MAIN_SEGS(sbi)) {
 			if (sbi->last_victim[p.gc_mode]) {
 				sbi->last_victim[p.gc_mode] = 0;
 				p.offset = 0;
@@ -307,9 +300,6 @@ static int get_victim_by_default(struct f2fs_sb_info *sbi,
 		if (sec_usage_check(sbi, secno))
 			continue;
 		if (gc_type == BG_GC && test_bit(secno, dirty_i->victim_secmap))
-			continue;
-		if (gc_type == FG_GC && p.alloc_mode == LFS &&
-					no_fggc_candidate(sbi, secno))
 			continue;
 
 		cost = get_gc_cost(sbi, segno, &p);
@@ -432,6 +422,12 @@ next_step:
 		if (IS_ERR(node_page))
 			continue;
 
+		/* block may become invalid during get_node_page */
+		if (check_valid_map(sbi, segno, off) == 0) {
+			f2fs_put_page(node_page, 1);
+			continue;
+		}
+
 		/* set page dirty and write it */
 		if (gc_type == FG_GC) {
 			f2fs_wait_on_page_writeback(node_page, NODE);
@@ -540,7 +536,7 @@ static void move_data_page(struct inode *inode, struct page *page, int gc_type)
 		f2fs_wait_on_page_writeback(page, DATA);
 
 		if (clear_page_dirty_for_io(page))
-			inode_dec_dirty_dents(inode);
+			inode_dec_dirty_pages(inode);
 		set_cold_data(page);
 		do_write_data_page(page, &fio);
 		clear_cold_data(page);
@@ -697,17 +693,20 @@ int f2fs_gc(struct f2fs_sb_info *sbi)
 	int gc_type = BG_GC;
 	int nfree = 0;
 	int ret = -1;
+	struct cp_control cpc = {
+		.reason = CP_SYNC,
+	};
 
 	INIT_LIST_HEAD(&ilist);
 gc_more:
 	if (unlikely(!(sbi->sb->s_flags & MS_ACTIVE)))
 		goto stop;
-	if (unlikely(is_set_ckpt_flags(F2FS_CKPT(sbi), CP_ERROR_FLAG)))
+	if (unlikely(f2fs_cp_error(sbi)))
 		goto stop;
 
 	if (gc_type == BG_GC && has_not_enough_free_secs(sbi, nfree)) {
 		gc_type = FG_GC;
-		write_checkpoint(sbi, false);
+		write_checkpoint(sbi, &cpc);
 	}
 
 	if (!__get_victim(sbi, &segno, gc_type, NO_CHECK_TYPE))
@@ -732,7 +731,7 @@ gc_more:
 		goto gc_more;
 
 	if (gc_type == FG_GC)
-		write_checkpoint(sbi, false);
+		write_checkpoint(sbi, &cpc);
 stop:
 	mutex_unlock(&sbi->gc_mutex);
 
@@ -742,18 +741,7 @@ stop:
 
 void build_gc_manager(struct f2fs_sb_info *sbi)
 {
-	u64 main_count, resv_count, ovp_count, blocks_per_sec;
-
 	DIRTY_I(sbi)->v_ops = &default_v_ops;
-
-	/* threshold of # of valid blocks in a section for victims of FG_GC */
-	main_count = SM_I(sbi)->main_segments << sbi->log_blocks_per_seg;
-	resv_count = SM_I(sbi)->reserved_segments << sbi->log_blocks_per_seg;
-	ovp_count = SM_I(sbi)->ovp_segments << sbi->log_blocks_per_seg;
-	blocks_per_sec = sbi->blocks_per_seg * sbi->segs_per_sec;
-
-	sbi->fggc_threshold = div_u64((main_count - ovp_count) * blocks_per_sec,
-					(main_count - resv_count));
 }
 
 int __init create_gc_caches(void)

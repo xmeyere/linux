@@ -64,9 +64,8 @@ struct fib6_node {
 
 	__u16			fn_bit;		/* bit key */
 	__u16			fn_flags;
-	__u32			fn_sernum;
+	int			fn_sernum;
 	struct rt6_info		*rr_ptr;
-	struct rcu_head		rcu;
 };
 
 #ifndef CONFIG_IPV6_SUBTREES
@@ -96,7 +95,7 @@ struct rt6_info {
 	 * the same cache line.
 	 */
 	struct fib6_table		*rt6i_table;
-	struct fib6_node __rcu		*rt6i_node;
+	struct fib6_node		*rt6i_node;
 
 	struct in6_addr			rt6i_gateway;
 
@@ -194,38 +193,6 @@ static inline void rt6_set_from(struct rt6_info *rt, struct rt6_info *from)
 	rt->dst.from = new;
 }
 
-/* Function to safely get fn->sernum for passed in rt
- * and store result in passed in cookie.
- * Return true if we can get cookie safely
- * Return false if not
- */
-static inline bool rt6_get_cookie_safe(const struct rt6_info *rt,
-				       u32 *cookie)
-{
-	struct fib6_node *fn;
-	bool status = false;
-
-	rcu_read_lock();
-	fn = rcu_dereference(rt->rt6i_node);
-
-	if (fn) {
-		*cookie = fn->fn_sernum;
-		status = true;
-	}
-
-	rcu_read_unlock();
-	return status;
-}
-
-static inline u32 rt6_get_cookie(const struct rt6_info *rt)
-{
-	u32 cookie = 0;
-
-	rt6_get_cookie_safe(rt, &cookie);
-
-	return cookie;
-}
-
 static inline void ip6_rt_put(struct rt6_info *rt)
 {
 	/* dst_release() accepts a NULL parameter.
@@ -235,15 +202,25 @@ static inline void ip6_rt_put(struct rt6_info *rt)
 	dst_release(&rt->dst);
 }
 
-struct fib6_walker_t {
+enum fib6_walk_state {
+#ifdef CONFIG_IPV6_SUBTREES
+	FWS_S,
+#endif
+	FWS_L,
+	FWS_R,
+	FWS_C,
+	FWS_U
+};
+
+struct fib6_walker {
 	struct list_head lh;
 	struct fib6_node *root, *node;
 	struct rt6_info *leaf;
-	unsigned char state;
-	unsigned char prune;
+	enum fib6_walk_state state;
+	bool prune;
 	unsigned int skip;
 	unsigned int count;
-	int (*func)(struct fib6_walker_t *);
+	int (*func)(struct fib6_walker *);
 	void *args;
 };
 

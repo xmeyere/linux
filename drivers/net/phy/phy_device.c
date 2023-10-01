@@ -230,13 +230,13 @@ static int get_phy_c45_ids(struct mii_bus *bus, int addr, u32 *phy_id,
 	for (i = 1;
 	     i < num_ids && c45_ids->devices_in_package == 0;
 	     i++) {
-		reg_addr = MII_ADDR_C45 | i << 16 | 6;
+		reg_addr = MII_ADDR_C45 | i << 16 | MDIO_DEVS2;
 		phy_reg = mdiobus_read(bus, addr, reg_addr);
 		if (phy_reg < 0)
 			return -EIO;
 		c45_ids->devices_in_package = (phy_reg & 0xffff) << 16;
 
-		reg_addr = MII_ADDR_C45 | i << 16 | 5;
+		reg_addr = MII_ADDR_C45 | i << 16 | MDIO_DEVS1;
 		phy_reg = mdiobus_read(bus, addr, reg_addr);
 		if (phy_reg < 0)
 			return -EIO;
@@ -543,6 +543,8 @@ int phy_init_hw(struct phy_device *phydev)
 
 	if (phydev->drv->soft_reset)
 		ret = phydev->drv->soft_reset(phydev);
+	else
+		ret = genphy_soft_reset(phydev);
 
 	if (ret < 0)
 		return ret;
@@ -707,6 +709,7 @@ int phy_suspend(struct phy_device *phydev)
 		return phydrv->suspend(phydev);
 	return 0;
 }
+EXPORT_SYMBOL(phy_suspend);
 
 int phy_resume(struct phy_device *phydev)
 {
@@ -716,6 +719,7 @@ int phy_resume(struct phy_device *phydev)
 		return phydrv->resume(phydev);
 	return 0;
 }
+EXPORT_SYMBOL(phy_resume);
 
 /* Generic PHY support and helper functions */
 
@@ -778,10 +782,9 @@ static int genphy_config_advert(struct phy_device *phydev)
 	if (phydev->supported & (SUPPORTED_1000baseT_Half |
 				 SUPPORTED_1000baseT_Full)) {
 		adv |= ethtool_adv_to_mii_ctrl1000_t(advertise);
+		if (adv != oldadv)
+			changed = 1;
 	}
-
-	if (adv != oldadv)
-		changed = 1;
 
 	err = phy_write(phydev, MII_CTRL1000, adv);
 	if (err < 0)
@@ -1072,10 +1075,7 @@ int genphy_soft_reset(struct phy_device *phydev)
 {
 	int ret;
 
-	ret = phy_read(phydev, MII_BMCR);
-	if (ret < 0)
-		return ret;
-	ret = phy_write(phydev, MII_BMCR, ret | BMCR_RESET);
+	ret = phy_write(phydev, MII_BMCR, BMCR_RESET);
 	if (ret < 0)
 		return ret;
 
@@ -1340,7 +1340,7 @@ static struct phy_driver genphy_driver[] = {
 	.phy_id		= 0xffffffff,
 	.phy_id_mask	= 0xffffffff,
 	.name		= "Generic PHY",
-	.soft_reset	= genphy_no_soft_reset,
+	.soft_reset	= genphy_soft_reset,
 	.config_init	= genphy_config_init,
 	.features	= PHY_GBIT_FEATURES | SUPPORTED_MII |
 			  SUPPORTED_AUI | SUPPORTED_FIBRE |

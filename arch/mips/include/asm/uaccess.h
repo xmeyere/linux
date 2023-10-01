@@ -14,7 +14,6 @@
 #include <linux/kernel.h>
 #include <linux/errno.h>
 #include <linux/thread_info.h>
-#include <linux/string.h>
 #include <asm/asm-eva.h>
 
 /*
@@ -1096,15 +1095,9 @@ extern size_t __copy_in_user_eva(void *__to, const void *__from, size_t __n);
 	__cu_to = (to);							\
 	__cu_from = (from);						\
 	__cu_len = (n);							\
-	if (segment_eq(get_fs(), get_ds())) {				\
-		__cu_len = __invoke_copy_from_kernel(__cu_to,		\
-						     __cu_from,		\
-						     __cu_len);		\
-	} else {							\
-		might_fault();						\
-		__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,	\
-						   __cu_len);		\
-	}								\
+	might_fault();							\
+	__cu_len = __invoke_copy_from_user(__cu_to, __cu_from,		\
+					   __cu_len);			\
 	__cu_len;							\
 })
 
@@ -1143,8 +1136,6 @@ extern size_t __copy_in_user_eva(void *__to, const void *__from, size_t __n);
 			__cu_len = __invoke_copy_from_user(__cu_to,	\
 							   __cu_from,	\
 							   __cu_len);   \
-		} else {						\
-			memset(__cu_to, 0, __cu_len);			\
 		}							\
 	}								\
 	__cu_len;							\
@@ -1210,35 +1201,16 @@ __clear_user(void __user *addr, __kernel_size_t size)
 {
 	__kernel_size_t res;
 
-#ifdef CONFIG_CPU_MICROMIPS
-/* micromips memset / bzero also clobbers t7 & t8 */
-#define bzero_clobbers "$4", "$5", "$6", __UA_t0, __UA_t1, "$15", "$24", "$31"
-#else
-#define bzero_clobbers "$4", "$5", "$6", __UA_t0, __UA_t1, "$31"
-#endif /* CONFIG_CPU_MICROMIPS */
-
-	if (config_enabled(CONFIG_EVA) && segment_eq(get_fs(), get_ds())) {
-		__asm__ __volatile__(
-			"move\t$4, %1\n\t"
-			"move\t$5, $0\n\t"
-			"move\t$6, %2\n\t"
-			__MODULE_JAL(__bzero_kernel)
-			"move\t%0, $6"
-			: "=r" (res)
-			: "r" (addr), "r" (size)
-			: bzero_clobbers);
-	} else {
-		might_fault();
-		__asm__ __volatile__(
-			"move\t$4, %1\n\t"
-			"move\t$5, $0\n\t"
-			"move\t$6, %2\n\t"
-			__MODULE_JAL(__bzero)
-			"move\t%0, $6"
-			: "=r" (res)
-			: "r" (addr), "r" (size)
-			: bzero_clobbers);
-	}
+	might_fault();
+	__asm__ __volatile__(
+		"move\t$4, %1\n\t"
+		"move\t$5, $0\n\t"
+		"move\t$6, %2\n\t"
+		__MODULE_JAL(__bzero)
+		"move\t%0, $6"
+		: "=r" (res)
+		: "r" (addr), "r" (size)
+		: "$4", "$5", "$6", __UA_t0, __UA_t1, "$31");
 
 	return res;
 }
@@ -1410,7 +1382,7 @@ static inline long strlen_user(const char __user *s)
 		might_fault();
 		__asm__ __volatile__(
 			"move\t$4, %1\n\t"
-			__MODULE_JAL(__strlen_user_asm)
+			__MODULE_JAL(__strlen_kernel_asm)
 			"move\t%0, $2"
 			: "=r" (res)
 			: "r" (s)
@@ -1450,7 +1422,7 @@ static inline long __strnlen_user(const char __user *s, long n)
 }
 
 /*
- * strlen_user: - Get the size of a string in user space.
+ * strnlen_user: - Get the size of a string in user space.
  * @str: The string to measure.
  *
  * Context: User context only.	This function may sleep.
@@ -1459,9 +1431,7 @@ static inline long __strnlen_user(const char __user *s, long n)
  *
  * Returns the size of the string INCLUDING the terminating NUL.
  * On exception, returns 0.
- *
- * If there is a limit on the length of a valid string, you may wish to
- * consider using strnlen_user() instead.
+ * If the string is too long, returns a value greater than @n.
  */
 static inline long strnlen_user(const char __user *s, long n)
 {

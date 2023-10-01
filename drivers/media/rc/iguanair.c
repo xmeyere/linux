@@ -430,10 +430,6 @@ static int iguanair_probe(struct usb_interface *intf,
 	int ret, pipein, pipeout;
 	struct usb_host_interface *idesc;
 
-	idesc = intf->cur_altsetting;
-	if (idesc->desc.bNumEndpoints < 2)
-		return -ENODEV;
-
 	ir = kzalloc(sizeof(*ir), GFP_KERNEL);
 	rc = rc_allocate_device();
 	if (!ir || !rc) {
@@ -448,10 +444,15 @@ static int iguanair_probe(struct usb_interface *intf,
 	ir->urb_in = usb_alloc_urb(0, GFP_KERNEL);
 	ir->urb_out = usb_alloc_urb(0, GFP_KERNEL);
 
-	if (!ir->buf_in || !ir->packet || !ir->urb_in || !ir->urb_out ||
-	    !usb_endpoint_is_int_in(&idesc->endpoint[0].desc) ||
-	    !usb_endpoint_is_int_out(&idesc->endpoint[1].desc)) {
+	if (!ir->buf_in || !ir->packet || !ir->urb_in || !ir->urb_out) {
 		ret = -ENOMEM;
+		goto out;
+	}
+
+	idesc = intf->altsetting;
+
+	if (idesc->desc.bNumEndpoints < 2) {
+		ret = -ENODEV;
 		goto out;
 	}
 
@@ -494,7 +495,7 @@ static int iguanair_probe(struct usb_interface *intf,
 	usb_to_input_id(ir->udev, &rc->input_id);
 	rc->dev.parent = &intf->dev;
 	rc->driver_type = RC_DRIVER_IR_RAW;
-	rc_set_allowed_protocols(rc, RC_BIT_ALL);
+	rc->allowed_protocols = RC_BIT_ALL;
 	rc->priv = ir;
 	rc->open = iguanair_open;
 	rc->close = iguanair_close;

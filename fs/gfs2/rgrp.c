@@ -577,6 +577,13 @@ struct gfs2_rgrpd *gfs2_rgrpd_get_next(struct gfs2_rgrpd *rgd)
 	return rgd;
 }
 
+void check_and_update_goal(struct gfs2_inode *ip)
+{
+	struct gfs2_sbd *sdp = GFS2_SB(&ip->i_inode);
+	if (!ip->i_goal || gfs2_blk2rgrpd(sdp, ip->i_goal, 1) == NULL)
+		ip->i_goal = ip->i_no_addr;
+}
+
 void gfs2_free_clones(struct gfs2_rgrpd *rgd)
 {
 	int x;
@@ -731,7 +738,6 @@ void gfs2_clear_rgrpd(struct gfs2_sbd *sdp)
 
 		gfs2_free_clones(rgd);
 		kfree(rgd->rd_bits);
-		rgd->rd_bits = NULL;
 		return_all_reservations(rgd);
 		kmem_cache_free(gfs2_rgrpd_cachep, rgd);
 	}
@@ -926,6 +932,9 @@ static int read_rindex_entry(struct gfs2_inode *ip)
 	if (error)
 		goto fail;
 
+	rgd->rd_gl->gl_object = rgd;
+	rgd->rd_gl->gl_vm.start = rgd->rd_addr * bsize;
+	rgd->rd_gl->gl_vm.end = rgd->rd_gl->gl_vm.start + (rgd->rd_length * bsize) - 1;
 	rgd->rd_rgl = (struct gfs2_rgrp_lvb *)rgd->rd_gl->gl_lksb.sb_lvbptr;
 	rgd->rd_flags &= ~GFS2_RDF_UPTODATE;
 	if (rgd->rd_data > sdp->sd_max_rg_data)
@@ -933,20 +942,14 @@ static int read_rindex_entry(struct gfs2_inode *ip)
 	spin_lock(&sdp->sd_rindex_spin);
 	error = rgd_insert(rgd);
 	spin_unlock(&sdp->sd_rindex_spin);
-	if (!error) {
-		rgd->rd_gl->gl_object = rgd;
-		rgd->rd_gl->gl_vm.start = (rgd->rd_addr * bsize) & PAGE_MASK;
-		rgd->rd_gl->gl_vm.end = PAGE_ALIGN((rgd->rd_addr +
-						    rgd->rd_length) * bsize) - 1;
+	if (!error)
 		return 0;
-	}
 
 	error = 0; /* someone else read in the rgrp; free it and ignore it */
 	gfs2_glock_put(rgd->rd_gl);
 
 fail:
 	kfree(rgd->rd_bits);
-	rgd->rd_bits = NULL;
 	kmem_cache_free(gfs2_rgrpd_cachep, rgd);
 	return error;
 }
@@ -1914,6 +1917,7 @@ int gfs2_inplace_reserve(struct gfs2_inode *ip, const struct gfs2_alloc_parms *a
 	} else if (ip->i_rgd && rgrp_contains_block(ip->i_rgd, ip->i_goal)) {
 		rs->rs_rbm.rgd = begin = ip->i_rgd;
 	} else {
+		check_and_update_goal(ip);
 		rs->rs_rbm.rgd = begin = gfs2_blk2rgrpd(sdp, ip->i_goal, 1);
 	}
 	if (S_ISDIR(ip->i_inode.i_mode) && (ap->aflags & GFS2_AF_ORLOV))
@@ -2093,7 +2097,7 @@ static struct gfs2_rgrpd *rgblk_free(struct gfs2_sbd *sdp, u64 bstart,
 				     u32 blen, unsigned char new_state)
 {
 	struct gfs2_rbm rbm;
-	struct gfs2_bitmap *bi;
+	struct gfs2_bitmap *bi, *bi_prev = NULL;
 
 	rbm.rgd = gfs2_blk2rgrpd(sdp, bstart, 1);
 	if (!rbm.rgd) {
@@ -2102,18 +2106,22 @@ static struct gfs2_rgrpd *rgblk_free(struct gfs2_sbd *sdp, u64 bstart,
 		return NULL;
 	}
 
+	gfs2_rbm_from_block(&rbm, bstart);
 	while (blen--) {
-		gfs2_rbm_from_block(&rbm, bstart);
 		bi = rbm_bi(&rbm);
-		bstart++;
-		if (!bi->bi_clone) {
-			bi->bi_clone = kmalloc(bi->bi_bh->b_size,
-					       GFP_NOFS | __GFP_NOFAIL);
-			memcpy(bi->bi_clone + bi->bi_offset,
-			       bi->bi_bh->b_data + bi->bi_offset, bi->bi_len);
+		if (bi != bi_prev) {
+			if (!bi->bi_clone) {
+				bi->bi_clone = kmalloc(bi->bi_bh->b_size,
+						      GFP_NOFS | __GFP_NOFAIL);
+				memcpy(bi->bi_clone + bi->bi_offset,
+				       bi->bi_bh->b_data + bi->bi_offset,
+				       bi->bi_len);
+			}
+			gfs2_trans_add_meta(rbm.rgd->rd_gl, bi->bi_bh);
+			bi_prev = bi;
 		}
-		gfs2_trans_add_meta(rbm.rgd->rd_gl, bi->bi_bh);
 		gfs2_setbit(&rbm, false, new_state);
+		gfs2_rbm_incr(&rbm);
 	}
 
 	return rbm.rgd;

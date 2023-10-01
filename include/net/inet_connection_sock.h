@@ -242,6 +242,15 @@ static inline void inet_csk_reset_xmit_timer(struct sock *sk, const int what,
 #endif
 }
 
+static inline unsigned long
+inet_csk_rto_backoff(const struct inet_connection_sock *icsk,
+		     unsigned long max_when)
+{
+        u64 when = (u64)icsk->icsk_rto << icsk->icsk_backoff;
+
+        return (unsigned long)min_t(u64, when, max_when);
+}
+
 struct sock *inet_csk_accept(struct sock *sk, int flags, int *err);
 
 struct request_sock *inet_csk_search_req(const struct sock *sk,
@@ -285,6 +294,11 @@ static inline void inet_csk_reqsk_queue_added(struct sock *sk,
 static inline int inet_csk_reqsk_queue_len(const struct sock *sk)
 {
 	return reqsk_queue_len(&inet_csk(sk)->icsk_accept_queue);
+}
+
+static inline int inet_csk_reqsk_queue_young(const struct sock *sk)
+{
+	return reqsk_queue_len_young(&inet_csk(sk)->icsk_accept_queue);
 }
 
 static inline int inet_csk_reqsk_queue_is_full(const struct sock *sk)

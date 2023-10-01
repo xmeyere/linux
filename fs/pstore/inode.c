@@ -430,18 +430,22 @@ static struct file_system_type pstore_fs_type = {
 	.kill_sb	= pstore_kill_sb,
 };
 
+static struct kobject *pstore_kobj;
+
 static int __init init_pstore_fs(void)
 {
-	int err;
+	int err = 0;
 
 	/* Create a convenient mount point for people to access pstore */
-	err = sysfs_create_mount_point(fs_kobj, "pstore");
-	if (err)
+	pstore_kobj = kobject_create_and_add("pstore", fs_kobj);
+	if (!pstore_kobj) {
+		err = -ENOMEM;
 		goto out;
+	}
 
 	err = register_filesystem(&pstore_fs_type);
 	if (err < 0)
-		sysfs_remove_mount_point(fs_kobj, "pstore");
+		kobject_put(pstore_kobj);
 
 out:
 	return err;

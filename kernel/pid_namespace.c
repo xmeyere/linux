@@ -234,7 +234,7 @@ void zap_pid_ns_processes(struct pid_namespace *pid_ns)
 	 * Make sure they all go away, see free_pid().
 	 */
 	for (;;) {
-		set_current_state(TASK_INTERRUPTIBLE);
+		set_current_state(TASK_UNINTERRUPTIBLE);
 		if (pid_ns->nr_hashed == init_pids)
 			break;
 		schedule();
@@ -304,7 +304,7 @@ int reboot_pid_ns(struct pid_namespace *pid_ns, int cmd)
 	}
 
 	read_lock(&tasklist_lock);
-	send_sig(SIGKILL, pid_ns->child_reaper, 1);
+	force_sig(SIGKILL, pid_ns->child_reaper);
 	read_unlock(&tasklist_lock);
 
 	do_exit(0);

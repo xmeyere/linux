@@ -52,7 +52,6 @@ int adau17x1_set_micbias_voltage(struct snd_soc_codec *codec,
 	enum adau17x1_micbias_voltage micbias);
 bool adau17x1_readable_register(struct device *dev, unsigned int reg);
 bool adau17x1_volatile_register(struct device *dev, unsigned int reg);
-int adau17x1_suspend(struct snd_soc_codec *codec);
 int adau17x1_resume(struct snd_soc_codec *codec);
 
 extern const struct snd_soc_dai_ops adau17x1_dai_ops;
@@ -119,8 +118,6 @@ bool adau17x1_has_dsp(struct adau *adau);
 #define ADAU17X1_CONVERTER1_ADC_PAIR_MASK	0x3
 
 #define ADAU17X1_CONVERTER0_CONVSR_MASK		0x7
-
-#define ADAU17X1_CONVERTER0_ADOSR		BIT(3)
 
 
 #endif

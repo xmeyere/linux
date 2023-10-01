@@ -16,7 +16,6 @@
 #include <asm/unaligned.h>
 #include <net/mac80211.h>
 #include <crypto/aes.h>
-#include <crypto/algapi.h>
 
 #include "ieee80211_i.h"
 #include "michael.h"
@@ -65,8 +64,11 @@ ieee80211_tx_h_michael_mic_add(struct ieee80211_tx_data *tx)
 	if (!info->control.hw_key)
 		tail += IEEE80211_TKIP_ICV_LEN;
 
-	if (WARN_ON(skb_tailroom(skb) < tail ||
-		    skb_headroom(skb) < IEEE80211_TKIP_IV_LEN))
+	if (WARN(skb_tailroom(skb) < tail ||
+		 skb_headroom(skb) < IEEE80211_TKIP_IV_LEN,
+		 "mmic: not enough head/tail (%d/%d,%d/%d)\n",
+		 skb_headroom(skb), IEEE80211_TKIP_IV_LEN,
+		 skb_tailroom(skb), tail))
 		return TX_DROP;
 
 	key = &tx->key->conf.key[NL80211_TKIP_DATA_OFFSET_TX_MIC_KEY];
@@ -148,7 +150,7 @@ ieee80211_rx_h_michael_mic_verify(struct ieee80211_rx_data *rx)
 	data_len = skb->len - hdrlen - MICHAEL_MIC_LEN;
 	key = &rx->key->conf.key[NL80211_TKIP_DATA_OFFSET_RX_MIC_KEY];
 	michael_mic(key, hdr, data, data_len, mic);
-	if (crypto_memneq(mic, data + data_len, MICHAEL_MIC_LEN))
+	if (memcmp(mic, data + data_len, MICHAEL_MIC_LEN) != 0)
 		goto mic_fail;
 
 	/* remove Michael MIC from payload */
@@ -769,7 +771,7 @@ ieee80211_crypto_aes_cmac_decrypt(struct ieee80211_rx_data *rx)
 		bip_aad(skb, aad);
 		ieee80211_aes_cmac(key->u.aes_cmac.tfm, aad,
 				   skb->data + 24, skb->len - 24, mic);
-		if (crypto_memneq(mic, mmie->mic, sizeof(mmie->mic))) {
+		if (memcmp(mic, mmie->mic, sizeof(mmie->mic)) != 0) {
 			key->u.aes_cmac.icverrors++;
 			return RX_DROP_UNUSABLE;
 		}
@@ -812,7 +814,7 @@ ieee80211_crypto_hw_encrypt(struct ieee80211_tx_data *tx)
 ieee80211_rx_result
 ieee80211_crypto_hw_decrypt(struct ieee80211_rx_data *rx)
 {
-	if (rx->sta->cipher_scheme)
+	if (rx->sta && rx->sta->cipher_scheme)
 		return ieee80211_crypto_cs_decrypt(rx);
 
 	return RX_DROP_UNUSABLE;

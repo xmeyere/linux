@@ -103,7 +103,8 @@ static int find_index(struct mlx4_dev *dev,
 	int i;
 
 	for (i = 0; i < MLX4_MAX_MAC_NUM; i++) {
-		if ((mac & MLX4_MAC_MASK) ==
+		if (table->refs[i] &&
+		    (MLX4_MAC_MASK & mac) ==
 		    (MLX4_MAC_MASK & be64_to_cpu(table->entries[i])))
 			return i;
 	}
@@ -165,12 +166,14 @@ int __mlx4_register_mac(struct mlx4_dev *dev, u8 port, u64 mac)
 
 	mutex_lock(&table->mutex);
 	for (i = 0; i < MLX4_MAX_MAC_NUM; i++) {
-		if (free < 0 && !table->entries[i]) {
-			free = i;
+		if (!table->refs[i]) {
+			if (free < 0)
+				free = i;
 			continue;
 		}
 
-		if (mac == (MLX4_MAC_MASK & be64_to_cpu(table->entries[i]))) {
+		if ((MLX4_MAC_MASK & mac) ==
+		     (MLX4_MAC_MASK & be64_to_cpu(table->entries[i]))) {
 			/* MAC already registered, increment ref count */
 			err = i;
 			++table->refs[i];
@@ -244,10 +247,16 @@ EXPORT_SYMBOL_GPL(mlx4_get_base_qpn);
 
 void __mlx4_unregister_mac(struct mlx4_dev *dev, u8 port, u64 mac)
 {
-	struct mlx4_port_info *info = &mlx4_priv(dev)->port[port];
-	struct mlx4_mac_table *table = &info->mac_table;
+	struct mlx4_port_info *info;
+	struct mlx4_mac_table *table;
 	int index;
 
+	if (port < 1 || port > dev->caps.num_ports) {
+		mlx4_warn(dev, "invalid port number (%d), aborting...\n", port);
+		return;
+	}
+	info = &mlx4_priv(dev)->port[port];
+	table = &info->mac_table;
 	mutex_lock(&table->mutex);
 	index = find_index(dev, table, mac);
 
@@ -1051,14 +1060,26 @@ int mlx4_SET_PORT_SCHEDULER(struct mlx4_dev *dev, u8 port, u8 *tc_tx_bw,
 
 	for (i = 0; i < MLX4_NUM_TC; i++) {
 		struct mlx4_port_scheduler_tc_cfg_be *tc = &context->tc[i];
-		u16 r = ratelimit && ratelimit[i] ? ratelimit[i] :
-			MLX4_RATELIMIT_DEFAULT;
+		u16 r;
+
+		if (ratelimit && ratelimit[i]) {
+			if (ratelimit[i] <= MLX4_MAX_100M_UNITS_VAL) {
+				r = ratelimit[i];
+				tc->max_bw_units =
+					htons(MLX4_RATELIMIT_100M_UNITS);
+			} else {
+				r = ratelimit[i]/10;
+				tc->max_bw_units =
+					htons(MLX4_RATELIMIT_1G_UNITS);
+			}
+			tc->max_bw_value = htons(r);
+		} else {
+			tc->max_bw_value = htons(MLX4_RATELIMIT_DEFAULT);
+			tc->max_bw_units = htons(MLX4_RATELIMIT_1G_UNITS);
+		}
 
 		tc->pg = htons(pg[i]);
 		tc->bw_precentage = htons(tc_tx_bw[i]);
-
-		tc->max_bw_units = htons(MLX4_RATELIMIT_UNITS);
-		tc->max_bw_value = htons(r);
 	}
 
 	in_mod = MLX4_SET_PORT_SCHEDULER << 8 | port;
@@ -1143,13 +1164,24 @@ int mlx4_SET_VLAN_FLTR_wrapper(struct mlx4_dev *dev, int slave,
 	return err;
 }
 
+int mlx4_common_dump_eth_stats(struct mlx4_dev *dev, int slave,
+			       u32 in_mod, struct mlx4_cmd_mailbox *outbox)
+{
+	return mlx4_cmd_box(dev, 0, outbox->dma, in_mod, 0,
+			    MLX4_CMD_DUMP_ETH_STATS, MLX4_CMD_TIME_CLASS_B,
+			    MLX4_CMD_NATIVE);
+}
+
 int mlx4_DUMP_ETH_STATS_wrapper(struct mlx4_dev *dev, int slave,
 				struct mlx4_vhcr *vhcr,
 				struct mlx4_cmd_mailbox *inbox,
 				struct mlx4_cmd_mailbox *outbox,
 				struct mlx4_cmd_info *cmd)
 {
-	return 0;
+	if (slave != dev->caps.function)
+		return 0;
+	return mlx4_common_dump_eth_stats(dev, slave,
+					  vhcr->in_modifier, outbox);
 }
 
 void mlx4_set_stats_bitmap(struct mlx4_dev *dev, u64 *stats_bitmap)

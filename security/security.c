@@ -728,7 +728,7 @@ static inline unsigned long mmap_prot(struct file *file, unsigned long prot)
 	 * ditto if it's not on noexec mount, except that on !MMU we need
 	 * BDI_CAP_EXEC_MMAP (== VM_MAYEXEC) in this case
 	 */
-	if (!path_noexec(&file->f_path)) {
+	if (!(file->f_path.mnt->mnt_flags & MNT_NOEXEC)) {
 #ifndef CONFIG_MMU
 		unsigned long caps = 0;
 		struct address_space *mapping = file->f_mapping;
@@ -775,9 +775,9 @@ int security_file_fcntl(struct file *file, unsigned int cmd, unsigned long arg)
 	return security_ops->file_fcntl(file, cmd, arg);
 }
 
-int security_file_set_fowner(struct file *file)
+void security_file_set_fowner(struct file *file)
 {
-	return security_ops->file_set_fowner(file);
+	security_ops->file_set_fowner(file);
 }
 
 int security_file_send_sigiotask(struct task_struct *tsk,
@@ -844,6 +844,17 @@ int security_kernel_create_files_as(struct cred *new, struct inode *inode)
 {
 	return security_ops->kernel_create_files_as(new, inode);
 }
+
+int security_kernel_fw_from_file(struct file *file, char *buf, size_t size)
+{
+	int ret;
+
+	ret = security_ops->kernel_fw_from_file(file, buf, size);
+	if (ret)
+		return ret;
+	return ima_fw_from_file(file, buf, size);
+}
+EXPORT_SYMBOL_GPL(security_kernel_fw_from_file);
 
 int security_kernel_module_request(char *kmod_name)
 {

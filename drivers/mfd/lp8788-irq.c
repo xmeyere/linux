@@ -66,12 +66,14 @@ static inline u8 _irq_to_val(enum lp8788_int_id id, int enable)
 static void lp8788_irq_enable(struct irq_data *data)
 {
 	struct lp8788_irq_data *irqd = irq_data_get_irq_chip_data(data);
+
 	irqd->enabled[data->hwirq] = 1;
 }
 
 static void lp8788_irq_disable(struct irq_data *data)
 {
 	struct lp8788_irq_data *irqd = irq_data_get_irq_chip_data(data);
+
 	irqd->enabled[data->hwirq] = 0;
 }
 
@@ -110,7 +112,7 @@ static irqreturn_t lp8788_irq_handler(int irq, void *ptr)
 	struct lp8788_irq_data *irqd = ptr;
 	struct lp8788 *lp = irqd->lp;
 	u8 status[NUM_REGS], addr, mask;
-	bool handled = false;
+	bool handled;
 	int i;
 
 	if (lp8788_read_multi_bytes(lp, LP8788_INT_1, status, NUM_REGS))

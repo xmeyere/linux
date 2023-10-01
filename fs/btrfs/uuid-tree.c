@@ -279,7 +279,6 @@ int btrfs_uuid_tree_iterate(struct btrfs_fs_info *fs_info,
 	key.offset = 0;
 
 again_search_slot:
-	path->keep_locks = 1;
 	ret = btrfs_search_forward(root, &key, path, 0);
 	if (ret) {
 		if (ret > 0)
@@ -333,8 +332,6 @@ again_search_slot:
 				}
 				if (ret < 0 && ret != -ENOENT)
 					goto out;
-				key.offset++;
-				goto again_search_slot;
 			}
 			item_size -= sizeof(subid_le);
 			offset += sizeof(subid_le);

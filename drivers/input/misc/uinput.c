@@ -98,15 +98,14 @@ static int uinput_request_reserve_slot(struct uinput_device *udev,
 					uinput_request_alloc_id(udev, request));
 }
 
-static void uinput_request_release_slot(struct uinput_device *udev,
-					unsigned int id)
+static void uinput_request_done(struct uinput_device *udev,
+				struct uinput_request *request)
 {
 	/* Mark slot as available */
-	spin_lock(&udev->requests_lock);
-	udev->requests[id] = NULL;
-	spin_unlock(&udev->requests_lock);
-
+	udev->requests[request->id] = NULL;
 	wake_up(&udev->requests_waitq);
+
+	complete(&request->done);
 }
 
 static int uinput_request_send(struct uinput_device *udev,
@@ -139,22 +138,20 @@ static int uinput_request_send(struct uinput_device *udev,
 static int uinput_request_submit(struct uinput_device *udev,
 				 struct uinput_request *request)
 {
-	int retval;
+	int error;
 
-	retval = uinput_request_reserve_slot(udev, request);
-	if (retval)
-		return retval;
+	error = uinput_request_reserve_slot(udev, request);
+	if (error)
+		return error;
 
-	retval = uinput_request_send(udev, request);
-	if (retval)
-		goto out;
+	error = uinput_request_send(udev, request);
+	if (error) {
+		uinput_request_done(udev, request);
+		return error;
+	}
 
 	wait_for_completion(&request->done);
-	retval = request->retval;
-
- out:
-	uinput_request_release_slot(udev, request->id);
-	return retval;
+	return request->retval;
 }
 
 /*
@@ -172,7 +169,7 @@ static void uinput_flush_requests(struct uinput_device *udev)
 		request = udev->requests[i];
 		if (request) {
 			request->retval = -ENODEV;
-			complete(&request->done);
+			uinput_request_done(udev, request);
 		}
 	}
 
@@ -233,18 +230,6 @@ static int uinput_dev_erase_effect(struct input_dev *dev, int effect_id)
 	return uinput_request_submit(udev, &request);
 }
 
-static int uinput_dev_flush(struct input_dev *dev, struct file *file)
-{
-	/*
-	 * If we are called with file == NULL that means we are tearing
-	 * down the device, and therefore we can not handle FF erase
-	 * requests: either we are handling UI_DEV_DESTROY (and holding
-	 * the udev->mutex), or the file descriptor is closed and there is
-	 * nobody on the other side anymore.
-	 */
-	return file ? input_ff_flush(dev, file) : 0;
-}
-
 static void uinput_destroy_device(struct uinput_device *udev)
 {
 	const char *name, *phys;
@@ -288,12 +273,6 @@ static int uinput_create_device(struct uinput_device *udev)
 		dev->ff->playback = uinput_dev_playback;
 		dev->ff->set_gain = uinput_dev_set_gain;
 		dev->ff->set_autocenter = uinput_dev_set_autocenter;
-		/*
-		 * The standard input_ff_flush() implementation does
-		 * not quite work for uinput as we can't reasonably
-		 * handle FF requests during device teardown.
-		 */
-		dev->flush = uinput_dev_flush;
 	}
 
 	error = input_register_device(udev->dev);
@@ -332,7 +311,14 @@ static int uinput_open(struct inode *inode, struct file *file)
 static int uinput_validate_absbits(struct input_dev *dev)
 {
 	unsigned int cnt;
-	int retval = 0;
+	int nslot;
+
+	if (!test_bit(EV_ABS, dev->evbit))
+		return 0;
+
+	/*
+	 * Check if absmin/absmax/absfuzz/absflat are sane.
+	 */
 
 	for (cnt = 0; cnt < ABS_CNT; cnt++) {
 		int min, max;
@@ -348,8 +334,7 @@ static int uinput_validate_absbits(struct input_dev *dev)
 				UINPUT_NAME, cnt,
 				input_abs_get_min(dev, cnt),
 				input_abs_get_max(dev, cnt));
-			retval = -EINVAL;
-			break;
+			return -EINVAL;
 		}
 
 		if (input_abs_get_flat(dev, cnt) >
@@ -361,11 +346,18 @@ static int uinput_validate_absbits(struct input_dev *dev)
 				input_abs_get_flat(dev, cnt),
 				input_abs_get_min(dev, cnt),
 				input_abs_get_max(dev, cnt));
-			retval = -EINVAL;
-			break;
+			return -EINVAL;
 		}
 	}
-	return retval;
+
+	if (test_bit(ABS_MT_SLOT, dev->absbit)) {
+		nslot = input_abs_get_max(dev, ABS_MT_SLOT) + 1;
+		input_mt_init_slots(dev, nslot, 0);
+	} else if (test_bit(ABS_MT_POSITION_X, dev->absbit)) {
+		input_set_events_per_packet(dev, 60);
+	}
+
+	return 0;
 }
 
 static int uinput_allocate_device(struct uinput_device *udev)
@@ -431,19 +423,9 @@ static int uinput_setup_device(struct uinput_device *udev,
 		input_abs_set_flat(dev, i, user_dev->absflat[i]);
 	}
 
-	/* check if absmin/absmax/absfuzz/absflat are filled as
-	 * told in Documentation/input/input-programming.txt */
-	if (test_bit(EV_ABS, dev->evbit)) {
-		retval = uinput_validate_absbits(dev);
-		if (retval < 0)
-			goto exit;
-		if (test_bit(ABS_MT_SLOT, dev->absbit)) {
-			int nslot = input_abs_get_max(dev, ABS_MT_SLOT) + 1;
-			input_mt_init_slots(dev, nslot, 0);
-		} else if (test_bit(ABS_MT_POSITION_X, dev->absbit)) {
-			input_set_events_per_packet(dev, 60);
-		}
-	}
+	retval = uinput_validate_absbits(dev);
+	if (retval < 0)
+		goto exit;
 
 	udev->state = UIST_SETUP_COMPLETE;
 	retval = count;
@@ -741,6 +723,12 @@ static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 	}
 
 	switch (cmd) {
+		case UI_GET_VERSION:
+			if (put_user(UINPUT_VERSION,
+				     (unsigned int __user *)p))
+				retval = -EFAULT;
+			goto out;
+
 		case UI_DEV_CREATE:
 			retval = uinput_create_device(udev);
 			goto out;
@@ -861,7 +849,7 @@ static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 			}
 
 			req->retval = ff_up.retval;
-			complete(&req->done);
+			uinput_request_done(udev, req);
 			goto out;
 
 		case UI_END_FF_ERASE:
@@ -877,7 +865,7 @@ static long uinput_ioctl_handler(struct file *file, unsigned int cmd,
 			}
 
 			req->retval = ff_erase.retval;
-			complete(&req->done);
+			uinput_request_done(udev, req);
 			goto out;
 	}
 
@@ -907,33 +895,9 @@ static long uinput_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 }
 
 #ifdef CONFIG_COMPAT
-
-/*
- * These IOCTLs change their size and thus their numbers between
- * 32 and 64 bits.
- */
-#define UI_SET_PHYS_COMPAT		\
-	_IOW(UINPUT_IOCTL_BASE, 108, compat_uptr_t)
-#define UI_BEGIN_FF_UPLOAD_COMPAT	\
-	_IOWR(UINPUT_IOCTL_BASE, 200, struct uinput_ff_upload_compat)
-#define UI_END_FF_UPLOAD_COMPAT		\
-	_IOW(UINPUT_IOCTL_BASE, 201, struct uinput_ff_upload_compat)
-
 static long uinput_compat_ioctl(struct file *file,
 				unsigned int cmd, unsigned long arg)
 {
-	switch (cmd) {
-	case UI_SET_PHYS_COMPAT:
-		cmd = UI_SET_PHYS;
-		break;
-	case UI_BEGIN_FF_UPLOAD_COMPAT:
-		cmd = UI_BEGIN_FF_UPLOAD;
-		break;
-	case UI_END_FF_UPLOAD_COMPAT:
-		cmd = UI_END_FF_UPLOAD;
-		break;
-	}
-
 	return uinput_ioctl_handler(file, cmd, arg, compat_ptr(arg));
 }
 #endif

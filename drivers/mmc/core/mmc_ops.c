@@ -93,6 +93,26 @@ int mmc_deselect_cards(struct mmc_host *host)
 	return _mmc_select_card(host, NULL);
 }
 
+/*
+ * Write the value specified in the device tree or board code into the optional
+ * 16 bit Driver Stage Register. This can be used to tune raise/fall times and
+ * drive strength of the DAT and CMD outputs. The actual meaning of a given
+ * value is hardware dependant.
+ * The presence of the DSR register can be determined from the CSD register,
+ * bit 76.
+ */
+int mmc_set_dsr(struct mmc_host *host)
+{
+	struct mmc_command cmd = {0};
+
+	cmd.opcode = MMC_SET_DSR;
+
+	cmd.arg = (host->dsr << 16) | 0xffff;
+	cmd.flags = MMC_RSP_NONE | MMC_CMD_AC;
+
+	return mmc_wait_for_cmd(host, &cmd, MMC_CMD_RETRIES);
+}
+
 int mmc_go_idle(struct mmc_host *host)
 {
 	int err;
@@ -470,7 +490,7 @@ int __mmc_switch(struct mmc_card *card, u8 set, u8 index, u8 value,
 		timeout_ms = MMC_OPS_TIMEOUT_MS;
 
 	/* Must check status to be sure of no errors. */
-	timeout = jiffies + msecs_to_jiffies(timeout_ms) + 1;
+	timeout = jiffies + msecs_to_jiffies(timeout_ms);
 	do {
 		if (send_status) {
 			err = __mmc_send_status(card, &status, ignore_crc);
@@ -629,8 +649,8 @@ int mmc_send_hpi_cmd(struct mmc_card *card, u32 *status)
 	int err;
 
 	if (!card->ext_csd.hpi) {
-		pr_warning("%s: Card didn't support HPI command\n",
-			   mmc_hostname(card->host));
+		pr_warn("%s: Card didn't support HPI command\n",
+			mmc_hostname(card->host));
 		return -EINVAL;
 	}
 

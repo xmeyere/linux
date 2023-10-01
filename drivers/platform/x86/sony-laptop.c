@@ -1654,19 +1654,17 @@ static int sony_nc_setup_rfkill(struct acpi_device *device,
 	if (!rfk)
 		return -ENOMEM;
 
-	err = sony_call_snc_handle(sony_rfkill_handle, 0x200, &result);
-	if (err < 0) {
+	if (sony_call_snc_handle(sony_rfkill_handle, 0x200, &result) < 0) {
 		rfkill_destroy(rfk);
-		return err;
+		return -1;
 	}
 	hwblock = !(result & 0x1);
 
-	err = sony_call_snc_handle(sony_rfkill_handle,
-				   sony_rfkill_address[nc_type],
-				   &result);
-	if (err < 0) {
+	if (sony_call_snc_handle(sony_rfkill_handle,
+				sony_rfkill_address[nc_type],
+				&result) < 0) {
 		rfkill_destroy(rfk);
-		return err;
+		return -1;
 	}
 	swblock = !(result & 0x2);
 
@@ -2391,7 +2389,7 @@ static int sony_nc_lid_resume_setup(struct platform_device *pd,
 		lid_ctl->attrs[LID_RESUME_S3].store = sony_nc_lid_resume_store;
 	}
 	for (i = 0; i < LID_RESUME_MAX &&
-			lid_ctl->attrs[LID_RESUME_S3].attr.name; i++) {
+			lid_ctl->attrs[i].attr.name; i++) {
 		result = device_create_file(&pd->dev, &lid_ctl->attrs[i]);
 		if (result)
 			goto liderror;
@@ -4401,16 +4399,14 @@ sony_pic_read_possible_resource(struct acpi_resource *resource, void *context)
 			}
 			return AE_OK;
 		}
-
-	case ACPI_RESOURCE_TYPE_END_TAG:
-		return AE_OK;
-
 	default:
 		dprintk("Resource %d isn't an IRQ nor an IO port\n",
 			resource->type);
-		return AE_CTRL_TERMINATE;
 
+	case ACPI_RESOURCE_TYPE_END_TAG:
+		return AE_OK;
 	}
+	return AE_CTRL_TERMINATE;
 }
 
 static int sony_pic_possible_resources(struct acpi_device *device)

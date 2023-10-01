@@ -257,8 +257,7 @@ EXPORT_SYMBOL_GPL(sensor_hub_get_feature);
 
 int sensor_hub_input_attr_get_raw_value(struct hid_sensor_hub_device *hsdev,
 					u32 usage_id,
-					u32 attr_usage_id, u32 report_id,
-					bool is_signed)
+					u32 attr_usage_id, u32 report_id)
 {
 	struct sensor_hub_data *data = hid_get_drvdata(hsdev->hdev);
 	unsigned long flags;
@@ -283,16 +282,10 @@ int sensor_hub_input_attr_get_raw_value(struct hid_sensor_hub_device *hsdev,
 	wait_for_completion_interruptible_timeout(&data->pending.ready, HZ*5);
 	switch (data->pending.raw_size) {
 	case 1:
-		if (is_signed)
-			ret_val = *(s8 *)data->pending.raw_data;
-		else
-			ret_val = *(u8 *)data->pending.raw_data;
+		ret_val = *(u8 *)data->pending.raw_data;
 		break;
 	case 2:
-		if (is_signed)
-			ret_val = *(s16 *)data->pending.raw_data;
-		else
-			ret_val = *(u16 *)data->pending.raw_data;
+		ret_val = *(u16 *)data->pending.raw_data;
 		break;
 	case 4:
 		ret_val = *(u32 *)data->pending.raw_data;
@@ -611,9 +604,9 @@ static int sensor_hub_probe(struct hid_device *hdev,
 		ret = -EINVAL;
 		goto err_stop_hw;
 	}
-	sd->hid_sensor_hub_client_devs = kzalloc(dev_cnt *
-						sizeof(struct mfd_cell),
-						GFP_KERNEL);
+	sd->hid_sensor_hub_client_devs = devm_kzalloc(&hdev->dev, dev_cnt *
+						      sizeof(struct mfd_cell),
+						      GFP_KERNEL);
 	if (sd->hid_sensor_hub_client_devs == NULL) {
 		hid_err(hdev, "Failed to allocate memory for mfd cells\n");
 			ret = -ENOMEM;
@@ -625,11 +618,12 @@ static int sensor_hub_probe(struct hid_device *hdev,
 
 		if (collection->type == HID_COLLECTION_PHYSICAL) {
 
-			hsdev = kzalloc(sizeof(*hsdev), GFP_KERNEL);
+			hsdev = devm_kzalloc(&hdev->dev, sizeof(*hsdev),
+					     GFP_KERNEL);
 			if (!hsdev) {
 				hid_err(hdev, "cannot allocate hid_sensor_hub_device\n");
 				ret = -ENOMEM;
-				goto err_no_mem;
+				goto err_stop_hw;
 			}
 			hsdev->hdev = hdev;
 			hsdev->vendor_id = hdev->vendor;
@@ -638,13 +632,13 @@ static int sensor_hub_probe(struct hid_device *hdev,
 			if (last_hsdev)
 				last_hsdev->end_collection_index = i;
 			last_hsdev = hsdev;
-			name = kasprintf(GFP_KERNEL, "HID-SENSOR-%x",
-					collection->usage);
+			name = devm_kasprintf(&hdev->dev, GFP_KERNEL,
+					      "HID-SENSOR-%x",
+					      collection->usage);
 			if (name == NULL) {
 				hid_err(hdev, "Failed MFD device name\n");
 					ret = -ENOMEM;
-					kfree(hsdev);
-					goto err_no_mem;
+					goto err_stop_hw;
 			}
 			sd->hid_sensor_hub_client_devs[
 				sd->hid_sensor_client_cnt].id =
@@ -668,16 +662,10 @@ static int sensor_hub_probe(struct hid_device *hdev,
 	ret = mfd_add_devices(&hdev->dev, 0, sd->hid_sensor_hub_client_devs,
 		sd->hid_sensor_client_cnt, NULL, 0, NULL);
 	if (ret < 0)
-		goto err_no_mem;
+		goto err_stop_hw;
 
 	return ret;
 
-err_no_mem:
-	for (i = 0; i < sd->hid_sensor_client_cnt; ++i) {
-		kfree(sd->hid_sensor_hub_client_devs[i].name);
-		kfree(sd->hid_sensor_hub_client_devs[i].platform_data);
-	}
-	kfree(sd->hid_sensor_hub_client_devs);
 err_stop_hw:
 	hid_hw_stop(hdev);
 
@@ -688,7 +676,6 @@ static void sensor_hub_remove(struct hid_device *hdev)
 {
 	struct sensor_hub_data *data = hid_get_drvdata(hdev);
 	unsigned long flags;
-	int i;
 
 	hid_dbg(hdev, " hardware removed\n");
 	hid_hw_close(hdev);
@@ -698,11 +685,6 @@ static void sensor_hub_remove(struct hid_device *hdev)
 		complete(&data->pending.ready);
 	spin_unlock_irqrestore(&data->lock, flags);
 	mfd_remove_devices(&hdev->dev);
-	for (i = 0; i < data->hid_sensor_client_cnt; ++i) {
-		kfree(data->hid_sensor_hub_client_devs[i].name);
-		kfree(data->hid_sensor_hub_client_devs[i].platform_data);
-	}
-	kfree(data->hid_sensor_hub_client_devs);
 	hid_set_drvdata(hdev, NULL);
 	mutex_destroy(&data->mutex);
 }
@@ -725,6 +707,9 @@ static const struct hid_device_id sensor_hub_devices[] = {
 			.driver_data = HID_SENSOR_HUB_ENUM_QUIRK},
 	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_SENSOR_HUB, USB_VENDOR_ID_MICROSOFT,
 			USB_DEVICE_ID_MS_TYPE_COVER_2),
+			.driver_data = HID_SENSOR_HUB_ENUM_QUIRK},
+	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_SENSOR_HUB, USB_VENDOR_ID_STM_0,
+			USB_DEVICE_ID_STM_HID_SENSOR),
 			.driver_data = HID_SENSOR_HUB_ENUM_QUIRK},
 	{ HID_DEVICE(HID_BUS_ANY, HID_GROUP_SENSOR_HUB, USB_VENDOR_ID_STM_0,
 			USB_DEVICE_ID_STM_HID_SENSOR_1),

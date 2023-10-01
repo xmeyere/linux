@@ -80,6 +80,7 @@ void tiqdio_add_input_queues(struct qdio_irq *irq_ptr)
 	mutex_lock(&tiq_list_lock);
 	list_add_rcu(&irq_ptr->input_qs[0]->entry, &tiq_list);
 	mutex_unlock(&tiq_list_lock);
+	xchg(irq_ptr->dsci, 1 << 7);
 }
 
 void tiqdio_remove_input_queues(struct qdio_irq *irq_ptr)
@@ -87,14 +88,14 @@ void tiqdio_remove_input_queues(struct qdio_irq *irq_ptr)
 	struct qdio_q *q;
 
 	q = irq_ptr->input_qs[0];
-	if (!q)
+	/* if establish triggered an error */
+	if (!q || !q->entry.prev || !q->entry.next)
 		return;
 
 	mutex_lock(&tiq_list_lock);
 	list_del_rcu(&q->entry);
 	mutex_unlock(&tiq_list_lock);
 	synchronize_rcu();
-	INIT_LIST_HEAD(&q->entry);
 }
 
 static inline int has_multiple_inq_on_dsci(struct qdio_irq *irq_ptr)
@@ -146,11 +147,11 @@ static inline void tiqdio_call_inq_handlers(struct qdio_irq *irq)
 	struct qdio_q *q;
 	int i;
 
-	if (!references_shared_dsci(irq) &&
-	    has_multiple_inq_on_dsci(irq))
-		xchg(irq->dsci, 0);
-
 	for_each_input_queue(irq, q, i) {
+		if (!references_shared_dsci(irq) &&
+		    has_multiple_inq_on_dsci(irq))
+			xchg(q->irq_ptr->dsci, 0);
+
 		if (q->u.in.queue_start_poll) {
 			/* skip if polling is enabled or already in work */
 			if (test_and_set_bit(QDIO_QUEUE_IRQS_DISABLED,

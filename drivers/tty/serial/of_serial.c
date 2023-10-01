@@ -93,10 +93,6 @@ static int of_platform_serial_setup(struct platform_device *ofdev,
 	if (of_property_read_u32(np, "reg-offset", &prop) == 0)
 		port->mapbase += prop;
 
-	/* Compatibility with the deprecated pxa driver and 8250_pxa drivers. */
-	if (of_device_is_compatible(np, "mrvl,mmp-uart"))
-		port->regshift = 2;
-
 	/* Check for registers offset within the devices address range */
 	if (of_property_read_u32(np, "reg-shift", &prop) == 0)
 		port->regshift = prop;
@@ -162,7 +158,7 @@ static int of_platform_serial_probe(struct platform_device *ofdev)
 	if (of_find_property(ofdev->dev.of_node, "used-by-rtas", NULL))
 		return -EBUSY;
 
-	info = kmalloc(sizeof(*info), GFP_KERNEL);
+	info = kzalloc(sizeof(*info), GFP_KERNEL);
 	if (info == NULL)
 		return -ENOMEM;
 
@@ -186,10 +182,6 @@ static int of_platform_serial_probe(struct platform_device *ofdev)
 		if (of_property_read_bool(ofdev->dev.of_node,
 					  "auto-flow-control"))
 			port8250.capabilities |= UART_CAP_AFE;
-
-		if (of_property_read_bool(ofdev->dev.of_node,
-					  "has-hw-flow-control"))
-			port8250.port.flags |= UPF_HARD_FLOW;
 
 		ret = serial8250_register_8250_port(&port8250);
 		break;
@@ -270,6 +262,7 @@ static struct of_device_id of_platform_serial_table[] = {
 	{ .compatible = "ibm,qpace-nwp-serial",
 		.data = (void *)PORT_NWPSERIAL, },
 #endif
+	{ .type = "serial",         .data = (void *)PORT_UNKNOWN, },
 	{ /* end of list */ },
 };
 

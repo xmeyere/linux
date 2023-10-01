@@ -268,7 +268,7 @@ static int acpi_processor_get_info(struct acpi_device *device)
 	pr->apic_id = apic_id;
 
 	cpu_index = acpi_map_cpuid(pr->apic_id, pr->acpi_id);
-	if (!cpu0_initialized && !acpi_lapic) {
+	if (!cpu0_initialized && !acpi_has_cpu_in_madt()) {
 		cpu0_initialized = 1;
 		/* Handle UP system running SMP kernel, with no LAPIC in MADT */
 		if ((cpu_index == -1) && (num_online_cpus() == 1))
@@ -311,6 +311,15 @@ static int acpi_processor_get_info(struct acpi_device *device)
 		pr->throttling.duty_width = acpi_gbl_FADT.duty_width;
 
 		pr->pblk = object.processor.pblk_address;
+
+		/*
+		 * We don't care about error returns - we just try to mark
+		 * these reserved so that nobody else is confused into thinking
+		 * that this region might be unused..
+		 *
+		 * (In particular, allocating the IO range for Cardbus)
+		 */
+		request_region(pr->throttling.address, 6, "ACPI CPU throttle");
 	}
 
 	/*

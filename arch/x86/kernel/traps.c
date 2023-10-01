@@ -37,6 +37,11 @@
 #include <linux/smp.h>
 #include <linux/io.h>
 
+#ifdef CONFIG_EISA
+#include <linux/ioport.h>
+#include <linux/eisa.h>
+#endif
+
 #if defined(CONFIG_EDAC)
 #include <linux/edac.h>
 #endif
@@ -258,7 +263,6 @@ dotraplinkage void do_double_fault(struct pt_regs *regs, long error_code)
 		normal_regs->orig_ax = 0;  /* Missing (lost) #GP error code */
 		regs->ip = (unsigned long)general_protection;
 		regs->sp = (unsigned long)&normal_regs->orig_ax;
-
 		return;
 	}
 #endif
@@ -330,6 +334,7 @@ exit:
 }
 NOKPROBE_SYMBOL(do_general_protection);
 
+/* May run on IST stack. */
 dotraplinkage void notrace do_int3(struct pt_regs *regs, long error_code)
 {
 	enum ctx_state prev_state;
@@ -362,9 +367,15 @@ dotraplinkage void notrace do_int3(struct pt_regs *regs, long error_code)
 			SIGTRAP) == NOTIFY_STOP)
 		goto exit;
 
+	/*
+	 * Let others (NMI) know that the debug stack is in use
+	 * as we may switch to the interrupt stack.
+	 */
+	debug_stack_usage_inc();
 	preempt_conditional_sti(regs);
 	do_trap(X86_TRAP_BP, SIGTRAP, "int3", regs, error_code, NULL);
 	preempt_conditional_cli(regs);
+	debug_stack_usage_dec();
 exit:
 	exception_exit(prev_state);
 }
@@ -376,7 +387,7 @@ NOKPROBE_SYMBOL(do_int3);
  * for scheduling or signal handling. The actual stack switch is done in
  * entry.S
  */
-asmlinkage __visible notrace struct pt_regs *sync_regs(struct pt_regs *eregs)
+asmlinkage __visible struct pt_regs *sync_regs(struct pt_regs *eregs)
 {
 	struct pt_regs *regs = eregs;
 	/* Did already sync */
@@ -402,7 +413,7 @@ struct bad_iret_stack {
 	struct pt_regs regs;
 };
 
-asmlinkage __visible notrace
+asmlinkage __visible
 struct bad_iret_stack *fixup_bad_iret(struct bad_iret_stack *s)
 {
 	/*
@@ -425,7 +436,6 @@ struct bad_iret_stack *fixup_bad_iret(struct bad_iret_stack *s)
 	BUG_ON(!user_mode_vm(&new_stack->regs));
 	return new_stack;
 }
-NOKPROBE_SYMBOL(fixup_bad_iret);
 #endif
 
 /*
@@ -472,7 +482,7 @@ dotraplinkage void do_debug(struct pt_regs *regs, long error_code)
 	 * then it's very likely the result of an icebp/int01 trap.
 	 * User wants a sigtrap for that.
 	 */
-	if (!dr6 && user_mode_vm(regs))
+	if (!dr6 && user_mode(regs))
 		user_icebp = 1;
 
 	/* Catch kmemcheck conditions first of all! */
@@ -552,19 +562,17 @@ static void math_error(struct pt_regs *regs, int error_code, int trapnr)
 	char *str = (trapnr == X86_TRAP_MF) ? "fpu exception" :
 						"simd exception";
 
+	if (notify_die(DIE_TRAP, str, regs, error_code, trapnr, SIGFPE) == NOTIFY_STOP)
+		return;
 	conditional_sti(regs);
 
 	if (!user_mode_vm(regs))
 	{
-		if (fixup_exception(regs))
-			return;
-
-		task->thread.error_code = error_code;
-		task->thread.trap_nr = trapnr;
-
-		if (notify_die(DIE_TRAP, str, regs, error_code,
-					trapnr, SIGFPE) != NOTIFY_STOP)
+		if (!fixup_exception(regs)) {
+			task->thread.error_code = error_code;
+			task->thread.trap_nr = trapnr;
 			die(str, regs, error_code);
+		}
 		return;
 	}
 
@@ -764,17 +772,9 @@ dotraplinkage void do_iret_error(struct pt_regs *regs, long error_code)
 /* Set of traps needed for early debugging. */
 void __init early_trap_init(void)
 {
-	/*
-	 * Don't set ist to DEBUG_STACK as it doesn't work until TSS is
-	 * ready in cpu_init() <-- trap_init(). Before trap_init(), CPU
-	 * runs at ring 0 so it is impossible to hit an invalid stack.
-	 * Using the original stack works well enough at this early
-	 * stage. DEBUG_STACK will be equipped after cpu_init() in
-	 * trap_init().
-	 */
-	set_intr_gate_ist(X86_TRAP_DB, &debug, 0);
+	set_intr_gate_ist(X86_TRAP_DB, &debug, DEBUG_STACK);
 	/* int3 can be called from all */
-	set_system_intr_gate_ist(X86_TRAP_BP, &int3, 0);
+	set_system_intr_gate_ist(X86_TRAP_BP, &int3, DEBUG_STACK);
 #ifdef CONFIG_X86_32
 	set_intr_gate(X86_TRAP_PF, page_fault);
 #endif
@@ -791,6 +791,14 @@ void __init early_trap_pf_init(void)
 void __init trap_init(void)
 {
 	int i;
+
+#ifdef CONFIG_EISA
+	void __iomem *p = early_ioremap(0x0FFFD9, 4);
+
+	if (readl(p) == 'E' + ('I'<<8) + ('S'<<16) + ('A'<<24))
+		EISA_bus = 1;
+	early_iounmap(p, 4);
+#endif
 
 	set_intr_gate(X86_TRAP_DE, divide_error);
 	set_intr_gate_ist(X86_TRAP_NMI, &nmi, NMI_STACK);
@@ -844,17 +852,11 @@ void __init trap_init(void)
 	 */
 	cpu_init();
 
-	/*
-	 * X86_TRAP_DB was installed in early_trap_init(). However,
-	 * DEBUG_STACK works only after cpu_init() loads TSS. See comments
-	 * in early_trap_init().
-	 */
-	set_intr_gate_ist(X86_TRAP_DB, &debug, DEBUG_STACK);
-
 	x86_init.irqs.trap_init();
 
 #ifdef CONFIG_X86_64
 	memcpy(&debug_idt_table, &idt_table, IDT_ENTRIES * 16);
 	set_nmi_gate(X86_TRAP_DB, &debug);
+	set_nmi_gate(X86_TRAP_BP, &int3);
 #endif
 }

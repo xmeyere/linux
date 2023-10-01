@@ -82,9 +82,8 @@ static void brcmstb_l2_intc_suspend(struct irq_data *d)
 {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 	struct brcmstb_l2_intc_data *b = gc->private;
-	unsigned long flags;
 
-	irq_gc_lock_irqsave(gc, flags);
+	irq_gc_lock(gc);
 	/* Save the current mask */
 	b->saved_mask = __raw_readl(b->base + CPU_MASK_STATUS);
 
@@ -93,23 +92,22 @@ static void brcmstb_l2_intc_suspend(struct irq_data *d)
 		__raw_writel(~gc->wake_active, b->base + CPU_MASK_SET);
 		__raw_writel(gc->wake_active, b->base + CPU_MASK_CLEAR);
 	}
-	irq_gc_unlock_irqrestore(gc, flags);
+	irq_gc_unlock(gc);
 }
 
 static void brcmstb_l2_intc_resume(struct irq_data *d)
 {
 	struct irq_chip_generic *gc = irq_data_get_irq_chip_data(d);
 	struct brcmstb_l2_intc_data *b = gc->private;
-	unsigned long flags;
 
-	irq_gc_lock_irqsave(gc, flags);
+	irq_gc_lock(gc);
 	/* Clear unmasked non-wakeup interrupts */
 	__raw_writel(~b->saved_mask & ~gc->wake_active, b->base + CPU_CLEAR);
 
 	/* Restore the saved mask */
 	__raw_writel(b->saved_mask, b->base + CPU_MASK_SET);
 	__raw_writel(~b->saved_mask, b->base + CPU_MASK_CLEAR);
-	irq_gc_unlock_irqrestore(gc, flags);
+	irq_gc_unlock(gc);
 }
 
 int __init brcmstb_l2_intc_of_init(struct device_node *np,
@@ -137,9 +135,9 @@ int __init brcmstb_l2_intc_of_init(struct device_node *np,
 	__raw_writel(0xffffffff, data->base + CPU_CLEAR);
 
 	data->parent_irq = irq_of_parse_and_map(np, 0);
-	if (data->parent_irq < 0) {
+	if (!data->parent_irq) {
 		pr_err("failed to find parent interrupt\n");
-		ret = data->parent_irq;
+		ret = -EINVAL;
 		goto out_unmap;
 	}
 
@@ -178,7 +176,6 @@ int __init brcmstb_l2_intc_of_init(struct device_node *np,
 
 	ct->chip.irq_suspend = brcmstb_l2_intc_suspend;
 	ct->chip.irq_resume = brcmstb_l2_intc_resume;
-	ct->chip.irq_pm_shutdown = brcmstb_l2_intc_suspend;
 
 	if (of_property_read_bool(np, "brcm,irq-can-wake")) {
 		data->can_wake = true;

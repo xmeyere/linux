@@ -163,7 +163,7 @@ static int ramfs_nommu_setattr(struct dentry *dentry, struct iattr *ia)
 	int ret = 0;
 
 	/* POSIX UID/GID verification for setting inode attributes */
-	ret = setattr_prepare(dentry, ia);
+	ret = inode_change_ok(inode, ia);
 	if (ret)
 		return ret;
 
@@ -222,7 +222,7 @@ static unsigned long ramfs_nommu_get_unmapped_area(struct file *file,
 
 	/* gang-find the pages */
 	ret = -ENOMEM;
-	pages = kzalloc(lpages * sizeof(struct page *), GFP_KERNEL);
+	pages = kcalloc(lpages, sizeof(struct page *), GFP_KERNEL);
 	if (!pages)
 		goto out_free;
 

@@ -14,10 +14,6 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
 */
 
 #include <linux/kernel.h>
@@ -244,7 +240,7 @@ static bool is_ack(struct s3c24xx_i2c *i2c)
 		}
 		usleep_range(1000, 2000);
 	}
-	dev_err(i2c->dev, "ack was not recieved\n");
+	dev_err(i2c->dev, "ack was not received\n");
 	return false;
 }
 
@@ -782,16 +778,14 @@ static int s3c24xx_i2c_xfer(struct i2c_adapter *adap,
 	int ret;
 
 	pm_runtime_get_sync(&adap->dev);
-	ret = clk_enable(i2c->clk);
-	if (ret)
-		return ret;
+	clk_prepare_enable(i2c->clk);
 
 	for (retry = 0; retry < adap->retries; retry++) {
 
 		ret = s3c24xx_i2c_doxfer(i2c, msgs, num);
 
 		if (ret != -EAGAIN) {
-			clk_disable(i2c->clk);
+			clk_disable_unprepare(i2c->clk);
 			pm_runtime_put(&adap->dev);
 			return ret;
 		}
@@ -801,7 +795,7 @@ static int s3c24xx_i2c_xfer(struct i2c_adapter *adap,
 		udelay(100);
 	}
 
-	clk_disable(i2c->clk);
+	clk_disable_unprepare(i2c->clk);
 	pm_runtime_put(&adap->dev);
 	return -EREMOTEIO;
 }
@@ -1130,11 +1124,11 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 		s3c24xx_i2c_parse_dt(pdev->dev.of_node, i2c);
 
 	strlcpy(i2c->adap.name, "s3c2410-i2c", sizeof(i2c->adap.name));
-	i2c->adap.owner   = THIS_MODULE;
-	i2c->adap.algo    = &s3c24xx_i2c_algorithm;
+	i2c->adap.owner = THIS_MODULE;
+	i2c->adap.algo = &s3c24xx_i2c_algorithm;
 	i2c->adap.retries = 2;
-	i2c->adap.class   = I2C_CLASS_HWMON | I2C_CLASS_SPD | I2C_CLASS_DEPRECATED;
-	i2c->tx_setup     = 50;
+	i2c->adap.class = I2C_CLASS_DEPRECATED;
+	i2c->tx_setup = 50;
 
 	init_waitqueue_head(&i2c->wait);
 
@@ -1180,7 +1174,7 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 
 	clk_prepare_enable(i2c->clk);
 	ret = s3c24xx_i2c_init(i2c);
-	clk_disable(i2c->clk);
+	clk_disable_unprepare(i2c->clk);
 	if (ret != 0) {
 		dev_err(&pdev->dev, "I2C controller init failed\n");
 		return ret;
@@ -1193,7 +1187,6 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 		i2c->irq = ret = platform_get_irq(pdev, 0);
 		if (ret <= 0) {
 			dev_err(&pdev->dev, "cannot find IRQ\n");
-			clk_unprepare(i2c->clk);
 			return ret;
 		}
 
@@ -1202,7 +1195,6 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 
 		if (ret != 0) {
 			dev_err(&pdev->dev, "cannot claim IRQ %d\n", i2c->irq);
-			clk_unprepare(i2c->clk);
 			return ret;
 		}
 	}
@@ -1210,7 +1202,6 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	ret = s3c24xx_i2c_register_cpufreq(i2c);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to register cpufreq notifier\n");
-		clk_unprepare(i2c->clk);
 		return ret;
 	}
 
@@ -1223,19 +1214,16 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 	i2c->adap.nr = i2c->pdata->bus_num;
 	i2c->adap.dev.of_node = pdev->dev.of_node;
 
-	platform_set_drvdata(pdev, i2c);
-
-	pm_runtime_enable(&pdev->dev);
-
 	ret = i2c_add_numbered_adapter(&i2c->adap);
 	if (ret < 0) {
 		dev_err(&pdev->dev, "failed to add bus to i2c core\n");
-		pm_runtime_disable(&pdev->dev);
 		s3c24xx_i2c_deregister_cpufreq(i2c);
-		clk_unprepare(i2c->clk);
 		return ret;
 	}
 
+	platform_set_drvdata(pdev, i2c);
+
+	pm_runtime_enable(&pdev->dev);
 	pm_runtime_enable(&i2c->adap.dev);
 
 	dev_info(&pdev->dev, "%s: S3C I2C adapter\n", dev_name(&i2c->adap.dev));
@@ -1250,8 +1238,6 @@ static int s3c24xx_i2c_probe(struct platform_device *pdev)
 static int s3c24xx_i2c_remove(struct platform_device *pdev)
 {
 	struct s3c24xx_i2c *i2c = platform_get_drvdata(pdev);
-
-	clk_unprepare(i2c->clk);
 
 	pm_runtime_disable(&i2c->adap.dev);
 	pm_runtime_disable(&pdev->dev);
@@ -1277,17 +1263,14 @@ static int s3c24xx_i2c_suspend_noirq(struct device *dev)
 	return 0;
 }
 
-static int s3c24xx_i2c_resume(struct device *dev)
+static int s3c24xx_i2c_resume_noirq(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct s3c24xx_i2c *i2c = platform_get_drvdata(pdev);
-	int ret;
 
-	ret = clk_enable(i2c->clk);
-	if (ret)
-		return ret;
+	clk_prepare_enable(i2c->clk);
 	s3c24xx_i2c_init(i2c);
-	clk_disable(i2c->clk);
+	clk_disable_unprepare(i2c->clk);
 	i2c->suspended = 0;
 
 	return 0;
@@ -1298,7 +1281,11 @@ static int s3c24xx_i2c_resume(struct device *dev)
 static const struct dev_pm_ops s3c24xx_i2c_dev_pm_ops = {
 #ifdef CONFIG_PM_SLEEP
 	.suspend_noirq = s3c24xx_i2c_suspend_noirq,
-	.resume = s3c24xx_i2c_resume,
+	.resume_noirq = s3c24xx_i2c_resume_noirq,
+	.freeze_noirq = s3c24xx_i2c_suspend_noirq,
+	.thaw_noirq = s3c24xx_i2c_resume_noirq,
+	.poweroff_noirq = s3c24xx_i2c_suspend_noirq,
+	.restore_noirq = s3c24xx_i2c_resume_noirq,
 #endif
 };
 

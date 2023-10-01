@@ -446,16 +446,12 @@ static ssize_t qeth_dev_layer2_store(struct device *dev,
 
 	if (card->options.layer2 == newdis)
 		goto out;
-	if (card->info.type == QETH_CARD_TYPE_OSM) {
-		/* fixed layer, can't switch */
-		rc = -EOPNOTSUPP;
-		goto out;
-	}
-
-	card->info.mac_bits = 0;
-	if (card->discipline) {
-		card->discipline->remove(card->gdev);
-		qeth_core_free_discipline(card);
+	else {
+		card->info.mac_bits  = 0;
+		if (card->discipline) {
+			card->discipline->remove(card->gdev);
+			qeth_core_free_discipline(card);
+		}
 	}
 
 	rc = qeth_core_load_discipline(card, newdis);
@@ -463,8 +459,6 @@ static ssize_t qeth_dev_layer2_store(struct device *dev,
 		goto out;
 
 	rc = card->discipline->setup(card->gdev);
-	if (rc)
-		qeth_core_free_discipline(card);
 out:
 	mutex_unlock(&card->discipline_mutex);
 	return rc ? rc : count;
@@ -549,7 +543,42 @@ out:
 }
 
 static DEVICE_ATTR(isolation, 0644, qeth_dev_isolation_show,
-		   qeth_dev_isolation_store);
+			qeth_dev_isolation_store);
+
+static ssize_t qeth_dev_switch_attrs_show(struct device *dev,
+				struct device_attribute *attr, char *buf)
+{
+	struct qeth_card *card = dev_get_drvdata(dev);
+	struct qeth_switch_info sw_info;
+	int	rc = 0;
+
+	if (!card)
+		return -EINVAL;
+
+	if (card->state != CARD_STATE_SOFTSETUP && card->state != CARD_STATE_UP)
+		return sprintf(buf, "n/a\n");
+
+	rc = qeth_query_switch_attributes(card, &sw_info);
+	if (rc)
+		return rc;
+
+	if (!sw_info.capabilities)
+		rc = sprintf(buf, "unknown");
+
+	if (sw_info.capabilities & QETH_SWITCH_FORW_802_1)
+		rc = sprintf(buf, (sw_info.settings & QETH_SWITCH_FORW_802_1 ?
+							"[802.1]" : "802.1"));
+	if (sw_info.capabilities & QETH_SWITCH_FORW_REFL_RELAY)
+		rc += sprintf(buf + rc,
+			(sw_info.settings & QETH_SWITCH_FORW_REFL_RELAY ?
+							" [rr]" : " rr"));
+	rc += sprintf(buf + rc, "\n");
+
+	return rc;
+}
+
+static DEVICE_ATTR(switch_attrs, 0444,
+		   qeth_dev_switch_attrs_show, NULL);
 
 static ssize_t qeth_hw_trap_show(struct device *dev,
 				struct device_attribute *attr, char *buf)
@@ -714,11 +743,10 @@ static struct attribute *qeth_blkt_device_attrs[] = {
 	&dev_attr_inter_jumbo.attr,
 	NULL,
 };
-const struct attribute_group qeth_device_blkt_group = {
+static struct attribute_group qeth_device_blkt_group = {
 	.name = "blkt",
 	.attrs = qeth_blkt_device_attrs,
 };
-EXPORT_SYMBOL_GPL(qeth_device_blkt_group);
 
 static struct attribute *qeth_device_attrs[] = {
 	&dev_attr_state.attr,
@@ -735,12 +763,12 @@ static struct attribute *qeth_device_attrs[] = {
 	&dev_attr_layer2.attr,
 	&dev_attr_isolation.attr,
 	&dev_attr_hw_trap.attr,
+	&dev_attr_switch_attrs.attr,
 	NULL,
 };
-const struct attribute_group qeth_device_attr_group = {
+static struct attribute_group qeth_device_attr_group = {
 	.attrs = qeth_device_attrs,
 };
-EXPORT_SYMBOL_GPL(qeth_device_attr_group);
 
 const struct attribute_group *qeth_generic_attr_groups[] = {
 	&qeth_device_attr_group,

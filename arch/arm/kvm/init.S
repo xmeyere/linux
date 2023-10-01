@@ -17,6 +17,7 @@
  */
 
 #include <linux/linkage.h>
+#include <asm/assembler.h>
 #include <asm/unified.h>
 #include <asm/asm-offsets.h>
 #include <asm/kvm_asm.h>
@@ -71,7 +72,7 @@ __do_hyp_init:
 	bne	phase2			@ Yes, second stage init
 
 	@ Set the HTTBR to point to the hypervisor PGD pointer passed
-	mcrr	p15, 4, r2, r3, c2
+	mcrr	p15, 4, rr_lo_hi(r2, r3), c2
 
 	@ Set the HTCR and VTCR to the same shareability and cacheability
 	@ settings as the non-secure TTBCR and with T0SZ == 0.
@@ -109,6 +110,7 @@ __do_hyp_init:
 	@  - Write permission implies XN: disabled
 	@  - Instruction cache: enabled
 	@  - Data/Unified cache: enabled
+	@  - Memory alignment checks: enabled
 	@  - MMU: enabled (this code must be run from an identity mapping)
 	mrc	p15, 4, r0, c1, c0, 0	@ HSCR
 	ldr	r2, =HSCTLR_MASK
@@ -116,8 +118,8 @@ __do_hyp_init:
 	mrc	p15, 0, r1, c1, c0, 0	@ SCTLR
 	ldr	r2, =(HSCTLR_EE | HSCTLR_FI | HSCTLR_I | HSCTLR_C)
 	and	r1, r1, r2
- ARM(	ldr	r2, =(HSCTLR_M)					)
- THUMB(	ldr	r2, =(HSCTLR_M | HSCTLR_TE)			)
+ ARM(	ldr	r2, =(HSCTLR_M | HSCTLR_A)			)
+ THUMB(	ldr	r2, =(HSCTLR_M | HSCTLR_A | HSCTLR_TE)		)
 	orr	r1, r1, r2
 	orr	r0, r0, r1
 	isb
@@ -137,10 +139,10 @@ phase2:
 	ldr	r0, =TRAMPOLINE_VA
 	adr	r1, target
 	bfi	r0, r1, #0, #PAGE_SHIFT
-	mov	pc, r0
+	ret	r0
 
 target:	@ We're now in the trampoline code, switch page tables
-	mcrr	p15, 4, r2, r3, c2
+	mcrr	p15, 4, rr_lo_hi(r2, r3), c2
 	isb
 
 	@ Invalidate the old TLBs

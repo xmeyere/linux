@@ -623,14 +623,14 @@ static int mc13783_probe(struct snd_soc_codec *codec)
 				AUDIO_SSI_SEL, 0);
 	else
 		mc13xxx_reg_rmw(priv->mc13xxx, MC13783_AUDIO_CODEC,
-				AUDIO_SSI_SEL, AUDIO_SSI_SEL);
+				0, AUDIO_SSI_SEL);
 
 	if (priv->dac_ssi_port == MC13783_SSI1_PORT)
 		mc13xxx_reg_rmw(priv->mc13xxx, MC13783_AUDIO_DAC,
 				AUDIO_SSI_SEL, 0);
 	else
 		mc13xxx_reg_rmw(priv->mc13xxx, MC13783_AUDIO_DAC,
-				AUDIO_SSI_SEL, AUDIO_SSI_SEL);
+				0, AUDIO_SSI_SEL);
 
 	return 0;
 }
@@ -765,12 +765,18 @@ static int __init mc13783_codec_probe(struct platform_device *pdev)
 			return -ENOSYS;
 
 		ret = of_property_read_u32(np, "adc-port", &priv->adc_ssi_port);
-		if (ret)
+		if (ret) {
+			of_node_put(np);
 			return ret;
+		}
 
 		ret = of_property_read_u32(np, "dac-port", &priv->dac_ssi_port);
-		if (ret)
+		if (ret) {
+			of_node_put(np);
 			return ret;
+		}
+
+		of_node_put(np);
 	}
 
 	dev_set_drvdata(&pdev->dev, priv);

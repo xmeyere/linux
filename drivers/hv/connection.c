@@ -68,7 +68,6 @@ static int vmbus_negotiate_version(struct vmbus_channel_msginfo *msginfo,
 					__u32 version)
 {
 	int ret = 0;
-	unsigned int cur_cpu;
 	struct vmbus_channel_initiate_contact *msg;
 	unsigned long flags;
 
@@ -81,11 +80,8 @@ static int vmbus_negotiate_version(struct vmbus_channel_msginfo *msginfo,
 	msg->interrupt_page = virt_to_phys(vmbus_connection.int_page);
 	msg->monitor_page1 = virt_to_phys(vmbus_connection.monitor_pages[0]);
 	msg->monitor_page2 = virt_to_phys(vmbus_connection.monitor_pages[1]);
-	if (version == VERSION_WIN8_1) {
-		cur_cpu = get_cpu();
-		msg->target_vcpu = hv_context.vp_index[cur_cpu];
-		put_cpu();
-	}
+	if (version == VERSION_WIN8_1)
+		msg->target_vcpu = hv_context.vp_index[smp_processor_id()];
 
 	/*
 	 * Add to list before we send the request since we may
@@ -98,8 +94,7 @@ static int vmbus_negotiate_version(struct vmbus_channel_msginfo *msginfo,
 	spin_unlock_irqrestore(&vmbus_connection.channelmsg_lock, flags);
 
 	ret = vmbus_post_msg(msg,
-			     sizeof(struct vmbus_channel_initiate_contact),
-			     true);
+			       sizeof(struct vmbus_channel_initiate_contact));
 	if (ret != 0) {
 		spin_lock_irqsave(&vmbus_connection.channelmsg_lock, flags);
 		list_del(&msginfo->msglistentry);
@@ -418,12 +413,11 @@ void vmbus_on_event(unsigned long data)
 /*
  * vmbus_post_msg - Send a msg on the vmbus's message connection
  */
-int vmbus_post_msg(void *buffer, size_t buflen, bool can_sleep)
+int vmbus_post_msg(void *buffer, size_t buflen)
 {
 	union hv_connection_id conn_id;
 	int ret = 0;
 	int retries = 0;
-	u32 usec = 1;
 
 	conn_id.asu32 = 0;
 	conn_id.u.id = VMBUS_MESSAGE_CONNECTION_ID;
@@ -433,20 +427,13 @@ int vmbus_post_msg(void *buffer, size_t buflen, bool can_sleep)
 	 * insufficient resources. Retry the operation a couple of
 	 * times before giving up.
 	 */
-	while (retries < 100) {
+	while (retries < 10) {
 		ret = hv_post_message(conn_id, 1, buffer, buflen);
 
 		switch (ret) {
-		case HV_STATUS_INVALID_CONNECTION_ID:
-			/*
-			 * We could get this if we send messages too
-			 * frequently.
-			 */
-			ret = -EAGAIN;
-			break;
-		case HV_STATUS_INSUFFICIENT_MEMORY:
 		case HV_STATUS_INSUFFICIENT_BUFFERS:
 			ret = -ENOMEM;
+		case -ENOMEM:
 			break;
 		case HV_STATUS_SUCCESS:
 			return ret;
@@ -456,15 +443,7 @@ int vmbus_post_msg(void *buffer, size_t buflen, bool can_sleep)
 		}
 
 		retries++;
-		if (can_sleep && usec > 1000)
-			msleep(usec / 1000);
-		else if (usec < MAX_UDELAY_MS * 1000)
-			udelay(usec);
-		else
-			mdelay(usec / 1000);
-
-		if (usec < 256000)
-			usec *= 2;
+		msleep(100);
 	}
 	return ret;
 }

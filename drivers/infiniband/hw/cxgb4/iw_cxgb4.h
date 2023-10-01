@@ -139,6 +139,29 @@ struct c4iw_stats {
 	u64  pas_ofld_conn_fails;
 };
 
+struct c4iw_hw_queue {
+	int t4_eq_status_entries;
+	int t4_max_eq_size;
+	int t4_max_iq_size;
+	int t4_max_rq_size;
+	int t4_max_sq_size;
+	int t4_max_qp_depth;
+	int t4_max_cq_depth;
+	int t4_stat_len;
+};
+
+struct wr_log_entry {
+	struct timespec post_host_ts;
+	struct timespec poll_host_ts;
+	u64 post_sge_ts;
+	u64 cqe_sge_ts;
+	u64 poll_sge_ts;
+	u16 qid;
+	u16 wr_id;
+	u8 opcode;
+	u8 valid;
+};
+
 struct c4iw_rdev {
 	struct c4iw_resource resource;
 	unsigned long qpshift;
@@ -156,11 +179,11 @@ struct c4iw_rdev {
 	unsigned long oc_mw_pa;
 	void __iomem *oc_mw_kva;
 	struct c4iw_stats stats;
+	struct c4iw_hw_queue hw_queue;
 	struct t4_dev_status_page *status_page;
-	struct completion rqt_compl;
-	struct completion pbl_compl;
-	struct kref rqt_kref;
-	struct kref pbl_kref;
+	atomic_t wr_log_idx;
+	struct wr_log_entry *wr_log;
+	int wr_log_size;
 };
 
 static inline int c4iw_fatal_error(struct c4iw_rdev *rdev)
@@ -170,7 +193,7 @@ static inline int c4iw_fatal_error(struct c4iw_rdev *rdev)
 
 static inline int c4iw_num_stags(struct c4iw_rdev *rdev)
 {
-	return min((int)T4_MAX_NUM_STAG, (int)(rdev->lldi.vr->stag.size >> 5));
+	return (int)(rdev->lldi.vr->stag.size >> 5);
 }
 
 #define C4IW_WR_TO (30*HZ)
@@ -241,6 +264,7 @@ struct c4iw_dev {
 	struct idr atid_idr;
 	struct idr stid_idr;
 	struct list_head db_fc_list;
+	u32 avail_ird;
 };
 
 static inline struct c4iw_dev *to_c4iw_dev(struct ib_device *ibdev)
@@ -320,6 +344,13 @@ static inline void remove_handle_nolock(struct c4iw_dev *rhp,
 					 struct idr *idr, u32 id)
 {
 	_remove_handle(rhp, idr, id, 0);
+}
+
+extern uint c4iw_max_read_depth;
+
+static inline int cur_max_read_depth(struct c4iw_dev *dev)
+{
+	return min(dev->rdev.lldi.max_ordird_qp, c4iw_max_read_depth);
 }
 
 struct c4iw_pd {
@@ -977,7 +1008,7 @@ void c4iw_pblpool_free(struct c4iw_rdev *rdev, u32 addr, int size);
 u32 c4iw_ocqp_pool_alloc(struct c4iw_rdev *rdev, int size);
 void c4iw_ocqp_pool_free(struct c4iw_rdev *rdev, u32 addr, int size);
 int c4iw_ofld_send(struct c4iw_rdev *rdev, struct sk_buff *skb);
-void c4iw_flush_hw_cq(struct c4iw_cq *chp, struct c4iw_qp *flush_qhp);
+void c4iw_flush_hw_cq(struct c4iw_cq *chp);
 void c4iw_count_rcqes(struct t4_cq *cq, struct t4_wq *wq, int *count);
 int c4iw_ep_disconnect(struct c4iw_ep *ep, int abrupt, gfp_t gfp);
 int c4iw_flush_rq(struct t4_wq *wq, struct t4_cq *cq, int count);
@@ -995,7 +1026,8 @@ void c4iw_ev_dispatch(struct c4iw_dev *dev, struct t4_cqe *err_cqe);
 
 extern struct cxgb4_client t4c_client;
 extern c4iw_handler_func c4iw_handlers[NUM_CPL_CMDS];
-extern int c4iw_max_read_depth;
+extern void c4iw_log_wr_stats(struct t4_wq *wq, struct t4_cqe *cqe);
+extern int c4iw_wr_log;
 extern int db_fc_threshold;
 extern int db_coalescing_threshold;
 extern int use_dsgl;

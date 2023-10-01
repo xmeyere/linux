@@ -226,12 +226,12 @@ static int ieee80211_set_smps(struct ieee80211_sub_if_data *sdata,
 	struct ieee80211_local *local = sdata->local;
 	int err;
 
-	if (!(local->hw.flags & IEEE80211_HW_SUPPORTS_STATIC_SMPS) &&
+	if (!(local->hw.wiphy->features & NL80211_FEATURE_STATIC_SMPS) &&
 	    smps_mode == IEEE80211_SMPS_STATIC)
 		return -EINVAL;
 
 	/* auto should be dynamic if in PS mode */
-	if (!(local->hw.flags & IEEE80211_HW_SUPPORTS_DYNAMIC_SMPS) &&
+	if (!(local->hw.wiphy->features & NL80211_FEATURE_DYNAMIC_SMPS) &&
 	    (smps_mode == IEEE80211_SMPS_DYNAMIC ||
 	     smps_mode == IEEE80211_SMPS_AUTOMATIC))
 		return -EINVAL;
@@ -725,7 +725,6 @@ void ieee80211_debugfs_remove_netdev(struct ieee80211_sub_if_data *sdata)
 
 	debugfs_remove_recursive(sdata->vif.debugfs_dir);
 	sdata->vif.debugfs_dir = NULL;
-	sdata->debugfs.subdir_stations = NULL;
 }
 
 void ieee80211_debugfs_rename_netdev(struct ieee80211_sub_if_data *sdata)
@@ -735,7 +734,7 @@ void ieee80211_debugfs_rename_netdev(struct ieee80211_sub_if_data *sdata)
 
 	dir = sdata->vif.debugfs_dir;
 
-	if (IS_ERR_OR_NULL(dir))
+	if (!dir)
 		return;
 
 	sprintf(buf, "netdev:%s", sdata->name);

@@ -43,7 +43,7 @@ struct extended_sigtable {
 #define DWSIZE			(sizeof(u32))
 
 #define get_totalsize(mc) \
-	(((struct microcode_intel *)mc)->hdr.totalsize ? \
+	(((struct microcode_intel *)mc)->hdr.datasize ? \
 	 ((struct microcode_intel *)mc)->hdr.totalsize : \
 	 DEFAULT_UCODE_TOTALSIZE)
 
@@ -62,21 +62,6 @@ extern int microcode_sanity_check(void *mc, int print_err);
 extern int get_matching_sig(unsigned int csig, int cpf, void *mc, int rev);
 extern int
 update_match_revision(struct microcode_header_intel *mc_header, int rev);
-
-static inline u32 intel_get_microcode_revision(void)
-{
-	u32 rev, dummy;
-
-	native_wrmsrl(MSR_IA32_UCODE_REV, 0);
-
-	/* As documented in the SDM: Do a CPUID 1 here */
-	sync_core();
-
-	/* get the current revision from MSR 0x8B */
-	native_rdmsr(MSR_IA32_UCODE_REV, dummy, rev);
-
-	return rev;
-}
 
 #ifdef CONFIG_MICROCODE_INTEL_EARLY
 extern void __init load_ucode_intel_bsp(void);

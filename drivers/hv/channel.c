@@ -135,7 +135,7 @@ int vmbus_open(struct vmbus_channel *newchannel, u32 send_ringbuffer_size,
 			   GFP_KERNEL);
 	if (!open_info) {
 		err = -ENOMEM;
-		goto error_gpadl;
+		goto error0;
 	}
 
 	init_completion(&open_info->waitevent);
@@ -151,7 +151,7 @@ int vmbus_open(struct vmbus_channel *newchannel, u32 send_ringbuffer_size,
 
 	if (userdatalen > MAX_USER_DEFINED_BYTES) {
 		err = -EINVAL;
-		goto error_gpadl;
+		goto error0;
 	}
 
 	if (userdatalen)
@@ -163,7 +163,7 @@ int vmbus_open(struct vmbus_channel *newchannel, u32 send_ringbuffer_size,
 	spin_unlock_irqrestore(&vmbus_connection.channelmsg_lock, flags);
 
 	ret = vmbus_post_msg(open_msg,
-			     sizeof(struct vmbus_channel_open_channel), true);
+			       sizeof(struct vmbus_channel_open_channel));
 
 	if (ret != 0) {
 		err = ret;
@@ -194,9 +194,6 @@ error1:
 	spin_lock_irqsave(&vmbus_connection.channelmsg_lock, flags);
 	list_del(&open_info->msglistentry);
 	spin_unlock_irqrestore(&vmbus_connection.channelmsg_lock, flags);
-
-error_gpadl:
-	vmbus_teardown_gpadl(newchannel, newchannel->ringbuffer_gpadlhandle);
 
 error0:
 	free_pages((unsigned long)out,
@@ -391,7 +388,7 @@ int vmbus_establish_gpadl(struct vmbus_channel *channel, void *kbuffer,
 	spin_unlock_irqrestore(&vmbus_connection.channelmsg_lock, flags);
 
 	ret = vmbus_post_msg(gpadlmsg, msginfo->msgsize -
-			     sizeof(*msginfo), true);
+			       sizeof(*msginfo));
 	if (ret != 0)
 		goto cleanup;
 
@@ -407,22 +404,14 @@ int vmbus_establish_gpadl(struct vmbus_channel *channel, void *kbuffer,
 			gpadl_body->gpadl = next_gpadl_handle;
 
 			ret = vmbus_post_msg(gpadl_body,
-					     submsginfo->msgsize - sizeof(*submsginfo),
-					     true);
+					       submsginfo->msgsize -
+					       sizeof(*submsginfo));
 			if (ret != 0)
 				goto cleanup;
 
 		}
 	}
 	wait_for_completion(&msginfo->waitevent);
-
-	if (msginfo->response.gpadl_created.creation_status != 0) {
-		pr_err("Failed to establish GPADL: err = 0x%x\n",
-		       msginfo->response.gpadl_created.creation_status);
-
-		ret = -EDQUOT;
-		goto cleanup;
-	}
 
 	/* At this point, we received the gpadl created msg */
 	*gpadl_handle = gpadlmsg->gpadl;
@@ -464,8 +453,8 @@ int vmbus_teardown_gpadl(struct vmbus_channel *channel, u32 gpadl_handle)
 	list_add_tail(&info->msglistentry,
 		      &vmbus_connection.chn_msg_list);
 	spin_unlock_irqrestore(&vmbus_connection.channelmsg_lock, flags);
-	ret = vmbus_post_msg(msg, sizeof(struct vmbus_channel_gpadl_teardown),
-			     true);
+	ret = vmbus_post_msg(msg,
+			       sizeof(struct vmbus_channel_gpadl_teardown));
 
 	if (ret)
 		goto post_msg_err;
@@ -497,11 +486,14 @@ static int vmbus_close_internal(struct vmbus_channel *channel)
 	channel->state = CHANNEL_OPEN_STATE;
 	channel->sc_creation_callback = NULL;
 	/* Stop callback and cancel the timer asap */
-	if (channel->target_cpu != smp_processor_id())
+	if (channel->target_cpu != get_cpu()) {
+		put_cpu();
 		smp_call_function_single(channel->target_cpu, reset_channel_cb,
 					 channel, true);
-	else
+	} else {
 		reset_channel_cb(channel);
+		put_cpu();
+	}
 
 	/* Send a closing message */
 
@@ -510,8 +502,7 @@ static int vmbus_close_internal(struct vmbus_channel *channel)
 	msg->header.msgtype = CHANNELMSG_CLOSECHANNEL;
 	msg->child_relid = channel->offermsg.child_relid;
 
-	ret = vmbus_post_msg(msg, sizeof(struct vmbus_channel_close_channel),
-			     true);
+	ret = vmbus_post_msg(msg, sizeof(struct vmbus_channel_close_channel));
 
 	if (ret) {
 		pr_err("Close failed: close post msg return is %d\n", ret);
@@ -837,12 +828,8 @@ int vmbus_recvpacket_raw(struct vmbus_channel *channel, void *buffer,
 
 	*buffer_actual_len = packetlen;
 
-	if (packetlen > bufferlen) {
-		pr_err("Buffer too small - needed %d bytes but "
-			"got space for only %d bytes\n",
-			packetlen, bufferlen);
+	if (packetlen > bufferlen)
 		return -ENOBUFS;
-	}
 
 	*requestid = desc.trans_id;
 

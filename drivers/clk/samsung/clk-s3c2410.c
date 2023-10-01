@@ -78,7 +78,7 @@ static struct syscore_ops s3c2410_clk_syscore_ops = {
 	.resume = s3c2410_clk_resume,
 };
 
-static void __init s3c2410_clk_sleep_init(void)
+static void s3c2410_clk_sleep_init(void)
 {
 	s3c2410_save = samsung_clk_alloc_reg_dump(s3c2410_clk_regs,
 						ARRAY_SIZE(s3c2410_clk_regs));
@@ -92,7 +92,7 @@ static void __init s3c2410_clk_sleep_init(void)
 	return;
 }
 #else
-static void __init s3c2410_clk_sleep_init(void) {}
+static void s3c2410_clk_sleep_init(void) {}
 #endif
 
 PNAME(fclk_p) = { "mpll", "div_slow" };
@@ -466,6 +466,8 @@ void __init s3c2410_common_clk_init(struct device_node *np, unsigned long xti_f,
 	}
 
 	s3c2410_clk_sleep_init();
+
+	samsung_clk_of_add_provider(np, ctx);
 }
 
 static void __init s3c2410_clk_init(struct device_node *np)

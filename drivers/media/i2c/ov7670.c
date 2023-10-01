@@ -19,6 +19,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-mediabus.h>
+#include <media/v4l2-image-sizes.h>
 #include <media/ov7670.h>
 
 MODULE_AUTHOR("Jonathan Corbet <corbet@lwn.net>");
@@ -28,19 +29,6 @@ MODULE_LICENSE("GPL");
 static bool debug;
 module_param(debug, bool, 0644);
 MODULE_PARM_DESC(debug, "Debug level (0-1)");
-
-/*
- * Basic window sizes.  These probably belong somewhere more globally
- * useful.
- */
-#define VGA_WIDTH	640
-#define VGA_HEIGHT	480
-#define QVGA_WIDTH	320
-#define QVGA_HEIGHT	240
-#define CIF_WIDTH	352
-#define CIF_HEIGHT	288
-#define QCIF_WIDTH	176
-#define	QCIF_HEIGHT	144
 
 /*
  * The 7670 sits on i2c with ID 0x42
@@ -167,10 +155,10 @@ MODULE_PARM_DESC(debug, "Debug level (0-1)");
 #define REG_GFIX	0x69	/* Fix gain control */
 
 #define REG_DBLV	0x6b	/* PLL control an debugging */
-#define   DBLV_BYPASS	  0x0a	  /* Bypass PLL */
-#define   DBLV_X4	  0x4a	  /* clock x4 */
-#define   DBLV_X6	  0x8a	  /* clock x6 */
-#define   DBLV_X8	  0xca	  /* clock x8 */
+#define   DBLV_BYPASS	  0x00	  /* Bypass PLL */
+#define   DBLV_X4	  0x01	  /* clock x4 */
+#define   DBLV_X6	  0x10	  /* clock x6 */
+#define   DBLV_X8	  0x11	  /* clock x8 */
 
 #define REG_REG76	0x76	/* OV's name */
 #define   R76_BLKPCOR	  0x80	  /* Black pixel correction enable */
@@ -845,7 +833,7 @@ static int ov7675_set_framerate(struct v4l2_subdev *sd,
 	if (ret < 0)
 		return ret;
 
-	return 0;
+	return ov7670_write(sd, REG_DBLV, DBLV_X4);
 }
 
 static void ov7670_get_framerate_legacy(struct v4l2_subdev *sd,
@@ -1552,7 +1540,11 @@ static int ov7670_probe(struct i2c_client *client,
 		if (config->clock_speed)
 			info->clock_speed = config->clock_speed;
 
-		if (config->pll_bypass)
+		/*
+		 * It should be allowed for ov7670 too when it is migrated to
+		 * the new frame rate formula.
+		 */
+		if (config->pll_bypass && id->driver_data != MODEL_OV7670)
 			info->pll_bypass = true;
 
 		if (config->pclk_hb_disable)

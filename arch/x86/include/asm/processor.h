@@ -13,7 +13,7 @@ struct mm_struct;
 #include <asm/types.h>
 #include <asm/sigcontext.h>
 #include <asm/current.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 #include <asm/page.h>
 #include <asm/pgtable_types.h>
 #include <asm/percpu.h>
@@ -23,6 +23,7 @@ struct mm_struct;
 #include <asm/special_insns.h>
 
 #include <linux/personality.h>
+#include <linux/cpumask.h>
 #include <linux/cache.h>
 #include <linux/threads.h>
 #include <linux/math64.h>
@@ -82,7 +83,7 @@ struct cpuinfo_x86 {
 	__u8			x86;		/* CPU family */
 	__u8			x86_vendor;	/* CPU vendor */
 	__u8			x86_model;
-	__u8			x86_stepping;
+	__u8			x86_mask;
 #ifdef CONFIG_X86_32
 	char			wp_works_ok;	/* It doesn't on 386's */
 
@@ -106,7 +107,7 @@ struct cpuinfo_x86 {
 	char			x86_vendor_id[16];
 	char			x86_model_id[64];
 	/* in KB - valid for CPUS which support this call: */
-	unsigned int		x86_cache_size;
+	int			x86_cache_size;
 	int			x86_cache_alignment;	/* In bytes */
 	int			x86_power;
 	unsigned long		loops_per_jiffy;
@@ -126,8 +127,6 @@ struct cpuinfo_x86 {
 	/* Index into per_cpu list: */
 	u16			cpu_index;
 	u32			microcode;
-	/* Address space bits used by the cache internally */
-	u8			x86_cache_bits;
 } __attribute__((__aligned__(SMP_CACHE_BYTES)));
 
 #define X86_VENDOR_INTEL	0
@@ -148,8 +147,8 @@ extern struct cpuinfo_x86	boot_cpu_data;
 extern struct cpuinfo_x86	new_cpu_data;
 
 extern struct tss_struct	doublefault_tss;
-extern __u32			cpu_caps_cleared[NCAPINTS + NBUGINTS];
-extern __u32			cpu_caps_set[NCAPINTS + NBUGINTS];
+extern __u32			cpu_caps_cleared[NCAPINTS];
+extern __u32			cpu_caps_set[NCAPINTS];
 
 #ifdef CONFIG_SMP
 DECLARE_PER_CPU_SHARED_ALIGNED(struct cpuinfo_x86, cpu_info);
@@ -165,11 +164,6 @@ extern const struct seq_operations cpuinfo_op;
 
 extern void cpu_detect(struct cpuinfo_x86 *c);
 extern void fpu_detect(struct cpuinfo_x86 *c);
-
-static inline unsigned long long l1tf_pfn_limit(void)
-{
-	return BIT_ULL(boot_cpu_data.x86_cache_bits - 1 - PAGE_SHIFT);
-}
 
 extern void early_cpu_init(void);
 extern void identify_boot_cpu(void);
@@ -288,7 +282,7 @@ struct tss_struct {
 
 } ____cacheline_aligned;
 
-DECLARE_PER_CPU_SHARED_ALIGNED_USER_MAPPED(struct tss_struct, init_tss);
+DECLARE_PER_CPU_SHARED_ALIGNED(struct tss_struct, init_tss);
 
 /*
  * Save the original ist values for checking stack pointers during debugging
@@ -391,8 +385,8 @@ struct bndcsr_struct {
 
 struct xsave_hdr_struct {
 	u64 xstate_bv;
-	u64 reserved1[2];
-	u64 reserved2[5];
+	u64 xcomp_bv;
+	u64 reserved[6];
 } __attribute__((packed));
 
 struct xsave_struct {
@@ -584,6 +578,39 @@ static inline void load_sp0(struct tss_struct *tss,
 #define set_iopl_mask native_set_iopl_mask
 #endif /* CONFIG_PARAVIRT */
 
+/*
+ * Save the cr4 feature set we're using (ie
+ * Pentium 4MB enable and PPro Global page
+ * enable), so that any CPU's that boot up
+ * after us can get the correct flags.
+ */
+extern unsigned long mmu_cr4_features;
+extern u32 *trampoline_cr4_features;
+
+static inline void set_in_cr4(unsigned long mask)
+{
+	unsigned long cr4;
+
+	mmu_cr4_features |= mask;
+	if (trampoline_cr4_features)
+		*trampoline_cr4_features = mmu_cr4_features;
+	cr4 = read_cr4();
+	cr4 |= mask;
+	write_cr4(cr4);
+}
+
+static inline void clear_in_cr4(unsigned long mask)
+{
+	unsigned long cr4;
+
+	mmu_cr4_features &= ~mask;
+	if (trampoline_cr4_features)
+		*trampoline_cr4_features = mmu_cr4_features;
+	cr4 = read_cr4();
+	cr4 &= ~mask;
+	write_cr4(cr4);
+}
+
 typedef struct {
 	unsigned long		seg;
 } mm_segment_t;
@@ -667,6 +694,8 @@ static inline void cpu_relax(void)
 {
 	rep_nop();
 }
+
+#define cpu_relax_lowlatency() cpu_relax()
 
 /* Stop speculative execution and prefetching of modified code. */
 static inline void sync_core(void)
@@ -902,7 +931,7 @@ extern unsigned long KSTK_ESP(struct task_struct *task);
 /*
  * User space RSP while inside the SYSCALL fast path
  */
-DECLARE_PER_CPU_USER_MAPPED(unsigned long, old_rsp);
+DECLARE_PER_CPU(unsigned long, old_rsp);
 
 #endif /* CONFIG_X86_64 */
 
@@ -953,18 +982,4 @@ bool xen_set_default_idle(void);
 
 void stop_this_cpu(void *dummy);
 void df_debug(struct pt_regs *regs, long error_code);
-
-enum mds_mitigations {
-	MDS_MITIGATION_OFF,
-	MDS_MITIGATION_FULL,
-	MDS_MITIGATION_VMWERV,
-};
-
-enum taa_mitigations {
-	TAA_MITIGATION_OFF,
-	TAA_MITIGATION_UCODE_NEEDED,
-	TAA_MITIGATION_VERW,
-	TAA_MITIGATION_TSX_DISABLED,
-};
-
 #endif /* _ASM_X86_PROCESSOR_H */

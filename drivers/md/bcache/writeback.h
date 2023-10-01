@@ -14,25 +14,6 @@ static inline uint64_t bcache_dev_sectors_dirty(struct bcache_device *d)
 	return ret;
 }
 
-static inline uint64_t  bcache_flash_devs_sectors_dirty(struct cache_set *c)
-{
-	uint64_t i, ret = 0;
-
-	mutex_lock(&bch_register_lock);
-
-	for (i = 0; i < c->nr_uuids; i++) {
-		struct bcache_device *d = c->devices[i];
-
-		if (!d || !UUID_FLASH_ONLY(&c->uuids[i]))
-			continue;
-	   ret += bcache_dev_sectors_dirty(d);
-	}
-
-	mutex_unlock(&bch_register_lock);
-
-	return ret;
-}
-
 static inline unsigned offset_to_stripe(struct bcache_device *d,
 					uint64_t offset)
 {
@@ -68,9 +49,6 @@ static inline bool should_writeback(struct cached_dev *dc, struct bio *bio,
 	    in_use > CUTOFF_WRITEBACK_SYNC)
 		return false;
 
-	if (bio->bi_rw & REQ_DISCARD)
-		return false;
-
 	if (dc->partial_stripes_expensive &&
 	    bcache_dev_stripe_dirty(dc, bio->bi_iter.bi_sector,
 				    bio_sectors(bio)))
@@ -85,8 +63,7 @@ static inline bool should_writeback(struct cached_dev *dc, struct bio *bio,
 
 static inline void bch_writeback_queue(struct cached_dev *dc)
 {
-	if (!IS_ERR_OR_NULL(dc->writeback_thread))
-		wake_up_process(dc->writeback_thread);
+	wake_up_process(dc->writeback_thread);
 }
 
 static inline void bch_writeback_add(struct cached_dev *dc)
@@ -107,7 +84,8 @@ static inline void bch_writeback_add(struct cached_dev *dc)
 
 void bcache_dev_sectors_dirty_add(struct cache_set *, unsigned, uint64_t, int);
 
-void bch_sectors_dirty_init(struct bcache_device *);
-int bch_cached_dev_writeback_init(struct cached_dev *);
+void bch_sectors_dirty_init(struct cached_dev *dc);
+void bch_cached_dev_writeback_init(struct cached_dev *);
+int bch_cached_dev_writeback_start(struct cached_dev *);
 
 #endif

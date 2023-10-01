@@ -17,7 +17,6 @@
 #include <asm/dsp.h>
 #include <asm/cop2.h>
 #include <asm/msa.h>
-#include <asm/fpu.h>
 
 struct task_struct;
 
@@ -81,29 +80,11 @@ do {									\
 		ll_bit = 0;						\
 } while (0)
 
-/*
- * Check FCSR for any unmasked exceptions pending set with `ptrace',
- * clear them and send a signal.
- */
-#define __sanitize_fcr31(next)						\
-do {									\
-	unsigned long fcr31 = mask_fcr31_x(next->thread.fpu.fcr31);	\
-	void __user *pc;						\
-									\
-	if (unlikely(fcr31)) {						\
-		pc = (void __user *)task_pt_regs(next)->cp0_epc;	\
-		next->thread.fpu.fcr31 &= ~fcr31;			\
-		force_fcr31_sig(fcr31, pc, next);			\
-	}								\
-} while (0)
-
 #define switch_to(prev, next, last)					\
 do {									\
 	u32 __c0_stat;							\
 	s32 __fpsave = FP_SAVE_NONE;					\
 	__mips_mt_fpaff_switch_to(prev);				\
-	if (tsk_used_math(next))					\
-		__sanitize_fcr31(next);					\
 	if (cpu_has_dsp)						\
 		__save_dsp(prev);					\
 	if (cop2_present && (KSTK_STATUS(prev) & ST0_CU2)) {		\
@@ -111,7 +92,7 @@ do {									\
 			KSTK_STATUS(prev) &= ~ST0_CU2;			\
 		__c0_stat = read_c0_status();				\
 		write_c0_status(__c0_stat | ST0_CU2);			\
-		cop2_save(&prev->thread.cp2);				\
+		cop2_save(prev);					\
 		write_c0_status(__c0_stat & ~ST0_CU2);			\
 	}								\
 	__clear_software_ll_bit();					\
@@ -120,6 +101,7 @@ do {									\
 	if (test_and_clear_tsk_thread_flag(prev, TIF_USEDMSA))		\
 		__fpsave = FP_SAVE_VECTOR;				\
 	(last) = resume(prev, next, task_thread_info(next), __fpsave);	\
+	disable_msa();							\
 } while (0)
 
 #define finish_arch_switch(prev)					\
@@ -129,7 +111,7 @@ do {									\
 			(KSTK_STATUS(current) & ST0_CU2)) {		\
 		__c0_stat = read_c0_status();				\
 		write_c0_status(__c0_stat | ST0_CU2);			\
-		cop2_restore(&current->thread.cp2);			\
+		cop2_restore(current);					\
 		write_c0_status(__c0_stat & ~ST0_CU2);			\
 	}								\
 	if (cpu_has_dsp)						\
@@ -137,7 +119,6 @@ do {									\
 	if (cpu_has_userlocal)						\
 		write_c0_userlocal(current_thread_info()->tp_value);	\
 	__restore_watch();						\
-	disable_msa();							\
 } while (0)
 
 #endif /* _ASM_SWITCH_TO_H */

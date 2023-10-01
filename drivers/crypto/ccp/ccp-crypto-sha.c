@@ -193,55 +193,14 @@ static int ccp_sha_digest(struct ahash_request *req)
 	return ccp_sha_finup(req);
 }
 
-static int ccp_sha_export(struct ahash_request *req, void *out)
-{
-	struct ccp_sha_req_ctx *rctx = ahash_request_ctx(req);
-	struct ccp_sha_exp_ctx state;
-
-	/* Don't let anything leak to 'out' */
-	memset(&state, 0, sizeof(state));
-
-	state.type = rctx->type;
-	state.msg_bits = rctx->msg_bits;
-	state.first = rctx->first;
-	memcpy(state.ctx, rctx->ctx, sizeof(state.ctx));
-	state.buf_count = rctx->buf_count;
-	memcpy(state.buf, rctx->buf, sizeof(state.buf));
-
-	/* 'out' may not be aligned so memcpy from local variable */
-	memcpy(out, &state, sizeof(state));
-
-	return 0;
-}
-
-static int ccp_sha_import(struct ahash_request *req, const void *in)
-{
-	struct ccp_sha_req_ctx *rctx = ahash_request_ctx(req);
-	struct ccp_sha_exp_ctx state;
-
-	/* 'in' may not be aligned so memcpy to local variable */
-	memcpy(&state, in, sizeof(state));
-
-	memset(rctx, 0, sizeof(*rctx));
-	rctx->type = state.type;
-	rctx->msg_bits = state.msg_bits;
-	rctx->first = state.first;
-	memcpy(rctx->ctx, state.ctx, sizeof(rctx->ctx));
-	rctx->buf_count = state.buf_count;
-	memcpy(rctx->buf, state.buf, sizeof(rctx->buf));
-
-	return 0;
-}
-
 static int ccp_sha_setkey(struct crypto_ahash *tfm, const u8 *key,
 			  unsigned int key_len)
 {
 	struct ccp_ctx *ctx = crypto_tfm_ctx(crypto_ahash_tfm(tfm));
 	struct crypto_shash *shash = ctx->u.sha.hmac_tfm;
-	struct {
-		struct shash_desc sdesc;
-		char ctx[crypto_shash_descsize(shash)];
-	} desc;
+
+	SHASH_DESC_ON_STACK(sdesc, shash);
+
 	unsigned int block_size = crypto_shash_blocksize(shash);
 	unsigned int digest_size = crypto_shash_digestsize(shash);
 	int i, ret;
@@ -256,11 +215,11 @@ static int ccp_sha_setkey(struct crypto_ahash *tfm, const u8 *key,
 
 	if (key_len > block_size) {
 		/* Must hash the input key */
-		desc.sdesc.tfm = shash;
-		desc.sdesc.flags = crypto_ahash_get_flags(tfm) &
+		sdesc->tfm = shash;
+		sdesc->flags = crypto_ahash_get_flags(tfm) &
 			CRYPTO_TFM_REQ_MAY_SLEEP;
 
-		ret = crypto_shash_digest(&desc.sdesc, key, key_len,
+		ret = crypto_shash_digest(sdesc, key, key_len,
 					  ctx->u.sha.key);
 		if (ret) {
 			crypto_ahash_set_flags(tfm, CRYPTO_TFM_RES_BAD_KEY_LEN);
@@ -429,12 +388,9 @@ static int ccp_register_sha_alg(struct list_head *head,
 	alg->final = ccp_sha_final;
 	alg->finup = ccp_sha_finup;
 	alg->digest = ccp_sha_digest;
-	alg->export = ccp_sha_export;
-	alg->import = ccp_sha_import;
 
 	halg = &alg->halg;
 	halg->digestsize = def->digest_size;
-	halg->statesize = sizeof(struct ccp_sha_exp_ctx);
 
 	base = &halg->base;
 	snprintf(base->cra_name, CRYPTO_MAX_ALG_NAME, "%s", def->name);

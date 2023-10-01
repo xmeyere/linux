@@ -222,10 +222,6 @@ void acpi_ns_detach_object(struct acpi_namespace_node *node)
 		}
 	}
 
-	if (obj_desc->common.type == ACPI_TYPE_REGION) {
-		acpi_ut_remove_address_range(obj_desc->region.space_id, node);
-	}
-
 	/* Clear the Node entry in all cases */
 
 	node->object = NULL;
@@ -241,17 +237,16 @@ void acpi_ns_detach_object(struct acpi_namespace_node *node)
 		    (node->object->common.type != ACPI_TYPE_LOCAL_DATA)) {
 			node->object = node->object->common.next_object;
 		}
-	}
 
-	/*
-	 * Detach the object from any data objects (which are still held by
-	 * the namespace node)
-	 */
-
-	if (obj_desc->common.next_object &&
-	    ((obj_desc->common.next_object)->common.type ==
-	     ACPI_TYPE_LOCAL_DATA)) {
-		obj_desc->common.next_object = NULL;
+		/*
+		 * Detach the object from any data objects (which are still held by
+		 * the namespace node)
+		 */
+		if (obj_desc->common.next_object &&
+		    ((obj_desc->common.next_object)->common.type ==
+		     ACPI_TYPE_LOCAL_DATA)) {
+			obj_desc->common.next_object = NULL;
+		}
 	}
 
 	/* Reset the node type to untyped */

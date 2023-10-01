@@ -80,5 +80,4 @@ struct btrfs_compress_op {
 extern struct btrfs_compress_op btrfs_zlib_compress;
 extern struct btrfs_compress_op btrfs_lzo_compress;
 
-bool btrfs_compress_is_valid_type(const char *str, size_t len);
 #endif

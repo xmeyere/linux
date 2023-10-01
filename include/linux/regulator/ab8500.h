@@ -38,11 +38,14 @@ enum ab8505_regulator_id {
 	AB8505_LDO_AUX6,
 	AB8505_LDO_INTCORE,
 	AB8505_LDO_ADC,
+	AB8505_LDO_USB,
 	AB8505_LDO_AUDIO,
 	AB8505_LDO_ANAMIC1,
 	AB8505_LDO_ANAMIC2,
 	AB8505_LDO_AUX8,
 	AB8505_LDO_ANA,
+	AB8505_SYSCLKREQ_2,
+	AB8505_SYSCLKREQ_4,
 	AB8505_NUM_REGULATORS,
 };
 
@@ -318,19 +321,5 @@ struct ab8500_regulator_platform_data {
 	int num_ext_regulator;
 	struct regulator_init_data *ext_regulator;
 };
-
-#ifdef CONFIG_REGULATOR_AB8500_DEBUG
-int ab8500_regulator_debug_init(struct platform_device *pdev);
-int ab8500_regulator_debug_exit(struct platform_device *pdev);
-#else
-static inline int ab8500_regulator_debug_init(struct platform_device *pdev)
-{
-	return 0;
-}
-static inline int ab8500_regulator_debug_exit(struct platform_device *pdev)
-{
-	return 0;
-}
-#endif
 
 #endif

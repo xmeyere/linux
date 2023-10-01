@@ -633,13 +633,17 @@ static int qup_i2c_probe(struct platform_device *pdev)
 	 * associated with each byte written/received
 	 */
 	size = QUP_OUTPUT_BLOCK_SIZE(io_mode);
-	if (size >= ARRAY_SIZE(blk_sizes))
-		return -EIO;
+	if (size >= ARRAY_SIZE(blk_sizes)) {
+		ret = -EIO;
+		goto fail;
+	}
 	qup->out_blk_sz = blk_sizes[size] / 2;
 
 	size = QUP_INPUT_BLOCK_SIZE(io_mode);
-	if (size >= ARRAY_SIZE(blk_sizes))
-		return -EIO;
+	if (size >= ARRAY_SIZE(blk_sizes)) {
+		ret = -EIO;
+		goto fail;
+	}
 	qup->in_blk_sz = blk_sizes[size] / 2;
 
 	size = QUP_OUTPUT_FIFO_SIZE(io_mode);
@@ -724,8 +728,7 @@ static int qup_i2c_pm_resume_runtime(struct device *device)
 #ifdef CONFIG_PM_SLEEP
 static int qup_i2c_suspend(struct device *device)
 {
-	if (!pm_runtime_suspended(device))
-		return qup_i2c_pm_suspend_runtime(device);
+	qup_i2c_pm_suspend_runtime(device);
 	return 0;
 }
 

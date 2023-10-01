@@ -56,8 +56,10 @@ struct snd_seq_timer *snd_seq_timer_new(void)
 	struct snd_seq_timer *tmr;
 	
 	tmr = kzalloc(sizeof(*tmr), GFP_KERNEL);
-	if (!tmr)
+	if (tmr == NULL) {
+		pr_debug("ALSA: seq: malloc failed for snd_seq_timer_new() \n");
 		return NULL;
+	}
 	spin_lock_init(&tmr->lock);
 
 	/* reset setup to defaults */
@@ -90,9 +92,6 @@ void snd_seq_timer_delete(struct snd_seq_timer **tmr)
 
 void snd_seq_timer_defaults(struct snd_seq_timer * tmr)
 {
-	unsigned long flags;
-
-	spin_lock_irqsave(&tmr->lock, flags);
 	/* setup defaults */
 	tmr->ppq = 96;		/* 96 PPQ */
 	tmr->tempo = 500000;	/* 120 BPM */
@@ -108,25 +107,21 @@ void snd_seq_timer_defaults(struct snd_seq_timer * tmr)
 	tmr->preferred_resolution = seq_default_timer_resolution;
 
 	tmr->skew = tmr->skew_base = SKEW_BASE;
-	spin_unlock_irqrestore(&tmr->lock, flags);
 }
 
-static void seq_timer_reset(struct snd_seq_timer *tmr)
+void snd_seq_timer_reset(struct snd_seq_timer * tmr)
 {
+	unsigned long flags;
+
+	spin_lock_irqsave(&tmr->lock, flags);
+
 	/* reset time & songposition */
 	tmr->cur_time.tv_sec = 0;
 	tmr->cur_time.tv_nsec = 0;
 
 	tmr->tick.cur_tick = 0;
 	tmr->tick.fraction = 0;
-}
 
-void snd_seq_timer_reset(struct snd_seq_timer *tmr)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&tmr->lock, flags);
-	seq_timer_reset(tmr);
 	spin_unlock_irqrestore(&tmr->lock, flags);
 }
 
@@ -145,11 +140,8 @@ static void snd_seq_timer_interrupt(struct snd_timer_instance *timeri,
 	tmr = q->timer;
 	if (tmr == NULL)
 		return;
-	spin_lock_irqsave(&tmr->lock, flags);
-	if (!tmr->running) {
-		spin_unlock_irqrestore(&tmr->lock, flags);
+	if (!tmr->running)
 		return;
-	}
 
 	resolution *= ticks;
 	if (tmr->skew != tmr->skew_base) {
@@ -157,6 +149,8 @@ static void snd_seq_timer_interrupt(struct snd_timer_instance *timeri,
 		resolution = (resolution >> 16) * tmr->skew +
 			(((resolution & 0xffff) * tmr->skew) >> 16);
 	}
+
+	spin_lock_irqsave(&tmr->lock, flags);
 
 	/* update timer */
 	snd_seq_inc_time_nsec(&tmr->cur_time, resolution);
@@ -304,30 +298,26 @@ int snd_seq_timer_open(struct snd_seq_queue *q)
 	t->callback = snd_seq_timer_interrupt;
 	t->callback_data = q;
 	t->flags |= SNDRV_TIMER_IFLG_AUTO;
-	spin_lock_irq(&tmr->lock);
 	tmr->timeri = t;
-	spin_unlock_irq(&tmr->lock);
 	return 0;
 }
 
 int snd_seq_timer_close(struct snd_seq_queue *q)
 {
 	struct snd_seq_timer *tmr;
-	struct snd_timer_instance *t;
 	
 	tmr = q->timer;
 	if (snd_BUG_ON(!tmr))
 		return -EINVAL;
-	spin_lock_irq(&tmr->lock);
-	t = tmr->timeri;
-	tmr->timeri = NULL;
-	spin_unlock_irq(&tmr->lock);
-	if (t)
-		snd_timer_close(t);
+	if (tmr->timeri) {
+		snd_timer_stop(tmr->timeri);
+		snd_timer_close(tmr->timeri);
+		tmr->timeri = NULL;
+	}
 	return 0;
 }
 
-static int seq_timer_stop(struct snd_seq_timer *tmr)
+int snd_seq_timer_stop(struct snd_seq_timer * tmr)
 {
 	if (! tmr->timeri)
 		return -EINVAL;
@@ -338,24 +328,13 @@ static int seq_timer_stop(struct snd_seq_timer *tmr)
 	return 0;
 }
 
-int snd_seq_timer_stop(struct snd_seq_timer *tmr)
-{
-	unsigned long flags;
-	int err;
-
-	spin_lock_irqsave(&tmr->lock, flags);
-	err = seq_timer_stop(tmr);
-	spin_unlock_irqrestore(&tmr->lock, flags);
-	return err;
-}
-
 static int initialize_timer(struct snd_seq_timer *tmr)
 {
 	struct snd_timer *t;
 	unsigned long freq;
 
 	t = tmr->timeri->timer;
-	if (!t)
+	if (snd_BUG_ON(!t))
 		return -EINVAL;
 
 	freq = tmr->preferred_resolution;
@@ -381,13 +360,13 @@ static int initialize_timer(struct snd_seq_timer *tmr)
 	return 0;
 }
 
-static int seq_timer_start(struct snd_seq_timer *tmr)
+int snd_seq_timer_start(struct snd_seq_timer * tmr)
 {
 	if (! tmr->timeri)
 		return -EINVAL;
 	if (tmr->running)
-		seq_timer_stop(tmr);
-	seq_timer_reset(tmr);
+		snd_seq_timer_stop(tmr);
+	snd_seq_timer_reset(tmr);
 	if (initialize_timer(tmr) < 0)
 		return -EINVAL;
 	snd_timer_start(tmr->timeri, tmr->ticks);
@@ -396,25 +375,14 @@ static int seq_timer_start(struct snd_seq_timer *tmr)
 	return 0;
 }
 
-int snd_seq_timer_start(struct snd_seq_timer *tmr)
-{
-	unsigned long flags;
-	int err;
-
-	spin_lock_irqsave(&tmr->lock, flags);
-	err = seq_timer_start(tmr);
-	spin_unlock_irqrestore(&tmr->lock, flags);
-	return err;
-}
-
-static int seq_timer_continue(struct snd_seq_timer *tmr)
+int snd_seq_timer_continue(struct snd_seq_timer * tmr)
 {
 	if (! tmr->timeri)
 		return -EINVAL;
 	if (tmr->running)
 		return -EBUSY;
 	if (! tmr->initialized) {
-		seq_timer_reset(tmr);
+		snd_seq_timer_reset(tmr);
 		if (initialize_timer(tmr) < 0)
 			return -EINVAL;
 	}
@@ -424,24 +392,11 @@ static int seq_timer_continue(struct snd_seq_timer *tmr)
 	return 0;
 }
 
-int snd_seq_timer_continue(struct snd_seq_timer *tmr)
-{
-	unsigned long flags;
-	int err;
-
-	spin_lock_irqsave(&tmr->lock, flags);
-	err = seq_timer_continue(tmr);
-	spin_unlock_irqrestore(&tmr->lock, flags);
-	return err;
-}
-
 /* return current 'real' time. use timeofday() to get better granularity. */
 snd_seq_real_time_t snd_seq_timer_get_cur_time(struct snd_seq_timer *tmr)
 {
 	snd_seq_real_time_t cur_time;
-	unsigned long flags;
 
-	spin_lock_irqsave(&tmr->lock, flags);
 	cur_time = tmr->cur_time;
 	if (tmr->running) { 
 		struct timeval tm;
@@ -457,7 +412,7 @@ snd_seq_real_time_t snd_seq_timer_get_cur_time(struct snd_seq_timer *tmr)
 		}
 		snd_seq_sanity_real_time(&cur_time);
 	}
-	spin_unlock_irqrestore(&tmr->lock, flags);
+                
 	return cur_time;	
 }
 
@@ -484,19 +439,15 @@ void snd_seq_info_timer_read(struct snd_info_entry *entry,
 		q = queueptr(idx);
 		if (q == NULL)
 			continue;
-		mutex_lock(&q->timer_mutex);
-		tmr = q->timer;
-		if (!tmr)
-			goto unlock;
-		ti = tmr->timeri;
-		if (!ti)
-			goto unlock;
+		if ((tmr = q->timer) == NULL ||
+		    (ti = tmr->timeri) == NULL) {
+			queuefree(q);
+			continue;
+		}
 		snd_iprintf(buffer, "Timer for queue %i : %s\n", q->queue, ti->timer->name);
 		resolution = snd_timer_resolution(ti) * tmr->ticks;
 		snd_iprintf(buffer, "  Period time : %lu.%09lu\n", resolution / 1000000000, resolution % 1000000000);
 		snd_iprintf(buffer, "  Skew : %u / %u\n", tmr->skew, tmr->skew_base);
-unlock:
-		mutex_unlock(&q->timer_mutex);
 		queuefree(q);
  	}
 }

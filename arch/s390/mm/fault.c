@@ -374,12 +374,6 @@ static noinline void do_fault_error(struct pt_regs *regs, int fault)
 				do_no_context(regs);
 			else
 				pagefault_out_of_memory();
-		} else if (fault & VM_FAULT_SIGSEGV) {
-			/* Kernel mode? Handle exceptions or die */
-			if (!user_mode(regs))
-				do_no_context(regs);
-			else
-				do_sigsegv(regs, SEGV_MAPERR);
 		} else if (fault & VM_FAULT_SIGBUS) {
 			/* Kernel mode? Handle exceptions or die */
 			if (!user_mode(regs))
@@ -448,16 +442,13 @@ static inline int do_exception(struct pt_regs *regs, int access)
 	down_read(&mm->mmap_sem);
 
 #ifdef CONFIG_PGSTE
-	gmap = (struct gmap *)
-		((current->flags & PF_VCPU) ? S390_lowcore.gmap : 0);
+	gmap = (current->flags & PF_VCPU) ?
+		(struct gmap *) S390_lowcore.gmap : NULL;
 	if (gmap) {
-		address = __gmap_fault(address, gmap);
+		current->thread.gmap_addr = address;
+		address = __gmap_translate(gmap, address);
 		if (address == -EFAULT) {
 			fault = VM_FAULT_BADMAP;
-			goto out_up;
-		}
-		if (address == -ENOMEM) {
-			fault = VM_FAULT_OOM;
 			goto out_up;
 		}
 		if (gmap->pfault_enabled)
@@ -497,8 +488,6 @@ retry:
 	/* No reason to continue if interrupted by SIGKILL. */
 	if ((fault & VM_FAULT_RETRY) && fatal_signal_pending(current)) {
 		fault = VM_FAULT_SIGNAL;
-		if (flags & FAULT_FLAG_RETRY_NOWAIT)
-			goto out_up;
 		goto out;
 	}
 	if (unlikely(fault & VM_FAULT_ERROR))
@@ -538,6 +527,20 @@ retry:
 			goto retry;
 		}
 	}
+#ifdef CONFIG_PGSTE
+	if (gmap) {
+		address =  __gmap_link(gmap, current->thread.gmap_addr,
+				       address);
+		if (address == -EFAULT) {
+			fault = VM_FAULT_BADMAP;
+			goto out_up;
+		}
+		if (address == -ENOMEM) {
+			fault = VM_FAULT_OOM;
+			goto out_up;
+		}
+	}
+#endif
 	fault = 0;
 out_up:
 	up_read(&mm->mmap_sem);

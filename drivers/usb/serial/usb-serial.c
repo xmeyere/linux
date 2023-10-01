@@ -167,9 +167,9 @@ void usb_serial_put(struct usb_serial *serial)
  * @driver: the driver (USB in our case)
  * @tty: the tty being created
  *
- * Initialise the termios structure for this tty.  We use the default
+ * Create the termios objects for this tty.  We use the default
  * USB serial settings but permit them to be overridden by
- * serial->type->init_termios on first open.
+ * serial->type->init_termios.
  *
  * This is the first place a new tty gets used.  Hence this is where we
  * acquire references to the usb_serial structure and the driver module,
@@ -181,7 +181,6 @@ static int serial_install(struct tty_driver *driver, struct tty_struct *tty)
 	int idx = tty->index;
 	struct usb_serial *serial;
 	struct usb_serial_port *port;
-	bool init_termios;
 	int retval = -ENODEV;
 
 	port = usb_serial_port_get_by_minor(idx);
@@ -196,16 +195,14 @@ static int serial_install(struct tty_driver *driver, struct tty_struct *tty)
 	if (retval)
 		goto error_get_interface;
 
-	init_termios = (driver->termios[idx] == NULL);
-
 	retval = tty_port_install(&port->port, driver, tty);
 	if (retval)
 		goto error_init_termios;
 
 	mutex_unlock(&serial->disc_mutex);
 
-	/* allow the driver to update the initial settings */
-	if (init_termios && serial->type->init_termios)
+	/* allow the driver to update the settings */
+	if (serial->type->init_termios)
 		serial->type->init_termios(tty);
 
 	tty->driver_data = port;
@@ -317,7 +314,10 @@ static void serial_cleanup(struct tty_struct *tty)
 	serial = port->serial;
 	owner = serial->type->driver.owner;
 
-	usb_autopm_put_interface(serial->interface);
+	mutex_lock(&serial->disc_mutex);
+	if (!serial->disconnected)
+		usb_autopm_put_interface(serial->interface);
+	mutex_unlock(&serial->disc_mutex);
 
 	usb_serial_put(serial);
 	module_put(owner);
@@ -940,9 +940,8 @@ static int usb_serial_probe(struct usb_interface *interface,
 		port = serial->port[i];
 		if (kfifo_alloc(&port->write_fifo, PAGE_SIZE, GFP_KERNEL))
 			goto probe_error;
-		buffer_size = serial->type->bulk_out_size;
-		if (!buffer_size)
-			buffer_size = usb_endpoint_maxp(endpoint);
+		buffer_size = max_t(int, serial->type->bulk_out_size,
+						usb_endpoint_maxp(endpoint));
 		port->bulk_out_size = buffer_size;
 		port->bulk_out_endpointAddress = endpoint->bEndpointAddress;
 
@@ -1061,8 +1060,7 @@ static int usb_serial_probe(struct usb_interface *interface,
 
 	serial->disconnected = 0;
 
-	if (num_ports > 0)
-		usb_serial_console_init(serial->port[0]->minor);
+	usb_serial_console_init(serial->port[0]->minor);
 exit:
 	module_put(type->driver.owner);
 	return 0;
@@ -1291,7 +1289,6 @@ static void __exit usb_serial_exit(void)
 	tty_unregister_driver(usb_serial_tty_driver);
 	put_tty_driver(usb_serial_tty_driver);
 	bus_unregister(&usb_serial_bus_type);
-	idr_destroy(&serial_minors);
 }
 
 
@@ -1336,9 +1333,6 @@ static int usb_serial_register(struct usb_serial_driver *driver)
 				driver->description);
 		return -EINVAL;
 	}
-
-	/* Prevent individual ports from being unbound. */
-	driver->driver.suppress_bind_attrs = true;
 
 	usb_serial_operations_init(driver);
 
@@ -1420,7 +1414,7 @@ int usb_serial_register_drivers(struct usb_serial_driver *const serial_drivers[]
 
 	rc = usb_register(udriver);
 	if (rc)
-		goto failed_usb_register;
+		return rc;
 
 	for (sd = serial_drivers; *sd; ++sd) {
 		(*sd)->usb_driver = udriver;
@@ -1438,8 +1432,6 @@ int usb_serial_register_drivers(struct usb_serial_driver *const serial_drivers[]
 	while (sd-- > serial_drivers)
 		usb_serial_deregister(*sd);
 	usb_deregister(udriver);
-failed_usb_register:
-	kfree(udriver);
 	return rc;
 }
 EXPORT_SYMBOL_GPL(usb_serial_register_drivers);

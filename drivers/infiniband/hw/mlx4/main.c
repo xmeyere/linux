@@ -59,6 +59,7 @@
 
 #define MLX4_IB_FLOW_MAX_PRIO 0xFFF
 #define MLX4_IB_FLOW_QPN_MASK 0xFFFFFF
+#define MLX4_IB_CARD_REV_A0   0xA0
 
 MODULE_AUTHOR("Roland Dreier");
 MODULE_DESCRIPTION("Mellanox ConnectX HCA InfiniBand driver");
@@ -119,6 +120,17 @@ static int check_flow_steering_support(struct mlx4_dev *dev)
 	return dmfs;
 }
 
+static int num_ib_ports(struct mlx4_dev *dev)
+{
+	int ib_ports = 0;
+	int i;
+
+	mlx4_foreach_port(i, dev, MLX4_PORT_TYPE_IB)
+		ib_ports++;
+
+	return ib_ports;
+}
+
 static int mlx4_ib_query_device(struct ib_device *ibdev,
 				struct ib_device_attr *props)
 {
@@ -126,6 +138,7 @@ static int mlx4_ib_query_device(struct ib_device *ibdev,
 	struct ib_smp *in_mad  = NULL;
 	struct ib_smp *out_mad = NULL;
 	int err = -ENOMEM;
+	int have_ib_ports;
 
 	in_mad  = kzalloc(sizeof *in_mad, GFP_KERNEL);
 	out_mad = kmalloc(sizeof *out_mad, GFP_KERNEL);
@@ -142,6 +155,8 @@ static int mlx4_ib_query_device(struct ib_device *ibdev,
 
 	memset(props, 0, sizeof *props);
 
+	have_ib_ports = num_ib_ports(dev->dev);
+
 	props->fw_ver = dev->dev->caps.fw_ver;
 	props->device_cap_flags    = IB_DEVICE_CHANGE_PHY_PORT |
 		IB_DEVICE_PORT_ACTIVE_EVENT		|
@@ -152,13 +167,15 @@ static int mlx4_ib_query_device(struct ib_device *ibdev,
 		props->device_cap_flags |= IB_DEVICE_BAD_PKEY_CNTR;
 	if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_BAD_QKEY_CNTR)
 		props->device_cap_flags |= IB_DEVICE_BAD_QKEY_CNTR;
-	if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_APM)
+	if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_APM && have_ib_ports)
 		props->device_cap_flags |= IB_DEVICE_AUTO_PATH_MIG;
 	if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_UD_AV_PORT)
 		props->device_cap_flags |= IB_DEVICE_UD_AV_PORT_ENFORCE;
 	if (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_IPOIB_CSUM)
 		props->device_cap_flags |= IB_DEVICE_UD_IP_CSUM;
-	if (dev->dev->caps.max_gso_sz && dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_BLH)
+	if (dev->dev->caps.max_gso_sz &&
+	    (dev->dev->rev_id != MLX4_IB_CARD_REV_A0) &&
+	    (dev->dev->caps.flags & MLX4_DEV_CAP_FLAG_BLH))
 		props->device_cap_flags |= IB_DEVICE_UD_TSO;
 	if (dev->dev->caps.bmme_flags & MLX4_BMME_FLAG_RESERVED_LKEY)
 		props->device_cap_flags |= IB_DEVICE_LOCAL_DMA_LKEY;
@@ -212,7 +229,6 @@ static int mlx4_ib_query_device(struct ib_device *ibdev,
 	props->max_total_mcast_qp_attach = props->max_mcast_qp_attach *
 					   props->max_mcast_grp;
 	props->max_map_per_fmr = dev->dev->caps.max_fmr_maps;
-	props->max_ah = INT_MAX;
 
 out:
 	kfree(in_mad);
@@ -346,11 +362,9 @@ static int eth_link_query_port(struct ib_device *ibdev, u8 port,
 	if (err)
 		goto out;
 
-	props->active_width	=  (((u8 *)mailbox->buf)[5] == 0x40) ||
-				   (((u8 *)mailbox->buf)[5] == 0x20 /*56Gb*/) ?
-					   IB_WIDTH_4X : IB_WIDTH_1X;
-	props->active_speed	=  (((u8 *)mailbox->buf)[5] == 0x20 /*56Gb*/) ?
-					   IB_SPEED_FDR : IB_SPEED_QDR;
+	props->active_width	=  (((u8 *)mailbox->buf)[5] == 0x40) ?
+						IB_WIDTH_4X : IB_WIDTH_1X;
+	props->active_speed	= IB_SPEED_QDR;
 	props->port_cap_flags	= IB_PORT_CM_SUP | IB_PORT_IP_BASED_GIDS;
 	props->gid_tbl_len	= mdev->dev->caps.gid_table_len[port];
 	props->max_msg_sz	= mdev->dev->caps.max_msg_sz;
@@ -360,7 +374,7 @@ static int eth_link_query_port(struct ib_device *ibdev, u8 port,
 	props->state		= IB_PORT_DOWN;
 	props->phys_state	= state_to_phys_state(props->state);
 	props->active_mtu	= IB_MTU_256;
-	spin_lock(&iboe->lock);
+	spin_lock_bh(&iboe->lock);
 	ndev = iboe->netdevs[port - 1];
 	if (!ndev)
 		goto out_unlock;
@@ -372,7 +386,7 @@ static int eth_link_query_port(struct ib_device *ibdev, u8 port,
 					IB_PORT_ACTIVE : IB_PORT_DOWN;
 	props->phys_state	= state_to_phys_state(props->state);
 out_unlock:
-	spin_unlock(&iboe->lock);
+	spin_unlock_bh(&iboe->lock);
 out:
 	mlx4_free_cmd_mailbox(mdev->dev, mailbox);
 	return err;
@@ -814,11 +828,11 @@ int mlx4_ib_add_mc(struct mlx4_ib_dev *mdev, struct mlx4_ib_qp *mqp,
 	if (!mqp->port)
 		return 0;
 
-	spin_lock(&mdev->iboe.lock);
+	spin_lock_bh(&mdev->iboe.lock);
 	ndev = mdev->iboe.netdevs[mqp->port - 1];
 	if (ndev)
 		dev_hold(ndev);
-	spin_unlock(&mdev->iboe.lock);
+	spin_unlock_bh(&mdev->iboe.lock);
 
 	if (ndev) {
 		ret = 1;
@@ -913,8 +927,7 @@ static int __mlx4_ib_default_rules_match(struct ib_qp *qp,
 	const struct default_rules *pdefault_rules = default_table;
 	u8 link_layer = rdma_port_get_link_layer(qp->device, flow_attr->port);
 
-	for (i = 0; i < sizeof(default_table)/sizeof(default_table[0]); i++,
-	     pdefault_rules++) {
+	for (i = 0; i < ARRAY_SIZE(default_table); i++, pdefault_rules++) {
 		__u32 field_types[IB_FLOW_SPEC_SUPPORT_LAYERS];
 		memset(&field_types, 0, sizeof(field_types));
 
@@ -968,8 +981,7 @@ static int __mlx4_ib_create_default_rules(
 	int size = 0;
 	int i;
 
-	for (i = 0; i < sizeof(pdefault_rules->rules_create_list)/
-			sizeof(pdefault_rules->rules_create_list[0]); i++) {
+	for (i = 0; i < ARRAY_SIZE(pdefault_rules->rules_create_list); i++) {
 		int ret;
 		union ib_flow_spec ib_spec;
 		switch (pdefault_rules->rules_create_list[i]) {
@@ -1018,9 +1030,6 @@ static int __mlx4_ib_create_flow(struct ib_qp *qp, struct ib_flow_attr *flow_att
 		[IB_FLOW_DOMAIN_RFS] = MLX4_DOMAIN_RFS,
 		[IB_FLOW_DOMAIN_NIC] = MLX4_DOMAIN_NIC,
 	};
-
-	if (flow_attr->port < 1 || flow_attr->port > qp->device->phys_port_cnt)
-		return -EINVAL;
 
 	if (flow_attr->priority > MLX4_IB_FLOW_MAX_PRIO) {
 		pr_err("Invalid priority value %d\n", flow_attr->priority);
@@ -1097,6 +1106,30 @@ static int __mlx4_ib_destroy_flow(struct mlx4_dev *dev, u64 reg_id)
 	return err;
 }
 
+static int mlx4_ib_tunnel_steer_add(struct ib_qp *qp, struct ib_flow_attr *flow_attr,
+				    u64 *reg_id)
+{
+	void *ib_flow;
+	union ib_flow_spec *ib_spec;
+	struct mlx4_dev	*dev = to_mdev(qp->device)->dev;
+	int err = 0;
+
+	if (dev->caps.tunnel_offload_mode != MLX4_TUNNEL_OFFLOAD_MODE_VXLAN)
+		return 0; /* do nothing */
+
+	ib_flow = flow_attr + 1;
+	ib_spec = (union ib_flow_spec *)ib_flow;
+
+	if (ib_spec->type !=  IB_FLOW_SPEC_ETH || flow_attr->num_of_specs != 1)
+		return 0; /* do nothing */
+
+	err = mlx4_tunnel_steer_add(to_mdev(qp->device)->dev, ib_spec->eth.val.dst_mac,
+				    flow_attr->port, qp->qp_num,
+				    MLX4_DOMAIN_UVERBS | (flow_attr->priority & 0xff),
+				    reg_id);
+	return err;
+}
+
 static struct ib_flow *mlx4_ib_create_flow(struct ib_qp *qp,
 				    struct ib_flow_attr *flow_attr,
 				    int domain)
@@ -1140,12 +1173,24 @@ static struct ib_flow *mlx4_ib_create_flow(struct ib_qp *qp,
 		err = __mlx4_ib_create_flow(qp, flow_attr, domain, type[i],
 					    &mflow->reg_id[i]);
 		if (err)
-			goto err_free;
+			goto err_create_flow;
+		i++;
+	}
+
+	if (i < ARRAY_SIZE(type) && flow_attr->type == IB_FLOW_ATTR_NORMAL) {
+		err = mlx4_ib_tunnel_steer_add(qp, flow_attr, &mflow->reg_id[i]);
+		if (err)
+			goto err_create_flow;
 		i++;
 	}
 
 	return &mflow->ibflow;
 
+err_create_flow:
+	while (i) {
+		(void)__mlx4_ib_destroy_flow(to_mdev(qp->device)->dev, mflow->reg_id[i]);
+		i--;
+	}
 err_free:
 	kfree(mflow);
 	return ERR_PTR(err);
@@ -1176,7 +1221,8 @@ static int mlx4_ib_mcg_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 	struct mlx4_ib_qp *mqp = to_mqp(ibqp);
 	u64 reg_id;
 	struct mlx4_ib_steering *ib_steering = NULL;
-	enum mlx4_protocol prot = MLX4_PROT_IB_IPV6;
+	enum mlx4_protocol prot = (gid->raw[1] == 0x0e) ?
+		MLX4_PROT_IB_IPV4 : MLX4_PROT_IB_IPV6;
 
 	if (mdev->dev->caps.steering_mode ==
 	    MLX4_STEERING_MODE_DEVICE_MANAGED) {
@@ -1189,10 +1235,8 @@ static int mlx4_ib_mcg_attach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 				    !!(mqp->flags &
 				       MLX4_IB_QP_BLOCK_MULTICAST_LOOPBACK),
 				    prot, &reg_id);
-	if (err) {
-		pr_err("multicast attach op failed, err %d\n", err);
+	if (err)
 		goto err_malloc;
-	}
 
 	err = add_gid_entry(ibqp, gid);
 	if (err)
@@ -1240,7 +1284,8 @@ static int mlx4_ib_mcg_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 	struct net_device *ndev;
 	struct mlx4_ib_gid_entry *ge;
 	u64 reg_id = 0;
-	enum mlx4_protocol prot =  MLX4_PROT_IB_IPV6;
+	enum mlx4_protocol prot = (gid->raw[1] == 0x0e) ?
+		MLX4_PROT_IB_IPV4 : MLX4_PROT_IB_IPV6;
 
 	if (mdev->dev->caps.steering_mode ==
 	    MLX4_STEERING_MODE_DEVICE_MANAGED) {
@@ -1270,11 +1315,11 @@ static int mlx4_ib_mcg_detach(struct ib_qp *ibqp, union ib_gid *gid, u16 lid)
 	mutex_lock(&mqp->mutex);
 	ge = find_gid_entry(mqp, gid->raw);
 	if (ge) {
-		spin_lock(&mdev->iboe.lock);
+		spin_lock_bh(&mdev->iboe.lock);
 		ndev = ge->added ? mdev->iboe.netdevs[ge->port - 1] : NULL;
 		if (ndev)
 			dev_hold(ndev);
-		spin_unlock(&mdev->iboe.lock);
+		spin_unlock_bh(&mdev->iboe.lock);
 		if (ndev)
 			dev_put(ndev);
 		list_del(&ge->list);
@@ -1565,7 +1610,7 @@ static int mlx4_ib_addr_event(int event, struct net_device *event_netdev,
 		return 0;
 
 	iboe = &ibdev->iboe;
-	spin_lock(&iboe->lock);
+	spin_lock_bh(&iboe->lock);
 
 	for (port = 1; port <= ibdev->dev->caps.num_ports; ++port)
 		if ((netif_is_bond_master(real_dev) &&
@@ -1575,7 +1620,7 @@ static int mlx4_ib_addr_event(int event, struct net_device *event_netdev,
 			update_gid_table(ibdev, port, gid,
 					 event == NETDEV_DOWN, 0);
 
-	spin_unlock(&iboe->lock);
+	spin_unlock_bh(&iboe->lock);
 	return 0;
 
 }
@@ -1648,13 +1693,21 @@ static void mlx4_ib_update_qps(struct mlx4_ib_dev *ibdev,
 	new_smac = mlx4_mac_to_u64(dev->dev_addr);
 	read_unlock(&dev_base_lock);
 
+	atomic64_set(&ibdev->iboe.mac[port - 1], new_smac);
+
+	/* no need for update QP1 and mac registration in non-SRIOV */
+	if (!mlx4_is_mfunc(ibdev->dev))
+		return;
+
 	mutex_lock(&ibdev->qp1_proxy_lock[port - 1]);
 	qp = ibdev->qp1_proxy[port - 1];
 	if (qp) {
 		int new_smac_index;
-		u64 old_smac = qp->pri.smac;
+		u64 old_smac;
 		struct mlx4_update_qp_params update_params;
 
+		mutex_lock(&qp->mutex);
+		old_smac = qp->pri.smac;
 		if (new_smac == old_smac)
 			goto unlock;
 
@@ -1664,22 +1717,25 @@ static void mlx4_ib_update_qps(struct mlx4_ib_dev *ibdev,
 			goto unlock;
 
 		update_params.smac_index = new_smac_index;
-		if (mlx4_update_qp(ibdev->dev, &qp->mqp, MLX4_UPDATE_QP_SMAC,
+		if (mlx4_update_qp(ibdev->dev, qp->mqp.qpn, MLX4_UPDATE_QP_SMAC,
 				   &update_params)) {
 			release_mac = new_smac;
 			goto unlock;
 		}
-
+		/* if old port was zero, no mac was yet registered for this QP */
+		if (qp->pri.smac_port)
+			release_mac = old_smac;
 		qp->pri.smac = new_smac;
+		qp->pri.smac_port = port;
 		qp->pri.smac_index = new_smac_index;
-
-		release_mac = old_smac;
 	}
 
 unlock:
-	mutex_unlock(&ibdev->qp1_proxy_lock[port - 1]);
 	if (release_mac != MLX4_IB_INVALID_MAC)
 		mlx4_unregister_mac(ibdev->dev, port, release_mac);
+	if (qp)
+		mutex_unlock(&qp->mutex);
+	mutex_unlock(&ibdev->qp1_proxy_lock[port - 1]);
 }
 
 static void mlx4_ib_get_dev_addr(struct net_device *dev,
@@ -1741,24 +1797,33 @@ static int mlx4_ib_init_gid_table(struct mlx4_ib_dev *ibdev)
 	struct	net_device *dev;
 	struct mlx4_ib_iboe *iboe = &ibdev->iboe;
 	int i;
+	int err = 0;
 
-	for (i = 1; i <= ibdev->num_ports; ++i)
-		if (reset_gid_table(ibdev, i))
-			return -1;
+	for (i = 1; i <= ibdev->num_ports; ++i) {
+		if (rdma_port_get_link_layer(&ibdev->ib_dev, i) ==
+		    IB_LINK_LAYER_ETHERNET) {
+			err = reset_gid_table(ibdev, i);
+			if (err)
+				goto out;
+		}
+	}
 
 	read_lock(&dev_base_lock);
-	spin_lock(&iboe->lock);
+	spin_lock_bh(&iboe->lock);
 
 	for_each_netdev(&init_net, dev) {
 		u8 port = mlx4_ib_get_dev_port(dev, ibdev);
-		if (port)
+		/* port will be non-zero only for ETH ports */
+		if (port) {
+			mlx4_ib_set_default_gid(ibdev, dev, port);
 			mlx4_ib_get_dev_addr(dev, ibdev, port);
+		}
 	}
 
-	spin_unlock(&iboe->lock);
+	spin_unlock_bh(&iboe->lock);
 	read_unlock(&dev_base_lock);
-
-	return 0;
+out:
+	return err;
 }
 
 static void mlx4_ib_scan_netdevs(struct mlx4_ib_dev *ibdev,
@@ -1772,7 +1837,7 @@ static void mlx4_ib_scan_netdevs(struct mlx4_ib_dev *ibdev,
 
 	iboe = &ibdev->iboe;
 
-	spin_lock(&iboe->lock);
+	spin_lock_bh(&iboe->lock);
 	mlx4_foreach_ib_transport_port(port, ibdev->dev) {
 		enum ib_port_state	port_state = IB_PORT_NOP;
 		struct net_device *old_master = iboe->masters[port - 1];
@@ -1804,14 +1869,23 @@ static void mlx4_ib_scan_netdevs(struct mlx4_ib_dev *ibdev,
 			port_state = (netif_running(curr_netdev) && netif_carrier_ok(curr_netdev)) ?
 						IB_PORT_ACTIVE : IB_PORT_DOWN;
 			mlx4_ib_set_default_gid(ibdev, curr_netdev, port);
-			/* if using bonding/team and a slave port is down, we
-			 * don't the bond IP based gids in the table since
-			 * flows that select port by gid may get the down port.
-			 */
-			if (curr_master && (port_state == IB_PORT_DOWN)) {
-				reset_gid_table(ibdev, port);
-				mlx4_ib_set_default_gid(ibdev,
-							curr_netdev, port);
+			if (curr_master) {
+				/* if using bonding/team and a slave port is down, we
+				 * don't want the bond IP based gids in the table since
+				 * flows that select port by gid may get the down port.
+				*/
+				if (port_state == IB_PORT_DOWN) {
+					reset_gid_table(ibdev, port);
+					mlx4_ib_set_default_gid(ibdev,
+								curr_netdev,
+								port);
+				} else {
+					/* gids from the upper dev (bond/team)
+					 * should appear in port's gid table
+					*/
+					mlx4_ib_get_dev_addr(curr_master,
+							     ibdev, port);
+				}
 			}
 			/* if bonding is used it is possible that we add it to
 			 * masters only after IP address is assigned to the
@@ -1835,7 +1909,7 @@ static void mlx4_ib_scan_netdevs(struct mlx4_ib_dev *ibdev,
 		}
 	}
 
-	spin_unlock(&iboe->lock);
+	spin_unlock_bh(&iboe->lock);
 
 	if (update_qps_port > 0)
 		mlx4_ib_update_qps(ibdev, dev, update_qps_port);
@@ -2026,6 +2100,7 @@ static void *mlx4_ib_add(struct mlx4_dev *dev)
 		(1ull << IB_USER_VERBS_CMD_ALLOC_PD)		|
 		(1ull << IB_USER_VERBS_CMD_DEALLOC_PD)		|
 		(1ull << IB_USER_VERBS_CMD_REG_MR)		|
+		(1ull << IB_USER_VERBS_CMD_REREG_MR)		|
 		(1ull << IB_USER_VERBS_CMD_DEREG_MR)		|
 		(1ull << IB_USER_VERBS_CMD_CREATE_COMP_CHANNEL)	|
 		(1ull << IB_USER_VERBS_CMD_CREATE_CQ)		|
@@ -2078,6 +2153,7 @@ static void *mlx4_ib_add(struct mlx4_dev *dev)
 	ibdev->ib_dev.req_notify_cq	= mlx4_ib_arm_cq;
 	ibdev->ib_dev.get_dma_mr	= mlx4_ib_get_dma_mr;
 	ibdev->ib_dev.reg_user_mr	= mlx4_ib_reg_user_mr;
+	ibdev->ib_dev.rereg_user_mr	= mlx4_ib_rereg_user_mr;
 	ibdev->ib_dev.dereg_mr		= mlx4_ib_dereg_mr;
 	ibdev->ib_dev.alloc_fast_reg_mr = mlx4_ib_alloc_fast_reg_mr;
 	ibdev->ib_dev.alloc_fast_reg_page_list = mlx4_ib_alloc_fast_reg_page_list;
@@ -2165,20 +2241,18 @@ static void *mlx4_ib_add(struct mlx4_dev *dev)
 			goto err_steer_qp_release;
 		}
 
-		if (dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_DMFS_IPOIB) {
-			bitmap_zero(ibdev->ib_uc_qpns_bitmap,
-				    ibdev->steer_qpn_count);
-			err = mlx4_FLOW_STEERING_IB_UC_QP_RANGE(
-					dev, ibdev->steer_qpn_base,
-					ibdev->steer_qpn_base +
-					ibdev->steer_qpn_count - 1);
-			if (err)
-				goto err_steer_free_bitmap;
-		} else {
-			bitmap_fill(ibdev->ib_uc_qpns_bitmap,
-				    ibdev->steer_qpn_count);
-		}
+		bitmap_zero(ibdev->ib_uc_qpns_bitmap, ibdev->steer_qpn_count);
+
+		err = mlx4_FLOW_STEERING_IB_UC_QP_RANGE(
+				dev, ibdev->steer_qpn_base,
+				ibdev->steer_qpn_base +
+				ibdev->steer_qpn_count - 1);
+		if (err)
+			goto err_steer_free_bitmap;
 	}
+
+	for (j = 1; j <= ibdev->dev->caps.num_ports; j++)
+		atomic64_set(&iboe->mac[j - 1], ibdev->dev->caps.def_mac[j]);
 
 	if (ib_register_device(&ibdev->ib_dev, NULL))
 		goto err_steer_free_bitmap;
@@ -2216,12 +2290,8 @@ static void *mlx4_ib_add(struct mlx4_dev *dev)
 			}
 		}
 #endif
-		for (i = 1 ; i <= ibdev->num_ports ; ++i)
-			reset_gid_table(ibdev, i);
-		rtnl_lock();
-		mlx4_ib_scan_netdevs(ibdev, NULL, 0);
-		rtnl_unlock();
-		mlx4_ib_init_gid_table(ibdev);
+		if (mlx4_ib_init_gid_table(ibdev))
+			goto err_notif;
 	}
 
 	for (j = 0; j < ARRAY_SIZE(mlx4_class_attributes); ++j) {
@@ -2278,15 +2348,15 @@ err_steer_free_bitmap:
 	kfree(ibdev->ib_uc_qpns_bitmap);
 
 err_steer_qp_release:
-	mlx4_qp_release_range(dev, ibdev->steer_qpn_base,
-			      ibdev->steer_qpn_count);
+	if (ibdev->steering_support == MLX4_STEERING_MODE_DEVICE_MANAGED)
+		mlx4_qp_release_range(dev, ibdev->steer_qpn_base,
+				      ibdev->steer_qpn_count);
 err_counter:
 	for (; i; --i)
 		if (ibdev->counters[i - 1] != -1)
 			mlx4_counter_free(ibdev->dev, ibdev->counters[i - 1]);
 
 err_map:
-	mlx4_ib_free_eqs(dev, ibdev);
 	iounmap(ibdev->uar_map);
 
 err_uar:
@@ -2372,19 +2442,20 @@ static void mlx4_ib_remove(struct mlx4_dev *dev, void *ibdev_ptr)
 	ibdev->ib_active = false;
 	flush_workqueue(wq);
 
+	mlx4_ib_close_sriov(ibdev);
+	mlx4_ib_mad_cleanup(ibdev);
+	ib_unregister_device(&ibdev->ib_dev);
 	if (ibdev->iboe.nb.notifier_call) {
 		if (unregister_netdevice_notifier(&ibdev->iboe.nb))
 			pr_warn("failure unregistering notifier\n");
 		ibdev->iboe.nb.notifier_call = NULL;
 	}
 
-	mlx4_ib_close_sriov(ibdev);
-	mlx4_ib_mad_cleanup(ibdev);
-	ib_unregister_device(&ibdev->ib_dev);
-
-	mlx4_qp_release_range(dev, ibdev->steer_qpn_base,
-			      ibdev->steer_qpn_count);
-	kfree(ibdev->ib_uc_qpns_bitmap);
+	if (ibdev->steering_support == MLX4_STEERING_MODE_DEVICE_MANAGED) {
+		mlx4_qp_release_range(dev, ibdev->steer_qpn_base,
+				      ibdev->steer_qpn_count);
+		kfree(ibdev->ib_uc_qpns_bitmap);
+	}
 
 	if (ibdev->iboe.nb_inet.notifier_call) {
 		if (unregister_inetaddr_notifier(&ibdev->iboe.nb_inet))

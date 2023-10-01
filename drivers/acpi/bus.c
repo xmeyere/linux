@@ -36,10 +36,10 @@
 #include <linux/regulator/machine.h>
 #ifdef CONFIG_X86
 #include <asm/mpspec.h>
-#include <linux/dmi.h>
 #endif
 #include <linux/pci.h>
 #include <acpi/apei.h>
+#include <linux/dmi.h>
 #include <linux/suspend.h>
 
 #include "internal.h"
@@ -80,6 +80,10 @@ static struct dmi_system_id dsdt_dmi_table[] __initdata = {
 		DMI_MATCH(DMI_PRODUCT_NAME, "Satellite"),
 		},
 	},
+	{}
+};
+#else
+static struct dmi_system_id dsdt_dmi_table[] __initdata = {
 	{}
 };
 #endif
@@ -154,7 +158,7 @@ int acpi_bus_get_private_data(acpi_handle handle, void **data)
 {
 	acpi_status status;
 
-	if (!data)
+	if (!*data)
 		return -EINVAL;
 
 	status = acpi_get_data(handle, acpi_bus_private_data_handler, data);
@@ -172,16 +176,6 @@ void acpi_bus_detach_private_data(acpi_handle handle)
 	acpi_detach_data(handle, acpi_bus_private_data_handler);
 }
 EXPORT_SYMBOL_GPL(acpi_bus_detach_private_data);
-
-void acpi_bus_no_hotplug(acpi_handle handle)
-{
-	struct acpi_device *adev = NULL;
-
-	acpi_bus_get_device(handle, &adev);
-	if (adev)
-		adev->flags.no_hotplug = true;
-}
-EXPORT_SYMBOL_GPL(acpi_bus_no_hotplug);
 
 static void acpi_print_osc_error(acpi_handle handle,
 	struct acpi_osc_context *context, char *error)
@@ -473,19 +467,6 @@ static int __init acpi_bus_init_irq(void)
 	return 0;
 }
 
-u8 acpi_gbl_permanent_mmap;
-
-
-/**
- * acpi_early_init - Initialize ACPICA and populate the ACPI namespace.
- *
- * The ACPI tables are accessible after this, but the handling of events has not
- * been initialized and the global lock is not available yet, so AML should not
- * be executed at this point.
- *
- * Doing this before switching the EFI runtime services to virtual mode allows
- * the EfiBootServices memory to be freed slightly earlier on boot.
- */
 void __init acpi_early_init(void)
 {
 	acpi_status status;
@@ -504,16 +485,11 @@ void __init acpi_early_init(void)
 
 	acpi_gbl_permanent_mmap = 1;
 
-#ifdef CONFIG_X86
 	/*
 	 * If the machine falls into the DMI check table,
-	 * DSDT will be copied to memory.
-	 * Note that calling dmi_check_system() here on other architectures
-	 * would not be OK because only x86 initializes dmi early enough.
-	 * Thankfully only x86 systems need such quirks for now.
+	 * DSDT will be copied to memory
 	 */
 	dmi_check_system(dsdt_dmi_table);
-#endif
 
 	status = acpi_reallocate_root_table();
 	if (ACPI_FAILURE(status)) {
@@ -554,42 +530,26 @@ void __init acpi_early_init(void)
 		acpi_gbl_FADT.sci_interrupt = acpi_sci_override_gsi;
 	}
 #endif
-	return;
-
- error0:
-	disable_acpi();
-}
-
-/**
- * acpi_subsystem_init - Finalize the early initialization of ACPI.
- *
- * Switch over the platform to the ACPI mode (if possible), initialize the
- * handling of ACPI events, install the interrupt and global lock handlers.
- *
- * Doing this too early is generally unsafe, but at the same time it needs to be
- * done before all things that really depend on ACPI.  The right spot appears to
- * be before finalizing the EFI initialization.
- */
-void __init acpi_subsystem_init(void)
-{
-	acpi_status status;
-
-	if (acpi_disabled)
-		return;
 
 	status = acpi_enable_subsystem(~ACPI_NO_ACPI_ENABLE);
 	if (ACPI_FAILURE(status)) {
 		printk(KERN_ERR PREFIX "Unable to enable ACPI\n");
-		disable_acpi();
-	} else {
-		/*
-		 * If the system is using ACPI then we can be reasonably
-		 * confident that any regulators are managed by the firmware
-		 * so tell the regulator core it has everything it needs to
-		 * know.
-		 */
-		regulator_has_full_constraints();
+		goto error0;
 	}
+
+	/*
+	 * If the system is using ACPI then we can be reasonably
+	 * confident that any regulators are managed by the firmware
+	 * so tell the regulator core it has everything it needs to
+	 * know.
+	 */
+	regulator_has_full_constraints();
+
+	return;
+
+      error0:
+	disable_acpi();
+	return;
 }
 
 static int __init acpi_bus_init(void)

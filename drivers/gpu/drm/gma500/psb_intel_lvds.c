@@ -563,7 +563,7 @@ void psb_intel_lvds_destroy(struct drm_connector *connector)
 
 	if (lvds_priv->ddc_bus)
 		psb_intel_i2c_destroy(lvds_priv->ddc_bus);
-	drm_sysfs_connector_remove(connector);
+	drm_connector_unregister(connector);
 	drm_connector_cleanup(connector);
 	kfree(connector);
 }
@@ -783,23 +783,20 @@ void psb_intel_lvds_init(struct drm_device *dev,
 		if (scan->type & DRM_MODE_TYPE_PREFERRED) {
 			mode_dev->panel_fixed_mode =
 			    drm_mode_duplicate(dev, scan);
-			DRM_DEBUG_KMS("Using mode from DDC\n");
 			goto out;	/* FIXME: check for quirks */
 		}
 	}
 
 	/* Failed to get EDID, what about VBT? do we need this? */
-	if (dev_priv->lfp_lvds_vbt_mode) {
+	if (mode_dev->vbt_mode)
 		mode_dev->panel_fixed_mode =
-			drm_mode_duplicate(dev, dev_priv->lfp_lvds_vbt_mode);
+		    drm_mode_duplicate(dev, mode_dev->vbt_mode);
 
-		if (mode_dev->panel_fixed_mode) {
-			mode_dev->panel_fixed_mode->type |=
-				DRM_MODE_TYPE_PREFERRED;
-			DRM_DEBUG_KMS("Using mode from VBT\n");
-			goto out;
-		}
-	}
+	if (!mode_dev->panel_fixed_mode)
+		if (dev_priv->lfp_lvds_vbt_mode)
+			mode_dev->panel_fixed_mode =
+				drm_mode_duplicate(dev,
+					dev_priv->lfp_lvds_vbt_mode);
 
 	/*
 	 * If we didn't get EDID, try checking if the panel is already turned
@@ -816,7 +813,6 @@ void psb_intel_lvds_init(struct drm_device *dev,
 		if (mode_dev->panel_fixed_mode) {
 			mode_dev->panel_fixed_mode->type |=
 			    DRM_MODE_TYPE_PREFERRED;
-			DRM_DEBUG_KMS("Using pre-programmed mode\n");
 			goto out;	/* FIXME: check for quirks */
 		}
 	}
@@ -833,7 +829,7 @@ void psb_intel_lvds_init(struct drm_device *dev,
 	 */
 out:
 	mutex_unlock(&dev->mode_config.mutex);
-	drm_sysfs_connector_add(connector);
+	drm_connector_register(connector);
 	return;
 
 failed_find:

@@ -137,6 +137,7 @@ struct hrtimer_sleeper {
  *			timer to a base on another cpu.
  * @clockid:		clock id for per_cpu support
  * @active:		red black tree root node for the active timers
+ * @resolution:		the resolution of the clock, in nanoseconds
  * @get_time:		function to retrieve the current time of the clock
  * @softirq_time:	the time when running the hrtimer queue in the softirq
  * @offset:		offset of this clock to the monotonic base
@@ -146,6 +147,7 @@ struct hrtimer_clock_base {
 	int			index;
 	clockid_t		clockid;
 	struct timerqueue_head	active;
+	ktime_t			resolution;
 	ktime_t			(*get_time)(void);
 	ktime_t			softirq_time;
 	ktime_t			offset;
@@ -291,14 +293,10 @@ extern void hrtimer_peek_ahead_timers(void);
 
 extern void clock_was_set_delayed(void);
 
-extern unsigned int hrtimer_resolution;
-
 #else
 
 # define MONOTONIC_RES_NSEC	LOW_RES_NSEC
 # define KTIME_MONOTONIC_RES	KTIME_LOW_RES
-
-#define hrtimer_resolution	LOW_RES_NSEC
 
 static inline void hrtimer_peek_ahead_timers(void) { }
 
@@ -327,14 +325,6 @@ extern void timerfd_clock_was_set(void);
 static inline void timerfd_clock_was_set(void) { }
 #endif
 extern void hrtimers_resume(void);
-
-extern ktime_t ktime_get(void);
-extern ktime_t ktime_get_real(void);
-extern ktime_t ktime_get_boottime(void);
-extern ktime_t ktime_get_monotonic_offset(void);
-extern ktime_t ktime_get_clocktai(void);
-extern ktime_t ktime_get_update_offsets(ktime_t *offs_real, ktime_t *offs_boot,
-					 ktime_t *offs_tai);
 
 DECLARE_PER_CPU(struct tick_device, tick_cpu_device);
 
@@ -455,12 +445,6 @@ extern void hrtimer_run_pending(void);
 
 /* Bootup initialization: */
 extern void __init hrtimers_init(void);
-
-#if BITS_PER_LONG < 64
-extern u64 ktime_divns(const ktime_t kt, s64 div);
-#else /* BITS_PER_LONG < 64 */
-# define ktime_divns(kt, div)		(u64)((kt).tv64 / (div))
-#endif
 
 /* Show pending timers: */
 extern void sysrq_timer_list_show(void);

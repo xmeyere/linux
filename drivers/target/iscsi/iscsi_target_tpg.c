@@ -228,7 +228,6 @@ static void iscsit_set_default_tpg_attribs(struct iscsi_portal_group *tpg)
 	a->demo_mode_discovery = TA_DEMO_MODE_DISCOVERY;
 	a->default_erl = TA_DEFAULT_ERL;
 	a->t10_pi = TA_DEFAULT_T10_PI;
-	a->login_keys_workaround = TA_DEFAULT_LOGIN_KEYS_WORKAROUND;
 }
 
 int iscsit_tpg_add_portal_group(struct iscsi_tiqn *tiqn, struct iscsi_portal_group *tpg)
@@ -262,6 +261,7 @@ err_out:
 		iscsi_release_param_list(tpg->param_list);
 		tpg->param_list = NULL;
 	}
+	kfree(tpg);
 	return -ENOMEM;
 }
 
@@ -652,7 +652,8 @@ int iscsit_ta_authentication(struct iscsi_portal_group *tpg, u32 authentication)
 		none = strstr(buf1, NONE);
 		if (none)
 			goto out;
-		strlcat(buf1, "," NONE, sizeof(buf1));
+		strncat(buf1, ",", strlen(","));
+		strncat(buf1, NONE, strlen(NONE));
 		if (iscsi_update_param_value(param, buf1) < 0)
 			return -EINVAL;
 	}
@@ -875,24 +876,6 @@ int iscsit_ta_t10_pi(
 	pr_debug("iSCSI_TPG[%hu] - T10 Protection information bit:"
 		" %s\n", tpg->tpgt, (a->t10_pi) ?
 		"ON" : "OFF");
-
-	return 0;
-}
-
-int iscsit_ta_login_keys_workaround(
-	struct iscsi_portal_group *tpg,
-	u32 flag)
-{
-	struct iscsi_tpg_attrib *a = &tpg->tpg_attrib;
-
-	if ((flag != 0) && (flag != 1)) {
-		pr_err("Illegal value %d\n", flag);
-		return -EINVAL;
-	}
-
-	a->login_keys_workaround = flag;
-	pr_debug("iSCSI_TPG[%hu] - TPG enabled bit for login keys workaround: %s ",
-		tpg->tpgt, (a->login_keys_workaround) ? "ON" : "OFF");
 
 	return 0;
 }

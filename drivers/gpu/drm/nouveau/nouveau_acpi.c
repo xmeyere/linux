@@ -45,9 +45,7 @@
 static struct nouveau_dsm_priv {
 	bool dsm_detected;
 	bool optimus_detected;
-	bool optimus_flags_detected;
 	acpi_handle dhandle;
-	acpi_handle other_handle;
 	acpi_handle rom_handle;
 } nouveau_dsm_priv;
 
@@ -58,6 +56,9 @@ bool nouveau_is_optimus(void) {
 bool nouveau_is_v1_dsm(void) {
 	return nouveau_dsm_priv.dsm_detected;
 }
+
+#define NOUVEAU_DSM_HAS_MUX 0x1
+#define NOUVEAU_DSM_HAS_OPT 0x2
 
 #ifdef CONFIG_VGA_SWITCHEROO
 static const char nouveau_dsm_muid[] = {
@@ -109,7 +110,7 @@ static int nouveau_optimus_dsm(acpi_handle handle, int func, int arg, uint32_t *
  * requirements on the fourth parameter, so a private implementation
  * instead of using acpi_check_dsm().
  */
-static int nouveau_dsm_get_optimus_functions(acpi_handle handle)
+static int nouveau_check_optimus_dsm(acpi_handle handle)
 {
 	int result;
 
@@ -124,9 +125,7 @@ static int nouveau_dsm_get_optimus_functions(acpi_handle handle)
 	 * ACPI Spec v4 9.14.1: if bit 0 is zero, no function is supported.
 	 * If the n-th bit is enabled, function n is supported
 	 */
-	if (result & 1 && result & (1 << NOUVEAU_DSM_OPTIMUS_CAPS))
-		return result;
-	return 0;
+	return result & 1 && result & (1 << NOUVEAU_DSM_OPTIMUS_CAPS);
 }
 
 static int nouveau_dsm(acpi_handle handle, int func, int arg)
@@ -213,36 +212,26 @@ static struct vga_switcheroo_handler nouveau_dsm_handler = {
 	.get_client_id = nouveau_dsm_get_client_id,
 };
 
-static void nouveau_dsm_pci_probe(struct pci_dev *pdev, acpi_handle *dhandle_out,
-				  bool *has_mux, bool *has_opt,
-				  bool *has_opt_flags)
+static int nouveau_dsm_pci_probe(struct pci_dev *pdev)
 {
 	acpi_handle dhandle;
-	bool supports_mux;
-	int optimus_funcs;
+	int retval = 0;
 
 	dhandle = ACPI_HANDLE(&pdev->dev);
 	if (!dhandle)
-		return;
+		return false;
 
-	if (!acpi_has_method(dhandle, "_DSM")) {
-		nouveau_dsm_priv.other_handle = dhandle;
-		return;
-	}
-	supports_mux = acpi_check_dsm(dhandle, nouveau_dsm_muid, 0x00000102,
-				      1 << NOUVEAU_DSM_POWER);
-	optimus_funcs = nouveau_dsm_get_optimus_functions(dhandle);
+	if (!acpi_has_method(dhandle, "_DSM"))
+		return false;
 
-	/* Does not look like a Nvidia device. */
-	if (!supports_mux && !optimus_funcs)
-		return;
+	if (acpi_check_dsm(dhandle, nouveau_dsm_muid, 0x00000102,
+			   1 << NOUVEAU_DSM_POWER))
+		retval |= NOUVEAU_DSM_HAS_MUX;
 
-	*dhandle_out = dhandle;
-	*has_mux = supports_mux;
-	*has_opt = !!optimus_funcs;
-	*has_opt_flags = optimus_funcs & (1 << NOUVEAU_DSM_OPTIMUS_FLAGS);
+	if (nouveau_check_optimus_dsm(dhandle))
+		retval |= NOUVEAU_DSM_HAS_OPT;
 
-	if (optimus_funcs) {
+	if (retval & NOUVEAU_DSM_HAS_OPT) {
 		uint32_t result;
 		nouveau_optimus_dsm(dhandle, NOUVEAU_DSM_OPTIMUS_CAPS, 0,
 				    &result);
@@ -251,6 +240,10 @@ static void nouveau_dsm_pci_probe(struct pci_dev *pdev, acpi_handle *dhandle_out
 			 (result & OPTIMUS_DYNAMIC_PWR_CAP) ? "dynamic power, " : "",
 			 (result & OPTIMUS_HDA_CODEC_MASK) ? "hda bios codec supported" : "");
 	}
+	if (retval)
+		nouveau_dsm_priv.dhandle = dhandle;
+
+	return retval;
 }
 
 static bool nouveau_dsm_detect(void)
@@ -258,12 +251,11 @@ static bool nouveau_dsm_detect(void)
 	char acpi_method_name[255] = { 0 };
 	struct acpi_buffer buffer = {sizeof(acpi_method_name), acpi_method_name};
 	struct pci_dev *pdev = NULL;
-	acpi_handle dhandle = NULL;
-	bool has_mux = false;
-	bool has_optimus = false;
-	bool has_optimus_flags = false;
+	int has_dsm = 0;
+	int has_optimus = 0;
 	int vga_count = 0;
 	bool guid_valid;
+	int retval;
 	bool ret = false;
 
 	/* lookup the MXM GUID */
@@ -276,44 +268,37 @@ static bool nouveau_dsm_detect(void)
 	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_VGA << 8, pdev)) != NULL) {
 		vga_count++;
 
-		nouveau_dsm_pci_probe(pdev, &dhandle, &has_mux, &has_optimus,
-				      &has_optimus_flags);
+		retval = nouveau_dsm_pci_probe(pdev);
+		if (retval & NOUVEAU_DSM_HAS_MUX)
+			has_dsm |= 1;
+		if (retval & NOUVEAU_DSM_HAS_OPT)
+			has_optimus = 1;
 	}
 
 	while ((pdev = pci_get_class(PCI_CLASS_DISPLAY_3D << 8, pdev)) != NULL) {
 		vga_count++;
 
-		nouveau_dsm_pci_probe(pdev, &dhandle, &has_mux, &has_optimus,
-				      &has_optimus_flags);
+		retval = nouveau_dsm_pci_probe(pdev);
+		if (retval & NOUVEAU_DSM_HAS_MUX)
+			has_dsm |= 1;
+		if (retval & NOUVEAU_DSM_HAS_OPT)
+			has_optimus = 1;
 	}
 
 	/* find the optimus DSM or the old v1 DSM */
-	if (has_optimus) {
-		nouveau_dsm_priv.dhandle = dhandle;
+	if (has_optimus == 1) {
 		acpi_get_name(nouveau_dsm_priv.dhandle, ACPI_FULL_PATHNAME,
 			&buffer);
 		printk(KERN_INFO "VGA switcheroo: detected Optimus DSM method %s handle\n",
 			acpi_method_name);
 		nouveau_dsm_priv.optimus_detected = true;
-		nouveau_dsm_priv.optimus_flags_detected = has_optimus_flags;
 		ret = true;
-	} else if (vga_count == 2 && has_mux && guid_valid) {
-		nouveau_dsm_priv.dhandle = dhandle;
+	} else if (vga_count == 2 && has_dsm && guid_valid) {
 		acpi_get_name(nouveau_dsm_priv.dhandle, ACPI_FULL_PATHNAME,
 			&buffer);
 		printk(KERN_INFO "VGA switcheroo: detected DSM switching method %s handle\n",
 			acpi_method_name);
 		nouveau_dsm_priv.dsm_detected = true;
-		/*
-		 * On some systems hotplug events are generated for the device
-		 * being switched off when _DSM is executed.  They cause ACPI
-		 * hotplug to trigger and attempt to remove the device from
-		 * the system, which causes it to break down.  Prevent that from
-		 * happening by setting the no_hotplug flag for the involved
-		 * ACPI device objects.
-		 */
-		acpi_bus_no_hotplug(nouveau_dsm_priv.dhandle);
-		acpi_bus_no_hotplug(nouveau_dsm_priv.other_handle);
 		ret = true;
 	}
 
@@ -339,9 +324,8 @@ void nouveau_switcheroo_optimus_dsm(void)
 	if (!nouveau_dsm_priv.optimus_detected)
 		return;
 
-	if (nouveau_dsm_priv.optimus_flags_detected)
-		nouveau_optimus_dsm(nouveau_dsm_priv.dhandle, NOUVEAU_DSM_OPTIMUS_FLAGS,
-				    0x3, &result);
+	nouveau_optimus_dsm(nouveau_dsm_priv.dhandle, NOUVEAU_DSM_OPTIMUS_FLAGS,
+			    0x3, &result);
 
 	nouveau_optimus_dsm(nouveau_dsm_priv.dhandle, NOUVEAU_DSM_OPTIMUS_CAPS,
 		NOUVEAU_DSM_OPTIMUS_SET_POWERDOWN, &result);

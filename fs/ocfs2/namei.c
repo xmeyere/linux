@@ -94,14 +94,6 @@ static int ocfs2_create_symlink_data(struct ocfs2_super *osb,
 				     struct inode *inode,
 				     const char *symname);
 
-static int ocfs2_double_lock(struct ocfs2_super *osb,
-			     struct buffer_head **bh1,
-			     struct inode *inode1,
-			     struct buffer_head **bh2,
-			     struct inode *inode2,
-			     int rename);
-
-static void ocfs2_double_unlock(struct inode *inode1, struct inode *inode2);
 /* An orphan dir name is an 8 byte value, printed as a hex string */
 #define OCFS2_ORPHAN_NAMELEN ((int)(2 * sizeof(u64)))
 
@@ -166,7 +158,7 @@ bail_add:
 		 * NOTE: This dentry already has ->d_op set from
 		 * ocfs2_get_parent() and ocfs2_get_dentry()
 		 */
-		if (ret)
+		if (!IS_ERR_OR_NULL(ret))
 			dentry = ret;
 
 		status = ocfs2_dentry_attach_lock(dentry, inode,
@@ -253,6 +245,7 @@ static int ocfs2_mknod(struct inode *dir,
 	struct ocfs2_dir_lookup_result lookup = { NULL, };
 	sigset_t oldset;
 	int did_block_signals = 0;
+	struct posix_acl *default_acl = NULL, *acl = NULL;
 	struct ocfs2_dentry_lock *dl = NULL;
 
 	trace_ocfs2_mknod(dir, dentry, dentry->d_name.len, dentry->d_name.name,
@@ -355,6 +348,12 @@ static int ocfs2_mknod(struct inode *dir,
 		goto leave;
 	}
 
+	status = posix_acl_create(dir, &mode, &default_acl, &acl);
+	if (status) {
+		mlog_errno(status);
+		goto leave;
+	}
+
 	handle = ocfs2_start_trans(osb, ocfs2_mknod_credits(osb->sb,
 							    S_ISDIR(mode),
 							    xattr_credits));
@@ -403,8 +402,16 @@ static int ocfs2_mknod(struct inode *dir,
 		inc_nlink(dir);
 	}
 
-	status = ocfs2_init_acl(handle, inode, dir, new_fe_bh, parent_fe_bh,
-			 meta_ac, data_ac);
+	if (default_acl) {
+		status = ocfs2_set_acl(handle, inode, new_fe_bh,
+				       ACL_TYPE_DEFAULT, default_acl,
+				       meta_ac, data_ac);
+	}
+	if (!status && acl) {
+		status = ocfs2_set_acl(handle, inode, new_fe_bh,
+				       ACL_TYPE_ACCESS, acl,
+				       meta_ac, data_ac);
+	}
 
 	if (status < 0) {
 		mlog_errno(status);
@@ -446,6 +453,10 @@ static int ocfs2_mknod(struct inode *dir,
 	d_instantiate(dentry, inode);
 	status = 0;
 leave:
+	if (default_acl)
+		posix_acl_release(default_acl);
+	if (acl)
+		posix_acl_release(acl);
 	if (status < 0 && did_quota_inode)
 		dquot_free_inode(inode);
 	if (handle)
@@ -667,10 +678,8 @@ static int ocfs2_link(struct dentry *old_dentry,
 {
 	handle_t *handle;
 	struct inode *inode = old_dentry->d_inode;
-	struct inode *old_dir = old_dentry->d_parent->d_inode;
 	int err;
 	struct buffer_head *fe_bh = NULL;
-	struct buffer_head *old_dir_bh = NULL;
 	struct buffer_head *parent_fe_bh = NULL;
 	struct ocfs2_dinode *fe = NULL;
 	struct ocfs2_super *osb = OCFS2_SB(dir->i_sb);
@@ -687,25 +696,11 @@ static int ocfs2_link(struct dentry *old_dentry,
 
 	dquot_initialize(dir);
 
-	err = ocfs2_double_lock(osb, &old_dir_bh, old_dir,
-			&parent_fe_bh, dir, 0);
+	err = ocfs2_inode_lock_nested(dir, &parent_fe_bh, 1, OI_LS_PARENT);
 	if (err < 0) {
 		if (err != -ENOENT)
 			mlog_errno(err);
 		return err;
-	}
-
-	/* make sure both dirs have bhs
-	 * get an extra ref on old_dir_bh if old==new */
-	if (!parent_fe_bh) {
-		if (old_dir_bh) {
-			parent_fe_bh = old_dir_bh;
-			get_bh(parent_fe_bh);
-		} else {
-			mlog(ML_ERROR, "%s: no old_dir_bh!\n", osb->uuid_str);
-			err = -EIO;
-			goto out;
-		}
 	}
 
 	if (!dir->i_nlink) {
@@ -713,7 +708,7 @@ static int ocfs2_link(struct dentry *old_dentry,
 		goto out;
 	}
 
-	err = ocfs2_lookup_ino_from_name(old_dir, old_dentry->d_name.name,
+	err = ocfs2_lookup_ino_from_name(dir, old_dentry->d_name.name,
 			old_dentry->d_name.len, &old_de_ino);
 	if (err) {
 		err = -ENOENT;
@@ -806,11 +801,10 @@ out_unlock_inode:
 	ocfs2_inode_unlock(inode, 1);
 
 out:
-	ocfs2_double_unlock(old_dir, dir);
+	ocfs2_inode_unlock(dir, 1);
 
 	brelse(fe_bh);
 	brelse(parent_fe_bh);
-	brelse(old_dir_bh);
 
 	ocfs2_free_dir_lookup_result(&lookup);
 
@@ -1078,15 +1072,14 @@ static int ocfs2_check_if_ancestor(struct ocfs2_super *osb,
 }
 
 /*
- * The only place this should be used is rename and link!
+ * The only place this should be used is rename!
  * if they have the same id, then the 1st one is the only one locked.
  */
 static int ocfs2_double_lock(struct ocfs2_super *osb,
 			     struct buffer_head **bh1,
 			     struct inode *inode1,
 			     struct buffer_head **bh2,
-			     struct inode *inode2,
-			     int rename)
+			     struct inode *inode2)
 {
 	int status;
 	int inode1_is_ancestor, inode2_is_ancestor;
@@ -1134,7 +1127,7 @@ static int ocfs2_double_lock(struct ocfs2_super *osb,
 		}
 		/* lock id2 */
 		status = ocfs2_inode_lock_nested(inode2, bh2, 1,
-				rename == 1 ? OI_LS_RENAME1 : OI_LS_PARENT);
+						 OI_LS_RENAME1);
 		if (status < 0) {
 			if (status != -ENOENT)
 				mlog_errno(status);
@@ -1143,8 +1136,7 @@ static int ocfs2_double_lock(struct ocfs2_super *osb,
 	}
 
 	/* lock id1 */
-	status = ocfs2_inode_lock_nested(inode1, bh1, 1,
-			rename == 1 ?  OI_LS_RENAME2 : OI_LS_PARENT);
+	status = ocfs2_inode_lock_nested(inode1, bh1, 1, OI_LS_RENAME2);
 	if (status < 0) {
 		/*
 		 * An error return must mean that no cluster locks
@@ -1260,7 +1252,7 @@ static int ocfs2_rename(struct inode *old_dir,
 
 	/* if old and new are the same, this'll just do one lock. */
 	status = ocfs2_double_lock(osb, &old_dir_bh, old_dir,
-				   &new_dir_bh, new_dir, 1);
+				   &new_dir_bh, new_dir);
 	if (status < 0) {
 		mlog_errno(status);
 		goto bail;

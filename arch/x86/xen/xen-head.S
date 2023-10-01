@@ -8,9 +8,7 @@
 
 #include <asm/boot.h>
 #include <asm/asm.h>
-#include <asm/msr.h>
 #include <asm/page_types.h>
-#include <asm/percpu.h>
 
 #include <xen/interface/elfnote.h>
 #include <xen/interface/features.h>
@@ -44,23 +42,45 @@ ENTRY(startup_xen)
 #else
 	mov %rsi,xen_start_info
 	mov $init_thread_union+THREAD_SIZE,%rsp
-
-	/* Set up %gs.
-	 *
-	 * The base of %gs always points to the bottom of the irqstack
-	 * union.  If the stack protector canary is enabled, it is
-	 * located at %gs:40.  Note that, on SMP, the boot cpu uses
-	 * init data section till per cpu areas are set up.
-	 */
-	movl	$MSR_GS_BASE,%ecx
-	movq	$INIT_PER_CPU_VAR(irq_stack_union),%rax
-	cdq
-	wrmsr
 #endif
-
 	jmp xen_start_kernel
 
 	__FINIT
+
+#ifdef CONFIG_XEN_PVH
+/*
+ * xen_pvh_early_cpu_init() - early PVH VCPU initialization
+ * @cpu:   this cpu number (%rdi)
+ * @entry: true if this is a secondary vcpu coming up on this entry
+ *         point, false if this is the boot CPU being initialized for
+ *         the first time (%rsi)
+ *
+ * Note: This is called as a function on the boot CPU, and is the entry point
+ *       on the secondary CPU.
+ */
+ENTRY(xen_pvh_early_cpu_init)
+	mov     %rsi, %r11
+
+	/* Gather features to see if NX implemented. */
+	mov     $0x80000001, %eax
+	cpuid
+	mov     %edx, %esi
+
+	mov     $MSR_EFER, %ecx
+	rdmsr
+	bts     $_EFER_SCE, %eax
+
+	bt      $20, %esi
+	jnc     1f      	/* No NX, skip setting it */
+	bts     $_EFER_NX, %eax
+1:	wrmsr
+#ifdef CONFIG_SMP
+	cmp     $0, %r11b
+	jne     cpu_bringup_and_idle
+#endif
+	ret
+
+#endif /* CONFIG_XEN_PVH */
 
 .pushsection .text
 	.balign PAGE_SIZE
@@ -139,6 +159,7 @@ NEXT_HYPERCALL(arch_6)
 	ELFNOTE(Xen, XEN_ELFNOTE_L1_MFN_VALID,
 		.quad _PAGE_PRESENT; .quad _PAGE_PRESENT)
 	ELFNOTE(Xen, XEN_ELFNOTE_SUSPEND_CANCEL, .long 1)
+	ELFNOTE(Xen, XEN_ELFNOTE_MOD_START_PFN,  .long 1)
 	ELFNOTE(Xen, XEN_ELFNOTE_HV_START_LOW,   _ASM_PTR __HYPERVISOR_VIRT_START)
 	ELFNOTE(Xen, XEN_ELFNOTE_PADDR_OFFSET,   _ASM_PTR 0)
 

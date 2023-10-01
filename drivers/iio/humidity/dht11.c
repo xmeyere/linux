@@ -44,8 +44,7 @@
 #define DHT11_EDGES_PER_READ (2*DHT11_BITS_PER_READ + DHT11_EDGES_PREAMBLE + 1)
 
 /* Data transmission timing (nano seconds) */
-#define DHT11_START_TRANSMISSION_MIN	18000  /* us */
-#define DHT11_START_TRANSMISSION_MAX	20000  /* us */
+#define DHT11_START_TRANSMISSION	18  /* ms */
 #define DHT11_SENSOR_RESPONSE	80000
 #define DHT11_START_BIT		50000
 #define DHT11_DATA_BIT_LOW	27000
@@ -153,8 +152,7 @@ static int dht11_read_raw(struct iio_dev *iio_dev,
 		ret = gpio_direction_output(dht11->gpio, 0);
 		if (ret)
 			goto err;
-		usleep_range(DHT11_START_TRANSMISSION_MIN,
-			     DHT11_START_TRANSMISSION_MAX);
+		msleep(DHT11_START_TRANSMISSION);
 		ret = gpio_direction_input(dht11->gpio);
 		if (ret)
 			goto err;
@@ -283,7 +281,6 @@ static int dht11_probe(struct platform_device *pdev)
 static struct platform_driver dht11_driver = {
 	.driver = {
 		.name	= DRIVER_NAME,
-		.owner	= THIS_MODULE,
 		.of_match_table = dht11_dt_ids,
 	},
 	.probe  = dht11_probe,

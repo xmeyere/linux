@@ -66,12 +66,12 @@ mtype_destroy(struct ip_set *set)
 	if (SET_WITH_TIMEOUT(set))
 		del_timer_sync(&map->gc);
 
+	ip_set_free(map->members);
 	if (set->dsize) {
 		if (set->extensions & IPSET_EXT_DESTROY)
 			mtype_ext_cleanup(set);
 		ip_set_free(map->extensions);
 	}
-	ip_set_free(map->members);
 	kfree(map);
 
 	set->data = NULL;
@@ -128,6 +128,8 @@ mtype_test(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 		return 0;
 	if (SET_WITH_COUNTER(set))
 		ip_set_update_counter(ext_counter(x, set), ext, mext, flags);
+	if (SET_WITH_SKBINFO(set))
+		ip_set_get_skbinfo(ext_skbinfo(x, set), ext, mext, flags);
 	return 1;
 }
 
@@ -161,6 +163,8 @@ mtype_add(struct ip_set *set, void *value, const struct ip_set_ext *ext,
 		ip_set_init_counter(ext_counter(x, set), ext);
 	if (SET_WITH_COMMENT(set))
 		ip_set_init_comment(ext_comment(x, set), ext);
+	if (SET_WITH_SKBINFO(set))
+		ip_set_init_skbinfo(ext_skbinfo(x, set), ext);
 	return 0;
 }
 

@@ -91,7 +91,7 @@ struct svc_xprt_class svc_rdma_class = {
 	.xcl_name = "rdma",
 	.xcl_owner = THIS_MODULE,
 	.xcl_ops = &svc_rdma_ops,
-	.xcl_max_payload = RPCSVC_MAXPAYLOAD_TCP,
+	.xcl_max_payload = RPCSVC_MAXPAYLOAD_RDMA,
 	.xcl_ident = XPRT_TRANSPORT_RDMA,
 };
 
@@ -108,7 +108,6 @@ struct svc_rdma_op_ctxt *svc_rdma_get_context(struct svcxprt_rdma *xprt)
 	ctxt->xprt = xprt;
 	INIT_LIST_HEAD(&ctxt->dto_q);
 	ctxt->count = 0;
-	ctxt->mapped_sges = 0;
 	ctxt->frmr = NULL;
 	atomic_inc(&xprt->sc_ctxt_used);
 	return ctxt;
@@ -117,27 +116,22 @@ struct svc_rdma_op_ctxt *svc_rdma_get_context(struct svcxprt_rdma *xprt)
 void svc_rdma_unmap_dma(struct svc_rdma_op_ctxt *ctxt)
 {
 	struct svcxprt_rdma *xprt = ctxt->xprt;
-	struct ib_device *device = xprt->sc_cm_id->device;
-	u32 lkey = xprt->sc_dma_lkey;
-	unsigned int i, count;
-
-	for (count = 0, i = 0; i < ctxt->mapped_sges; i++) {
+	int i;
+	for (i = 0; i < ctxt->count && ctxt->sge[i].length; i++) {
 		/*
 		 * Unmap the DMA addr in the SGE if the lkey matches
 		 * the sc_dma_lkey, otherwise, ignore it since it is
 		 * an FRMR lkey and will be unmapped later when the
 		 * last WR that uses it completes.
 		 */
-		if (ctxt->sge[i].lkey == lkey) {
-			count++;
-			ib_dma_unmap_page(device,
+		if (ctxt->sge[i].lkey == xprt->sc_dma_lkey) {
+			atomic_dec(&xprt->sc_dma_used);
+			ib_dma_unmap_page(xprt->sc_cm_id->device,
 					    ctxt->sge[i].addr,
 					    ctxt->sge[i].length,
 					    ctxt->direction);
 		}
 	}
-	ctxt->mapped_sges = 0;
-	atomic_sub(count, &xprt->sc_dma_used);
 }
 
 void svc_rdma_put_context(struct svc_rdma_op_ctxt *ctxt, int free_pages)
@@ -527,7 +521,7 @@ int svc_rdma_post_recv(struct svcxprt_rdma *xprt)
 				     DMA_FROM_DEVICE);
 		if (ib_dma_mapping_error(xprt->sc_cm_id->device, pa))
 			goto err_put_ctxt;
-		svc_rdma_count_mappings(xprt, ctxt);
+		atomic_inc(&xprt->sc_dma_used);
 		ctxt->sge[sge_no].addr = pa;
 		ctxt->sge[sge_no].length = PAGE_SIZE;
 		ctxt->sge[sge_no].lkey = xprt->sc_dma_lkey;
@@ -949,23 +943,8 @@ static struct svc_xprt *svc_rdma_accept(struct svc_xprt *xprt)
 
 	ret = rdma_create_qp(newxprt->sc_cm_id, newxprt->sc_pd, &qp_attr);
 	if (ret) {
-		/*
-		 * XXX: This is a hack. We need a xx_request_qp interface
-		 * that will adjust the qp_attr's with a best-effort
-		 * number
-		 */
-		qp_attr.cap.max_send_sge -= 2;
-		qp_attr.cap.max_recv_sge -= 2;
-		ret = rdma_create_qp(newxprt->sc_cm_id, newxprt->sc_pd,
-				     &qp_attr);
-		if (ret) {
-			dprintk("svcrdma: failed to create QP, ret=%d\n", ret);
-			goto errout;
-		}
-		newxprt->sc_max_sge = qp_attr.cap.max_send_sge;
-		newxprt->sc_max_sge = qp_attr.cap.max_recv_sge;
-		newxprt->sc_sq_depth = qp_attr.cap.max_send_wr;
-		newxprt->sc_max_requests = qp_attr.cap.max_recv_wr;
+		dprintk("svcrdma: failed to create QP, ret=%d\n", ret);
+		goto errout;
 	}
 	newxprt->sc_qp = newxprt->sc_cm_id->qp;
 
@@ -1352,7 +1331,7 @@ void svc_rdma_send_error(struct svcxprt_rdma *xprt, struct rpcrdma_msg *rmsgp,
 		svc_rdma_put_context(ctxt, 1);
 		return;
 	}
-	svc_rdma_count_mappings(xprt, ctxt);
+	atomic_inc(&xprt->sc_dma_used);
 	ctxt->sge[0].lkey = xprt->sc_dma_lkey;
 	ctxt->sge[0].length = length;
 

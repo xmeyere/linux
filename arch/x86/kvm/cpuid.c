@@ -53,14 +53,14 @@ u64 kvm_supported_xcr0(void)
 	return xcr0;
 }
 
-void kvm_update_cpuid(struct kvm_vcpu *vcpu)
+int kvm_update_cpuid(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
 	struct kvm_lapic *apic = vcpu->arch.apic;
 
 	best = kvm_find_cpuid_entry(vcpu, 1, 0);
 	if (!best)
-		return;
+		return 0;
 
 	/* Update OSXSAVE bit */
 	if (cpu_has_xsave && best->function == 0x1) {
@@ -88,7 +88,17 @@ void kvm_update_cpuid(struct kvm_vcpu *vcpu)
 			xstate_required_size(vcpu->arch.xcr0);
 	}
 
+	/*
+	 * The existing code assumes virtual address is 48-bit in the canonical
+	 * address checks; exit if it is ever changed.
+	 */
+	best = kvm_find_cpuid_entry(vcpu, 0x80000008, 0);
+	if (best && ((best->eax & 0xff00) >> 8) != 48 &&
+		((best->eax & 0xff00) >> 8) != 0)
+		return -EINVAL;
+
 	kvm_pmu_cpuid_update(vcpu);
+	return 0;
 }
 
 static int is_efer_nx(void)
@@ -112,8 +122,8 @@ static void cpuid_fix_nx_cap(struct kvm_vcpu *vcpu)
 			break;
 		}
 	}
-	if (entry && (entry->edx & (1 << 20)) && !is_efer_nx()) {
-		entry->edx &= ~(1 << 20);
+	if (entry && (entry->edx & bit(X86_FEATURE_NX)) && !is_efer_nx()) {
+		entry->edx &= ~bit(X86_FEATURE_NX);
 		printk(KERN_INFO "kvm: guest NX capability removed\n");
 	}
 }
@@ -151,10 +161,9 @@ int kvm_vcpu_ioctl_set_cpuid(struct kvm_vcpu *vcpu,
 	}
 	vcpu->arch.cpuid_nent = cpuid->nent;
 	cpuid_fix_nx_cap(vcpu);
-	r = 0;
 	kvm_apic_set_version(vcpu);
 	kvm_x86_ops->cpuid_update(vcpu);
-	kvm_update_cpuid(vcpu);
+	r = kvm_update_cpuid(vcpu);
 
 out_free:
 	vfree(cpuid_entries);
@@ -178,9 +187,7 @@ int kvm_vcpu_ioctl_set_cpuid2(struct kvm_vcpu *vcpu,
 	vcpu->arch.cpuid_nent = cpuid->nent;
 	kvm_apic_set_version(vcpu);
 	kvm_x86_ops->cpuid_update(vcpu);
-	kvm_update_cpuid(vcpu);
-	return 0;
-
+	r = kvm_update_cpuid(vcpu);
 out:
 	return r;
 }
@@ -300,11 +307,6 @@ static inline int __do_cpuid_ent(struct kvm_cpuid_entry2 *entry, u32 function,
 		F(3DNOWPREFETCH) | F(OSVW) | 0 /* IBS */ | F(XOP) |
 		0 /* SKINIT, WDT, LWP */ | F(FMA4) | F(TBM);
 
-	/* cpuid 0x80000008.ebx */
-	const u32 kvm_cpuid_8000_0008_ebx_x86_features =
-		F(AMD_IBPB) | F(AMD_IBRS) | F(AMD_SSBD) | F(VIRT_SSBD) |
-		F(AMD_SSB_NO) | F(AMD_STIBP);
-
 	/* cpuid 0xC0000001.edx */
 	const u32 kvm_supported_word5_x86_features =
 		F(XSTORE) | F(XSTORE_EN) | F(XCRYPT) | F(XCRYPT_EN) |
@@ -317,17 +319,12 @@ static inline int __do_cpuid_ent(struct kvm_cpuid_entry2 *entry, u32 function,
 		F(BMI2) | F(ERMS) | f_invpcid | F(RTM) | f_mpx | F(RDSEED) |
 		F(ADX) | F(SMAP);
 
-	/* cpuid 7.0.edx*/
-	const u32 kvm_cpuid_7_0_edx_x86_features =
-		F(SPEC_CTRL) | F(SPEC_CTRL_SSBD) | F(ARCH_CAPABILITIES) |
-		F(INTEL_STIBP) | F(MD_CLEAR);
-
 	/* all calls to cpuid_count() should be made on the same cpu */
 	get_cpu();
 
 	r = -E2BIG;
 
-	if (WARN_ON(*nent >= maxnent))
+	if (*nent >= maxnent)
 		goto out;
 
 	do_cpuid_1_ent(entry, function, index);
@@ -393,27 +390,11 @@ static inline int __do_cpuid_ent(struct kvm_cpuid_entry2 *entry, u32 function,
 			cpuid_mask(&entry->ebx, 9);
 			// TSC_ADJUST is emulated
 			entry->ebx |= F(TSC_ADJUST);
-			entry->edx &= kvm_cpuid_7_0_edx_x86_features;
-			cpuid_mask(&entry->edx, 10);
-			if (boot_cpu_has(X86_FEATURE_IBPB) &&
-			    boot_cpu_has(X86_FEATURE_IBRS))
-				entry->edx |= F(SPEC_CTRL);
-			if (boot_cpu_has(X86_FEATURE_STIBP))
-				entry->edx |= F(INTEL_STIBP);
-			if (boot_cpu_has(X86_FEATURE_SPEC_CTRL_SSBD) ||
-			    boot_cpu_has(X86_FEATURE_AMD_SSBD))
-				entry->edx |= F(SPEC_CTRL_SSBD);
-			/*
-			 * We emulate ARCH_CAPABILITIES in software even
-			 * if the host doesn't support it.
-			 */
-			entry->edx |= F(ARCH_CAPABILITIES);
-		} else {
+		} else
 			entry->ebx = 0;
-			entry->edx = 0;
-		}
 		entry->eax = 0;
 		entry->ecx = 0;
+		entry->edx = 0;
 		break;
 	}
 	case 9:
@@ -538,26 +519,7 @@ static inline int __do_cpuid_ent(struct kvm_cpuid_entry2 *entry, u32 function,
 		if (!g_phys_as)
 			g_phys_as = phys_as;
 		entry->eax = g_phys_as | (virt_as << 8);
-		entry->edx = 0;
-		/*
-		 * IBRS, IBPB and VIRT_SSBD aren't necessarily present in
-		 * hardware cpuid
-		 */
-		if (boot_cpu_has(X86_FEATURE_AMD_IBPB))
-			entry->ebx |= F(AMD_IBPB);
-		if (boot_cpu_has(X86_FEATURE_AMD_IBRS))
-			entry->ebx |= F(AMD_IBRS);
-		if (boot_cpu_has(X86_FEATURE_VIRT_SSBD))
-			entry->ebx |= F(VIRT_SSBD);
-		entry->ebx &= kvm_cpuid_8000_0008_ebx_x86_features;
-		cpuid_mask(&entry->ebx, 11);
-		/*
-		 * The preference is to use SPEC CTRL MSR instead of the
-		 * VIRT_SPEC MSR.
-		 */
-		if (boot_cpu_has(X86_FEATURE_LS_CFG_SSBD) &&
-		    !boot_cpu_has(X86_FEATURE_AMD_SSBD))
-			entry->ebx |= F(VIRT_SSBD);
+		entry->ebx = entry->edx = 0;
 		break;
 	}
 	case 0x80000019:
@@ -600,9 +562,6 @@ out:
 static int do_cpuid_ent(struct kvm_cpuid_entry2 *entry, u32 func,
 			u32 idx, int *nent, int maxnent, unsigned int type)
 {
-	if (*nent >= maxnent)
-		return -E2BIG;
-
 	if (type == KVM_GET_EMULATED_CPUID)
 		return __do_cpuid_ent_emulated(entry, func, idx, nent, maxnent);
 
@@ -719,20 +678,18 @@ out:
 static int move_to_next_stateful_cpuid_entry(struct kvm_vcpu *vcpu, int i)
 {
 	struct kvm_cpuid_entry2 *e = &vcpu->arch.cpuid_entries[i];
-	struct kvm_cpuid_entry2 *ej;
-	int j = i;
-	int nent = vcpu->arch.cpuid_nent;
+	int j, nent = vcpu->arch.cpuid_nent;
 
 	e->flags &= ~KVM_CPUID_FLAG_STATE_READ_NEXT;
 	/* when no next entry is found, the current entry[i] is reselected */
-	do {
-		j = (j + 1) % nent;
-		ej = &vcpu->arch.cpuid_entries[j];
-	} while (ej->function != e->function);
-
-	ej->flags |= KVM_CPUID_FLAG_STATE_READ_NEXT;
-
-	return j;
+	for (j = i + 1; ; j = (j + 1) % nent) {
+		struct kvm_cpuid_entry2 *ej = &vcpu->arch.cpuid_entries[j];
+		if (ej->function == e->function) {
+			ej->flags |= KVM_CPUID_FLAG_STATE_READ_NEXT;
+			return j;
+		}
+	}
+	return 0; /* silence gcc, even though control never reaches here */
 }
 
 /* find an entry with matching function, matching index (if needed), and that
@@ -816,6 +773,12 @@ void kvm_cpuid(struct kvm_vcpu *vcpu, u32 *eax, u32 *ebx, u32 *ecx, u32 *edx)
 
 	if (!best)
 		best = check_cpuid_limit(vcpu, function, index);
+
+	/*
+	 * Perfmon not yet supported for L2 guest.
+	 */
+	if (is_guest_mode(vcpu) && function == 0xa)
+		best = NULL;
 
 	if (best) {
 		*eax = best->eax;

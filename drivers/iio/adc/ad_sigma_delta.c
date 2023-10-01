@@ -121,7 +121,6 @@ static int ad_sd_read_reg_raw(struct ad_sigma_delta *sigma_delta,
 	if (sigma_delta->info->has_registers) {
 		data[0] = reg << sigma_delta->info->addr_shift;
 		data[0] |= sigma_delta->info->read_mask;
-		data[0] |= sigma_delta->comm;
 		spi_message_add_tail(&t[0], &m);
 	}
 	spi_message_add_tail(&t[1], &m);
@@ -177,34 +176,6 @@ out:
 	return ret;
 }
 EXPORT_SYMBOL_GPL(ad_sd_read_reg);
-
-/**
- * ad_sd_reset() - Reset the serial interface
- *
- * @sigma_delta: The sigma delta device
- * @reset_length: Number of SCLKs with DIN = 1
- *
- * Returns 0 on success, an error code otherwise.
- **/
-int ad_sd_reset(struct ad_sigma_delta *sigma_delta,
-	unsigned int reset_length)
-{
-	uint8_t *buf;
-	unsigned int size;
-	int ret;
-
-	size = DIV_ROUND_UP(reset_length, 8);
-	buf = kcalloc(size, sizeof(*buf), GFP_KERNEL);
-	if (!buf)
-		return -ENOMEM;
-
-	memset(buf, 0xff, size);
-	ret = spi_write(sigma_delta->spi, buf, size);
-	kfree(buf);
-
-	return ret;
-}
-EXPORT_SYMBOL_GPL(ad_sd_reset);
 
 static int ad_sd_calibrate(struct ad_sigma_delta *sigma_delta,
 	unsigned int mode, unsigned int channel)
@@ -439,7 +410,7 @@ static irqreturn_t ad_sd_data_rdy_trig_poll(int irq, void *private)
 	complete(&sigma_delta->completion);
 	disable_irq_nosync(irq);
 	sigma_delta->irq_dis = true;
-	iio_trigger_poll(sigma_delta->trig, iio_get_time_ns());
+	iio_trigger_poll(sigma_delta->trig);
 
 	return IRQ_HANDLED;
 }

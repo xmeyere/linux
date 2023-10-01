@@ -28,6 +28,7 @@
  */
 
 #include <linux/device.h>
+#include <linux/acpi.h>
 #include <drm/drmP.h>
 #include <drm/i915_drm.h>
 #include "i915_drv.h"
@@ -46,8 +47,6 @@ static struct drm_driver driver;
 			  PIPE_C_OFFSET, PIPE_EDP_OFFSET }, \
 	.trans_offsets = { TRANSCODER_A_OFFSET, TRANSCODER_B_OFFSET, \
 			   TRANSCODER_C_OFFSET, TRANSCODER_EDP_OFFSET }, \
-	.dpll_offsets = { DPLL_A_OFFSET, DPLL_B_OFFSET }, \
-	.dpll_md_offsets = { DPLL_A_MD_OFFSET, DPLL_B_MD_OFFSET }, \
 	.palette_offsets = { PALETTE_A_OFFSET, PALETTE_B_OFFSET }
 
 #define GEN_CHV_PIPEOFFSETS \
@@ -55,10 +54,6 @@ static struct drm_driver driver;
 			  CHV_PIPE_C_OFFSET }, \
 	.trans_offsets = { TRANSCODER_A_OFFSET, TRANSCODER_B_OFFSET, \
 			   CHV_TRANSCODER_C_OFFSET, }, \
-	.dpll_offsets = { DPLL_A_OFFSET, DPLL_B_OFFSET, \
-			  CHV_DPLL_C_OFFSET }, \
-	.dpll_md_offsets = { DPLL_A_MD_OFFSET, DPLL_B_MD_OFFSET, \
-			     CHV_DPLL_C_MD_OFFSET }, \
 	.palette_offsets = { PALETTE_A_OFFSET, PALETTE_B_OFFSET, \
 			     CHV_PALETTE_C_OFFSET }
 
@@ -308,6 +303,7 @@ static const struct intel_device_info intel_broadwell_d_info = {
 	.ring_mask = RENDER_RING | BSD_RING | BLT_RING | VEBOX_RING,
 	.has_llc = 1,
 	.has_ddi = 1,
+	.has_fpga_dbg = 1,
 	.has_fbc = 1,
 	GEN_DEFAULT_PIPEOFFSETS,
 	IVB_CURSOR_OFFSETS,
@@ -319,6 +315,7 @@ static const struct intel_device_info intel_broadwell_m_info = {
 	.ring_mask = RENDER_RING | BSD_RING | BLT_RING | VEBOX_RING,
 	.has_llc = 1,
 	.has_ddi = 1,
+	.has_fpga_dbg = 1,
 	.has_fbc = 1,
 	GEN_DEFAULT_PIPEOFFSETS,
 	IVB_CURSOR_OFFSETS,
@@ -330,6 +327,7 @@ static const struct intel_device_info intel_broadwell_gt3d_info = {
 	.ring_mask = RENDER_RING | BSD_RING | BLT_RING | VEBOX_RING | BSD2_RING,
 	.has_llc = 1,
 	.has_ddi = 1,
+	.has_fpga_dbg = 1,
 	.has_fbc = 1,
 	GEN_DEFAULT_PIPEOFFSETS,
 	IVB_CURSOR_OFFSETS,
@@ -341,6 +339,7 @@ static const struct intel_device_info intel_broadwell_gt3m_info = {
 	.ring_mask = RENDER_RING | BSD_RING | BLT_RING | VEBOX_RING | BSD2_RING,
 	.has_llc = 1,
 	.has_ddi = 1,
+	.has_fpga_dbg = 1,
 	.has_fbc = 1,
 	GEN_DEFAULT_PIPEOFFSETS,
 	IVB_CURSOR_OFFSETS,
@@ -449,13 +448,19 @@ void intel_detect_pch(struct drm_device *dev)
 			} else if (id == INTEL_PCH_LPT_DEVICE_ID_TYPE) {
 				dev_priv->pch_type = PCH_LPT;
 				DRM_DEBUG_KMS("Found LynxPoint PCH\n");
-				WARN_ON(!IS_HASWELL(dev) && !IS_BROADWELL(dev));
-				WARN_ON(IS_HSW_ULT(dev) || IS_BDW_ULT(dev));
+				WARN_ON(!IS_HASWELL(dev));
+				WARN_ON(IS_ULT(dev));
+			} else if (IS_BROADWELL(dev)) {
+				dev_priv->pch_type = PCH_LPT;
+				dev_priv->pch_id =
+					INTEL_PCH_LPT_LP_DEVICE_ID_TYPE;
+				DRM_DEBUG_KMS("This is Broadwell, assuming "
+					      "LynxPoint LP PCH\n");
 			} else if (id == INTEL_PCH_LPT_LP_DEVICE_ID_TYPE) {
 				dev_priv->pch_type = PCH_LPT;
 				DRM_DEBUG_KMS("Found LynxPoint LP PCH\n");
-				WARN_ON(!IS_HASWELL(dev) && !IS_BROADWELL(dev));
-				WARN_ON(!IS_HSW_ULT(dev) && !IS_BDW_ULT(dev));
+				WARN_ON(!IS_HASWELL(dev));
+				WARN_ON(!IS_ULT(dev));
 			} else
 				continue;
 
@@ -476,6 +481,10 @@ bool i915_semaphore_is_enabled(struct drm_device *dev)
 	if (i915.semaphores >= 0)
 		return i915.semaphores;
 
+	/* TODO: make semaphores and Execlists play nicely together */
+	if (i915.enable_execlists)
+		return false;
+
 	/* Until we get further testing... */
 	if (IS_GEN8(dev))
 		return false;
@@ -489,12 +498,45 @@ bool i915_semaphore_is_enabled(struct drm_device *dev)
 	return true;
 }
 
+void intel_hpd_cancel_work(struct drm_i915_private *dev_priv)
+{
+	spin_lock_irq(&dev_priv->irq_lock);
+
+	dev_priv->long_hpd_port_mask = 0;
+	dev_priv->short_hpd_port_mask = 0;
+	dev_priv->hpd_event_bits = 0;
+
+	spin_unlock_irq(&dev_priv->irq_lock);
+
+	cancel_work_sync(&dev_priv->dig_port_work);
+	cancel_work_sync(&dev_priv->hotplug_work);
+	cancel_delayed_work_sync(&dev_priv->hotplug_reenable_work);
+}
+
+static void intel_suspend_encoders(struct drm_i915_private *dev_priv)
+{
+	struct drm_device *dev = dev_priv->dev;
+	struct drm_encoder *encoder;
+
+	drm_modeset_lock_all(dev);
+	list_for_each_entry(encoder, &dev->mode_config.encoder_list, head) {
+		struct intel_encoder *intel_encoder = to_intel_encoder(encoder);
+
+		if (intel_encoder->suspend)
+			intel_encoder->suspend(intel_encoder);
+	}
+	drm_modeset_unlock_all(dev);
+}
+
+static int intel_suspend_complete(struct drm_i915_private *dev_priv);
+static int intel_resume_prepare(struct drm_i915_private *dev_priv,
+				bool rpm_resume);
+
 static int i915_drm_freeze(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	struct drm_crtc *crtc;
-
-	intel_runtime_pm_get(dev_priv);
+	pci_power_t opregion_target_state;
 
 	/* ignore lid events during suspend */
 	mutex_lock(&dev_priv->modeset_restore_lock);
@@ -520,20 +562,25 @@ static int i915_drm_freeze(struct drm_device *dev)
 			return error;
 		}
 
-		drm_irq_uninstall(dev);
-		dev_priv->enable_hotplug_processing = false;
-
-		intel_disable_gt_powersave(dev);
-
 		/*
 		 * Disable CRTCs directly since we want to preserve sw state
-		 * for _thaw.
+		 * for _thaw. Also, power gate the CRTC power wells.
 		 */
 		drm_modeset_lock_all(dev);
-		for_each_crtc(dev, crtc) {
-			dev_priv->display.crtc_disable(crtc);
-		}
+		for_each_crtc(dev, crtc)
+			intel_crtc_control(crtc, false);
 		drm_modeset_unlock_all(dev);
+
+		intel_dp_mst_suspend(dev);
+
+		flush_delayed_work(&dev_priv->rps.delayed_resume_work);
+
+		intel_runtime_pm_disable_interrupts(dev);
+		intel_hpd_cancel_work(dev_priv);
+
+		intel_suspend_encoders(dev_priv);
+
+		intel_suspend_gt_powersave(dev);
 
 		intel_modeset_suspend_hw(dev);
 	}
@@ -542,14 +589,21 @@ static int i915_drm_freeze(struct drm_device *dev)
 
 	i915_save_state(dev);
 
-	intel_opregion_fini(dev);
-	intel_uncore_fini(dev);
+	opregion_target_state = PCI_D3cold;
+#if IS_ENABLED(CONFIG_ACPI_SLEEP)
+	if (acpi_target_system_state() < ACPI_STATE_S3)
+		opregion_target_state = PCI_D1;
+#endif
+	intel_opregion_notify_adapter(dev, opregion_target_state);
 
-	console_lock();
-	intel_fbdev_set_suspend(dev, FBINFO_STATE_SUSPENDED);
-	console_unlock();
+	intel_uncore_forcewake_reset(dev, false);
+	intel_opregion_fini(dev);
+
+	intel_fbdev_set_suspend(dev, FBINFO_STATE_SUSPENDED, true);
 
 	dev_priv->suspend_count++;
+
+	intel_display_set_init_power(dev_priv, false);
 
 	return 0;
 }
@@ -584,29 +638,20 @@ int i915_suspend(struct drm_device *dev, pm_message_t state)
 	return 0;
 }
 
-void intel_console_resume(struct work_struct *work)
-{
-	struct drm_i915_private *dev_priv =
-		container_of(work, struct drm_i915_private,
-			     console_resume_work);
-	struct drm_device *dev = dev_priv->dev;
-
-	console_lock();
-	intel_fbdev_set_suspend(dev, FBINFO_STATE_RUNNING);
-	console_unlock();
-}
-
 static int i915_drm_thaw_early(struct drm_device *dev)
 {
 	struct drm_i915_private *dev_priv = dev->dev_private;
+	int ret;
 
-	intel_uncore_early_sanitize(dev);
+	ret = intel_resume_prepare(dev_priv, false);
+	if (ret)
+		DRM_ERROR("Resume prepare failed: %d,Continuing resume\n", ret);
+
+	intel_uncore_early_sanitize(dev, true);
 	intel_uncore_sanitize(dev);
 	intel_power_domains_init_hw(dev_priv);
 
-	i915_rc6_ctx_wa_resume(dev_priv);
-
-	return 0;
+	return ret;
 }
 
 static int __i915_drm_thaw(struct drm_device *dev, bool restore_gtt_mappings)
@@ -635,11 +680,19 @@ static int __i915_drm_thaw(struct drm_device *dev, bool restore_gtt_mappings)
 		}
 		mutex_unlock(&dev->struct_mutex);
 
-		/* We need working interrupts for modeset enabling ... */
-		drm_irq_install(dev, dev->pdev->irq);
+		intel_runtime_pm_restore_interrupts(dev);
 
 		intel_modeset_init_hw(dev);
 
+		{
+			unsigned long irqflags;
+			spin_lock_irqsave(&dev_priv->irq_lock, irqflags);
+			if (dev_priv->display.hpd_irq_setup)
+				dev_priv->display.hpd_irq_setup(dev);
+			spin_unlock_irqrestore(&dev_priv->irq_lock, irqflags);
+		}
+
+		intel_dp_mst_resume(dev);
 		drm_modeset_lock_all(dev);
 		intel_modeset_setup_hw_state(dev, true);
 		drm_modeset_unlock_all(dev);
@@ -651,30 +704,20 @@ static int __i915_drm_thaw(struct drm_device *dev, bool restore_gtt_mappings)
 		 * notifications.
 		 * */
 		intel_hpd_init(dev);
-		dev_priv->enable_hotplug_processing = true;
 		/* Config may have changed between suspend and resume */
 		drm_helper_hpd_irq_event(dev);
 	}
 
 	intel_opregion_init(dev);
 
-	/*
-	 * The console lock can be pretty contented on resume due
-	 * to all the printk activity.  Try to keep it out of the hot
-	 * path of resume if possible.
-	 */
-	if (console_trylock()) {
-		intel_fbdev_set_suspend(dev, FBINFO_STATE_RUNNING);
-		console_unlock();
-	} else {
-		schedule_work(&dev_priv->console_resume_work);
-	}
+	intel_fbdev_set_suspend(dev, FBINFO_STATE_RUNNING, false);
 
 	mutex_lock(&dev_priv->modeset_restore_lock);
 	dev_priv->modeset_restore = MODESET_DONE;
 	mutex_unlock(&dev_priv->modeset_restore_lock);
 
-	intel_runtime_pm_put(dev_priv);
+	intel_opregion_notify_adapter(dev, PCI_D0);
+
 	return 0;
 }
 
@@ -688,8 +731,6 @@ static int i915_drm_thaw(struct drm_device *dev)
 
 static int i915_resume_early(struct drm_device *dev)
 {
-	int ret;
-
 	if (dev->switch_power_state == DRM_SWITCH_POWER_OFF)
 		return 0;
 
@@ -701,36 +742,6 @@ static int i915_resume_early(struct drm_device *dev)
 	 *
 	 * FIXME: This should be solved with a special hdmi sink device or
 	 * similar so that power domains can be employed.
-	 */
-
-	/*
-	 * Note that we need to set the power state explicitly, since we
-	 * powered off the device during freeze and the PCI core won't power
-	 * it back up for us during thaw. Powering off the device during
-	 * freeze is not a hard requirement though, and during the
-	 * suspend/resume phases the PCI core makes sure we get here with the
-	 * device powered on. So in case we change our freeze logic and keep
-	 * the device powered we can also remove the following set power state
-	 * call.
-	 */
-	ret = pci_set_power_state(dev->pdev, PCI_D0);
-	if (ret) {
-		DRM_ERROR("failed to set PCI D0 power state (%d)\n", ret);
-		return ret;
-	}
-
-	/*
-	 * Note that pci_enable_device() first enables any parent bridge
-	 * device and only then sets the power state for this device. The
-	 * bridge enabling is a nop though, since bridge devices are resumed
-	 * first. The order of enabling power and enabling the device is
-	 * imposed by the PCI core as described above, so here we preserve the
-	 * same order for the freeze/thaw phases.
-	 *
-	 * TODO: eventually we should remove pci_disable_device() /
-	 * pci_enable_enable_device() from suspend/resume. Due to how they
-	 * depend on the device enable refcount we can't anyway depend on them
-	 * disabling/enabling the device.
 	 */
 	if (pci_enable_device(dev->pdev))
 		return -EIO;
@@ -833,7 +844,13 @@ int i915_reset(struct drm_device *dev)
 			!dev_priv->ums.mm_suspended) {
 		dev_priv->ums.mm_suspended = 0;
 
+		/* Used to prevent gem_check_wedged returning -EAGAIN during gpu reset */
+		dev_priv->gpu_error.reload_in_reset = true;
+
 		ret = i915_gem_init_hw(dev);
+
+		dev_priv->gpu_error.reload_in_reset = false;
+
 		mutex_unlock(&dev->struct_mutex);
 		if (ret) {
 			DRM_ERROR("Failed hw init on reset %d\n", ret);
@@ -854,8 +871,6 @@ int i915_reset(struct drm_device *dev)
 		 */
 		if (INTEL_INFO(dev)->gen > 5)
 			intel_reset_gt_powersave(dev);
-
-		intel_hpd_init(dev);
 	} else {
 		mutex_unlock(&dev->struct_mutex);
 	}
@@ -915,6 +930,8 @@ static int i915_pm_suspend_late(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
 	struct drm_device *drm_dev = pci_get_drvdata(pdev);
+	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+	int ret;
 
 	/*
 	 * We have a suspedn ordering issue with the snd-hda driver also
@@ -928,12 +945,16 @@ static int i915_pm_suspend_late(struct device *dev)
 	if (drm_dev->switch_power_state == DRM_SWITCH_POWER_OFF)
 		return 0;
 
-	i915_rc6_ctx_wa_suspend(to_i915(drm_dev));
+	ret = intel_suspend_complete(dev_priv);
 
-	pci_disable_device(pdev);
-	pci_set_power_state(pdev, PCI_D3hot);
+	if (ret)
+		DRM_ERROR("Suspend complete failed: %d\n", ret);
+	else {
+		pci_disable_device(pdev);
+		pci_set_power_state(pdev, PCI_D3hot);
+	}
 
-	return 0;
+	return ret;
 }
 
 static int i915_pm_resume_early(struct device *dev)
@@ -965,6 +986,15 @@ static int i915_pm_freeze(struct device *dev)
 	return i915_drm_freeze(drm_dev);
 }
 
+static int i915_pm_freeze_late(struct device *dev)
+{
+	struct pci_dev *pdev = to_pci_dev(dev);
+	struct drm_device *drm_dev = pci_get_drvdata(pdev);
+	struct drm_i915_private *dev_priv = drm_dev->dev_private;
+
+	return intel_suspend_complete(dev_priv);
+}
+
 static int i915_pm_thaw_early(struct device *dev)
 {
 	struct pci_dev *pdev = to_pci_dev(dev);
@@ -989,23 +1019,26 @@ static int i915_pm_poweroff(struct device *dev)
 	return i915_drm_freeze(drm_dev);
 }
 
-static int hsw_runtime_suspend(struct drm_i915_private *dev_priv)
+static int hsw_suspend_complete(struct drm_i915_private *dev_priv)
 {
 	hsw_enable_pc8(dev_priv);
 
 	return 0;
 }
 
-static int snb_runtime_resume(struct drm_i915_private *dev_priv)
+static int snb_resume_prepare(struct drm_i915_private *dev_priv,
+				bool rpm_resume)
 {
 	struct drm_device *dev = dev_priv->dev;
 
-	intel_init_pch_refclk(dev);
+	if (rpm_resume)
+		intel_init_pch_refclk(dev);
 
 	return 0;
 }
 
-static int hsw_runtime_resume(struct drm_i915_private *dev_priv)
+static int hsw_resume_prepare(struct drm_i915_private *dev_priv,
+				bool rpm_resume)
 {
 	hsw_disable_pc8(dev_priv);
 
@@ -1054,7 +1087,7 @@ static void vlv_save_gunit_s0ix_state(struct drm_i915_private *dev_priv)
 		s->lra_limits[i] = I915_READ(GEN7_LRA_LIMITS_BASE + i * 4);
 
 	s->media_max_req_count	= I915_READ(GEN7_MEDIA_MAX_REQ_COUNT);
-	s->gfx_max_req_count	= I915_READ(GEN7_GFX_MAX_REQ_COUNT);
+	s->gfx_max_req_count	= I915_READ(GEN7_MEDIA_MAX_REQ_COUNT);
 
 	s->render_hwsp		= I915_READ(RENDER_HWS_PGA_GEN7);
 	s->ecochk		= I915_READ(GAM_ECOCHK);
@@ -1107,7 +1140,6 @@ static void vlv_save_gunit_s0ix_state(struct drm_i915_private *dev_priv)
 	/* Gunit-Display CZ domain, 0x182028-0x1821CF */
 	s->gu_ctl0		= I915_READ(VLV_GU_CTL0);
 	s->gu_ctl1		= I915_READ(VLV_GU_CTL1);
-	s->pcbr			= I915_READ(VLV_PCBR);
 	s->clock_gate_dis2	= I915_READ(VLV_GUNIT_CLOCK_GATE2);
 
 	/*
@@ -1136,7 +1168,7 @@ static void vlv_restore_gunit_s0ix_state(struct drm_i915_private *dev_priv)
 		I915_WRITE(GEN7_LRA_LIMITS_BASE + i * 4, s->lra_limits[i]);
 
 	I915_WRITE(GEN7_MEDIA_MAX_REQ_COUNT, s->media_max_req_count);
-	I915_WRITE(GEN7_GFX_MAX_REQ_COUNT, s->gfx_max_req_count);
+	I915_WRITE(GEN7_MEDIA_MAX_REQ_COUNT, s->gfx_max_req_count);
 
 	I915_WRITE(RENDER_HWS_PGA_GEN7,	s->render_hwsp);
 	I915_WRITE(GAM_ECOCHK,		s->ecochk);
@@ -1202,7 +1234,6 @@ static void vlv_restore_gunit_s0ix_state(struct drm_i915_private *dev_priv)
 	/* Gunit-Display CZ domain, 0x182028-0x1821CF */
 	I915_WRITE(VLV_GU_CTL0,			s->gu_ctl0);
 	I915_WRITE(VLV_GU_CTL1,			s->gu_ctl1);
-	I915_WRITE(VLV_PCBR,			s->pcbr);
 	I915_WRITE(VLV_GUNIT_CLOCK_GATE2,	s->clock_gate_dis2);
 }
 
@@ -1211,7 +1242,19 @@ int vlv_force_gfx_clock(struct drm_i915_private *dev_priv, bool force_on)
 	u32 val;
 	int err;
 
+	val = I915_READ(VLV_GTLC_SURVIVABILITY_REG);
+	WARN_ON(!!(val & VLV_GFX_CLK_FORCE_ON_BIT) == force_on);
+
 #define COND (I915_READ(VLV_GTLC_SURVIVABILITY_REG) & VLV_GFX_CLK_STATUS_BIT)
+	/* Wait for a previous force-off to settle */
+	if (force_on) {
+		err = wait_for(!COND, 20);
+		if (err) {
+			DRM_ERROR("timeout waiting for GFX clock force-off (%08x)\n",
+				  I915_READ(VLV_GTLC_SURVIVABILITY_REG));
+			return err;
+		}
+	}
 
 	val = I915_READ(VLV_GTLC_SURVIVABILITY_REG);
 	val &= ~VLV_GFX_CLK_FORCE_ON_BIT;
@@ -1291,7 +1334,7 @@ static void vlv_check_no_gt_access(struct drm_i915_private *dev_priv)
 	I915_WRITE(VLV_GTLC_PW_STATUS, VLV_GTLC_ALLOWWAKEERR);
 }
 
-static int vlv_runtime_suspend(struct drm_i915_private *dev_priv)
+static int vlv_suspend_complete(struct drm_i915_private *dev_priv)
 {
 	u32 mask;
 	int err;
@@ -1331,7 +1374,8 @@ err1:
 	return err;
 }
 
-static int vlv_runtime_resume(struct drm_i915_private *dev_priv)
+static int vlv_resume_prepare(struct drm_i915_private *dev_priv,
+				bool rpm_resume)
 {
 	struct drm_device *dev = dev_priv->dev;
 	int err;
@@ -1356,8 +1400,10 @@ static int vlv_runtime_resume(struct drm_i915_private *dev_priv)
 
 	vlv_check_no_gt_access(dev_priv);
 
-	intel_init_clock_gating(dev);
-	i915_gem_restore_fences(dev);
+	if (rpm_resume) {
+		intel_init_clock_gating(dev);
+		i915_gem_restore_fences(dev);
+	}
 
 	return ret;
 }
@@ -1372,7 +1418,9 @@ static int intel_runtime_suspend(struct device *device)
 	if (WARN_ON_ONCE(!(dev_priv->rps.enabled && intel_enable_rc6(dev))))
 		return -ENODEV;
 
-	WARN_ON(!HAS_RUNTIME_PM(dev));
+	if (WARN_ON_ONCE(!HAS_RUNTIME_PM(dev)))
+		return -ENODEV;
+
 	assert_force_wake_inactive(dev_priv);
 
 	DRM_DEBUG_KMS("Suspending device\n");
@@ -1409,17 +1457,7 @@ static int intel_runtime_suspend(struct device *device)
 	cancel_work_sync(&dev_priv->rps.work);
 	intel_runtime_pm_disable_interrupts(dev);
 
-	if (IS_GEN6(dev)) {
-		ret = 0;
-	} else if (IS_HASWELL(dev) || IS_BROADWELL(dev)) {
-		ret = hsw_runtime_suspend(dev_priv);
-	} else if (IS_VALLEYVIEW(dev)) {
-		ret = vlv_runtime_suspend(dev_priv);
-	} else {
-		ret = -ENODEV;
-		WARN_ON(1);
-	}
-
+	ret = intel_suspend_complete(dev_priv);
 	if (ret) {
 		DRM_ERROR("Runtime suspend failed, disabling it (%d)\n", ret);
 		intel_runtime_pm_restore_interrupts(dev);
@@ -1431,13 +1469,29 @@ static int intel_runtime_suspend(struct device *device)
 	dev_priv->pm.suspended = true;
 
 	/*
-	 * current versions of firmware which depend on this opregion
-	 * notification have repurposed the D1 definition to mean
-	 * "runtime suspended" vs. what you would normally expect (D3)
-	 * to distinguish it from notifications that might be sent
-	 * via the suspend path.
+	 * FIXME: We really should find a document that references the arguments
+	 * used below!
 	 */
-	intel_opregion_notify_adapter(dev, PCI_D1);
+	if (IS_HASWELL(dev)) {
+		/*
+		 * current versions of firmware which depend on this opregion
+		 * notification have repurposed the D1 definition to mean
+		 * "runtime suspended" vs. what you would normally expect (D3)
+		 * to distinguish it from notifications that might be sent via
+		 * the suspend path.
+		 */
+		intel_opregion_notify_adapter(dev, PCI_D1);
+	} else {
+		/*
+		 * On Broadwell, if we use PCI_D1 the PCH DDI ports will stop
+		 * being detected, and the call we do at intel_runtime_resume()
+		 * won't be able to restore them. Since PCI_D3hot matches the
+		 * actual specification and appears to be working, use it. Let's
+		 * assume the other non-Haswell platforms will stay the same as
+		 * Broadwell.
+		 */
+		intel_opregion_notify_adapter(dev, PCI_D3hot);
+	}
 
 	DRM_DEBUG_KMS("Device suspended\n");
 	return 0;
@@ -1450,24 +1504,15 @@ static int intel_runtime_resume(struct device *device)
 	struct drm_i915_private *dev_priv = dev->dev_private;
 	int ret;
 
-	WARN_ON(!HAS_RUNTIME_PM(dev));
+	if (WARN_ON_ONCE(!HAS_RUNTIME_PM(dev)))
+		return -ENODEV;
 
 	DRM_DEBUG_KMS("Resuming device\n");
 
 	intel_opregion_notify_adapter(dev, PCI_D0);
 	dev_priv->pm.suspended = false;
 
-	if (IS_GEN6(dev)) {
-		ret = snb_runtime_resume(dev_priv);
-	} else if (IS_HASWELL(dev) || IS_BROADWELL(dev)) {
-		ret = hsw_runtime_resume(dev_priv);
-	} else if (IS_VALLEYVIEW(dev)) {
-		ret = vlv_runtime_resume(dev_priv);
-	} else {
-		WARN_ON(1);
-		ret = -ENODEV;
-	}
-
+	ret = intel_resume_prepare(dev_priv, true);
 	/*
 	 * No point of rolling back things in case of an error, as the best
 	 * we can do is to hope that things will still work (and disable RPM).
@@ -1486,12 +1531,55 @@ static int intel_runtime_resume(struct device *device)
 	return ret;
 }
 
+/*
+ * This function implements common functionality of runtime and system
+ * suspend sequence.
+ */
+static int intel_suspend_complete(struct drm_i915_private *dev_priv)
+{
+	struct drm_device *dev = dev_priv->dev;
+	int ret;
+
+	if (IS_HASWELL(dev) || IS_BROADWELL(dev))
+		ret = hsw_suspend_complete(dev_priv);
+	else if (IS_VALLEYVIEW(dev))
+		ret = vlv_suspend_complete(dev_priv);
+	else
+		ret = 0;
+
+	return ret;
+}
+
+/*
+ * This function implements common functionality of runtime and system
+ * resume sequence. Variable rpm_resume used for implementing different
+ * code paths.
+ */
+static int intel_resume_prepare(struct drm_i915_private *dev_priv,
+				bool rpm_resume)
+{
+	struct drm_device *dev = dev_priv->dev;
+	int ret;
+
+	if (IS_GEN6(dev))
+		ret = snb_resume_prepare(dev_priv, rpm_resume);
+	else if (IS_HASWELL(dev) || IS_BROADWELL(dev))
+		ret = hsw_resume_prepare(dev_priv, rpm_resume);
+	else if (IS_VALLEYVIEW(dev))
+		ret = vlv_resume_prepare(dev_priv, rpm_resume);
+	else
+		ret = 0;
+
+	return ret;
+}
+
 static const struct dev_pm_ops i915_pm_ops = {
 	.suspend = i915_pm_suspend,
 	.suspend_late = i915_pm_suspend_late,
 	.resume_early = i915_pm_resume_early,
 	.resume = i915_pm_resume,
 	.freeze = i915_pm_freeze,
+	.freeze_late = i915_pm_freeze_late,
 	.thaw_early = i915_pm_thaw_early,
 	.thaw = i915_pm_thaw,
 	.poweroff = i915_pm_poweroff,
@@ -1535,6 +1623,7 @@ static struct drm_driver driver = {
 	.lastclose = i915_driver_lastclose,
 	.preclose = i915_driver_preclose,
 	.postclose = i915_driver_postclose,
+	.set_busid = drm_pci_set_busid,
 
 	/* Used in place of i915_pm_ops for non-DRIVER_MODESET */
 	.suspend = i915_suspend,
@@ -1626,6 +1715,8 @@ static void __exit i915_exit(void)
 module_init(i915_init);
 module_exit(i915_exit);
 
-MODULE_AUTHOR(DRIVER_AUTHOR);
+MODULE_AUTHOR("Tungsten Graphics, Inc.");
+MODULE_AUTHOR("Intel Corporation");
+
 MODULE_DESCRIPTION(DRIVER_DESC);
 MODULE_LICENSE("GPL and additional rights");

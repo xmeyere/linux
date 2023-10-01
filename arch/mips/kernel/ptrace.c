@@ -24,7 +24,6 @@
 #include <linux/ptrace.h>
 #include <linux/regset.h>
 #include <linux/smp.h>
-#include <linux/user.h>
 #include <linux/security.h>
 #include <linux/tracehook.h>
 #include <linux/audit.h>
@@ -33,7 +32,6 @@
 
 #include <asm/byteorder.h>
 #include <asm/cpu.h>
-#include <asm/cpu-info.h>
 #include <asm/dsp.h>
 #include <asm/fpu.h>
 #include <asm/mipsregs.h>
@@ -48,25 +46,6 @@
 #define CREATE_TRACE_POINTS
 #include <trace/events/syscalls.h>
 
-static void init_fp_ctx(struct task_struct *target)
-{
-	/* If FP has been used then the target already has context */
-	if (tsk_used_math(target))
-		return;
-
-	/* Begin with data registers set to all 1s... */
-	memset(&target->thread.fpu.fpr, ~0, sizeof(target->thread.fpu.fpr));
-
-	target->thread.fpu.fcr31 = boot_cpu_data.fpu_csr31;
-
-	/*
-	 * Record that the target has "used" math, such that the context
-	 * just initialised, and any modifications made by the caller,
-	 * aren't discarded.
-	 */
-	set_stopped_child_used_math(target);
-}
-
 /*
  * Called by kernel/ptrace.c when detaching..
  *
@@ -79,26 +58,11 @@ void ptrace_disable(struct task_struct *child)
 }
 
 /*
- * Poke at FCSR according to its mask.  Set the Cause bits even
- * if a corresponding Enable bit is set.  This will be noticed at
- * the time the thread is switched to and SIGFPE thrown accordingly.
- */
-static void ptrace_setfcr31(struct task_struct *child, u32 value)
-{
-	u32 fcr31;
-	u32 mask;
-
-	fcr31 = child->thread.fpu.fcr31;
-	mask = boot_cpu_data.fpu_msk31;
-	child->thread.fpu.fcr31 = (value & ~mask) | (fcr31 & mask);
-}
-
-/*
  * Read a general register set.	 We always use the 64-bit format, even
  * for 32-bit kernels and for 32-bit processes on a 64-bit kernel.
  * Registers are sign extended to fill the available space.
  */
-int ptrace_getregs(struct task_struct *child, __s64 __user *data)
+int ptrace_getregs(struct task_struct *child, struct user_pt_regs __user *data)
 {
 	struct pt_regs *regs;
 	int i;
@@ -109,13 +73,13 @@ int ptrace_getregs(struct task_struct *child, __s64 __user *data)
 	regs = task_pt_regs(child);
 
 	for (i = 0; i < 32; i++)
-		__put_user((long)regs->regs[i], data + i);
-	__put_user((long)regs->lo, data + EF_LO - EF_R0);
-	__put_user((long)regs->hi, data + EF_HI - EF_R0);
-	__put_user((long)regs->cp0_epc, data + EF_CP0_EPC - EF_R0);
-	__put_user((long)regs->cp0_badvaddr, data + EF_CP0_BADVADDR - EF_R0);
-	__put_user((long)regs->cp0_status, data + EF_CP0_STATUS - EF_R0);
-	__put_user((long)regs->cp0_cause, data + EF_CP0_CAUSE - EF_R0);
+		__put_user((long)regs->regs[i], (__s64 __user *)&data->regs[i]);
+	__put_user((long)regs->lo, (__s64 __user *)&data->lo);
+	__put_user((long)regs->hi, (__s64 __user *)&data->hi);
+	__put_user((long)regs->cp0_epc, (__s64 __user *)&data->cp0_epc);
+	__put_user((long)regs->cp0_badvaddr, (__s64 __user *)&data->cp0_badvaddr);
+	__put_user((long)regs->cp0_status, (__s64 __user *)&data->cp0_status);
+	__put_user((long)regs->cp0_cause, (__s64 __user *)&data->cp0_cause);
 
 	return 0;
 }
@@ -125,7 +89,7 @@ int ptrace_getregs(struct task_struct *child, __s64 __user *data)
  * the 64-bit format.  On a 32-bit kernel only the lower order half
  * (according to endianness) will be used.
  */
-int ptrace_setregs(struct task_struct *child, __s64 __user *data)
+int ptrace_setregs(struct task_struct *child, struct user_pt_regs __user *data)
 {
 	struct pt_regs *regs;
 	int i;
@@ -136,10 +100,10 @@ int ptrace_setregs(struct task_struct *child, __s64 __user *data)
 	regs = task_pt_regs(child);
 
 	for (i = 0; i < 32; i++)
-		__get_user(regs->regs[i], data + i);
-	__get_user(regs->lo, data + EF_LO - EF_R0);
-	__get_user(regs->hi, data + EF_HI - EF_R0);
-	__get_user(regs->cp0_epc, data + EF_CP0_EPC - EF_R0);
+		__get_user(regs->regs[i], (__s64 __user *)&data->regs[i]);
+	__get_user(regs->lo, (__s64 __user *)&data->lo);
+	__get_user(regs->hi, (__s64 __user *)&data->hi);
+	__get_user(regs->cp0_epc, (__s64 __user *)&data->cp0_epc);
 
 	/* badvaddr, status, and cause may not be written.  */
 
@@ -173,13 +137,11 @@ int ptrace_setfpregs(struct task_struct *child, __u32 __user *data)
 {
 	union fpureg *fregs;
 	u64 fpr_val;
-	u32 value;
 	int i;
 
 	if (!access_ok(VERIFY_READ, data, 33 * 8))
 		return -EIO;
 
-	init_fp_ctx(child);
 	fregs = get_fpu_regs(child);
 
 	for (i = 0; i < 32; i++) {
@@ -187,8 +149,8 @@ int ptrace_setfpregs(struct task_struct *child, __u32 __user *data)
 		set_fpr64(&fregs[i], 0, fpr_val);
 	}
 
-	__get_user(value, data + 64);
-	ptrace_setfcr31(child, value);
+	__get_user(child->thread.fpu.fcr31, data + 64);
+	child->thread.fpu.fcr31 &= ~FPU_CSR_ALL_X;
 
 	/* FIR may not be written.  */
 
@@ -438,37 +400,25 @@ static int gpr64_set(struct task_struct *target,
 
 #endif /* CONFIG_64BIT */
 
-/*
- * Copy the floating-point context to the supplied NT_PRFPREG buffer,
- * !CONFIG_CPU_HAS_MSA variant.  FP context's general register slots
- * correspond 1:1 to buffer slots.  Only general registers are copied.
- */
-static int fpr_get_fpa(struct task_struct *target,
-		       unsigned int *pos, unsigned int *count,
-		       void **kbuf, void __user **ubuf)
+static int fpr_get(struct task_struct *target,
+		   const struct user_regset *regset,
+		   unsigned int pos, unsigned int count,
+		   void *kbuf, void __user *ubuf)
 {
-	return user_regset_copyout(pos, count, kbuf, ubuf,
-				   &target->thread.fpu,
-				   0, NUM_FPU_REGS * sizeof(elf_fpreg_t));
-}
-
-/*
- * Copy the floating-point context to the supplied NT_PRFPREG buffer,
- * CONFIG_CPU_HAS_MSA variant.  Only lower 64 bits of FP context's
- * general register slots are copied to buffer slots.  Only general
- * registers are copied.
- */
-static int fpr_get_msa(struct task_struct *target,
-		       unsigned int *pos, unsigned int *count,
-		       void **kbuf, void __user **ubuf)
-{
-	unsigned int i;
-	u64 fpr_val;
+	unsigned i;
 	int err;
+	u64 fpr_val;
+
+	/* XXX fcr31  */
+
+	if (sizeof(target->thread.fpu.fpr[i]) == sizeof(elf_fpreg_t))
+		return user_regset_copyout(&pos, &count, &kbuf, &ubuf,
+					   &target->thread.fpu,
+					   0, sizeof(elf_fpregset_t));
 
 	for (i = 0; i < NUM_FPU_REGS; i++) {
 		fpr_val = get_fpr64(&target->thread.fpu.fpr[i], 0);
-		err = user_regset_copyout(pos, count, kbuf, ubuf,
+		err = user_regset_copyout(&pos, &count, &kbuf, &ubuf,
 					  &fpr_val, i * sizeof(elf_fpreg_t),
 					  (i + 1) * sizeof(elf_fpreg_t));
 		if (err)
@@ -478,71 +428,24 @@ static int fpr_get_msa(struct task_struct *target,
 	return 0;
 }
 
-/*
- * Copy the floating-point context to the supplied NT_PRFPREG buffer.
- * Choose the appropriate helper for general registers, and then copy
- * the FCSR and FIR registers separately.
- */
-static int fpr_get(struct task_struct *target,
+static int fpr_set(struct task_struct *target,
 		   const struct user_regset *regset,
 		   unsigned int pos, unsigned int count,
-		   void *kbuf, void __user *ubuf)
+		   const void *kbuf, const void __user *ubuf)
 {
-	const int fcr31_pos = NUM_FPU_REGS * sizeof(elf_fpreg_t);
-	const int fir_pos = fcr31_pos + sizeof(u32);
+	unsigned i;
 	int err;
-
-	if (sizeof(target->thread.fpu.fpr[0]) == sizeof(elf_fpreg_t))
-		err = fpr_get_fpa(target, &pos, &count, &kbuf, &ubuf);
-	else
-		err = fpr_get_msa(target, &pos, &count, &kbuf, &ubuf);
-	if (err)
-		return err;
-
-	err = user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				  &target->thread.fpu.fcr31,
-				  fcr31_pos, fcr31_pos + sizeof(u32));
-	if (err)
-		return err;
-
-	err = user_regset_copyout(&pos, &count, &kbuf, &ubuf,
-				  &boot_cpu_data.fpu_id,
-				  fir_pos, fir_pos + sizeof(u32));
-
-	return err;
-}
-
-/*
- * Copy the supplied NT_PRFPREG buffer to the floating-point context,
- * !CONFIG_CPU_HAS_MSA variant.   Buffer slots correspond 1:1 to FP
- * context's general register slots.  Only general registers are copied.
- */
-static int fpr_set_fpa(struct task_struct *target,
-		       unsigned int *pos, unsigned int *count,
-		       const void **kbuf, const void __user **ubuf)
-{
-	return user_regset_copyin(pos, count, kbuf, ubuf,
-				  &target->thread.fpu,
-				  0, NUM_FPU_REGS * sizeof(elf_fpreg_t));
-}
-
-/*
- * Copy the supplied NT_PRFPREG buffer to the floating-point context,
- * CONFIG_CPU_HAS_MSA variant.  Buffer slots are copied to lower 64
- * bits only of FP context's general register slots.  Only general
- * registers are copied.
- */
-static int fpr_set_msa(struct task_struct *target,
-		       unsigned int *pos, unsigned int *count,
-		       const void **kbuf, const void __user **ubuf)
-{
-	unsigned int i;
 	u64 fpr_val;
-	int err;
 
-	BUILD_BUG_ON(sizeof(fpr_val) != sizeof(elf_fpreg_t));
-	for (i = 0; i < NUM_FPU_REGS && *count >= sizeof(elf_fpreg_t); i++) {
-		err = user_regset_copyin(pos, count, kbuf, ubuf,
+	/* XXX fcr31  */
+
+	if (sizeof(target->thread.fpu.fpr[i]) == sizeof(elf_fpreg_t))
+		return user_regset_copyin(&pos, &count, &kbuf, &ubuf,
+					  &target->thread.fpu,
+					  0, sizeof(elf_fpregset_t));
+
+	for (i = 0; i < NUM_FPU_REGS; i++) {
+		err = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
 					 &fpr_val, i * sizeof(elf_fpreg_t),
 					 (i + 1) * sizeof(elf_fpreg_t));
 		if (err)
@@ -551,60 +454,6 @@ static int fpr_set_msa(struct task_struct *target,
 	}
 
 	return 0;
-}
-
-/*
- * Copy the supplied NT_PRFPREG buffer to the floating-point context.
- * Choose the appropriate helper for general registers, and then copy
- * the FCSR register separately.  Ignore the incoming FIR register
- * contents though, as the register is read-only.
- *
- * We optimize for the case where `count % sizeof(elf_fpreg_t) == 0',
- * which is supposed to have been guaranteed by the kernel before
- * calling us, e.g. in `ptrace_regset'.  We enforce that requirement,
- * so that we can safely avoid preinitializing temporaries for
- * partial register writes.
- */
-static int fpr_set(struct task_struct *target,
-		   const struct user_regset *regset,
-		   unsigned int pos, unsigned int count,
-		   const void *kbuf, const void __user *ubuf)
-{
-	const int fcr31_pos = NUM_FPU_REGS * sizeof(elf_fpreg_t);
-	const int fir_pos = fcr31_pos + sizeof(u32);
-	u32 fcr31;
-	int err;
-
-	BUG_ON(count % sizeof(elf_fpreg_t));
-
-	if (pos + count > sizeof(elf_fpregset_t))
-		return -EIO;
-
-	init_fp_ctx(target);
-
-	if (sizeof(target->thread.fpu.fpr[0]) == sizeof(elf_fpreg_t))
-		err = fpr_set_fpa(target, &pos, &count, &kbuf, &ubuf);
-	else
-		err = fpr_set_msa(target, &pos, &count, &kbuf, &ubuf);
-	if (err)
-		return err;
-
-	if (count > 0) {
-		err = user_regset_copyin(&pos, &count, &kbuf, &ubuf,
-					 &fcr31,
-					 fcr31_pos, fcr31_pos + sizeof(u32));
-		if (err)
-			return err;
-
-		ptrace_setfcr31(target, fcr31);
-	}
-
-	if (count > 0)
-		err = user_regset_copyin_ignore(&pos, &count, &kbuf, &ubuf,
-						fir_pos,
-						fir_pos + sizeof(u32));
-
-	return err;
 }
 
 enum mips_regset {
@@ -672,19 +521,6 @@ static const struct user_regset_view user_mips64_view = {
 	.n		= ARRAY_SIZE(mips64_regsets),
 };
 
-#ifdef CONFIG_MIPS32_N32
-
-static const struct user_regset_view user_mipsn32_view = {
-	.name		= "mipsn32",
-	.e_flags	= EF_MIPS_ABI2,
-	.e_machine	= ELF_ARCH,
-	.ei_osabi	= ELF_OSABI,
-	.regsets	= mips64_regsets,
-	.n		= ARRAY_SIZE(mips64_regsets),
-};
-
-#endif /* CONFIG_MIPS32_N32 */
-
 #endif /* CONFIG_64BIT */
 
 const struct user_regset_view *task_user_regset_view(struct task_struct *task)
@@ -695,10 +531,6 @@ const struct user_regset_view *task_user_regset_view(struct task_struct *task)
 #ifdef CONFIG_MIPS32_O32
 	if (test_tsk_thread_flag(task, TIF_32BIT_REGS))
 		return &user_mips_view;
-#endif
-#ifdef CONFIG_MIPS32_N32
-	if (test_tsk_thread_flag(task, TIF_32BIT_ADDR))
-		return &user_mipsn32_view;
 #endif
 	return &user_mips64_view;
 #endif
@@ -741,7 +573,7 @@ long arch_ptrace(struct task_struct *child, long request,
 			fregs = get_fpu_regs(child);
 
 #ifdef CONFIG_32BIT
-			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
+			if (test_thread_flag(TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
@@ -752,7 +584,7 @@ long arch_ptrace(struct task_struct *child, long request,
 				break;
 			}
 #endif
-			tmp = get_fpr64(&fregs[addr - FPR_BASE], 0);
+			tmp = get_fpr32(&fregs[addr - FPR_BASE], 0);
 			break;
 		case PC:
 			tmp = regs->cp0_epc;
@@ -790,7 +622,7 @@ long arch_ptrace(struct task_struct *child, long request,
 				goto out;
 			}
 			dregs = __get_dsp_regs(child);
-			tmp = dregs[addr - DSP_BASE];
+			tmp = (unsigned long) (dregs[addr - DSP_BASE]);
 			break;
 		}
 		case DSP_CONTROL:
@@ -828,9 +660,14 @@ long arch_ptrace(struct task_struct *child, long request,
 		case FPR_BASE ... FPR_BASE + 31: {
 			union fpureg *fregs = get_fpu_regs(child);
 
-			init_fp_ctx(child);
+			if (!tsk_used_math(child)) {
+				/* FP not yet used  */
+				memset(&child->thread.fpu, ~0,
+				       sizeof(child->thread.fpu));
+				child->thread.fpu.fcr31 = 0;
+			}
 #ifdef CONFIG_32BIT
-			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
+			if (test_thread_flag(TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
@@ -859,7 +696,7 @@ long arch_ptrace(struct task_struct *child, long request,
 			break;
 #endif
 		case FPC_CSR:
-			ptrace_setfcr31(child, data);
+			child->thread.fpu.fcr31 = data & ~FPU_CSR_ALL_X;
 			break;
 		case DSP_BASE ... DSP_BASE + 5: {
 			dspreg_t *dregs;
@@ -933,7 +770,7 @@ asmlinkage long syscall_trace_enter(struct pt_regs *regs, long syscall)
 	long ret = 0;
 	user_exit();
 
-	if (secure_computing(syscall) == -1)
+	if (secure_computing() == -1)
 		return -1;
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE) &&
@@ -943,9 +780,7 @@ asmlinkage long syscall_trace_enter(struct pt_regs *regs, long syscall)
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
 		trace_sys_enter(regs, regs->regs[2]);
 
-	audit_syscall_entry(syscall_get_arch(),
-			    syscall,
-			    regs->regs[4], regs->regs[5],
+	audit_syscall_entry(syscall, regs->regs[4], regs->regs[5],
 			    regs->regs[6], regs->regs[7]);
 	return syscall;
 }
@@ -966,7 +801,7 @@ asmlinkage void syscall_trace_leave(struct pt_regs *regs)
 	audit_syscall_exit(regs);
 
 	if (unlikely(test_thread_flag(TIF_SYSCALL_TRACEPOINT)))
-		trace_sys_exit(regs, regs_return_value(regs));
+		trace_sys_exit(regs, regs->regs[2]);
 
 	if (test_thread_flag(TIF_SYSCALL_TRACE))
 		tracehook_report_syscall_exit(regs, 0);

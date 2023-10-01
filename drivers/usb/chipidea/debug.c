@@ -208,7 +208,7 @@ static const struct file_operations ci_requests_fops = {
 	.release	= single_release,
 };
 
-int ci_otg_show(struct seq_file *s, void *unused)
+static int ci_otg_show(struct seq_file *s, void *unused)
 {
 	struct ci_hdrc *ci = s->private;
 	struct otg_fsm *fsm;
@@ -286,8 +286,7 @@ static int ci_role_show(struct seq_file *s, void *data)
 {
 	struct ci_hdrc *ci = s->private;
 
-	if (ci->role != CI_ROLE_END)
-		seq_printf(s, "%s\n", ci_role(ci)->name);
+	seq_printf(s, "%s\n", ci_role(ci)->name);
 
 	return 0;
 }
@@ -313,10 +312,8 @@ static ssize_t ci_role_write(struct file *file, const char __user *ubuf,
 	if (role == CI_ROLE_END || role == ci->role)
 		return -EINVAL;
 
-	disable_irq(ci->irq);
 	ci_role_stop(ci);
 	ret = ci_role_start(ci, role);
-	enable_irq(ci->irq);
 
 	return ret ? ret : count;
 }
@@ -334,7 +331,7 @@ static const struct file_operations ci_role_fops = {
 	.release	= single_release,
 };
 
-int ci_registers_show(struct seq_file *s, void *unused)
+static int ci_registers_show(struct seq_file *s, void *unused)
 {
 	struct ci_hdrc *ci = s->private;
 	u32 tmp_reg;

@@ -440,7 +440,7 @@ static umode_t ideapad_is_visible(struct kobject *kobj,
 	return supported ? attr->mode : 0;
 }
 
-static struct attribute_group ideapad_attribute_group = {
+static const struct attribute_group ideapad_attribute_group = {
 	.is_visible = ideapad_is_visible,
 	.attrs = ideapad_attributes
 };
@@ -455,7 +455,7 @@ struct ideapad_rfk_data {
 	int type;
 };
 
-const struct ideapad_rfk_data ideapad_rfk_data[] = {
+static const struct ideapad_rfk_data ideapad_rfk_data[] = {
 	{ "ideapad_wlan",    CFG_WIFI_BIT, VPCCMD_W_WIFI, RFKILL_TYPE_WLAN },
 	{ "ideapad_bluetooth", CFG_BT_BIT, VPCCMD_W_BT, RFKILL_TYPE_BLUETOOTH },
 	{ "ideapad_3g",        CFG_3G_BIT, VPCCMD_W_3G, RFKILL_TYPE_WWAN },
@@ -464,9 +464,8 @@ const struct ideapad_rfk_data ideapad_rfk_data[] = {
 static int ideapad_rfk_set(void *data, bool blocked)
 {
 	struct ideapad_rfk_priv *priv = data;
-	int opcode = ideapad_rfk_data[priv->dev].opcode;
 
-	return write_ec_cmd(priv->priv->adev->handle, opcode, !blocked);
+	return write_ec_cmd(priv->priv->adev->handle, priv->dev, !blocked);
 }
 
 static struct rfkill_ops ideapad_rfk_ops = {
@@ -830,42 +829,7 @@ static void ideapad_acpi_notify(acpi_handle handle, u32 event, void *data)
  * always results in 0 on these models, causing ideapad_laptop to wrongly
  * report all radios as hardware-blocked.
  */
-static struct dmi_system_id no_hw_rfkill_list[] = {
-	{
-		.ident = "Lenovo G50-30",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo G50-30"),
-		},
-	},
-	{
-		.ident = "Lenovo ideapad Y700-15ISK",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo ideapad Y700-15ISK"),
-		},
-	},
-	{
-		.ident = "Lenovo ideapad Y700 Touch-15ISK",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo ideapad Y700 Touch-15ISK"),
-		},
-	},
-	{
-		.ident = "Lenovo ideapad Y700-17ISK",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo ideapad Y700-17ISK"),
-		},
-	},
-	{
-		.ident = "Lenovo Legion Y520-15IKB",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo Y520-15IKB"),
-		},
-	},
+static const struct dmi_system_id no_hw_rfkill_list[] = {
 	{
 		.ident = "Lenovo Yoga 2 11 / 13 / Pro",
 		.matches = {
@@ -874,31 +838,10 @@ static struct dmi_system_id no_hw_rfkill_list[] = {
 		},
 	},
 	{
-		.ident = "Lenovo Yoga 3 14",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo Yoga 3 14"),
-		},
-	},
-	{
 		.ident = "Lenovo Yoga 3 Pro 1370",
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo YOGA 3 Pro-1370"),
-		},
-	},
-	{
-		.ident = "Lenovo Yoga 700",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo YOGA 700"),
-		},
-	},
-	{
-		.ident = "Lenovo Yoga 900",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "LENOVO"),
-			DMI_MATCH(DMI_PRODUCT_VERSION, "Lenovo YOGA 900"),
 		},
 	},
 	{}

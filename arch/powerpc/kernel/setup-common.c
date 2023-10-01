@@ -81,8 +81,6 @@ EXPORT_SYMBOL_GPL(boot_cpuid);
 
 unsigned long klimit = (unsigned long) _end;
 
-char cmd_line[COMMAND_LINE_SIZE];
-
 /*
  * This still seems to be needed... -- paulus
  */ 
@@ -94,6 +92,9 @@ struct screen_info screen_info = {
 	.orig_video_isVGA = 1,
 	.orig_video_points = 16
 };
+#if defined(CONFIG_FB_VGA16_MODULE)
+EXPORT_SYMBOL(screen_info);
+#endif
 
 /* Variables required to store legacy IO irq routing */
 int of_i8042_kbd_irq;
@@ -216,6 +217,14 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 	unsigned short maj;
 	unsigned short min;
 
+	/* We only show online cpus: disable preempt (overzealous, I
+	 * knew) to prevent cpu going down. */
+	preempt_disable();
+	if (!cpu_online(cpu_id)) {
+		preempt_enable();
+		return 0;
+	}
+
 #ifdef CONFIG_SMP
 	pvr = per_cpu(cpu_pvr, cpu_id);
 #else
@@ -320,6 +329,9 @@ static int show_cpuinfo(struct seq_file *m, void *v)
 #ifdef CONFIG_SMP
 	seq_printf(m, "\n");
 #endif
+
+	preempt_enable();
+
 	/* If this is the last cpu, print the summary */
 	if (cpumask_next(cpu_id, cpu_online_mask) >= nr_cpu_ids)
 		show_cpuinfo_summary(m);
@@ -371,7 +383,7 @@ void __init check_for_initrd(void)
 		initrd_start = initrd_end = 0;
 
 	if (initrd_start)
-		printk("Found initrd at 0x%lx:0x%lx\n", initrd_start, initrd_end);
+		pr_info("Found initrd at 0x%lx:0x%lx\n", initrd_start, initrd_end);
 
 	DBG(" <- check_for_initrd()\n");
 #endif /* CONFIG_BLK_DEV_INITRD */
@@ -445,17 +457,19 @@ void __init smp_setup_cpu_maps(void)
 		intserv = of_get_property(dn, "ibm,ppc-interrupt-server#s",
 				&len);
 		if (intserv) {
-			nthreads = len / sizeof(int);
 			DBG("    ibm,ppc-interrupt-server#s -> %d threads\n",
 			    nthreads);
 		} else {
 			DBG("    no ibm,ppc-interrupt-server#s -> 1 thread\n");
-			intserv = of_get_property(dn, "reg", NULL);
+			intserv = of_get_property(dn, "reg", &len);
 			if (!intserv) {
 				cpu_be = cpu_to_be32(cpu);
 				intserv = &cpu_be;	/* assume logical == phys */
+				len = 4;
 			}
 		}
+
+		nthreads = len / sizeof(int);
 
 		for (j = 0; j < nthreads && cpu < nr_cpu_ids; j++) {
 			bool avail;

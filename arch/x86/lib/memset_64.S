@@ -2,7 +2,7 @@
 
 #include <linux/linkage.h>
 #include <asm/dwarf2.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 #include <asm/alternative-asm.h>
 
 /*
@@ -147,8 +147,8 @@ ENDPROC(__memset)
          * feature to implement the right patch order.
 	 */
 	.section .altinstructions,"a"
-	altinstruction_entry __memset,.Lmemset_c,X86_FEATURE_REP_GOOD,\
-			     .Lfinal-__memset,.Lmemset_e-.Lmemset_c,0
-	altinstruction_entry __memset,.Lmemset_c_e,X86_FEATURE_ERMS, \
-			     .Lfinal-__memset,.Lmemset_e_e-.Lmemset_c_e,0
+	altinstruction_entry memset,.Lmemset_c,X86_FEATURE_REP_GOOD,\
+			     .Lfinal-memset,.Lmemset_e-.Lmemset_c
+	altinstruction_entry memset,.Lmemset_c_e,X86_FEATURE_ERMS, \
+			     .Lfinal-memset,.Lmemset_e_e-.Lmemset_c_e
 	.previous

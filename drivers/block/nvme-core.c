@@ -1916,6 +1916,7 @@ static struct nvme_ns *nvme_alloc_ns(struct nvme_dev *dev, unsigned nsid,
 	ns->queue->queue_flags = QUEUE_FLAG_DEFAULT;
 	queue_flag_set_unlocked(QUEUE_FLAG_NOMERGES, ns->queue);
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, ns->queue);
+	queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, ns->queue);
 	blk_queue_make_request(ns->queue, nvme_make_request);
 	ns->dev = dev;
 	ns->queue->queuedata = ns;
@@ -2196,7 +2197,7 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	result = queue_request_irq(dev, adminq, adminq->irqname);
 	if (result) {
 		adminq->q_suspended = 1;
-		return result;
+		goto free_queues;
 	}
 
 	/* Free previously allocated queues that are no longer usable */
@@ -2204,6 +2205,10 @@ static int nvme_setup_io_queues(struct nvme_dev *dev)
 	nvme_assign_io_queues(dev);
 
 	return 0;
+
+ free_queues:
+	nvme_free_queues(dev, 1);
+	return result;
 }
 
 /*

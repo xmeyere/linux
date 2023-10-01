@@ -113,20 +113,8 @@ static int adl_pci7x3x_do_insn_bits(struct comedi_device *dev,
 {
 	unsigned long reg = (unsigned long)s->private;
 
-	if (comedi_dio_update_state(s, data)) {
-		unsigned int val = s->state;
-
-		if (s->n_chan == 16) {
-			/*
-			 * It seems the PCI-7230 needs the 16-bit DO state
-			 * to be shifted left by 16 bits before being written
-			 * to the 32-bit register.  Set the value in both
-			 * halves of the register to be sure.
-			 */
-			val |= val << 16;
-		}
-		outl(val, dev->iobase + reg);
-	}
+	if (comedi_dio_update_state(s, data))
+		outl(s->state, dev->iobase + reg);
 
 	data[1] = s->state;
 
@@ -258,7 +246,7 @@ static struct comedi_driver adl_pci7x3x_driver = {
 	.driver_name	= "adl_pci7x3x",
 	.module		= THIS_MODULE,
 	.auto_attach	= adl_pci7x3x_auto_attach,
-	.detach		= comedi_pci_disable,
+	.detach		= comedi_pci_detach,
 };
 
 static int adl_pci7x3x_pci_probe(struct pci_dev *dev,

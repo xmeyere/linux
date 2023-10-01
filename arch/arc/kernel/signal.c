@@ -67,7 +67,7 @@ stash_usr_regs(struct rt_sigframe __user *sf, struct pt_regs *regs,
 	       sigset_t *set)
 {
 	int err;
-	err = __copy_to_user(&(sf->uc.uc_mcontext.regs.scratch), regs,
+	err = __copy_to_user(&(sf->uc.uc_mcontext.regs), regs,
 			     sizeof(sf->uc.uc_mcontext.regs.scratch));
 	err |= __copy_to_user(&sf->uc.uc_sigmask, set, sizeof(sigset_t));
 
@@ -80,12 +80,11 @@ static int restore_usr_regs(struct pt_regs *regs, struct rt_sigframe __user *sf)
 	int err;
 
 	err = __copy_from_user(&set, &sf->uc.uc_sigmask, sizeof(set));
-	err |= __copy_from_user(regs, &(sf->uc.uc_mcontext.regs.scratch),
-				sizeof(sf->uc.uc_mcontext.regs.scratch));
-	if (err)
-		return err;
+	if (!err)
+		set_current_blocked(&set);
 
-	set_current_blocked(&set);
+	err |= __copy_from_user(regs, &(sf->uc.uc_mcontext.regs),
+				sizeof(sf->uc.uc_mcontext.regs.scratch));
 
 	return err;
 }
@@ -132,15 +131,6 @@ SYSCALL_DEFINE0(rt_sigreturn)
 	/* Don't restart from sigreturn */
 	syscall_wont_restart(regs);
 
-	/*
-	 * Ensure that sigreturn always returns to user mode (in case the
-	 * regs saved on user stack got fudged between save and sigreturn)
-	 * Otherwise it is easy to panic the kernel with a custom
-	 * signal handler and/or restorer which clobberes the status32/ret
-	 * to return to a bogus location in kernel mode.
-	 */
-	regs->status32 |= STATUS_U_MASK;
-
 	return regs->r0;
 
 badframe:
@@ -151,16 +141,12 @@ badframe:
 /*
  * Determine which stack to use..
  */
-static inline void __user *get_sigframe(struct k_sigaction *ka,
+static inline void __user *get_sigframe(struct ksignal *ksig,
 					struct pt_regs *regs,
 					unsigned long framesize)
 {
-	unsigned long sp = regs->sp;
+	unsigned long sp = sigsp(regs->sp, ksig);
 	void __user *frame;
-
-	/* This is the X/Open sanctioned signal stack switching */
-	if ((ka->sa.sa_flags & SA_ONSTACK) && !sas_ss_flags(sp))
-		sp = current->sas_ss_sp + current->sas_ss_size;
 
 	/* No matter what happens, 'sp' must be word
 	 * aligned otherwise nasty things could happen
@@ -195,7 +181,7 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 	unsigned int magic = 0;
 	int err = 0;
 
-	sf = get_sigframe(&ksig->ka, regs, sizeof(struct rt_sigframe));
+	sf = get_sigframe(ksig, regs, sizeof(struct rt_sigframe));
 	if (!sf)
 		return 1;
 
@@ -243,11 +229,8 @@ setup_rt_frame(struct ksignal *ksig, sigset_t *set, struct pt_regs *regs)
 
 	/*
 	 * handler returns using sigreturn stub provided already by userpsace
-	 * If not, nuke the process right away
 	 */
-	if(!(ksig->ka.sa.sa_flags & SA_RESTORER))
-		return 1;
-
+	BUG_ON(!(ksig->ka.sa.sa_flags & SA_RESTORER));
 	regs->blink = (unsigned long)ksig->ka.sa.sa_restorer;
 
 	/* User Stack for signal handler will be above the frame just carved */
@@ -313,12 +296,12 @@ static void
 handle_signal(struct ksignal *ksig, struct pt_regs *regs)
 {
 	sigset_t *oldset = sigmask_to_save();
-	int failed;
+	int ret;
 
 	/* Set up the stack frame */
-	failed = setup_rt_frame(ksig, oldset, regs);
+	ret = setup_rt_frame(ksig, oldset, regs);
 
-	signal_setup_done(failed, ksig, 0);
+	signal_setup_done(ret, ksig, 0);
 }
 
 void do_signal(struct pt_regs *regs)

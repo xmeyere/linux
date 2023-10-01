@@ -272,11 +272,15 @@ struct vm_area_struct {
 
 	/*
 	 * For areas with an address space and backing store,
-	 * linkage into the address_space->i_mmap interval tree.
+	 * linkage into the address_space->i_mmap interval tree, or
+	 * linkage of vma in the address_space->i_mmap_nonlinear list.
 	 */
-	struct {
-		struct rb_node rb;
-		unsigned long rb_subtree_last;
+	union {
+		struct {
+			struct rb_node rb;
+			unsigned long rb_subtree_last;
+		} linear;
+		struct list_head nonlinear;
 	} shared;
 
 	/*
@@ -341,7 +345,7 @@ struct kioctx_table;
 struct mm_struct {
 	struct vm_area_struct *mmap;		/* list of VMAs */
 	struct rb_root mm_rb;
-	u64 vmacache_seqnum;                   /* per-thread vmacache */
+	u32 vmacache_seqnum;                   /* per-thread vmacache */
 #ifdef CONFIG_MMU
 	unsigned long (*get_unmapped_area) (struct file *filp,
 				unsigned long addr, unsigned long len,
@@ -415,7 +419,6 @@ struct mm_struct {
 	 */
 	struct task_struct __rcu *owner;
 #endif
-	struct user_namespace *user_ns;
 
 	/* store ref to file /proc/<pid>/exe symlink points to */
 	struct file *exe_file;
@@ -448,7 +451,7 @@ struct mm_struct {
 	 * can move process memory needs to flush the TLB when moving a
 	 * PROT_NONE or PROT_NUMA mapped page.
 	 */
-	atomic_t tlb_flush_pending;
+	bool tlb_flush_pending;
 #endif
 	struct uprobes_state uprobes_state;
 };
@@ -458,6 +461,7 @@ static inline void mm_init_cpumask(struct mm_struct *mm)
 #ifdef CONFIG_CPUMASK_OFFSTACK
 	mm->cpu_vm_mask_var = &mm->cpumask_allocation;
 #endif
+	cpumask_clear(mm->cpu_vm_mask_var);
 }
 
 /* Future-safe accessor for struct mm_struct's cpu_vm_mask. */
@@ -476,46 +480,33 @@ static inline cpumask_t *mm_cpumask(struct mm_struct *mm)
 static inline bool mm_tlb_flush_pending(struct mm_struct *mm)
 {
 	barrier();
-	return atomic_read(&mm->tlb_flush_pending) > 0;
+	return mm->tlb_flush_pending;
 }
-
-static inline void init_tlb_flush_pending(struct mm_struct *mm)
+static inline void set_tlb_flush_pending(struct mm_struct *mm)
 {
-	atomic_set(&mm->tlb_flush_pending, 0);
-}
-
-static inline void inc_tlb_flush_pending(struct mm_struct *mm)
-{
-	atomic_inc(&mm->tlb_flush_pending);
+	mm->tlb_flush_pending = true;
 
 	/*
-	 * Guarantee that the tlb_flush_pending increase does not leak into the
+	 * Guarantee that the tlb_flush_pending store does not leak into the
 	 * critical section updating the page tables
 	 */
 	smp_mb__before_spinlock();
 }
-
 /* Clearing is done after a TLB flush, which also provides a barrier. */
-static inline void dec_tlb_flush_pending(struct mm_struct *mm)
+static inline void clear_tlb_flush_pending(struct mm_struct *mm)
 {
 	barrier();
-	atomic_dec(&mm->tlb_flush_pending);
+	mm->tlb_flush_pending = false;
 }
 #else
 static inline bool mm_tlb_flush_pending(struct mm_struct *mm)
 {
 	return false;
 }
-
-static inline void init_tlb_flush_pending(struct mm_struct *mm)
+static inline void set_tlb_flush_pending(struct mm_struct *mm)
 {
 }
-
-static inline void inc_tlb_flush_pending(struct mm_struct *mm)
-{
-}
-
-static inline void dec_tlb_flush_pending(struct mm_struct *mm)
+static inline void clear_tlb_flush_pending(struct mm_struct *mm)
 {
 }
 #endif
@@ -524,6 +515,14 @@ struct vm_special_mapping
 {
 	const char *name;
 	struct page **pages;
+};
+
+enum tlb_flush_reason {
+	TLB_FLUSH_ON_TASK_SWITCH,
+	TLB_REMOTE_SHOOTDOWN,
+	TLB_LOCAL_SHOOTDOWN,
+	TLB_LOCAL_MM_SHOOTDOWN,
+	NR_TLB_FLUSH_REASONS,
 };
 
 #endif /* _LINUX_MM_TYPES_H */

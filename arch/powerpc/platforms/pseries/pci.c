@@ -29,6 +29,7 @@
 #include <asm/pci-bridge.h>
 #include <asm/prom.h>
 #include <asm/ppc-pci.h>
+#include "pseries.h"
 
 #if 0
 void pcibios_name_device(struct pci_dev *dev)
@@ -117,10 +118,6 @@ int pseries_root_bridge_prepare(struct pci_host_bridge *bridge)
 	int rc;
 
 	bus = bridge->bus;
-
-	/* Rely on the pcibios_free_controller_deferred() callback. */
-	pci_set_host_bridge_release(bridge, pcibios_free_controller_deferred,
-					(void *) pci_bus_to_host(bus));
 
 	dn = pcibios_get_phb_of_node(bus);
 	if (!dn)

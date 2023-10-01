@@ -82,8 +82,8 @@
 
 #define NUMBER_OF_SMB2_COMMANDS	0x0013
 
-/* 4 len + 52 transform hdr + 64 hdr + 56 create rsp */
-#define MAX_SMB2_HDR_SIZE 0x00b0
+/* BB FIXME - analyze following length BB */
+#define MAX_SMB2_HDR_SIZE 0x78 /* 4 len + 64 hdr + (2*24 wct) + 2 bct + 2 pad */
 
 #define SMB2_PROTO_NUMBER __constant_cpu_to_le32(0x424d53fe)
 
@@ -245,7 +245,7 @@ struct smb2_sess_setup_req {
 	__le32 Channel;
 	__le16 SecurityBufferOffset;
 	__le16 SecurityBufferLength;
-	__u64 PreviousSessionId;
+	__le64 PreviousSessionId;
 	__u8   Buffer[1];	/* variable length GSS security buffer */
 } __packed;
 
@@ -352,6 +352,8 @@ struct smb2_tree_disconnect_rsp {
 #define FILE_ATTRIBUTE_OFFLINE			0x00001000
 #define FILE_ATTRIBUTE_NOT_CONTENT_INDEXED	0x00002000
 #define FILE_ATTRIBUTE_ENCRYPTED		0x00004000
+#define FILE_ATTRIBUTE_INTEGRITY_STREAM		0x00008000
+#define FILE_ATTRIBUTE_NO_SCRUB_DATA		0x00020000
 
 /* Oplock levels */
 #define SMB2_OPLOCK_LEVEL_NONE		0x00
@@ -510,14 +512,16 @@ struct create_context {
 #define SMB2_LEASE_KEY_SIZE 16
 
 struct lease_context {
-	u8 LeaseKey[SMB2_LEASE_KEY_SIZE];
+	__le64 LeaseKeyLow;
+	__le64 LeaseKeyHigh;
 	__le32 LeaseState;
 	__le32 LeaseFlags;
 	__le64 LeaseDuration;
 } __packed;
 
 struct lease_context_v2 {
-	u8 LeaseKey[SMB2_LEASE_KEY_SIZE];
+	__le64 LeaseKeyLow;
+	__le64 LeaseKeyHigh;
 	__le32 LeaseState;
 	__le32 LeaseFlags;
 	__le64 LeaseDuration;
@@ -569,6 +573,12 @@ struct copychunk_ioctl {
 	__le64 TargetOffset;
 	__le32 Length; /* how many bytes to copy */
 	__u32 Reserved2;
+} __packed;
+
+/* this goes in the ioctl buffer when doing FSCTL_SET_ZERO_DATA */
+struct file_zero_data_information {
+	__le64	FileOffset;
+	__le64	BeyondFinalZero;
 } __packed;
 
 struct copychunk_ioctl_rsp {
@@ -944,17 +954,6 @@ struct smb3_fs_ss_info {
 	__le32 Flags;
 	__le32 ByteOffsetForSectorAlignment;
 	__le32 ByteOffsetForPartitionAlignment;
-} __packed;
-
-/* volume info struct - see MS-FSCC 2.5.9 */
-#define MAX_VOL_LABEL_LEN	32
-struct smb3_fs_vol_info {
-	__le64	VolumeCreationTime;
-	__u32	VolumeSerialNumber;
-	__le32	VolumeLabelLength; /* includes trailing null */
-	__u8	SupportsObjects; /* True if eg like NTFS, supports objects */
-	__u8	Reserved;
-	__u8	VolumeLabel[0]; /* variable len */
 } __packed;
 
 /* partial list of QUERY INFO levels */

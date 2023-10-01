@@ -113,7 +113,6 @@ static inline enum nft_registers nft_type_to_reg(enum nft_data_types type)
 	return type == NFT_DATA_VERDICT ? NFT_REG_VERDICT : NFT_REG_1;
 }
 
-int nft_parse_u32_check(const struct nlattr *attr, int max, u32 *dest);
 int nft_validate_input_register(enum nft_registers reg);
 int nft_validate_output_register(enum nft_registers reg);
 int nft_validate_data_load(const struct nft_ctx *ctx, enum nft_registers reg,
@@ -183,7 +182,7 @@ enum nft_set_class {
  *	@class: lookup performance class
  */
 struct nft_set_estimate {
-	u64			size;
+	unsigned int		size;
 	enum nft_set_class	class;
 };
 
@@ -215,7 +214,7 @@ struct nft_set_ops {
 						const struct nft_set *set,
 						struct nft_set_iter *iter);
 
-	u64				(*privsize)(const struct nlattr * const nla[]);
+	unsigned int			(*privsize)(const struct nlattr * const nla[]);
 	bool				(*estimate)(const struct nft_set_desc *desc,
 						    u32 features,
 						    struct nft_set_estimate *est);
@@ -242,6 +241,7 @@ void nft_unregister_set(struct nft_set_ops *ops);
  * 	@dtype: data type (verdict or numeric type defined by userspace)
  * 	@size: maximum set size
  * 	@nelems: number of elements
+ *	@policy: set parameterization (see enum nft_set_policies)
  * 	@ops: set ops
  * 	@flags: set flags
  * 	@klen: key length
@@ -256,6 +256,7 @@ struct nft_set {
 	u32				dtype;
 	u32				size;
 	u32				nelems;
+	u16				policy;
 	/* runtime data below here */
 	const struct nft_set_ops	*ops ____cacheline_aligned;
 	u16				flags;
@@ -364,8 +365,7 @@ struct nft_expr_ops {
  */
 struct nft_expr {
 	const struct nft_expr_ops	*ops;
-	unsigned char			data[]
-		__attribute__((aligned(__alignof__(u64))));
+	unsigned char			data[];
 };
 
 static inline void *nft_expr_priv(const struct nft_expr *expr)
@@ -396,14 +396,12 @@ struct nft_rule {
 /**
  *	struct nft_trans - nf_tables object update in transaction
  *
- *	@rcu_head: rcu head to defer release of transaction data
  *	@list: used internally
  *	@msg_type: message type
  *	@ctx: transaction context
  *	@data: internal information related to the transaction
  */
 struct nft_trans {
-	struct rcu_head			rcu_head;
 	struct list_head		list;
 	int				msg_type;
 	struct nft_ctx			ctx;
@@ -529,6 +527,9 @@ enum nft_chain_type {
 	NFT_CHAIN_T_NAT,
 	NFT_CHAIN_T_MAX
 };
+
+int nft_chain_validate_dependency(const struct nft_chain *chain,
+				  enum nft_chain_type type);
 
 struct nft_stats {
 	u64			bytes;

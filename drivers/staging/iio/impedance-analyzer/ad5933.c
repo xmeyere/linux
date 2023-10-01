@@ -190,6 +190,7 @@ static int ad5933_cmd(struct ad5933_state *st, unsigned char cmd)
 static int ad5933_reset(struct ad5933_state *st)
 {
 	unsigned char dat = st->ctrl_lb | AD5933_CTRL_RESET;
+
 	return ad5933_i2c_write(st->client,
 			AD5933_REG_CONTROL_LB, 1, &dat);
 }
@@ -217,7 +218,7 @@ static int ad5933_set_freq(struct ad5933_state *st,
 {
 	unsigned long long freqreg;
 	union {
-		u32 d32;
+		__be32 d32;
 		u8 d8[4];
 	} dat;
 
@@ -241,7 +242,7 @@ static int ad5933_set_freq(struct ad5933_state *st,
 
 static int ad5933_setup(struct ad5933_state *st)
 {
-	unsigned short dat;
+	__be16 dat;
 	int ret;
 
 	ret = ad5933_reset(st);
@@ -294,7 +295,7 @@ static ssize_t ad5933_show_frequency(struct device *dev,
 	int ret;
 	unsigned long long freqreg;
 	union {
-		u32 d32;
+		__be32 d32;
 		u8 d8[4];
 	} dat;
 
@@ -399,7 +400,7 @@ static ssize_t ad5933_store(struct device *dev,
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
 	u16 val;
 	int i, ret = 0;
-	unsigned short dat;
+	__be16 dat;
 
 	if (this_attr->address != AD5933_IN_PGA_GAIN) {
 		ret = kstrtou16(buf, 10, &val);
@@ -518,7 +519,7 @@ static int ad5933_read_raw(struct iio_dev *indio_dev,
 			   long m)
 {
 	struct ad5933_state *st = iio_priv(indio_dev);
-	unsigned short dat;
+	__be16 dat;
 	int ret = -EINVAL;
 
 	mutex_lock(&indio_dev->mlock);
@@ -646,7 +647,6 @@ static void ad5933_work(struct work_struct *work)
 	struct iio_dev *indio_dev = i2c_get_clientdata(st->client);
 	signed short buf[2];
 	unsigned char status;
-	int ret;
 
 	mutex_lock(&indio_dev->mlock);
 	if (st->state == AD5933_CTRL_INIT_START_FREQ) {
@@ -654,22 +654,19 @@ static void ad5933_work(struct work_struct *work)
 		ad5933_cmd(st, AD5933_CTRL_START_SWEEP);
 		st->state = AD5933_CTRL_START_SWEEP;
 		schedule_delayed_work(&st->work, st->poll_time_jiffies);
-		goto out;
+		mutex_unlock(&indio_dev->mlock);
+		return;
 	}
 
-	ret = ad5933_i2c_read(st->client, AD5933_REG_STATUS, 1, &status);
-	if (ret)
-		goto out;
+	ad5933_i2c_read(st->client, AD5933_REG_STATUS, 1, &status);
 
 	if (status & AD5933_STAT_DATA_VALID) {
 		int scan_count = bitmap_weight(indio_dev->active_scan_mask,
 					       indio_dev->masklength);
-		ret = ad5933_i2c_read(st->client,
+		ad5933_i2c_read(st->client,
 				test_bit(1, indio_dev->active_scan_mask) ?
 				AD5933_REG_REAL_DATA : AD5933_REG_IMAG_DATA,
 				scan_count * 2, (u8 *)buf);
-		if (ret)
-			goto out;
 
 		if (scan_count == 2) {
 			buf[0] = be16_to_cpu(buf[0]);
@@ -681,7 +678,8 @@ static void ad5933_work(struct work_struct *work)
 	} else {
 		/* no data available - try again later */
 		schedule_delayed_work(&st->work, st->poll_time_jiffies);
-		goto out;
+		mutex_unlock(&indio_dev->mlock);
+		return;
 	}
 
 	if (status & AD5933_STAT_SWEEP_DONE) {
@@ -693,7 +691,7 @@ static void ad5933_work(struct work_struct *work)
 		ad5933_cmd(st, AD5933_CTRL_INC_FREQ);
 		schedule_delayed_work(&st->work, st->poll_time_jiffies);
 	}
-out:
+
 	mutex_unlock(&indio_dev->mlock);
 }
 

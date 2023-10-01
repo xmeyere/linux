@@ -104,9 +104,7 @@ static int fib6_rule_action(struct fib_rule *rule, struct flowi *flp,
 				goto again;
 			flp6->saddr = saddr;
 		}
-		err = rt->dst.error;
-		if (err != -EAGAIN)
-			goto out;
+		goto out;
 	}
 again:
 	ip6_rt_put(rt);

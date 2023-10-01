@@ -191,8 +191,6 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 	if (sb->s_op->show_devname) {
 		seq_puts(m, "device ");
 		err = sb->s_op->show_devname(m, mnt_path.dentry);
-		if (err)
-			goto out;
 	} else {
 		if (r->mnt_devname) {
 			seq_puts(m, "device ");
@@ -218,7 +216,6 @@ static int show_vfsstat(struct seq_file *m, struct vfsmount *mnt)
 	}
 
 	seq_putc(m, '\n');
-out:
 	return err;
 }
 
@@ -235,17 +232,15 @@ static int mounts_open_common(struct inode *inode, struct file *file,
 	if (!task)
 		goto err;
 
-	rcu_read_lock();
-	nsp = task_nsproxy(task);
+	task_lock(task);
+	nsp = task->nsproxy;
 	if (!nsp || !nsp->mnt_ns) {
-		rcu_read_unlock();
+		task_unlock(task);
 		put_task_struct(task);
 		goto err;
 	}
 	ns = nsp->mnt_ns;
 	get_mnt_ns(ns);
-	rcu_read_unlock();
-	task_lock(task);
 	if (!task->fs) {
 		task_unlock(task);
 		put_task_struct(task);

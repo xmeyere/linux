@@ -203,6 +203,7 @@ static void __init of_dra7_atl_clock_setup(struct device_node *node)
 
 	if (!IS_ERR(clk)) {
 		of_clk_add_provider(node, of_clk_src_simple_get, clk);
+		kfree(parent_names);
 		return;
 	}
 cleanup:
@@ -228,6 +229,7 @@ static int of_dra7_atl_clk_probe(struct platform_device *pdev)
 	cinfo->iobase = of_iomap(node, 0);
 	cinfo->dev = &pdev->dev;
 	pm_runtime_enable(cinfo->dev);
+	pm_runtime_irq_safe(cinfo->dev);
 
 	pm_runtime_get_sync(cinfo->dev);
 	atl_write(cinfo, DRA7_ATL_PCLKMUX_REG(0), DRA7_ATL_PCLKMUX);
@@ -250,11 +252,6 @@ static int of_dra7_atl_clk_probe(struct platform_device *pdev)
 		}
 
 		clk = of_clk_get_from_provider(&clkspec);
-		if (IS_ERR(clk)) {
-			pr_err("%s: failed to get atl clock %d from provider\n",
-			       __func__, i);
-			return PTR_ERR(clk);
-		}
 
 		cdesc = to_atl_desc(__clk_get_hw(clk));
 		cdesc->cinfo = cinfo;
@@ -262,7 +259,7 @@ static int of_dra7_atl_clk_probe(struct platform_device *pdev)
 
 		/* Get configuration for the ATL instances */
 		snprintf(prop, sizeof(prop), "atl%u", i);
-		cfg_node = of_get_child_by_name(node, prop);
+		cfg_node = of_find_node_by_name(node, prop);
 		if (cfg_node) {
 			ret = of_property_read_u32(cfg_node, "bws",
 						   &cdesc->bws);
@@ -275,7 +272,6 @@ static int of_dra7_atl_clk_probe(struct platform_device *pdev)
 				atl_write(cinfo, DRA7_ATL_AWSMUX_REG(i),
 					  cdesc->aws);
 			}
-			of_node_put(cfg_node);
 		}
 
 		cdesc->probed = true;
@@ -307,7 +303,6 @@ MODULE_DEVICE_TABLE(of, of_dra7_atl_clk_match_tbl);
 static struct platform_driver dra7_atl_clk_driver = {
 	.driver = {
 		.name = "dra7-atl",
-		.owner = THIS_MODULE,
 		.of_match_table = of_dra7_atl_clk_match_tbl,
 	},
 	.probe = of_dra7_atl_clk_probe,

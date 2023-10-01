@@ -46,7 +46,7 @@ struct efx_loopback_payload {
 	struct iphdr ip;
 	struct udphdr udp;
 	__be16 iteration;
-	char msg[64];
+	const char msg[64];
 } __packed;
 
 /* Loopback test source MAC address */
@@ -188,7 +188,7 @@ static int efx_test_eventq_irq(struct efx_nic *efx,
 		schedule_timeout_uninterruptible(wait);
 
 		efx_for_each_channel(channel, efx) {
-			napi_disable(&channel->napi_str);
+			efx_stop_eventq(channel);
 			if (channel->eventq_read_ptr !=
 			    read_ptr[channel->channel]) {
 				set_bit(channel->channel, &napi_ran);
@@ -200,8 +200,7 @@ static int efx_test_eventq_irq(struct efx_nic *efx,
 				if (efx_nic_event_test_irq_cpu(channel) >= 0)
 					clear_bit(channel->channel, &int_pend);
 			}
-			napi_enable(&channel->napi_str);
-			efx_nic_eventq_read_ack(channel);
+			efx_start_eventq(channel);
 		}
 
 		wait *= 2;
@@ -749,7 +748,7 @@ int efx_selftest(struct efx_nic *efx, struct efx_self_tests *tests,
 	__efx_reconfigure_port(efx);
 	mutex_unlock(&efx->mac_lock);
 
-	efx_device_attach_if_not_resetting(efx);
+	netif_device_attach(efx->net_dev);
 
 	return rc_test;
 }

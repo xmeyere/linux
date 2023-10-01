@@ -612,8 +612,6 @@ svc_prepare_thread(struct svc_serv *serv, struct svc_pool *pool, int node)
 	if (!rqstp)
 		goto out_enomem;
 
-	init_waitqueue_head(&rqstp->rq_wait);
-
 	serv->sv_nrthreads++;
 	spin_lock_bh(&pool->sp_lock);
 	pool->sp_nrthreads++;
@@ -1063,8 +1061,6 @@ void svc_printk(struct svc_rqst *rqstp, const char *fmt, ...)
 static __printf(2,3) void svc_printk(struct svc_rqst *rqstp, const char *fmt, ...) {}
 #endif
 
-extern void svc_tcp_prep_reply_hdr(struct svc_rqst *);
-
 /*
  * Common routine for processing the RPC request.
  */
@@ -1088,14 +1084,13 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 		goto err_short_len;
 
 	/* Will be turned off only in gss privacy case: */
-	rqstp->rq_splice_ok = 1;
+	rqstp->rq_splice_ok = true;
 	/* Will be turned off only when NFSv4 Sessions are used */
-	rqstp->rq_usedeferral = 1;
+	rqstp->rq_usedeferral = true;
 	rqstp->rq_dropme = false;
 
 	/* Setup reply header */
-	if (rqstp->rq_prot == IPPROTO_TCP)
-		svc_tcp_prep_reply_hdr(rqstp);
+	rqstp->rq_xprt->xpt_ops->xpo_prep_reply_hdr(rqstp);
 
 	svc_putu32(resv, rqstp->rq_xid);
 
@@ -1142,8 +1137,7 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 	case SVC_DENIED:
 		goto err_bad_auth;
 	case SVC_CLOSE:
-		if (rqstp->rq_xprt &&
-		    test_bit(XPT_TEMP, &rqstp->rq_xprt->xpt_flags))
+		if (test_bit(XPT_TEMP, &rqstp->rq_xprt->xpt_flags))
 			svc_close_xprt(rqstp->rq_xprt);
 	case SVC_DROP:
 		goto dropit;
@@ -1193,15 +1187,10 @@ svc_process_common(struct svc_rqst *rqstp, struct kvec *argv, struct kvec *resv)
 		*statp = procp->pc_func(rqstp, rqstp->rq_argp, rqstp->rq_resp);
 
 		/* Encode reply */
-		if (*statp == rpc_drop_reply || rqstp->rq_dropme) {
+		if (rqstp->rq_dropme) {
 			if (procp->pc_release)
 				procp->pc_release(rqstp, NULL, rqstp->rq_resp);
 			goto dropit;
-		}
-		if (*statp == rpc_autherr_badcred) {
-			if (procp->pc_release)
-				procp->pc_release(rqstp, NULL, rqstp->rq_resp);
-			goto err_bad_auth;
 		}
 		if (*statp == rpc_success &&
 		    (xdr = procp->pc_encode) &&
@@ -1358,28 +1347,15 @@ bc_svc_process(struct svc_serv *serv, struct rpc_rqst *req,
 	struct kvec	*resv = &rqstp->rq_res.head[0];
 
 	/* Build the svc_rqst used by the common processing routine */
+	rqstp->rq_xprt = serv->sv_bc_xprt;
 	rqstp->rq_xid = req->rq_xid;
 	rqstp->rq_prot = req->rq_xprt->prot;
 	rqstp->rq_server = serv;
-	rqstp->rq_bc_net = req->rq_xprt->xprt_net;
 
 	rqstp->rq_addrlen = sizeof(req->rq_xprt->addr);
 	memcpy(&rqstp->rq_addr, &req->rq_xprt->addr, rqstp->rq_addrlen);
 	memcpy(&rqstp->rq_arg, &req->rq_rcv_buf, sizeof(rqstp->rq_arg));
 	memcpy(&rqstp->rq_res, &req->rq_snd_buf, sizeof(rqstp->rq_res));
-
-	/* Adjust the argument buffer length */
-	rqstp->rq_arg.len = req->rq_private_buf.len;
-	if (rqstp->rq_arg.len <= rqstp->rq_arg.head[0].iov_len) {
-		rqstp->rq_arg.head[0].iov_len = rqstp->rq_arg.len;
-		rqstp->rq_arg.page_len = 0;
-	} else if (rqstp->rq_arg.len <= rqstp->rq_arg.head[0].iov_len +
-			rqstp->rq_arg.page_len)
-		rqstp->rq_arg.page_len = rqstp->rq_arg.len -
-			rqstp->rq_arg.head[0].iov_len;
-	else
-		rqstp->rq_arg.len = rqstp->rq_arg.head[0].iov_len +
-			rqstp->rq_arg.page_len;
 
 	/* reset result send buffer "put" position */
 	resv->iov_len = 0;

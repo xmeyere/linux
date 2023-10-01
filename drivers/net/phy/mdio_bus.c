@@ -261,6 +261,7 @@ int mdiobus_register(struct mii_bus *bus)
 	err = device_register(&bus->dev);
 	if (err) {
 		pr_err("mii_bus %s failed to register\n", bus->id);
+		put_device(&bus->dev);
 		return -EINVAL;
 	}
 
@@ -552,8 +553,14 @@ static ssize_t
 phy_interface_show(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct phy_device *phydev = to_phy_device(dev);
+	const char *mode = NULL;
 
-	return sprintf(buf, "%s\n", phy_modes(phydev->interface));
+	if (phy_is_internal(phydev))
+		mode = "internal";
+	else
+		mode = phy_modes(phydev->interface);
+
+	return sprintf(buf, "%s\n", mode);
 }
 static DEVICE_ATTR_RO(phy_interface);
 

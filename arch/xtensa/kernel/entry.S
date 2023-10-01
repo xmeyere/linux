@@ -335,10 +335,8 @@ common_exception:
 	s32i	a2, a1, PT_SYSCALL
 	movi	a2, 0
 	s32i	a3, a1, PT_EXCVADDR
-#if XCHAL_HAVE_LOOPS
 	xsr	a2, lcount
 	s32i	a2, a1, PT_LCOUNT
-#endif
 
 	/* It is now save to restore the EXC_TABLE_FIXUP variable. */
 
@@ -370,12 +368,11 @@ common_exception:
 	s32i	a3, a1, PT_PS		# save ps
 
 	/* Save lbeg, lend */
-#if XCHAL_HAVE_LOOPS
+
 	rsr	a2, lbeg
 	rsr	a3, lend
 	s32i	a2, a1, PT_LBEG
 	s32i	a3, a1, PT_LEND
-#endif
 
 	/* Save SCOMPARE1 */
 
@@ -571,13 +568,12 @@ user_exception_exit:
 	 *	 (if we have restored WSBITS-1 frames).
 	 */
 
-2:
 #if XCHAL_HAVE_THREADPTR
 	l32i	a3, a1, PT_THREADPTR
 	wur	a3, threadptr
 #endif
 
-	j	common_exception_exit
+2:	j	common_exception_exit
 
 	/* This is the kernel exception exit.
 	 * We avoided to do a MOVSP when we entered the exception, but we
@@ -667,14 +663,13 @@ common_exception_exit:
 	wsr	a3, sar
 
 	/* Restore LBEG, LEND, LCOUNT */
-#if XCHAL_HAVE_LOOPS
+
 	l32i	a2, a1, PT_LBEG
 	l32i	a3, a1, PT_LEND
 	wsr	a2, lbeg
 	l32i	a2, a1, PT_LCOUNT
 	wsr	a3, lend
 	wsr	a2, lcount
-#endif
 
 	/* We control single stepping through the ICOUNTLEVEL register. */
 
@@ -991,6 +986,8 @@ ENDPROC(fast_syscall_unrecoverable)
  *		j done
  */
 
+#ifdef CONFIG_FAST_SYSCALL_XTENSA
+
 #define TRY								\
 	.section __ex_table, "a";					\
 	.word	66f, 67f;						\
@@ -1054,6 +1051,18 @@ CATCH
 
 ENDPROC(fast_syscall_xtensa)
 
+#else /* CONFIG_FAST_SYSCALL_XTENSA */
+
+ENTRY(fast_syscall_xtensa)
+
+	l32i    a0, a2, PT_AREG0        # restore a0
+	movi	a2, -ENOSYS
+	rfe
+
+ENDPROC(fast_syscall_xtensa)
+
+#endif /* CONFIG_FAST_SYSCALL_XTENSA */
+
 
 /* fast_syscall_spill_registers.
  *
@@ -1068,6 +1077,8 @@ ENDPROC(fast_syscall_xtensa)
  *
  * Note: We assume the stack pointer is EXC_TABLE_KSTK in the fixup handler.
  */
+
+#ifdef CONFIG_FAST_SYSCALL_SPILL_REGISTERS
 
 ENTRY(fast_syscall_spill_registers)
 
@@ -1402,6 +1413,18 @@ ENTRY(fast_syscall_spill_registers_fixup_return)
 	rfde
 
 ENDPROC(fast_syscall_spill_registers_fixup_return)
+
+#else /* CONFIG_FAST_SYSCALL_SPILL_REGISTERS */
+
+ENTRY(fast_syscall_spill_registers)
+
+	l32i    a0, a2, PT_AREG0        # restore a0
+	movi	a2, -ENOSYS
+	rfe
+
+ENDPROC(fast_syscall_spill_registers)
+
+#endif /* CONFIG_FAST_SYSCALL_SPILL_REGISTERS */
 
 #ifdef CONFIG_MMU
 /*
@@ -1797,7 +1820,7 @@ ENDPROC(system_call)
 	mov	a12, a0
 	.endr
 #endif
-	_entry	a1, 16
+	_entry	a1, 48
 #if XCHAL_NUM_AREGS % 12 == 0
 	mov	a8, a8
 #elif XCHAL_NUM_AREGS % 12 == 4
@@ -1821,7 +1844,7 @@ ENDPROC(system_call)
 
 ENTRY(_switch_to)
 
-	entry	a1, 48
+	entry	a1, 16
 
 	mov	a11, a3			# and 'next' (a3)
 

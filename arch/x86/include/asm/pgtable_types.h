@@ -23,7 +23,6 @@
 #define _PAGE_BIT_SPECIAL	_PAGE_BIT_SOFTW1
 #define _PAGE_BIT_CPA_TEST	_PAGE_BIT_SOFTW1
 #define _PAGE_BIT_SPLITTING	_PAGE_BIT_SOFTW2 /* only valid on a PSE pmd */
-#define _PAGE_BIT_IOMAP		_PAGE_BIT_SOFTW2 /* flag used to indicate IO mapping */
 #define _PAGE_BIT_HIDDEN	_PAGE_BIT_SOFTW3 /* hidden by kmemcheck */
 #define _PAGE_BIT_SOFT_DIRTY	_PAGE_BIT_SOFTW3 /* software dirty tracking */
 #define _PAGE_BIT_NX           63       /* No execute: only valid after cpuid check */
@@ -39,6 +38,8 @@
 /* If _PAGE_BIT_PRESENT is clear, we use these: */
 /* - if the user mapped it with PROT_NONE; pte_present gives true */
 #define _PAGE_BIT_PROTNONE	_PAGE_BIT_GLOBAL
+/* - set: nonlinear file mapping, saved PTE; unset:swap */
+#define _PAGE_BIT_FILE		_PAGE_BIT_DIRTY
 
 #define _PAGE_PRESENT	(_AT(pteval_t, 1) << _PAGE_BIT_PRESENT)
 #define _PAGE_RW	(_AT(pteval_t, 1) << _PAGE_BIT_RW)
@@ -50,7 +51,7 @@
 #define _PAGE_PSE	(_AT(pteval_t, 1) << _PAGE_BIT_PSE)
 #define _PAGE_GLOBAL	(_AT(pteval_t, 1) << _PAGE_BIT_GLOBAL)
 #define _PAGE_SOFTW1	(_AT(pteval_t, 1) << _PAGE_BIT_SOFTW1)
-#define _PAGE_IOMAP	(_AT(pteval_t, 1) << _PAGE_BIT_IOMAP)
+#define _PAGE_SOFTW2	(_AT(pteval_t, 1) << _PAGE_BIT_SOFTW2)
 #define _PAGE_PAT	(_AT(pteval_t, 1) << _PAGE_BIT_PAT)
 #define _PAGE_PAT_LARGE (_AT(pteval_t, 1) << _PAGE_BIT_PAT_LARGE)
 #define _PAGE_SPECIAL	(_AT(pteval_t, 1) << _PAGE_BIT_SPECIAL)
@@ -94,15 +95,15 @@
 /*
  * Tracking soft dirty bit when a page goes to a swap is tricky.
  * We need a bit which can be stored in pte _and_ not conflict
- * with swap entry format. On x86 bits 1-4 are *not* involved
- * into swap entry computation, but bit 7 is used for thp migration,
- * so we borrow bit 1 for soft dirty tracking.
+ * with swap entry format. On x86 bits 6 and 7 are *not* involved
+ * into swap entry computation, but bit 6 is used for nonlinear
+ * file mapping, so we borrow bit 7 for soft dirty tracking.
  *
  * Please note that this bit must be treated as swap dirty page
- * mark if and only if the PTE/PMD has present bit clear!
+ * mark if and only if the PTE has present bit clear!
  */
 #ifdef CONFIG_MEM_SOFT_DIRTY
-#define _PAGE_SWP_SOFT_DIRTY	_PAGE_RW
+#define _PAGE_SWP_SOFT_DIRTY	_PAGE_PSE
 #else
 #define _PAGE_SWP_SOFT_DIRTY	(_AT(pteval_t, 0))
 #endif
@@ -113,7 +114,8 @@
 #define _PAGE_NX	(_AT(pteval_t, 0))
 #endif
 
-#define _PAGE_PROTNONE  (_AT(pteval_t, 1) << _PAGE_BIT_PROTNONE)
+#define _PAGE_FILE	(_AT(pteval_t, 1) << _PAGE_BIT_FILE)
+#define _PAGE_PROTNONE	(_AT(pteval_t, 1) << _PAGE_BIT_PROTNONE)
 
 #define _PAGE_TABLE	(_PAGE_PRESENT | _PAGE_RW | _PAGE_USER |	\
 			 _PAGE_ACCESSED | _PAGE_DIRTY)
@@ -125,33 +127,6 @@
 			 _PAGE_SPECIAL | _PAGE_ACCESSED | _PAGE_DIRTY |	\
 			 _PAGE_SOFT_DIRTY | _PAGE_NUMA)
 #define _HPAGE_CHG_MASK (_PAGE_CHG_MASK | _PAGE_PSE | _PAGE_NUMA)
-
-/* The ASID is the lower 12 bits of CR3 */
-#define X86_CR3_PCID_ASID_MASK  (_AC((1<<12)-1,UL))
-
-/* Mask for all the PCID-related bits in CR3: */
-#define X86_CR3_PCID_MASK       (X86_CR3_PCID_NOFLUSH | X86_CR3_PCID_ASID_MASK)
-#define X86_CR3_PCID_ASID_KERN  (_AC(0x0,UL))
-
-#if defined(CONFIG_PAGE_TABLE_ISOLATION) && defined(CONFIG_X86_64)
-/* Let X86_CR3_PCID_ASID_USER be usable for the X86_CR3_PCID_NOFLUSH bit */
-#define X86_CR3_PCID_ASID_USER	(_AC(0x80,UL))
-
-#define X86_CR3_PCID_KERN_FLUSH		(X86_CR3_PCID_ASID_KERN)
-#define X86_CR3_PCID_USER_FLUSH		(X86_CR3_PCID_ASID_USER)
-#define X86_CR3_PCID_KERN_NOFLUSH	(X86_CR3_PCID_NOFLUSH | X86_CR3_PCID_ASID_KERN)
-#define X86_CR3_PCID_USER_NOFLUSH	(X86_CR3_PCID_NOFLUSH | X86_CR3_PCID_ASID_USER)
-#else
-#define X86_CR3_PCID_ASID_USER  (_AC(0x0,UL))
-/*
- * PCIDs are unsupported on 32-bit and none of these bits can be
- * set in CR3:
- */
-#define X86_CR3_PCID_KERN_FLUSH		(0)
-#define X86_CR3_PCID_USER_FLUSH		(0)
-#define X86_CR3_PCID_KERN_NOFLUSH	(0)
-#define X86_CR3_PCID_USER_NOFLUSH	(0)
-#endif
 
 #define _PAGE_CACHE_MASK	(_PAGE_PCD | _PAGE_PWT)
 #define _PAGE_CACHE_WB		(0)
@@ -192,10 +167,10 @@
 #define __PAGE_KERNEL_LARGE_NOCACHE	(__PAGE_KERNEL | _PAGE_CACHE_UC | _PAGE_PSE)
 #define __PAGE_KERNEL_LARGE_EXEC	(__PAGE_KERNEL_EXEC | _PAGE_PSE)
 
-#define __PAGE_KERNEL_IO		(__PAGE_KERNEL | _PAGE_IOMAP)
-#define __PAGE_KERNEL_IO_NOCACHE	(__PAGE_KERNEL_NOCACHE | _PAGE_IOMAP)
-#define __PAGE_KERNEL_IO_UC_MINUS	(__PAGE_KERNEL_UC_MINUS | _PAGE_IOMAP)
-#define __PAGE_KERNEL_IO_WC		(__PAGE_KERNEL_WC | _PAGE_IOMAP)
+#define __PAGE_KERNEL_IO		(__PAGE_KERNEL)
+#define __PAGE_KERNEL_IO_NOCACHE	(__PAGE_KERNEL_NOCACHE)
+#define __PAGE_KERNEL_IO_UC_MINUS	(__PAGE_KERNEL_UC_MINUS)
+#define __PAGE_KERNEL_IO_WC		(__PAGE_KERNEL_WC)
 
 #define PAGE_KERNEL			__pgprot(__PAGE_KERNEL)
 #define PAGE_KERNEL_RO			__pgprot(__PAGE_KERNEL_RO)
@@ -257,10 +232,10 @@
 
 #include <linux/types.h>
 
-/* Extracts the PFN from a (pte|pmd|pud|pgd)val_t of a 4KB page */
+/* PTE_PFN_MASK extracts the PFN from a (pte|pmd|pud|pgd)val_t */
 #define PTE_PFN_MASK		((pteval_t)PHYSICAL_PAGE_MASK)
 
-/* Extracts the flags from a (pte|pmd|pud|pgd)val_t of a 4KB page */
+/* PTE_FLAGS_MASK extracts the flags from a (pte|pmd|pud|pgd)val_t */
 #define PTE_FLAGS_MASK		(~PTE_PFN_MASK)
 
 typedef struct pgprot { pgprotval_t pgprot; } pgprot_t;
@@ -318,51 +293,20 @@ static inline pmdval_t native_pmd_val(pmd_t pmd)
 #else
 #include <asm-generic/pgtable-nopmd.h>
 
-static inline pmd_t native_make_pmd(pmdval_t val)
-{
-	return (pmd_t) { .pud.pgd = native_make_pgd(val) };
-}
-
 static inline pmdval_t native_pmd_val(pmd_t pmd)
 {
 	return native_pgd_val(pmd.pud.pgd);
 }
 #endif
 
-static inline pudval_t pud_pfn_mask(pud_t pud)
-{
-	if (native_pud_val(pud) & _PAGE_PSE)
-		return PHYSICAL_PUD_PAGE_MASK;
-	else
-		return PTE_PFN_MASK;
-}
-
-static inline pudval_t pud_flags_mask(pud_t pud)
-{
-	return ~pud_pfn_mask(pud);
-}
-
 static inline pudval_t pud_flags(pud_t pud)
 {
-	return native_pud_val(pud) & pud_flags_mask(pud);
-}
-
-static inline pmdval_t pmd_pfn_mask(pmd_t pmd)
-{
-	if (native_pmd_val(pmd) & _PAGE_PSE)
-		return PHYSICAL_PMD_PAGE_MASK;
-	else
-		return PTE_PFN_MASK;
-}
-
-static inline pmdval_t pmd_flags_mask(pmd_t pmd)
-{
-	return ~pmd_pfn_mask(pmd);
+	return native_pud_val(pud) & PTE_FLAGS_MASK;
 }
 
 static inline pmdval_t pmd_flags(pmd_t pmd)
 {
-	return native_pmd_val(pmd) & pmd_flags_mask(pmd);
+	return native_pmd_val(pmd) & PTE_FLAGS_MASK;
 }
 
 static inline pte_t native_make_pte(pteval_t val)
@@ -379,6 +323,20 @@ static inline pteval_t pte_flags(pte_t pte)
 {
 	return native_pte_val(pte) & PTE_FLAGS_MASK;
 }
+
+#ifdef CONFIG_NUMA_BALANCING
+/* Set of bits that distinguishes present, prot_none and numa ptes */
+#define _PAGE_NUMA_MASK (_PAGE_NUMA|_PAGE_PROTNONE|_PAGE_PRESENT)
+static inline pteval_t ptenuma_flags(pte_t pte)
+{
+	return pte_flags(pte) & _PAGE_NUMA_MASK;
+}
+
+static inline pmdval_t pmdnuma_flags(pmd_t pmd)
+{
+	return pmd_flags(pmd) & _PAGE_NUMA_MASK;
+}
+#endif /* CONFIG_NUMA_BALANCING */
 
 #define pgprot_val(x)	((x).pgprot)
 #define __pgprot(x)	((pgprot_t) { (x) } )

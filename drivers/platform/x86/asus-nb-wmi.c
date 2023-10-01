@@ -84,7 +84,7 @@ static int dmi_matched(const struct dmi_system_id *dmi)
 	return 1;
 }
 
-static struct dmi_system_id asus_quirks[] = {
+static const struct dmi_system_id asus_quirks[] = {
 	{
 		.callback = dmi_matched,
 		.ident = "ASUSTeK COMPUTER INC. U32U",
@@ -186,15 +186,6 @@ static struct dmi_system_id asus_quirks[] = {
 		.matches = {
 			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
 			DMI_MATCH(DMI_PRODUCT_NAME, "X550VB"),
-		},
-		.driver_data = &quirk_asus_wapf4,
-	},
-	{
-		.callback = dmi_matched,
-		.ident = "ASUSTeK COMPUTER INC. X551CA",
-		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "ASUSTeK COMPUTER INC."),
-			DMI_MATCH(DMI_PRODUCT_NAME, "X551CA"),
 		},
 		.driver_data = &quirk_asus_wapf4,
 	},

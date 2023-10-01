@@ -54,11 +54,10 @@
 #include <asm/processor-flags.h>
 #include <asm/ftrace.h>
 #include <asm/irq_vectors.h>
-#include <asm/cpufeatures.h>
+#include <asm/cpufeature.h>
 #include <asm/alternative-asm.h>
 #include <asm/asm.h>
 #include <asm/smap.h>
-#include <asm/nospec-branch.h>
 
 /* Avoid __ASSEMBLER__'ifying <linux/audit.h> just for this.  */
 #include <linux/elf-em.h>
@@ -309,8 +308,7 @@ ENTRY(ret_from_kernel_thread)
 	pushl_cfi $0x0202		# Reset kernel eflags
 	popfl_cfi
 	movl PT_EBP(%esp),%eax
-	movl	PT_EBX(%esp), %edx
-	CALL_NOSPEC %edx
+	call *PT_EBX(%esp)
 	movl $0,PT_EAX(%esp)
 	jmp syscall_exit
 	CFI_ENDPROC
@@ -426,14 +424,7 @@ sysenter_past_esp:
 sysenter_do_call:
 	cmpl $(NR_syscalls), %eax
 	jae sysenter_badsys
-	sbb %edx, %edx				/* array_index_mask_nospec() */
-	and %edx, %eax
-#ifdef CONFIG_RETPOLINE
-	movl sys_call_table(,%eax,4),%eax
-	call __x86_indirect_thunk_eax
-#else
 	call *sys_call_table(,%eax,4)
-#endif
 sysenter_after_call:
 	movl %eax,PT_EAX(%esp)
 	LOCKDEP_SYS_EXIT
@@ -443,7 +434,6 @@ sysenter_after_call:
 	testl $_TIF_ALLWORK_MASK, %ecx
 	jne sysexit_audit
 sysenter_exit:
-	MDS_USER_CLEAR_CPU_BUFFERS
 /* if something modifies registers it must also disable sysexit */
 	movl PT_EIP(%esp), %edx
 	movl PT_OLDESP(%esp), %ecx
@@ -457,16 +447,14 @@ sysenter_exit:
 sysenter_audit:
 	testl $(_TIF_WORK_SYSCALL_ENTRY & ~_TIF_SYSCALL_AUDIT),TI_flags(%ebp)
 	jnz syscall_trace_entry
-	addl $4,%esp
-	CFI_ADJUST_CFA_OFFSET -4
-	/* %esi already in 8(%esp)	   6th arg: 4th syscall arg */
-	/* %edx already in 4(%esp)	   5th arg: 3rd syscall arg */
-	/* %ecx already in 0(%esp)	   4th arg: 2nd syscall arg */
-	movl %ebx,%ecx			/* 3rd arg: 1st syscall arg */
-	movl %eax,%edx			/* 2nd arg: syscall number */
-	movl $AUDIT_ARCH_I386,%eax	/* 1st arg: audit arch */
+	/* movl PT_EAX(%esp), %eax	already set, syscall number: 1st arg to audit */
+	movl PT_EBX(%esp), %edx		/* ebx/a0: 2nd arg to audit */
+	/* movl PT_ECX(%esp), %ecx	already set, a1: 3nd arg to audit */
+	pushl_cfi PT_ESI(%esp)		/* a3: 5th arg */
+	pushl_cfi PT_EDX+4(%esp)	/* a2: 4th arg */
 	call __audit_syscall_entry
-	pushl_cfi %ebx
+	popl_cfi %ecx /* get that remapped edx off the stack */
+	popl_cfi %ecx /* get that remapped esi off the stack */
 	movl PT_EAX(%esp),%eax		/* reload syscall number */
 	jmp sysenter_do_call
 
@@ -511,14 +499,7 @@ ENTRY(system_call)
 	cmpl $(NR_syscalls), %eax
 	jae syscall_badsys
 syscall_call:
-	sbb %edx, %edx				/* array_index_mask_nospec() */
-	and %edx, %eax
-#ifdef CONFIG_RETPOLINE
-	movl sys_call_table(,%eax,4),%eax
-	call __x86_indirect_thunk_eax
-#else
 	call *sys_call_table(,%eax,4)
-#endif
 syscall_after_call:
 	movl %eax,PT_EAX(%esp)		# store the return value
 syscall_exit:
@@ -532,7 +513,6 @@ syscall_exit:
 	jne syscall_exit_work
 
 restore_all:
-	MDS_USER_CLEAR_CPU_BUFFERS
 	TRACE_IRQS_IRET
 restore_all_notrace:
 #ifdef CONFIG_X86_ESPFIX32
@@ -701,7 +681,7 @@ END(syscall_badsys)
 sysenter_badsys:
 	movl $-ENOSYS,%eax
 	jmp sysenter_after_call
-END(syscall_badsys)
+END(sysenter_badsys)
 	CFI_ENDPROC
 
 .macro FIXUP_ESPFIX_STACK
@@ -839,7 +819,7 @@ ENTRY(simd_coprocessor_error)
 661:	pushl_cfi $do_general_protection
 662:
 .section .altinstructions,"a"
-	altinstruction_entry 661b, 663f, X86_FEATURE_XMM, 662b-661b, 664f-663f, 0
+	altinstruction_entry 661b, 663f, X86_FEATURE_XMM, 662b-661b, 664f-663f
 .previous
 .section .altinstr_replacement,"ax"
 663:	pushl $do_simd_coprocessor_error
@@ -1077,9 +1057,6 @@ ENTRY(mcount)
 END(mcount)
 
 ENTRY(ftrace_caller)
-	cmpl $0, function_trace_stop
-	jne  ftrace_stub
-
 	pushl %eax
 	pushl %ecx
 	pushl %edx
@@ -1104,15 +1081,13 @@ ftrace_graph_call:
 	jmp ftrace_stub
 #endif
 
-/* This is weak to keep gas from relaxing the jumps */
-WEAK(ftrace_stub)
+.globl ftrace_stub
+ftrace_stub:
 	ret
 END(ftrace_caller)
 
 ENTRY(ftrace_regs_caller)
 	pushf	/* push flags before compare (in cs location) */
-	cmpl $0, function_trace_stop
-	jne ftrace_restore_flags
 
 	/*
 	 * i386 does not save SS and ESP when coming from kernel.
@@ -1171,7 +1146,6 @@ GLOBAL(ftrace_regs_call)
 	popf			/* Pop flags at end (no addl to corrupt flags) */
 	jmp ftrace_ret
 
-ftrace_restore_flags:
 	popf
 	jmp  ftrace_stub
 #else /* ! CONFIG_DYNAMIC_FTRACE */
@@ -1179,9 +1153,6 @@ ftrace_restore_flags:
 ENTRY(mcount)
 	cmpl $__PAGE_OFFSET, %esp
 	jb ftrace_stub		/* Paging not enabled yet? */
-
-	cmpl $0, function_trace_stop
-	jne  ftrace_stub
 
 	cmpl $ftrace_stub, ftrace_trace_function
 	jnz trace
@@ -1205,8 +1176,7 @@ trace:
 	movl 0x4(%ebp), %edx
 	subl $MCOUNT_INSN_SIZE, %eax
 
-	movl ftrace_trace_function, %ecx
-	CALL_NOSPEC %ecx
+	call *ftrace_trace_function
 
 	popl %edx
 	popl %ecx
@@ -1241,7 +1211,7 @@ return_to_handler:
 	movl %eax, %ecx
 	popl %edx
 	popl %eax
-	JMP_NOSPEC %ecx
+	jmp *%ecx
 #endif
 
 #ifdef CONFIG_TRACING
@@ -1296,7 +1266,7 @@ error_code:
 	movl %ecx, %es
 	TRACE_IRQS_OFF
 	movl %esp,%eax			# pt_regs pointer
-	CALL_NOSPEC %edi
+	call *%edi
 	jmp ret_from_exception
 	CFI_ENDPROC
 END(page_fault)

@@ -22,7 +22,6 @@
 #include <linux/errno.h>
 #include <linux/ptrace.h>
 #include <linux/smp.h>
-#include <linux/user.h>
 #include <linux/security.h>
 
 #include <asm/cpu.h>
@@ -32,6 +31,7 @@
 #include <asm/mipsmtregs.h>
 #include <asm/pgtable.h>
 #include <asm/page.h>
+#include <asm/reg.h>
 #include <asm/uaccess.h>
 #include <asm/bootinfo.h>
 
@@ -69,7 +69,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		if (get_user(addrOthers, (u32 __user * __user *) (unsigned long) addr) != 0)
 			break;
 
-		copied = ptrace_access_vm(child, (u64)addrOthers, &tmp,
+		copied = access_process_vm(child, (u64)addrOthers, &tmp,
 				sizeof(tmp), 0);
 		if (copied != sizeof(tmp))
 			break;
@@ -97,7 +97,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 				break;
 			}
 			fregs = get_fpu_regs(child);
-			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
+			if (test_thread_flag(TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
@@ -107,7 +107,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 						addr & 1);
 				break;
 			}
-			tmp = get_fpr64(&fregs[addr - FPR_BASE], 0);
+			tmp = get_fpr32(&fregs[addr - FPR_BASE], 0);
 			break;
 		case PC:
 			tmp = regs->cp0_epc;
@@ -140,7 +140,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 				goto out;
 			}
 			dregs = __get_dsp_regs(child);
-			tmp = dregs[addr - DSP_BASE];
+			tmp = (unsigned long) (dregs[addr - DSP_BASE]);
 			break;
 		}
 		case DSP_CONTROL:
@@ -178,7 +178,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		if (get_user(addrOthers, (u32 __user * __user *) (unsigned long) addr) != 0)
 			break;
 		ret = 0;
-		if (ptrace_access_vm(child, (u64)addrOthers, &data,
+		if (access_process_vm(child, (u64)addrOthers, &data,
 					sizeof(data), 1) == sizeof(data))
 			break;
 		ret = -EIO;
@@ -203,7 +203,7 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 				       sizeof(child->thread.fpu));
 				child->thread.fpu.fcr31 = 0;
 			}
-			if (test_tsk_thread_flag(child, TIF_32BIT_FPREGS)) {
+			if (test_thread_flag(TIF_32BIT_FPREGS)) {
 				/*
 				 * The odd registers are actually the high
 				 * order bits of the values stored in the even
@@ -256,11 +256,13 @@ long compat_arch_ptrace(struct task_struct *child, compat_long_t request,
 		}
 
 	case PTRACE_GETREGS:
-		ret = ptrace_getregs(child, (__s64 __user *) (__u64) data);
+		ret = ptrace_getregs(child,
+				(struct user_pt_regs __user *) (__u64) data);
 		break;
 
 	case PTRACE_SETREGS:
-		ret = ptrace_setregs(child, (__s64 __user *) (__u64) data);
+		ret = ptrace_setregs(child,
+				(struct user_pt_regs __user *) (__u64) data);
 		break;
 
 	case PTRACE_GETFPREGS:

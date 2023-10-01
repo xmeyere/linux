@@ -433,9 +433,7 @@ static void fb_do_show_logo(struct fb_info *info, struct fb_image *image,
 			image->dx += image->width + 8;
 		}
 	} else if (rotate == FB_ROTATE_UD) {
-		u32 dx = image->dx;
-
-		for (x = 0; x < num && image->dx <= dx; x++) {
+		for (x = 0; x < num; x++) {
 			info->fbops->fb_imageblit(info, image);
 			image->dx -= image->width + 8;
 		}
@@ -447,9 +445,7 @@ static void fb_do_show_logo(struct fb_info *info, struct fb_image *image,
 			image->dy += image->height + 8;
 		}
 	} else if (rotate == FB_ROTATE_CCW) {
-		u32 dy = image->dy;
-
-		for (x = 0; x < num && image->dy <= dy; x++) {
+		for (x = 0; x < num; x++) {
 			info->fbops->fb_imageblit(info, image);
 			image->dy -= image->height + 8;
 		}
@@ -1691,12 +1687,12 @@ static int do_register_framebuffer(struct fb_info *fb_info)
 	return 0;
 }
 
-static int unbind_console(struct fb_info *fb_info)
+static int do_unregister_framebuffer(struct fb_info *fb_info)
 {
 	struct fb_event event;
-	int ret;
-	int i = fb_info->node;
+	int i, ret = 0;
 
+	i = fb_info->node;
 	if (i < 0 || i >= FB_MAX || registered_fb[i] != fb_info)
 		return -EINVAL;
 
@@ -1711,29 +1707,17 @@ static int unbind_console(struct fb_info *fb_info)
 	unlock_fb_info(fb_info);
 	console_unlock();
 
-	return ret;
-}
-
-static int __unlink_framebuffer(struct fb_info *fb_info);
-
-static int do_unregister_framebuffer(struct fb_info *fb_info)
-{
-	struct fb_event event;
-	int ret;
-
-	ret = unbind_console(fb_info);
-
 	if (ret)
 		return -EINVAL;
 
 	pm_vt_switch_unregister(fb_info->dev);
 
-	__unlink_framebuffer(fb_info);
+	unlink_framebuffer(fb_info);
 	if (fb_info->pixmap.addr &&
 	    (fb_info->pixmap.flags & FB_PIXMAP_DEFAULT))
 		kfree(fb_info->pixmap.addr);
 	fb_destroy_modelist(&fb_info->modelist);
-	registered_fb[fb_info->node] = NULL;
+	registered_fb[i] = NULL;
 	num_registered_fb--;
 	fb_cleanup_device(fb_info);
 	event.info = fb_info;
@@ -1746,7 +1730,7 @@ static int do_unregister_framebuffer(struct fb_info *fb_info)
 	return 0;
 }
 
-static int __unlink_framebuffer(struct fb_info *fb_info)
+int unlink_framebuffer(struct fb_info *fb_info)
 {
 	int i;
 
@@ -1758,20 +1742,6 @@ static int __unlink_framebuffer(struct fb_info *fb_info)
 		device_destroy(fb_class, MKDEV(FB_MAJOR, i));
 		fb_info->dev = NULL;
 	}
-
-	return 0;
-}
-
-int unlink_framebuffer(struct fb_info *fb_info)
-{
-	int ret;
-
-	ret = __unlink_framebuffer(fb_info);
-	if (ret)
-		return ret;
-
-	unbind_console(fb_info);
-
 	return 0;
 }
 EXPORT_SYMBOL(unlink_framebuffer);
@@ -1937,97 +1907,5 @@ int fb_new_modelist(struct fb_info *info)
 
 	return err;
 }
-
-static char *video_options[FB_MAX] __read_mostly;
-static int ofonly __read_mostly;
-
-/**
- * fb_get_options - get kernel boot parameters
- * @name:   framebuffer name as it would appear in
- *          the boot parameter line
- *          (video=<name>:<options>)
- * @option: the option will be stored here
- *
- * NOTE: Needed to maintain backwards compatibility
- */
-int fb_get_options(const char *name, char **option)
-{
-	char *opt, *options = NULL;
-	int retval = 0;
-	int name_len = strlen(name), i;
-
-	if (name_len && ofonly && strncmp(name, "offb", 4))
-		retval = 1;
-
-	if (name_len && !retval) {
-		for (i = 0; i < FB_MAX; i++) {
-			if (video_options[i] == NULL)
-				continue;
-			if (!video_options[i][0])
-				continue;
-			opt = video_options[i];
-			if (!strncmp(name, opt, name_len) &&
-			    opt[name_len] == ':')
-				options = opt + name_len + 1;
-		}
-	}
-	/* No match, pass global option */
-	if (!options && option && fb_mode_option)
-		options = kstrdup(fb_mode_option, GFP_KERNEL);
-	if (options && !strncmp(options, "off", 3))
-		retval = 1;
-
-	if (option)
-		*option = options;
-
-	return retval;
-}
-EXPORT_SYMBOL(fb_get_options);
-
-#ifndef MODULE
-/**
- *	video_setup - process command line options
- *	@options: string of options
- *
- *	Process command line options for frame buffer subsystem.
- *
- *	NOTE: This function is a __setup and __init function.
- *            It only stores the options.  Drivers have to call
- *            fb_get_options() as necessary.
- *
- *	Returns zero.
- *
- */
-static int __init video_setup(char *options)
-{
-	int i, global = 0;
-
-	if (!options || !*options)
- 		global = 1;
-
- 	if (!global && !strncmp(options, "ofonly", 6)) {
- 		ofonly = 1;
- 		global = 1;
- 	}
-
- 	if (!global && !strchr(options, ':')) {
- 		fb_mode_option = options;
- 		global = 1;
- 	}
-
- 	if (!global) {
- 		for (i = 0; i < FB_MAX; i++) {
- 			if (video_options[i] == NULL) {
- 				video_options[i] = options;
- 				break;
- 			}
-
-		}
-	}
-
-	return 1;
-}
-__setup("video=", video_setup);
-#endif
 
 MODULE_LICENSE("GPL");

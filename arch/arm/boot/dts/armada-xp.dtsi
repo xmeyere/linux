@@ -99,7 +99,7 @@
 			cpuclk: clock-complex@18700 {
 				#clock-cells = <1>;
 				compatible = "marvell,armada-xp-cpu-clock";
-				reg = <0x18700 0xA0>;
+				reg = <0x18700 0xA0>, <0x1c054 0x10>;
 				clocks = <&coreclk 1>;
 			};
 
@@ -125,7 +125,7 @@
 			};
 
 			eth2: ethernet@30000 {
-				compatible = "marvell,armada-xp-neta";
+				compatible = "marvell,armada-370-neta";
 				reg = <0x30000 0x4000>;
 				interrupts = <12>;
 				clocks = <&gateclk 2>;
@@ -166,14 +166,6 @@
 					dmacap,xor;
 					dmacap,memset;
 				};
-			};
-
-			ethernet@70000 {
-				compatible = "marvell,armada-xp-neta";
-			};
-
-			ethernet@74000 {
-				compatible = "marvell,armada-xp-neta";
 			};
 
 			xor@f0900 {

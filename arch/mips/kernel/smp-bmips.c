@@ -159,11 +159,11 @@ static void bmips_prepare_cpus(unsigned int max_cpus)
 		return;
 	}
 
-	if (request_irq(IPI0_IRQ, bmips_ipi_interrupt,
-			IRQF_PERCPU | IRQF_NO_SUSPEND, "smp_ipi0", NULL))
+	if (request_irq(IPI0_IRQ, bmips_ipi_interrupt, IRQF_PERCPU,
+			"smp_ipi0", NULL))
 		panic("Can't request IPI0 interrupt");
-	if (request_irq(IPI1_IRQ, bmips_ipi_interrupt,
-			IRQF_PERCPU | IRQF_NO_SUSPEND, "smp_ipi1", NULL))
+	if (request_irq(IPI1_IRQ, bmips_ipi_interrupt, IRQF_PERCPU,
+			"smp_ipi1", NULL))
 		panic("Can't request IPI1 interrupt");
 }
 
@@ -346,7 +346,7 @@ static irqreturn_t bmips43xx_ipi_interrupt(int irq, void *dev_id)
 	int action, cpu = irq - IPI0_IRQ;
 
 	spin_lock_irqsave(&ipi_lock, flags);
-	action = __get_cpu_var(ipi_action_mask);
+	action = __this_cpu_read(ipi_action_mask);
 	per_cpu(ipi_action_mask, cpu) = 0;
 	clear_c0_cause(cpu ? C_SW1 : C_SW0);
 	spin_unlock_irqrestore(&ipi_lock, flags);
@@ -467,10 +467,10 @@ static void bmips_wr_vec(unsigned long dst, char *start, char *end)
 
 static inline void bmips_nmi_handler_setup(void)
 {
-	bmips_wr_vec(BMIPS_NMI_RESET_VEC, bmips_reset_nmi_vec,
-		bmips_reset_nmi_vec_end);
-	bmips_wr_vec(BMIPS_WARM_RESTART_VEC, bmips_smp_int_vec,
-		bmips_smp_int_vec_end);
+	bmips_wr_vec(BMIPS_NMI_RESET_VEC, &bmips_reset_nmi_vec,
+		&bmips_reset_nmi_vec_end);
+	bmips_wr_vec(BMIPS_WARM_RESTART_VEC, &bmips_smp_int_vec,
+		&bmips_smp_int_vec_end);
 }
 
 void bmips_ebase_setup(void)

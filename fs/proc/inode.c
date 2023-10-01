@@ -23,7 +23,6 @@
 #include <linux/slab.h>
 #include <linux/mount.h>
 #include <linux/magic.h>
-#include <linux/namei.h>
 
 #include <asm/uaccess.h>
 
@@ -402,26 +401,6 @@ static const struct file_operations proc_reg_file_ops_no_compat = {
 };
 #endif
 
-static void *proc_follow_link(struct dentry *dentry, struct nameidata *nd)
-{
-	struct proc_dir_entry *pde = PDE(dentry->d_inode);
-	if (unlikely(!use_pde(pde)))
-		return ERR_PTR(-EINVAL);
-	nd_set_link(nd, pde->data);
-	return pde;
-}
-
-static void proc_put_link(struct dentry *dentry, struct nameidata *nd, void *p)
-{
-	unuse_pde(p);
-}
-
-const struct inode_operations proc_link_inode_operations = {
-	.readlink	= generic_readlink,
-	.follow_link	= proc_follow_link,
-	.put_link	= proc_put_link,
-};
-
 struct inode *proc_get_inode(struct super_block *sb, struct proc_dir_entry *de)
 {
 	struct inode *inode = new_inode_pseudo(sb);
@@ -431,10 +410,6 @@ struct inode *proc_get_inode(struct super_block *sb, struct proc_dir_entry *de)
 		inode->i_mtime = inode->i_atime = inode->i_ctime = CURRENT_TIME;
 		PROC_I(inode)->pde = de;
 
-		if (is_empty_pde(de)) {
-			make_empty_dir_inode(inode);
-			return inode;
-		}
 		if (de->mode) {
 			inode->i_mode = de->mode;
 			inode->i_uid = de->uid;
@@ -467,6 +442,7 @@ struct inode *proc_get_inode(struct super_block *sb, struct proc_dir_entry *de)
 int proc_fill_super(struct super_block *s)
 {
 	struct inode *root_inode;
+	int ret;
 
 	s->s_flags |= MS_NODIRATIME | MS_NOSUID | MS_NOEXEC;
 	s->s_blocksize = 1024;
@@ -488,5 +464,9 @@ int proc_fill_super(struct super_block *s)
 		return -ENOMEM;
 	}
 
-	return proc_setup_self(s);
+	ret = proc_setup_self(s);
+	if (ret) {
+		return ret;
+	}
+	return proc_setup_thread_self(s);
 }

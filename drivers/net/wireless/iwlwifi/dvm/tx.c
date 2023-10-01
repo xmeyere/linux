@@ -580,7 +580,7 @@ turn_off:
 		 * time, or we hadn't time to drain the AC queues.
 		 */
 		if (agg_state == IWL_AGG_ON)
-			iwl_trans_txq_disable(priv->trans, txq_id);
+			iwl_trans_txq_disable(priv->trans, txq_id, true);
 		else
 			IWL_DEBUG_TX_QUEUES(priv, "Don't disable tx agg: %d\n",
 					    agg_state);
@@ -686,7 +686,7 @@ int iwlagn_tx_agg_flush(struct iwl_priv *priv, struct ieee80211_vif *vif,
 		 * time, or we hadn't time to drain the AC queues.
 		 */
 		if (agg_state == IWL_AGG_ON)
-			iwl_trans_txq_disable(priv->trans, txq_id);
+			iwl_trans_txq_disable(priv->trans, txq_id, true);
 		else
 			IWL_DEBUG_TX_QUEUES(priv, "Don't disable tx agg: %d\n",
 					    agg_state);
@@ -781,7 +781,7 @@ static void iwlagn_check_ratid_empty(struct iwl_priv *priv, int sta_id, u8 tid)
 				"Can continue DELBA flow ssn = next_recl = %d\n",
 				tid_data->next_reclaimed);
 			iwl_trans_txq_disable(priv->trans,
-					      tid_data->agg.txq_id);
+					      tid_data->agg.txq_id, true);
 			iwlagn_dealloc_agg_txq(priv, tid_data->agg.txq_id);
 			tid_data->agg.state = IWL_AGG_OFF;
 			ieee80211_stop_tx_ba_cb_irqsafe(vif, addr, tid);
@@ -1190,11 +1190,11 @@ int iwlagn_rx_reply_tx(struct iwl_priv *priv, struct iwl_rx_cmd_buffer *rxb,
 				next_reclaimed;
 			IWL_DEBUG_TX_REPLY(priv, "Next reclaimed packet:%d\n",
 						  next_reclaimed);
-			iwlagn_check_ratid_empty(priv, sta_id, tid);
 		}
 
 		iwl_trans_reclaim(priv->trans, txq_id, ssn, &skbs);
 
+		iwlagn_check_ratid_empty(priv, sta_id, tid);
 		freed = 0;
 
 		/* process frames */

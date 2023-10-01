@@ -8,12 +8,10 @@
  * as published by the Free Software Foundation; version 2
  * of the License.
  */
-#include <linux/moduleloader.h>
-#include <asm/cacheflush.h>
 #include <linux/netdevice.h>
 #include <linux/filter.h>
 #include <linux/if_vlan.h>
-#include <linux/random.h>
+#include <asm/cacheflush.h>
 
 int bpf_jit_enable __read_mostly;
 
@@ -109,39 +107,6 @@ static inline void bpf_flush_icache(void *start, void *end)
 #define CHOOSE_LOAD_FUNC(K, func) \
 	((int)K < 0 ? ((int)K >= SKF_LL_OFF ? func##_negative_offset : func) : func##_positive_offset)
 
-struct bpf_binary_header {
-	unsigned int	pages;
-	/* Note : for security reasons, bpf code will follow a randomly
-	 * sized amount of int3 instructions
-	 */
-	u8		image[];
-};
-
-static struct bpf_binary_header *bpf_alloc_binary(unsigned int proglen,
-						  u8 **image_ptr)
-{
-	unsigned int sz, hole;
-	struct bpf_binary_header *header;
-
-	/* Most of BPF filters are really small,
-	 * but if some of them fill a page, allow at least
-	 * 128 extra bytes to insert a random section of int3
-	 */
-	sz = round_up(proglen + sizeof(*header) + 128, PAGE_SIZE);
-	header = module_alloc(sz);
-	if (!header)
-		return NULL;
-
-	memset(header, 0xcc, sz); /* fill whole space with int3 instructions */
-
-	header->pages = sz / PAGE_SIZE;
-	hole = min(sz - (proglen + sizeof(*header)), PAGE_SIZE - sizeof(*header));
-
-	/* insert a random number of int3 instructions before BPF code */
-	*image_ptr = &header->image[prandom_u32() % hole];
-	return header;
-}
-
 /* pick a register outside of BPF range for JIT internal work */
 #define AUX_REG (MAX_BPF_REG + 1)
 
@@ -206,6 +171,12 @@ static inline u8 add_2reg(u8 byte, u32 dst_reg, u32 src_reg)
 	return byte + reg2hex[dst_reg] + (reg2hex[src_reg] << 3);
 }
 
+static void jit_fill_hole(void *area, unsigned int size)
+{
+	/* fill whole space with int3 instructions */
+	memset(area, 0xcc, size);
+}
+
 struct jit_context {
 	unsigned int cleanup_addr; /* epilogue code offset */
 	bool seen_ld_abs;
@@ -215,10 +186,10 @@ struct jit_context {
 #define BPF_MAX_INSN_SIZE	128
 #define BPF_INSN_SAFETY		64
 
-static int do_jit(struct sk_filter *bpf_prog, int *addrs, u8 *image,
+static int do_jit(struct bpf_prog *bpf_prog, int *addrs, u8 *image,
 		  int oldproglen, struct jit_context *ctx)
 {
-	struct sock_filter_int *insn = bpf_prog->insnsi;
+	struct bpf_insn *insn = bpf_prog->insnsi;
 	int insn_cnt = bpf_prog->len;
 	bool seen_ld_abs = ctx->seen_ld_abs | (oldproglen == 0);
 	u8 temp[BPF_MAX_INSN_SIZE + BPF_INSN_SAFETY];
@@ -240,7 +211,7 @@ static int do_jit(struct sk_filter *bpf_prog, int *addrs, u8 *image,
 	/* mov qword ptr [rbp-X],rbx */
 	EMIT3_off32(0x48, 0x89, 0x9D, -stacksize);
 
-	/* sk_convert_filter() maps classic BPF register X to R7 and uses R8
+	/* bpf_convert_filter() maps classic BPF register X to R7 and uses R8
 	 * as temporary, so all tcpdump filters need to spill/fill R7(r13) and
 	 * R8(r14). R9(r15) spill could be made conditional, but there is only
 	 * one 'bpf_error' return path out of helper functions inside bpf_jit.S
@@ -398,6 +369,23 @@ static int do_jit(struct sk_filter *bpf_prog, int *addrs, u8 *image,
 			EMIT1_off32(add_1reg(0xB8, dst_reg), imm32);
 			break;
 
+		case BPF_LD | BPF_IMM | BPF_DW:
+			if (insn[1].code != 0 || insn[1].src_reg != 0 ||
+			    insn[1].dst_reg != 0 || insn[1].off != 0) {
+				/* verifier must catch invalid insns */
+				pr_err("invalid BPF_LD_IMM64 insn\n");
+				return -EINVAL;
+			}
+
+			/* movabsq %rax, imm64 */
+			EMIT2(add_1mod(0x48, dst_reg), add_1reg(0xB8, dst_reg));
+			EMIT(insn[0].imm, 4);
+			EMIT(insn[1].imm, 4);
+
+			insn++;
+			i++;
+			break;
+
 			/* dst %= src, dst /= src, dst %= imm32, dst /= imm32 */
 		case BPF_ALU | BPF_MOD | BPF_X:
 		case BPF_ALU | BPF_DIV | BPF_X:
@@ -518,6 +506,48 @@ static int do_jit(struct sk_filter *bpf_prog, int *addrs, u8 *image,
 			case BPF_ARSH: b3 = 0xF8; break;
 			}
 			EMIT3(0xC1, add_1reg(b3, dst_reg), imm32);
+			break;
+
+		case BPF_ALU | BPF_LSH | BPF_X:
+		case BPF_ALU | BPF_RSH | BPF_X:
+		case BPF_ALU | BPF_ARSH | BPF_X:
+		case BPF_ALU64 | BPF_LSH | BPF_X:
+		case BPF_ALU64 | BPF_RSH | BPF_X:
+		case BPF_ALU64 | BPF_ARSH | BPF_X:
+
+			/* check for bad case when dst_reg == rcx */
+			if (dst_reg == BPF_REG_4) {
+				/* mov r11, dst_reg */
+				EMIT_mov(AUX_REG, dst_reg);
+				dst_reg = AUX_REG;
+			}
+
+			if (src_reg != BPF_REG_4) { /* common case */
+				EMIT1(0x51); /* push rcx */
+
+				/* mov rcx, src_reg */
+				EMIT_mov(BPF_REG_4, src_reg);
+			}
+
+			/* shl %rax, %cl | shr %rax, %cl | sar %rax, %cl */
+			if (BPF_CLASS(insn->code) == BPF_ALU64)
+				EMIT1(add_1mod(0x48, dst_reg));
+			else if (is_ereg(dst_reg))
+				EMIT1(add_1mod(0x40, dst_reg));
+
+			switch (BPF_OP(insn->code)) {
+			case BPF_LSH: b3 = 0xE0; break;
+			case BPF_RSH: b3 = 0xE8; break;
+			case BPF_ARSH: b3 = 0xF8; break;
+			}
+			EMIT2(0xD3, add_1reg(b3, dst_reg));
+
+			if (src_reg != BPF_REG_4)
+				EMIT1(0x59); /* pop rcx */
+
+			if (insn->dst_reg == BPF_REG_4)
+				/* mov dst_reg, r11 */
+				EMIT_mov(insn->dst_reg, AUX_REG);
 			break;
 
 		case BPF_ALU | BPF_END | BPF_FROM_BE:
@@ -847,7 +877,7 @@ common_load:
 			/* By design x64 JIT should support all BPF instructions
 			 * This error will be seen if new instruction was added
 			 * to interpreter, but not to JIT
-			 * or if there is junk in sk_filter
+			 * or if there is junk in bpf_prog
 			 */
 			pr_err("bpf_jit: unknown opcode %02x\n", insn->code);
 			return -EINVAL;
@@ -873,11 +903,11 @@ common_load:
 	return proglen;
 }
 
-void bpf_jit_compile(struct sk_filter *prog)
+void bpf_jit_compile(struct bpf_prog *prog)
 {
 }
 
-void bpf_int_jit_compile(struct sk_filter *prog)
+void bpf_int_jit_compile(struct bpf_prog *prog)
 {
 	struct bpf_binary_header *header = NULL;
 	int proglen, oldproglen = 0;
@@ -906,30 +936,25 @@ void bpf_int_jit_compile(struct sk_filter *prog)
 	}
 	ctx.cleanup_addr = proglen;
 
-	/* JITed image shrinks with every pass and the loop iterates
-	 * until the image stops shrinking. Very large bpf programs
-	 * may converge on the last pass. In such case do one more
-	 * pass to emit the final image
-	 */
-	for (pass = 0; pass < 10 || image; pass++) {
+	for (pass = 0; pass < 10; pass++) {
 		proglen = do_jit(prog, addrs, image, oldproglen, &ctx);
 		if (proglen <= 0) {
-out_image:
 			image = NULL;
 			if (header)
-				module_free(NULL, header);
+				bpf_jit_binary_free(header);
 			goto out;
 		}
 		if (image) {
 			if (proglen != oldproglen) {
 				pr_err("bpf_jit: proglen=%d != oldproglen=%d\n",
 				       proglen, oldproglen);
-				goto out_image;
+				goto out;
 			}
 			break;
 		}
 		if (proglen == oldproglen) {
-			header = bpf_alloc_binary(proglen, &image);
+			header = bpf_jit_binary_alloc(proglen, &image,
+						      1, jit_fill_hole);
 			if (!header)
 				goto out;
 		}
@@ -943,29 +968,23 @@ out_image:
 		bpf_flush_icache(header, image + proglen);
 		set_memory_ro((unsigned long)header, header->pages);
 		prog->bpf_func = (void *)image;
-		prog->jited = 1;
+		prog->jited = true;
 	}
 out:
 	kfree(addrs);
 }
 
-static void bpf_jit_free_deferred(struct work_struct *work)
+void bpf_jit_free(struct bpf_prog *fp)
 {
-	struct sk_filter *fp = container_of(work, struct sk_filter, work);
 	unsigned long addr = (unsigned long)fp->bpf_func & PAGE_MASK;
 	struct bpf_binary_header *header = (void *)addr;
 
-	set_memory_rw(addr, header->pages);
-	module_free(NULL, header);
-	kfree(fp);
-}
+	if (!fp->jited)
+		goto free_filter;
 
-void bpf_jit_free(struct sk_filter *fp)
-{
-	if (fp->jited) {
-		INIT_WORK(&fp->work, bpf_jit_free_deferred);
-		schedule_work(&fp->work);
-	} else {
-		kfree(fp);
-	}
+	set_memory_rw(addr, header->pages);
+	bpf_jit_binary_free(header);
+
+free_filter:
+	bpf_prog_unlock_free(fp);
 }

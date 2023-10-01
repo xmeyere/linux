@@ -314,7 +314,7 @@ static void audit_update_watch(struct audit_parent *parent,
 					     &nentry->rule.list);
 			}
 
-			audit_watch_log_rule_change(r, owatch, "updated rules");
+			audit_watch_log_rule_change(r, owatch, "updated_rules");
 
 			call_rcu(&oentry->rcu, audit_free_rule_rcu);
 		}
@@ -342,7 +342,7 @@ static void audit_remove_parent_watches(struct audit_parent *parent)
 	list_for_each_entry_safe(w, nextw, &parent->watches, wlist) {
 		list_for_each_entry_safe(r, nextr, &w->rules, rlist) {
 			e = container_of(r, struct audit_entry, rule);
-			audit_watch_log_rule_change(r, w, "remove rule");
+			audit_watch_log_rule_change(r, w, "remove_rule");
 			list_del(&r->rlist);
 			list_del(&r->list);
 			list_del_rcu(&e->list);
@@ -455,15 +455,13 @@ void audit_remove_watch_rule(struct audit_krule *krule)
 	list_del(&krule->rlist);
 
 	if (list_empty(&watch->rules)) {
-		/*
-		 * audit_remove_watch() drops our reference to 'parent' which
-		 * can get freed. Grab our own reference to be safe.
-		 */
-		audit_get_parent(parent);
 		audit_remove_watch(watch);
-		if (list_empty(&parent->watches))
+
+		if (list_empty(&parent->watches)) {
+			audit_get_parent(parent);
 			fsnotify_destroy_mark(&parent->mark, audit_watch_group);
-		audit_put_parent(parent);
+			audit_put_parent(parent);
+		}
 	}
 }
 

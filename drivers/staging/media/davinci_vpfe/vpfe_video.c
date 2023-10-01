@@ -1351,7 +1351,7 @@ static int vpfe_reqbufs(struct file *file, void *priv,
 	if (ret) {
 		v4l2_err(&vpfe_dev->v4l2_dev, "vb2_queue_init() failed\n");
 		vb2_dma_contig_cleanup_ctx(vpfe_dev->pdev);
-		goto unlock_out;
+		return ret;
 	}
 
 	fh->io_allowed = 1;
@@ -1606,7 +1606,6 @@ int vpfe_video_init(struct vpfe_video_device *video, const char *name)
 	if (ret < 0)
 		return ret;
 
-	set_bit(V4L2_FL_USE_FH_PRIO, &video->video_dev.flags);
 	video_set_drvdata(&video->video_dev, video);
 
 	return 0;

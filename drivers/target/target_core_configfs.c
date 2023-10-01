@@ -665,6 +665,9 @@ SE_DEV_ATTR(is_nonrot, S_IRUGO | S_IWUSR);
 DEF_DEV_ATTRIB(emulate_rest_reord);
 SE_DEV_ATTR(emulate_rest_reord, S_IRUGO | S_IWUSR);
 
+DEF_DEV_ATTRIB(force_pr_aptpl);
+SE_DEV_ATTR(force_pr_aptpl, S_IRUGO | S_IWUSR);
+
 DEF_DEV_ATTRIB_RO(hw_block_size);
 SE_DEV_ATTR_RO(hw_block_size);
 
@@ -719,6 +722,7 @@ static struct configfs_attribute *target_core_dev_attrib_attrs[] = {
 	&target_core_dev_attrib_hw_pi_prot_type.attr,
 	&target_core_dev_attrib_pi_prot_format.attr,
 	&target_core_dev_attrib_enforce_pr_isids.attr,
+	&target_core_dev_attrib_force_pr_aptpl.attr,
 	&target_core_dev_attrib_is_nonrot.attr,
 	&target_core_dev_attrib_emulate_rest_reord.attr,
 	&target_core_dev_attrib_hw_block_size.attr,
@@ -1263,7 +1267,7 @@ static ssize_t target_core_dev_pr_store_attr_res_aptpl_metadata(
 {
 	unsigned char *i_fabric = NULL, *i_port = NULL, *isid = NULL;
 	unsigned char *t_fabric = NULL, *t_port = NULL;
-	char *orig, *ptr, *arg_p, *opts;
+	char *orig, *ptr, *opts;
 	substring_t args[MAX_OPT_ARGS];
 	unsigned long long tmp_ll;
 	u64 sa_res_key = 0;
@@ -1295,14 +1299,14 @@ static ssize_t target_core_dev_pr_store_attr_res_aptpl_metadata(
 		token = match_token(ptr, tokens, args);
 		switch (token) {
 		case Opt_initiator_fabric:
-			i_fabric = match_strdup(&args[0]);
+			i_fabric = match_strdup(args);
 			if (!i_fabric) {
 				ret = -ENOMEM;
 				goto out;
 			}
 			break;
 		case Opt_initiator_node:
-			i_port = match_strdup(&args[0]);
+			i_port = match_strdup(args);
 			if (!i_port) {
 				ret = -ENOMEM;
 				goto out;
@@ -1316,7 +1320,7 @@ static ssize_t target_core_dev_pr_store_attr_res_aptpl_metadata(
 			}
 			break;
 		case Opt_initiator_sid:
-			isid = match_strdup(&args[0]);
+			isid = match_strdup(args);
 			if (!isid) {
 				ret = -ENOMEM;
 				goto out;
@@ -1330,15 +1334,9 @@ static ssize_t target_core_dev_pr_store_attr_res_aptpl_metadata(
 			}
 			break;
 		case Opt_sa_res_key:
-			arg_p = match_strdup(&args[0]);
-			if (!arg_p) {
-				ret = -ENOMEM;
-				goto out;
-			}
-			ret = kstrtoull(arg_p, 0, &tmp_ll);
+			ret = kstrtoull(args->from, 0, &tmp_ll);
 			if (ret < 0) {
-				pr_err("kstrtoull() failed for"
-					" sa_res_key=\n");
+				pr_err("kstrtoull() failed for sa_res_key=\n");
 				goto out;
 			}
 			sa_res_key = (u64)tmp_ll;
@@ -1370,14 +1368,14 @@ static ssize_t target_core_dev_pr_store_attr_res_aptpl_metadata(
 		 * PR APTPL Metadata for Target Port
 		 */
 		case Opt_target_fabric:
-			t_fabric = match_strdup(&args[0]);
+			t_fabric = match_strdup(args);
 			if (!t_fabric) {
 				ret = -ENOMEM;
 				goto out;
 			}
 			break;
 		case Opt_target_node:
-			t_port = match_strdup(&args[0]);
+			t_port = match_strdup(args);
 			if (!t_port) {
 				ret = -ENOMEM;
 				goto out;
@@ -1810,14 +1808,14 @@ static ssize_t target_core_store_dev_lba_map(
 	struct se_device *dev = p;
 	struct t10_alua_lba_map *lba_map = NULL;
 	struct list_head lba_list;
-	char *map_entries, *orig, *ptr;
+	char *map_entries, *ptr;
 	char state;
 	int pg_num = -1, pg;
 	int ret = 0, num = 0, pg_id, alua_state;
 	unsigned long start_lba = -1, end_lba = -1;
 	unsigned long segment_size = -1, segment_mult = -1;
 
-	orig = map_entries = kstrdup(page, GFP_KERNEL);
+	map_entries = kstrdup(page, GFP_KERNEL);
 	if (!map_entries)
 		return -ENOMEM;
 
@@ -1915,7 +1913,7 @@ out:
 	} else
 		core_alua_set_lba_map(dev, &lba_list,
 				      segment_size, segment_mult);
-	kfree(orig);
+	kfree(map_entries);
 	return count;
 }
 

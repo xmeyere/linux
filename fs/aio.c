@@ -43,7 +43,6 @@
 
 #include <asm/kmap_types.h>
 #include <asm/uaccess.h>
-#include <linux/nospec.h>
 
 #include "internal.h"
 
@@ -69,18 +68,13 @@ struct aio_ring {
 #define AIO_RING_PAGES	8
 
 struct kioctx_table {
-	struct rcu_head		rcu;
-	unsigned		nr;
-	struct kioctx __rcu	*table[];
+	struct rcu_head	rcu;
+	unsigned	nr;
+	struct kioctx	*table[];
 };
 
 struct kioctx_cpu {
 	unsigned		reqs_available;
-};
-
-struct ctx_rq_wait {
-	struct completion comp;
-	atomic_t count;
 };
 
 struct kioctx {
@@ -116,13 +110,12 @@ struct kioctx {
 	struct page		**ring_pages;
 	long			nr_pages;
 
-	struct rcu_head		free_rcu;
-	struct work_struct	free_work;	/* see free_ioctx() */
+	struct work_struct	free_work;
 
 	/*
 	 * signals when all in-flight requests are done
 	 */
-	struct ctx_rq_wait	*rq_wait;
+	struct completion *requests_done;
 
 	struct {
 		/*
@@ -210,7 +203,6 @@ static struct file *aio_private_file(struct kioctx *ctx, loff_t nr_pages)
 	}
 
 	file->f_flags = O_RDWR;
-	file->private_data = ctx;
 	return file;
 }
 
@@ -220,7 +212,7 @@ static struct dentry *aio_mount(struct file_system_type *fs_type,
 	static const struct dentry_operations ops = {
 		.d_dname	= simple_dname,
 	};
-	return mount_pseudo(fs_type, "aio:", NULL, &ops, 0xa10a10a1);
+	return mount_pseudo(fs_type, "aio:", NULL, &ops, AIO_RING_MAGIC);
 }
 
 /* aio_setup
@@ -233,7 +225,6 @@ static int __init aio_setup(void)
 		.name		= "aio",
 		.mount		= aio_mount,
 		.kill_sb	= kill_anon_super,
-		.fs_flags	= FS_NOEXEC,
 	};
 	aio_mnt = kern_mount(&aio_fs);
 	if (IS_ERR(aio_mnt))
@@ -514,12 +505,6 @@ static int kiocb_cancel(struct kiocb *kiocb)
 	return cancel(kiocb);
 }
 
-/*
- * free_ioctx() should be RCU delayed to synchronize against the RCU
- * protected lookup_ioctx() and also needs process context to call
- * aio_free_ring(), so the double bouncing through kioctx->free_rcu and
- * ->free_work.
- */
 static void free_ioctx(struct work_struct *work)
 {
 	struct kioctx *ctx = container_of(work, struct kioctx, free_work);
@@ -528,15 +513,9 @@ static void free_ioctx(struct work_struct *work)
 
 	aio_free_ring(ctx);
 	free_percpu(ctx->cpu);
+	percpu_ref_exit(&ctx->reqs);
+	percpu_ref_exit(&ctx->users);
 	kmem_cache_free(kioctx_cachep, ctx);
-}
-
-static void free_ioctx_rcufn(struct rcu_head *head)
-{
-	struct kioctx *ctx = container_of(head, struct kioctx, free_rcu);
-
-	INIT_WORK(&ctx->free_work, free_ioctx);
-	schedule_work(&ctx->free_work);
 }
 
 static void free_ioctx_reqs(struct percpu_ref *ref)
@@ -544,11 +523,11 @@ static void free_ioctx_reqs(struct percpu_ref *ref)
 	struct kioctx *ctx = container_of(ref, struct kioctx, reqs);
 
 	/* At this point we know that there are no any in-flight requests */
-	if (ctx->rq_wait && atomic_dec_and_test(&ctx->rq_wait->count))
-		complete(&ctx->rq_wait->comp);
+	if (ctx->requests_done)
+		complete(ctx->requests_done);
 
-	/* Synchronize against RCU protected table->table[] dereferences */
-	call_rcu(&ctx->free_rcu, free_ioctx_rcufn);
+	INIT_WORK(&ctx->free_work, free_ioctx);
+	schedule_work(&ctx->free_work);
 }
 
 /*
@@ -566,8 +545,9 @@ static void free_ioctx_users(struct percpu_ref *ref)
 	while (!list_empty(&ctx->active_reqs)) {
 		req = list_first_entry(&ctx->active_reqs,
 				       struct kiocb, ki_list);
-		kiocb_cancel(req);
+
 		list_del_init(&req->ki_list);
+		kiocb_cancel(req);
 	}
 
 	spin_unlock_irq(&ctx->ctx_lock);
@@ -588,9 +568,9 @@ static int ioctx_add_table(struct kioctx *ctx, struct mm_struct *mm)
 	while (1) {
 		if (table)
 			for (i = 0; i < table->nr; i++)
-				if (!rcu_access_pointer(table->table[i])) {
+				if (!table->table[i]) {
 					ctx->id = i;
-					rcu_assign_pointer(table->table[i], ctx);
+					table->table[i] = ctx;
 					spin_unlock(&mm->ioctx_lock);
 
 					/* While kioctx setup is in progress,
@@ -688,10 +668,10 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 
 	INIT_LIST_HEAD(&ctx->active_reqs);
 
-	if (percpu_ref_init(&ctx->users, free_ioctx_users))
+	if (percpu_ref_init(&ctx->users, free_ioctx_users, 0, GFP_KERNEL))
 		goto err;
 
-	if (percpu_ref_init(&ctx->reqs, free_ioctx_reqs))
+	if (percpu_ref_init(&ctx->reqs, free_ioctx_reqs, 0, GFP_KERNEL))
 		goto err;
 
 	ctx->cpu = alloc_percpu(struct kioctx_cpu);
@@ -735,15 +715,12 @@ static struct kioctx *ioctx_alloc(unsigned nr_events)
 err_cleanup:
 	aio_nr_sub(ctx->max_reqs);
 err_ctx:
-	atomic_set(&ctx->dead, 1);
-	if (ctx->mmap_size)
-		vm_munmap(ctx->mmap_base, ctx->mmap_size);
 	aio_free_ring(ctx);
 err:
 	mutex_unlock(&ctx->ring_lock);
 	free_percpu(ctx->cpu);
-	free_percpu(ctx->reqs.pcpu_count);
-	free_percpu(ctx->users.pcpu_count);
+	percpu_ref_exit(&ctx->reqs);
+	percpu_ref_exit(&ctx->users);
 	kmem_cache_free(kioctx_cachep, ctx);
 	pr_debug("error allocating ioctx %d\n", err);
 	return ERR_PTR(err);
@@ -755,7 +732,7 @@ err:
  *	the rapid destruction of the kioctx.
  */
 static int kill_ioctx(struct mm_struct *mm, struct kioctx *ctx,
-		      struct ctx_rq_wait *wait)
+		struct completion *requests_done)
 {
 	struct kioctx_table *table;
 
@@ -765,11 +742,11 @@ static int kill_ioctx(struct mm_struct *mm, struct kioctx *ctx,
 
 	spin_lock(&mm->ioctx_lock);
 	table = rcu_dereference_raw(mm->ioctx_table);
-	WARN_ON(ctx != rcu_access_pointer(table->table[ctx->id]));
-	RCU_INIT_POINTER(table->table[ctx->id], NULL);
+	WARN_ON(ctx != table->table[ctx->id]);
+	table->table[ctx->id] = NULL;
 	spin_unlock(&mm->ioctx_lock);
 
-	/* free_ioctx_reqs() will do the necessary RCU synchronization */
+	/* percpu_ref_kill() will do the necessary call_rcu() */
 	wake_up_all(&ctx->wait);
 
 	/*
@@ -784,7 +761,7 @@ static int kill_ioctx(struct mm_struct *mm, struct kioctx *ctx,
 	if (ctx->mmap_size)
 		vm_munmap(ctx->mmap_base, ctx->mmap_size);
 
-	ctx->rq_wait = wait;
+	ctx->requests_done = requests_done;
 	percpu_ref_kill(&ctx->users);
 	return 0;
 }
@@ -816,25 +793,18 @@ EXPORT_SYMBOL(wait_on_sync_kiocb);
 void exit_aio(struct mm_struct *mm)
 {
 	struct kioctx_table *table = rcu_dereference_raw(mm->ioctx_table);
-	struct ctx_rq_wait wait;
-	int i, skipped;
+	int i;
 
 	if (!table)
 		return;
 
-	atomic_set(&wait.count, table->nr);
-	init_completion(&wait.comp);
-
-	skipped = 0;
 	for (i = 0; i < table->nr; ++i) {
-		struct kioctx *ctx =
-			rcu_dereference_protected(table->table[i], true);
+		struct kioctx *ctx = table->table[i];
+		struct completion requests_done =
+			COMPLETION_INITIALIZER_ONSTACK(requests_done);
 
-		if (!ctx) {
-			skipped++;
+		if (!ctx)
 			continue;
-		}
-
 		/*
 		 * We don't need to bother with munmap() here - exit_mmap(mm)
 		 * is coming and it'll unmap everything. And we simply can't,
@@ -843,12 +813,10 @@ void exit_aio(struct mm_struct *mm)
 		 * that it needs to unmap the area, just set it to 0.
 		 */
 		ctx->mmap_size = 0;
-		kill_ioctx(mm, ctx, &wait);
-	}
+		kill_ioctx(mm, ctx, &requests_done);
 
-	if (!atomic_sub_and_test(skipped, &wait.count)) {
 		/* Wait until all IO for the context are done. */
-		wait_for_completion(&wait.comp);
+		wait_for_completion(&requests_done);
 	}
 
 	RCU_INIT_POINTER(mm->ioctx_table, NULL);
@@ -860,10 +828,8 @@ static void put_reqs_available(struct kioctx *ctx, unsigned nr)
 	struct kioctx_cpu *kcpu;
 	unsigned long flags;
 
-	preempt_disable();
-	kcpu = this_cpu_ptr(ctx->cpu);
-
 	local_irq_save(flags);
+	kcpu = this_cpu_ptr(ctx->cpu);
 	kcpu->reqs_available += nr;
 
 	while (kcpu->reqs_available >= ctx->req_batch * 2) {
@@ -872,7 +838,6 @@ static void put_reqs_available(struct kioctx *ctx, unsigned nr)
 	}
 
 	local_irq_restore(flags);
-	preempt_enable();
 }
 
 static bool get_reqs_available(struct kioctx *ctx)
@@ -881,10 +846,8 @@ static bool get_reqs_available(struct kioctx *ctx)
 	bool ret = false;
 	unsigned long flags;
 
-	preempt_disable();
-	kcpu = this_cpu_ptr(ctx->cpu);
-
 	local_irq_save(flags);
+	kcpu = this_cpu_ptr(ctx->cpu);
 	if (!kcpu->reqs_available) {
 		int old, avail = atomic_read(&ctx->reqs_available);
 
@@ -904,7 +867,6 @@ static bool get_reqs_available(struct kioctx *ctx)
 	kcpu->reqs_available--;
 out:
 	local_irq_restore(flags);
-	preempt_enable();
 	return ret;
 }
 
@@ -1023,11 +985,10 @@ static struct kioctx *lookup_ioctx(unsigned long ctx_id)
 	if (!table || id >= table->nr)
 		goto out;
 
-	id = array_index_nospec(id, table->nr);
-	ctx = rcu_dereference(table->table[id]);
+	ctx = table->table[id];
 	if (ctx && ctx->user_id == ctx_id) {
-		if (percpu_ref_tryget_live(&ctx->users))
-			ret = ctx;
+		percpu_ref_get(&ctx->users);
+		ret = ctx;
 	}
 out:
 	rcu_read_unlock();
@@ -1142,7 +1103,7 @@ void aio_complete(struct kiocb *iocb, long res, long res2)
 }
 EXPORT_SYMBOL(aio_complete);
 
-/* aio_read_events
+/* aio_read_events_ring
  *	Pull an event off of the ioctx's event ring.  Returns the number of
  *	events fetched
  */
@@ -1329,17 +1290,15 @@ SYSCALL_DEFINE1(io_destroy, aio_context_t, ctx)
 {
 	struct kioctx *ioctx = lookup_ioctx(ctx);
 	if (likely(NULL != ioctx)) {
-		struct ctx_rq_wait wait;
+		struct completion requests_done =
+			COMPLETION_INITIALIZER_ONSTACK(requests_done);
 		int ret;
-
-		init_completion(&wait.comp);
-		atomic_set(&wait.count, 1);
 
 		/* Pass requests_done to kill_ioctx() where it can be set
 		 * in a thread-safe way. If we try to set it here then we have
 		 * a race condition if two io_destroy() called simultaneously.
 		 */
-		ret = kill_ioctx(current->mm, ioctx, &wait);
+		ret = kill_ioctx(current->mm, ioctx, &requests_done);
 		percpu_ref_put(&ioctx->users);
 
 		/* Wait until all IO for the context are done. Otherwise kernel
@@ -1347,7 +1306,7 @@ SYSCALL_DEFINE1(io_destroy, aio_context_t, ctx)
 		 * is destroyed.
 		 */
 		if (!ret)
-			wait_for_completion(&wait.comp);
+			wait_for_completion(&requests_done);
 
 		return ret;
 	}
@@ -1373,12 +1332,12 @@ static ssize_t aio_setup_vectored_rw(struct kiocb *kiocb,
 	if (compat)
 		ret = compat_rw_copy_check_uvector(rw,
 				(struct compat_iovec __user *)buf,
-				*nr_segs, 1, *iovec, iovec);
+				*nr_segs, UIO_FASTIOV, *iovec, iovec);
 	else
 #endif
 		ret = rw_copy_check_uvector(rw,
 				(struct iovec __user *)buf,
-				*nr_segs, 1, *iovec, iovec);
+				*nr_segs, UIO_FASTIOV, *iovec, iovec);
 	if (ret < 0)
 		return ret;
 
@@ -1392,24 +1351,18 @@ static ssize_t aio_setup_single_vector(struct kiocb *kiocb,
 				       unsigned long *nr_segs,
 				       struct iovec *iovec)
 {
-	size_t len = kiocb->ki_nbytes;
-
-	if (len > MAX_RW_COUNT)
-		len = MAX_RW_COUNT;
-
-	if (unlikely(!access_ok(!rw, buf, len)))
+	if (unlikely(!access_ok(!rw, buf, kiocb->ki_nbytes)))
 		return -EFAULT;
 
 	iovec->iov_base = buf;
-	iovec->iov_len = len;
+	iovec->iov_len = kiocb->ki_nbytes;
 	*nr_segs = 1;
 	return 0;
 }
 
 /*
- * aio_setup_iocb:
- *	Performs the initial checks and aio retry method
- *	setup for the kiocb at the time of io submission.
+ * aio_run_iocb:
+ *	Performs the initial checks and io submission.
  */
 static ssize_t aio_run_iocb(struct kiocb *req, unsigned opcode,
 			    char __user *buf, bool compat)
@@ -1421,7 +1374,7 @@ static ssize_t aio_run_iocb(struct kiocb *req, unsigned opcode,
 	fmode_t mode;
 	aio_rw_op *rw_op;
 	rw_iter_op *iter_op;
-	struct iovec inline_vec, *iovec = &inline_vec;
+	struct iovec inline_vecs[UIO_FASTIOV], *iovec = inline_vecs;
 	struct iov_iter iter;
 
 	switch (opcode) {
@@ -1456,7 +1409,7 @@ rw_common:
 		if (!ret)
 			ret = rw_verify_area(rw, file, &req->ki_pos, req->ki_nbytes);
 		if (ret < 0) {
-			if (iovec != &inline_vec)
+			if (iovec != inline_vecs)
 				kfree(iovec);
 			return ret;
 		}
@@ -1503,7 +1456,7 @@ rw_common:
 		return -EINVAL;
 	}
 
-	if (iovec != &inline_vec)
+	if (iovec != inline_vecs)
 		kfree(iovec);
 
 	if (ret != -EIOCBQUEUED) {

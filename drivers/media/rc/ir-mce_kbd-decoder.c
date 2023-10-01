@@ -130,8 +130,6 @@ static void mce_kbd_rx_timeout(unsigned long data)
 
 	for (i = 0; i < MCIR2_MASK_KEYS_START; i++)
 		input_report_key(mce_kbd->idev, kbd_keycodes[i], 0);
-
-	input_sync(mce_kbd->idev);
 }
 
 static enum mce_kbd_mode mce_kbd_mode(struct mce_kbd_dec *data)
@@ -218,7 +216,7 @@ static int ir_mce_kbd_decode(struct rc_dev *dev, struct ir_raw_event ev)
 	u32 scancode;
 	unsigned long delay;
 
-	if (!rc_protocols_enabled(dev, RC_BIT_MCE_KBD))
+	if (!(dev->enabled_protocols & RC_BIT_MCE_KBD))
 		return 0;
 
 	if (!is_timing_event(ev)) {

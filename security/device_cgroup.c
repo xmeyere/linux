@@ -568,7 +568,7 @@ static int propagate_exception(struct dev_cgroup *devcg_root,
 		    devcg->behavior == DEVCG_DEFAULT_ALLOW) {
 			rc = dev_exception_add(devcg, ex);
 			if (rc)
-				return rc;
+				break;
 		} else {
 			/*
 			 * in the other possible cases:
@@ -796,7 +796,7 @@ struct cgroup_subsys devices_cgrp_subsys = {
 	.css_free = devcgroup_css_free,
 	.css_online = devcgroup_online,
 	.css_offline = devcgroup_offline,
-	.base_cftypes = dev_cgroup_files,
+	.legacy_cftypes = dev_cgroup_files,
 };
 
 /**

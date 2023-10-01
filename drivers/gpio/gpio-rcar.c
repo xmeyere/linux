@@ -186,44 +186,6 @@ static inline struct gpio_rcar_priv *gpio_to_priv(struct gpio_chip *chip)
 	return container_of(chip, struct gpio_rcar_priv, gpio_chip);
 }
 
-static void gpio_rcar_irq_bus_lock(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct gpio_rcar_priv *p = gpio_to_priv(gc);
-
-	pm_runtime_get_sync(&p->pdev->dev);
-}
-
-static void gpio_rcar_irq_bus_sync_unlock(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct gpio_rcar_priv *p = gpio_to_priv(gc);
-
-	pm_runtime_put(&p->pdev->dev);
-}
-
-
-static int gpio_rcar_irq_request_resources(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct gpio_rcar_priv *p = gpio_to_priv(gc);
-	int error;
-
-	error = pm_runtime_get_sync(&p->pdev->dev);
-	if (error < 0)
-		return error;
-
-	return 0;
-}
-
-static void gpio_rcar_irq_release_resources(struct irq_data *d)
-{
-	struct gpio_chip *gc = irq_data_get_irq_chip_data(d);
-	struct gpio_rcar_priv *p = gpio_to_priv(gc);
-
-	pm_runtime_put(&p->pdev->dev);
-}
-
 static void gpio_rcar_config_general_input_output_mode(struct gpio_chip *chip,
 						       unsigned int gpio,
 						       bool output)
@@ -278,9 +240,9 @@ static int gpio_rcar_get(struct gpio_chip *chip, unsigned offset)
 	/* testing on r8a7790 shows that INDT does not show correct pin state
 	 * when configured as output, so use OUTDT in case of output pins */
 	if (gpio_rcar_read(gpio_to_priv(chip), INOUTSEL) & bit)
-		return (int)(gpio_rcar_read(gpio_to_priv(chip), OUTDT) & bit);
+		return !!(gpio_rcar_read(gpio_to_priv(chip), OUTDT) & bit);
 	else
-		return (int)(gpio_rcar_read(gpio_to_priv(chip), INDT) & bit);
+		return !!(gpio_rcar_read(gpio_to_priv(chip), INDT) & bit);
 }
 
 static void gpio_rcar_set(struct gpio_chip *chip, unsigned offset, int value)
@@ -401,8 +363,10 @@ static int gpio_rcar_probe(struct platform_device *pdev)
 	int ret;
 
 	p = devm_kzalloc(dev, sizeof(*p), GFP_KERNEL);
-	if (!p)
-		return -ENOMEM;
+	if (!p) {
+		ret = -ENOMEM;
+		goto err0;
+	}
 
 	p->pdev = pdev;
 	spin_lock_init(&p->lock);
@@ -452,10 +416,6 @@ static int gpio_rcar_probe(struct platform_device *pdev)
 	irq_chip->irq_mask = gpio_rcar_irq_disable;
 	irq_chip->irq_unmask = gpio_rcar_irq_enable;
 	irq_chip->irq_set_type = gpio_rcar_irq_set_type;
-	irq_chip->irq_bus_lock = gpio_rcar_irq_bus_lock;
-	irq_chip->irq_bus_sync_unlock = gpio_rcar_irq_bus_sync_unlock;
-	irq_chip->irq_request_resources = gpio_rcar_irq_request_resources;
-	irq_chip->irq_release_resources = gpio_rcar_irq_release_resources;
 	irq_chip->flags	= IRQCHIP_SKIP_SET_WAKE | IRQCHIP_SET_TYPE_MASKED
 			 | IRQCHIP_MASK_ON_SUSPEND;
 
@@ -512,11 +472,8 @@ err0:
 static int gpio_rcar_remove(struct platform_device *pdev)
 {
 	struct gpio_rcar_priv *p = platform_get_drvdata(pdev);
-	int ret;
 
-	ret = gpiochip_remove(&p->gpio_chip);
-	if (ret)
-		return ret;
+	gpiochip_remove(&p->gpio_chip);
 
 	irq_domain_remove(p->irq_domain);
 	pm_runtime_put(&pdev->dev);

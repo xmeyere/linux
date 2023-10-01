@@ -23,6 +23,8 @@ static int __init default_appraise_setup(char *str)
 {
 	if (strncmp(str, "off", 3) == 0)
 		ima_appraise = 0;
+	else if (strncmp(str, "log", 3) == 0)
+		ima_appraise = IMA_APPRAISE_LOG;
 	else if (strncmp(str, "fix", 3) == 0)
 		ima_appraise = IMA_APPRAISE_FIX;
 	return 1;
@@ -75,6 +77,8 @@ enum integrity_status ima_get_cache_status(struct integrity_iint_cache *iint,
 		return iint->ima_bprm_status;
 	case MODULE_CHECK:
 		return iint->ima_module_status;
+	case FIRMWARE_CHECK:
+		return iint->ima_firmware_status;
 	case FILE_CHECK:
 	default:
 		return iint->ima_file_status;
@@ -94,6 +98,9 @@ static void ima_set_cache_status(struct integrity_iint_cache *iint,
 	case MODULE_CHECK:
 		iint->ima_module_status = status;
 		break;
+	case FIRMWARE_CHECK:
+		iint->ima_firmware_status = status;
+		break;
 	case FILE_CHECK:
 	default:
 		iint->ima_file_status = status;
@@ -112,6 +119,9 @@ static void ima_cache_flags(struct integrity_iint_cache *iint, int func)
 		break;
 	case MODULE_CHECK:
 		iint->flags |= (IMA_MODULE_APPRAISED | IMA_APPRAISED);
+		break;
+	case FIRMWARE_CHECK:
+		iint->flags |= (IMA_FIRMWARE_APPRAISED | IMA_APPRAISED);
 		break;
 	case FILE_CHECK:
 	default:
@@ -184,8 +194,6 @@ int ima_appraise_measurement(int func, struct integrity_iint_cache *iint,
 	enum integrity_status status = INTEGRITY_UNKNOWN;
 	int rc = xattr_len, hash_start = 0;
 
-	if (!ima_appraise)
-		return 0;
 	if (!inode->i_op->getxattr)
 		return INTEGRITY_UNKNOWN;
 
@@ -195,12 +203,10 @@ int ima_appraise_measurement(int func, struct integrity_iint_cache *iint,
 
 		cause = "missing-hash";
 		status = INTEGRITY_NOLABEL;
-		if (opened & FILE_CREATED)
+		if (opened & FILE_CREATED) {
 			iint->flags |= IMA_NEW_FILE;
-		if ((iint->flags & IMA_NEW_FILE) &&
-		    (!(iint->flags & IMA_DIGSIG_REQUIRED) ||
-		     (inode->i_size == 0)))
 			status = INTEGRITY_PASS;
+		}
 		goto out;
 	}
 
@@ -219,7 +225,7 @@ int ima_appraise_measurement(int func, struct integrity_iint_cache *iint,
 		hash_start = 1;
 	case IMA_XATTR_DIGEST:
 		if (iint->flags & IMA_DIGSIG_REQUIRED) {
-			cause = "IMA signature required";
+			cause = "IMA-signature-required";
 			status = INTEGRITY_FAIL;
 			break;
 		}
@@ -312,7 +318,7 @@ void ima_inode_post_setattr(struct dentry *dentry)
 	struct integrity_iint_cache *iint;
 	int must_appraise, rc;
 
-	if (!ima_initialized || !ima_appraise || !S_ISREG(inode->i_mode)
+	if (!(ima_policy_flag & IMA_APPRAISE) || !S_ISREG(inode->i_mode)
 	    || !inode->i_op->removexattr)
 		return;
 
@@ -350,7 +356,7 @@ static void ima_reset_appraise_flags(struct inode *inode, int digsig)
 {
 	struct integrity_iint_cache *iint;
 
-	if (!ima_initialized || !ima_appraise || !S_ISREG(inode->i_mode))
+	if (!(ima_policy_flag & IMA_APPRAISE) || !S_ISREG(inode->i_mode))
 		return;
 
 	iint = integrity_iint_find(inode);

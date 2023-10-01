@@ -73,21 +73,16 @@ superio_inb(int reg)
 /* logical device for fans is 0x0A */
 #define superio_select() superio_outb(0x07, 0x0A)
 
-static inline int
+static inline void
 superio_enter(void)
 {
-	if (!request_muxed_region(REG, 2, DRVNAME))
-		return -EBUSY;
-
 	outb(0x55, REG);
-	return 0;
 }
 
 static inline void
 superio_exit(void)
 {
 	outb(0xAA, REG);
-	release_region(REG, 2);
 }
 
 #define SUPERIO_REG_ACT		0x30
@@ -147,11 +142,6 @@ struct smsc47m1_sio_data {
 	u8 activate;		/* Remember initial device state */
 };
 
-
-static int __exit smsc47m1_remove(struct platform_device *pdev);
-static struct smsc47m1_data *smsc47m1_update_device(struct device *dev,
-		int init);
-
 static inline int smsc47m1_read_value(struct smsc47m1_data *data, u8 reg)
 {
 	return inb_p(data->addr + reg);
@@ -163,13 +153,54 @@ static inline void smsc47m1_write_value(struct smsc47m1_data *data, u8 reg,
 	outb_p(value, data->addr + reg);
 }
 
-static struct platform_driver smsc47m1_driver = {
-	.driver = {
-		.owner	= THIS_MODULE,
-		.name	= DRVNAME,
-	},
-	.remove		= __exit_p(smsc47m1_remove),
-};
+static struct smsc47m1_data *smsc47m1_update_device(struct device *dev,
+		int init)
+{
+	struct smsc47m1_data *data = dev_get_drvdata(dev);
+
+	mutex_lock(&data->update_lock);
+
+	if (time_after(jiffies, data->last_updated + HZ + HZ / 2) || init) {
+		int i, fan_nr;
+		fan_nr = data->type == smsc47m2 ? 3 : 2;
+
+		for (i = 0; i < fan_nr; i++) {
+			data->fan[i] = smsc47m1_read_value(data,
+				       SMSC47M1_REG_FAN[i]);
+			data->fan_preload[i] = smsc47m1_read_value(data,
+					       SMSC47M1_REG_FAN_PRELOAD[i]);
+			data->pwm[i] = smsc47m1_read_value(data,
+				       SMSC47M1_REG_PWM[i]);
+		}
+
+		i = smsc47m1_read_value(data, SMSC47M1_REG_FANDIV);
+		data->fan_div[0] = (i >> 4) & 0x03;
+		data->fan_div[1] = i >> 6;
+
+		data->alarms = smsc47m1_read_value(data,
+			       SMSC47M1_REG_ALARM) >> 6;
+		/* Clear alarms if needed */
+		if (data->alarms)
+			smsc47m1_write_value(data, SMSC47M1_REG_ALARM, 0xC0);
+
+		if (fan_nr >= 3) {
+			data->fan_div[2] = (smsc47m1_read_value(data,
+					    SMSC47M2_REG_FANDIV3) >> 4) & 0x03;
+			data->alarms |= (smsc47m1_read_value(data,
+					 SMSC47M2_REG_ALARM6) & 0x40) >> 4;
+			/* Clear alarm if needed */
+			if (data->alarms & 0x04)
+				smsc47m1_write_value(data,
+						     SMSC47M2_REG_ALARM6,
+						     0x40);
+		}
+
+		data->last_updated = jiffies;
+	}
+
+	mutex_unlock(&data->update_lock);
+	return data;
+}
 
 static ssize_t get_fan(struct device *dev, struct device_attribute
 		       *devattr, char *buf)
@@ -500,12 +531,8 @@ static int __init smsc47m1_find(struct smsc47m1_sio_data *sio_data)
 {
 	u8 val;
 	unsigned short addr;
-	int err;
 
-	err = superio_enter();
-	if (err)
-		return err;
-
+	superio_enter();
 	val = force_id ? force_id : superio_inb(SUPERIO_REG_DEVID);
 
 	/*
@@ -581,14 +608,13 @@ static int __init smsc47m1_find(struct smsc47m1_sio_data *sio_data)
 static void smsc47m1_restore(const struct smsc47m1_sio_data *sio_data)
 {
 	if ((sio_data->activate & 0x01) == 0) {
-		if (!superio_enter()) {
-			superio_select();
-			pr_info("Disabling device\n");
-			superio_outb(SUPERIO_REG_ACT, sio_data->activate);
-			superio_exit();
-		} else {
-			pr_warn("Failed to disable device\n");
-		}
+		superio_enter();
+		superio_select();
+
+		pr_info("Disabling device\n");
+		superio_outb(SUPERIO_REG_ACT, sio_data->activate);
+
+		superio_exit();
 	}
 }
 
@@ -821,54 +847,13 @@ static int __exit smsc47m1_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static struct smsc47m1_data *smsc47m1_update_device(struct device *dev,
-		int init)
-{
-	struct smsc47m1_data *data = dev_get_drvdata(dev);
-
-	mutex_lock(&data->update_lock);
-
-	if (time_after(jiffies, data->last_updated + HZ + HZ / 2) || init) {
-		int i, fan_nr;
-		fan_nr = data->type == smsc47m2 ? 3 : 2;
-
-		for (i = 0; i < fan_nr; i++) {
-			data->fan[i] = smsc47m1_read_value(data,
-				       SMSC47M1_REG_FAN[i]);
-			data->fan_preload[i] = smsc47m1_read_value(data,
-					       SMSC47M1_REG_FAN_PRELOAD[i]);
-			data->pwm[i] = smsc47m1_read_value(data,
-				       SMSC47M1_REG_PWM[i]);
-		}
-
-		i = smsc47m1_read_value(data, SMSC47M1_REG_FANDIV);
-		data->fan_div[0] = (i >> 4) & 0x03;
-		data->fan_div[1] = i >> 6;
-
-		data->alarms = smsc47m1_read_value(data,
-			       SMSC47M1_REG_ALARM) >> 6;
-		/* Clear alarms if needed */
-		if (data->alarms)
-			smsc47m1_write_value(data, SMSC47M1_REG_ALARM, 0xC0);
-
-		if (fan_nr >= 3) {
-			data->fan_div[2] = (smsc47m1_read_value(data,
-					    SMSC47M2_REG_FANDIV3) >> 4) & 0x03;
-			data->alarms |= (smsc47m1_read_value(data,
-					 SMSC47M2_REG_ALARM6) & 0x40) >> 4;
-			/* Clear alarm if needed */
-			if (data->alarms & 0x04)
-				smsc47m1_write_value(data,
-						     SMSC47M2_REG_ALARM6,
-						     0x40);
-		}
-
-		data->last_updated = jiffies;
-	}
-
-	mutex_unlock(&data->update_lock);
-	return data;
-}
+static struct platform_driver smsc47m1_driver = {
+	.driver = {
+		.owner	= THIS_MODULE,
+		.name	= DRVNAME,
+	},
+	.remove		= __exit_p(smsc47m1_remove),
+};
 
 static int __init smsc47m1_device_add(unsigned short address,
 				      const struct smsc47m1_sio_data *sio_data)

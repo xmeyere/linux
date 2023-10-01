@@ -103,7 +103,6 @@ struct ext4_extent_header {
 };
 
 #define EXT4_EXT_MAGIC		cpu_to_le16(0xf30a)
-#define EXT4_MAX_EXTENT_DEPTH 5
 
 #define EXT4_EXTENT_TAIL_OFFSET(hdr) \
 	(sizeof(struct ext4_extent_header) + \
@@ -124,6 +123,7 @@ find_ext4_extent_tail(struct ext4_extent_header *eh)
 struct ext4_ext_path {
 	ext4_fsblk_t			p_block;
 	__u16				p_depth;
+	__u16				p_maxdepth;
 	struct ext4_extent		*p_ext;
 	struct ext4_extent_idx		*p_idx;
 	struct ext4_extent_header	*p_hdr;

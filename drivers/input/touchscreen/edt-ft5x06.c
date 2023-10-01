@@ -262,7 +262,6 @@ static int edt_ft5x06_register_write(struct edt_ft5x06_ts_data *tsdata,
 	case M06:
 		wrbuf[0] = tsdata->factory_mode ? 0xf3 : 0xfc;
 		wrbuf[1] = tsdata->factory_mode ? addr & 0x7f : addr & 0x3f;
-		wrbuf[1] = tsdata->factory_mode ? addr & 0x7f : addr & 0x3f;
 		wrbuf[2] = value;
 		wrbuf[3] = wrbuf[0] ^ wrbuf[1] ^ wrbuf[2];
 		return edt_ft5x06_ts_readwrite(tsdata->client, 4,
@@ -491,12 +490,6 @@ static int edt_ft5x06_factory_mode(struct edt_ft5x06_ts_data *tsdata)
 	int ret;
 	int error;
 
-	if (tsdata->version != M06) {
-		dev_err(&client->dev,
-			"No factory mode support for non-M06 devices\n");
-		return -EINVAL;
-	}
-
 	disable_irq(client->irq);
 
 	if (!tsdata->raw_buffer) {
@@ -510,6 +503,9 @@ static int edt_ft5x06_factory_mode(struct edt_ft5x06_ts_data *tsdata)
 	}
 
 	/* mode register is 0x3c when in the work mode */
+	if (tsdata->version == M09)
+		goto m09_out;
+
 	error = edt_ft5x06_register_write(tsdata, WORK_REGISTER_OPMODE, 0x03);
 	if (error) {
 		dev_err(&client->dev,
@@ -542,6 +538,11 @@ err_out:
 	enable_irq(client->irq);
 
 	return error;
+
+m09_out:
+	dev_err(&client->dev, "No factory mode support for M09\n");
+	return -EINVAL;
+
 }
 
 static int edt_ft5x06_work_mode(struct edt_ft5x06_ts_data *tsdata)
@@ -731,8 +732,7 @@ edt_ft5x06_ts_prepare_debugfs(struct edt_ft5x06_ts_data *tsdata,
 static void
 edt_ft5x06_ts_teardown_debugfs(struct edt_ft5x06_ts_data *tsdata)
 {
-	if (tsdata->debug_dir)
-		debugfs_remove_recursive(tsdata->debug_dir);
+	debugfs_remove_recursive(tsdata->debug_dir);
 	kfree(tsdata->raw_buffer);
 }
 
@@ -812,7 +812,7 @@ static int edt_ft5x06_ts_identify(struct i2c_client *client,
 	/* if we find something consistent, stay with that assumption
 	 * at least M09 won't send 3 bytes here
 	 */
-	if (!(strnicmp(rdbuf + 1, "EP0", 3))) {
+	if (!(strncasecmp(rdbuf + 1, "EP0", 3))) {
 		tsdata->version = M06;
 
 		/* remove last '$' end marker */

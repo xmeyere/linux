@@ -294,7 +294,7 @@ static void sunxi_mmc_init_idma_des(struct sunxi_mmc_host *host,
 				    struct mmc_data *data)
 {
 	struct sunxi_idma_des *pdes = (struct sunxi_idma_des *)host->sg_cpu;
-	dma_addr_t next_desc = host->sg_dma;
+	struct sunxi_idma_des *pdes_pa = (struct sunxi_idma_des *)host->sg_dma;
 	int i, max_len = (1 << host->idma_des_size_bits);
 
 	for (i = 0; i < data->sg_len; i++) {
@@ -306,9 +306,8 @@ static void sunxi_mmc_init_idma_des(struct sunxi_mmc_host *host,
 		else
 			pdes[i].buf_size = data->sg[i].length;
 
-		next_desc += sizeof(struct sunxi_idma_des);
 		pdes[i].buf_addr_ptr1 = sg_dma_address(&data->sg[i]);
-		pdes[i].buf_addr_ptr2 = (u32)next_desc;
+		pdes[i].buf_addr_ptr2 = (u32)&pdes_pa[i + 1];
 	}
 
 	pdes[0].config |= SDXC_IDMAC_DES0_FD;
@@ -910,9 +909,7 @@ static int sunxi_mmc_resource_request(struct sunxi_mmc_host *host,
 		return PTR_ERR(host->clk_mmc);
 	}
 
-	host->reset = devm_reset_control_get_optional(&pdev->dev, "ahb");
-	if (PTR_ERR(host->reset) == -EPROBE_DEFER)
-		return PTR_ERR(host->reset);
+	host->reset = devm_reset_control_get(&pdev->dev, "ahb");
 
 	ret = clk_prepare_enable(host->clk_ahb);
 	if (ret) {
@@ -993,7 +990,8 @@ static int sunxi_mmc_probe(struct platform_device *pdev)
 	/* 400kHz ~ 50MHz */
 	mmc->f_min		=   400000;
 	mmc->f_max		= 50000000;
-	mmc->caps	       |= MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED;
+	mmc->caps	       |= MMC_CAP_MMC_HIGHSPEED | MMC_CAP_SD_HIGHSPEED |
+				  MMC_CAP_ERASE;
 
 	ret = mmc_of_parse(mmc);
 	if (ret)
@@ -1038,7 +1036,6 @@ static int sunxi_mmc_remove(struct platform_device *pdev)
 static struct platform_driver sunxi_mmc_driver = {
 	.driver = {
 		.name	= "sunxi-mmc",
-		.owner	= THIS_MODULE,
 		.of_match_table = of_match_ptr(sunxi_mmc_of_match),
 	},
 	.probe		= sunxi_mmc_probe,

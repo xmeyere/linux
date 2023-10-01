@@ -194,10 +194,15 @@ int efx_init_irq_moderation(struct efx_nic *efx, unsigned int tx_usecs,
 			    bool rx_may_override_tx);
 void efx_get_irq_moderation(struct efx_nic *efx, unsigned int *tx_usecs,
 			    unsigned int *rx_usecs, bool *rx_adaptive);
+void efx_stop_eventq(struct efx_channel *channel);
+void efx_start_eventq(struct efx_channel *channel);
 
 /* Dummy PHY ops for PHY drivers */
 int efx_port_dummy_op_int(struct efx_nic *efx);
 void efx_port_dummy_op_void(struct efx_nic *efx);
+
+/* Update the generic software stats in the passed stats array */
+void efx_update_sw_stats(struct efx_nic *efx, u64 *stats);
 
 /* MTD */
 #ifdef CONFIG_SFC_MTD
@@ -245,12 +250,6 @@ static inline void efx_device_detach_sync(struct efx_nic *efx)
 	netif_tx_lock_bh(dev);
 	netif_device_detach(dev);
 	netif_tx_unlock_bh(dev);
-}
-
-static inline void efx_device_attach_if_not_resetting(struct efx_nic *efx)
-{
-	if ((efx->state != STATE_DISABLED) && !efx->reset_pending)
-		netif_device_attach(efx->net_dev);
 }
 
 #endif /* EFX_EFX_H */

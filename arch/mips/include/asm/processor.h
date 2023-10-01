@@ -51,7 +51,7 @@ extern unsigned int vced_count, vcei_count;
  * User space process size: 2GB. This is hardcoded into a few places,
  * so don't change it unless you know what you are doing.
  */
-#define TASK_SIZE	0x80000000UL
+#define TASK_SIZE	0x7fff8000UL
 #endif
 
 #ifdef __KERNEL__
@@ -143,7 +143,7 @@ struct mips_fpu_struct {
 
 #define NUM_DSP_REGS   6
 
-typedef unsigned long dspreg_t;
+typedef __u32 dspreg_t;
 
 struct mips_dsp_state {
 	dspreg_t	dspr[NUM_DSP_REGS];
@@ -238,7 +238,13 @@ typedef struct {
 	unsigned long seg;
 } mm_segment_t;
 
-#define ARCH_MIN_TASKALIGN	8
+#ifdef CONFIG_CPU_HAS_MSA
+# define ARCH_MIN_TASKALIGN	16
+# define FPU_ALIGN		__aligned(16)
+#else
+# define ARCH_MIN_TASKALIGN	8
+# define FPU_ALIGN
+#endif
 
 struct mips_abi;
 
@@ -255,7 +261,7 @@ struct thread_struct {
 	unsigned long cp0_status;
 
 	/* Saved fpu/fpu emulator stuff. */
-	struct mips_fpu_struct fpu;
+	struct mips_fpu_struct fpu FPU_ALIGN;
 #ifdef CONFIG_MIPS_MT_FPAFF
 	/* Emulated instruction count */
 	unsigned long emulated_fp;
@@ -366,20 +372,8 @@ unsigned long get_wchan(struct task_struct *p);
 #define KSTK_ESP(tsk) (task_pt_regs(tsk)->regs[29])
 #define KSTK_STATUS(tsk) (task_pt_regs(tsk)->cp0_status)
 
-#ifdef CONFIG_CPU_LOONGSON3
-/*
- * Loongson-3's SFB (Store-Fill-Buffer) may buffer writes indefinitely when a
- * tight read loop is executed, because reads take priority over writes & the
- * hardware (incorrectly) doesn't ensure that writes will eventually occur.
- *
- * Since spin loops of any kind should have a cpu_relax() in them, force an SFB
- * flush from cpu_relax() such that any pending writes will become visible as
- * expected.
- */
-#define cpu_relax()	smp_mb()
-#else
 #define cpu_relax()	barrier()
-#endif
+#define cpu_relax_lowlatency() cpu_relax()
 
 /*
  * Return_address is a replacement for __builtin_return_address(count)
@@ -402,12 +396,6 @@ unsigned long get_wchan(struct task_struct *p);
 
 #define ARCH_HAS_PREFETCHW
 #define prefetchw(x) __builtin_prefetch((x), 1, 1)
-
-/*
- * See Documentation/scheduler/sched-arch.txt; prevents deadlock on SMP
- * systems.
- */
-#define __ARCH_WANT_UNLOCKED_CTXSW
 
 #endif
 

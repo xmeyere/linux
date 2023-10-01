@@ -22,6 +22,7 @@
  */
 
 #include <linux/clk.h>
+#include <linux/err.h>
 #include <linux/io.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
@@ -32,7 +33,6 @@
 #include <linux/platform_device.h>
 #include <linux/regulator/consumer.h>
 #include <linux/reset.h>
-#include <linux/spinlock.h>
 
 #define REG_ISCR			0x00
 #define REG_PHYCTL			0x04
@@ -63,7 +63,7 @@
 
 struct sun4i_usb_phy_data {
 	void __iomem *base;
-	spinlock_t reg_lock; /* guard access to phyctl reg */
+	struct mutex mutex;
 	int num_phys;
 	u32 disc_thresh;
 	struct sun4i_usb_phy {
@@ -84,10 +84,9 @@ static void sun4i_usb_phy_write(struct sun4i_usb_phy *phy, u32 addr, u32 data,
 {
 	struct sun4i_usb_phy_data *phy_data = to_sun4i_usb_phy_data(phy);
 	u32 temp, usbc_bit = BIT(phy->index * 2);
-	unsigned long flags;
 	int i;
 
-	spin_lock_irqsave(&phy_data->reg_lock, flags);
+	mutex_lock(&phy_data->mutex);
 
 	for (i = 0; i < len; i++) {
 		temp = readl(phy_data->base + REG_PHYCTL);
@@ -119,8 +118,7 @@ static void sun4i_usb_phy_write(struct sun4i_usb_phy *phy, u32 addr, u32 data,
 
 		data >>= 1;
 	}
-
-	spin_unlock_irqrestore(&phy_data->reg_lock, flags);
+	mutex_unlock(&phy_data->mutex);
 }
 
 static void sun4i_usb_phy_passby(struct sun4i_usb_phy *phy, int enable)
@@ -235,7 +233,7 @@ static int sun4i_usb_phy_probe(struct platform_device *pdev)
 	if (!data)
 		return -ENOMEM;
 
-	spin_lock_init(&data->reg_lock);
+	mutex_init(&data->mutex);
 
 	if (of_device_is_compatible(np, "allwinner,sun5i-a13-usb-phy"))
 		data->num_phys = 2;
@@ -297,7 +295,7 @@ static int sun4i_usb_phy_probe(struct platform_device *pdev)
 				return PTR_ERR(phy->pmu);
 		}
 
-		phy->phy = devm_phy_create(dev, &sun4i_usb_phy_ops, NULL);
+		phy->phy = devm_phy_create(dev, NULL, &sun4i_usb_phy_ops, NULL);
 		if (IS_ERR(phy->phy)) {
 			dev_err(dev, "failed to create PHY %d\n", i);
 			return PTR_ERR(phy->phy);
@@ -309,10 +307,8 @@ static int sun4i_usb_phy_probe(struct platform_device *pdev)
 
 	dev_set_drvdata(dev, data);
 	phy_provider = devm_of_phy_provider_register(dev, sun4i_usb_phy_xlate);
-	if (IS_ERR(phy_provider))
-		return PTR_ERR(phy_provider);
 
-	return 0;
+	return PTR_ERR_OR_ZERO(phy_provider);
 }
 
 static const struct of_device_id sun4i_usb_phy_of_match[] = {
@@ -329,7 +325,6 @@ static struct platform_driver sun4i_usb_phy_driver = {
 	.driver = {
 		.of_match_table	= sun4i_usb_phy_of_match,
 		.name  = "sun4i-usb-phy",
-		.owner = THIS_MODULE,
 	}
 };
 module_platform_driver(sun4i_usb_phy_driver);

@@ -33,8 +33,10 @@ struct snd_seq_fifo *snd_seq_fifo_new(int poolsize)
 	struct snd_seq_fifo *f;
 
 	f = kzalloc(sizeof(*f), GFP_KERNEL);
-	if (!f)
+	if (f == NULL) {
+		pr_debug("ALSA: seq: malloc failed for snd_seq_fifo_new() \n");
 		return NULL;
+	}
 
 	f->pool = snd_seq_pool_new(poolsize);
 	if (f->pool == NULL) {
@@ -69,9 +71,6 @@ void snd_seq_fifo_delete(struct snd_seq_fifo **fifo)
 	if (snd_BUG_ON(!f))
 		return;
 	*fifo = NULL;
-
-	if (f->pool)
-		snd_seq_pool_mark_closing(f->pool);
 
 	snd_seq_fifo_clear(f);
 
@@ -123,7 +122,7 @@ int snd_seq_fifo_event_in(struct snd_seq_fifo *f,
 		return -EINVAL;
 
 	snd_use_lock_use(&f->use_lock);
-	err = snd_seq_event_dup(f->pool, event, &cell, 1, NULL, NULL); /* always non-blocking */
+	err = snd_seq_event_dup(f->pool, event, &cell, 1, NULL); /* always non-blocking */
 	if (err < 0) {
 		if ((err == -ENOMEM) || (err == -EAGAIN))
 			atomic_inc(&f->overflow);
@@ -138,7 +137,6 @@ int snd_seq_fifo_event_in(struct snd_seq_fifo *f,
 	f->tail = cell;
 	if (f->head == NULL)
 		f->head = cell;
-	cell->next = NULL;
 	f->cells++;
 	spin_unlock_irqrestore(&f->lock, flags);
 
@@ -218,8 +216,6 @@ void snd_seq_fifo_cell_putback(struct snd_seq_fifo *f,
 		spin_lock_irqsave(&f->lock, flags);
 		cell->next = f->head;
 		f->head = cell;
-		if (!f->tail)
-			f->tail = cell;
 		f->cells++;
 		spin_unlock_irqrestore(&f->lock, flags);
 	}
@@ -265,10 +261,6 @@ int snd_seq_fifo_resize(struct snd_seq_fifo *f, int poolsize)
 	/* NOTE: overflow flag is not cleared */
 	spin_unlock_irqrestore(&f->lock, flags);
 
-	/* close the old pool and wait until all users are gone */
-	snd_seq_pool_mark_closing(oldpool);
-	snd_use_lock_sync(&f->use_lock);
-
 	/* release cells in old pool */
 	for (cell = oldhead; cell; cell = next) {
 		next = cell->next;
@@ -277,21 +269,4 @@ int snd_seq_fifo_resize(struct snd_seq_fifo *f, int poolsize)
 	snd_seq_pool_delete(&oldpool);
 
 	return 0;
-}
-
-/* get the number of unused cells safely */
-int snd_seq_fifo_unused_cells(struct snd_seq_fifo *f)
-{
-	unsigned long flags;
-	int cells;
-
-	if (!f)
-		return 0;
-
-	snd_use_lock_use(&f->use_lock);
-	spin_lock_irqsave(&f->lock, flags);
-	cells = snd_seq_unused_cells(f->pool);
-	spin_unlock_irqrestore(&f->lock, flags);
-	snd_use_lock_free(&f->use_lock);
-	return cells;
 }

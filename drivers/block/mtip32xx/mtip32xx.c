@@ -247,7 +247,7 @@ static void mtip_async_complete(struct mtip_port *port,
 	if (unlikely(cmd->unaligned))
 		up(&port->cmd_slot_unal);
 
-	blk_mq_end_io(rq, status ? -EIO : 0);
+	blk_mq_end_request(rq, status ? -EIO : 0);
 }
 
 /*
@@ -621,6 +621,8 @@ static void mtip_handle_tfe(struct driver_data *dd)
 
 	port = dd->port;
 
+	set_bit(MTIP_PF_EH_ACTIVE_BIT, &port->flags);
+
 	if (test_bit(MTIP_PF_IC_ACTIVE_BIT, &port->flags) &&
 			test_bit(MTIP_TAG_INTERNAL, port->allocated)) {
 		cmd = mtip_cmd_from_tag(dd, MTIP_TAG_INTERNAL);
@@ -630,7 +632,7 @@ static void mtip_handle_tfe(struct driver_data *dd)
 			cmd->comp_func(port, MTIP_TAG_INTERNAL,
 					cmd, PORT_IRQ_TF_ERR);
 		}
-		return;
+		goto handle_tfe_exit;
 	}
 
 	/* clear the tag accumulator */
@@ -773,6 +775,11 @@ static void mtip_handle_tfe(struct driver_data *dd)
 		}
 	}
 	print_tags(dd, "reissued (TFE)", tagaccum, cmd_cnt);
+
+handle_tfe_exit:
+	/* clear eh_active */
+	clear_bit(MTIP_PF_EH_ACTIVE_BIT, &port->flags);
+	wake_up_interruptible(&port->svc_wait);
 }
 
 /*
@@ -2975,7 +2982,9 @@ static int mtip_service_thread(void *data)
 		 * is in progress nor error handling is active
 		 */
 		wait_event_interruptible(port->svc_wait, (port->flags) &&
-			(port->flags & MTIP_PF_SVC_THD_WORK));
+			!(port->flags & MTIP_PF_PAUSE_IO));
+
+		set_bit(MTIP_PF_SVC_THD_ACTIVE_BIT, &port->flags);
 
 		if (kthread_should_stop() ||
 			test_bit(MTIP_PF_SVC_THD_STOP_BIT, &port->flags))
@@ -2988,8 +2997,6 @@ static int mtip_service_thread(void *data)
 		if (unlikely(test_bit(MTIP_DDF_REMOVE_PENDING_BIT,
 				&dd->dd_flag)))
 			goto st_out;
-
-		set_bit(MTIP_PF_SVC_THD_ACTIVE_BIT, &port->flags);
 
 restart_eh:
 		/* Demux bits: start with error handling */
@@ -3345,25 +3352,20 @@ out1:
 	return rv;
 }
 
-static int mtip_standby_drive(struct driver_data *dd)
+static void mtip_standby_drive(struct driver_data *dd)
 {
-	int rv = 0;
+	if (dd->sr)
+		return;
 
-	if (dd->sr || !dd->port)
-		return -ENODEV;
 	/*
 	 * Send standby immediate (E0h) to the drive so that it
 	 * saves its state.
 	 */
 	if (!test_bit(MTIP_PF_REBUILD_BIT, &dd->port->flags) &&
-	    !test_bit(MTIP_DDF_REBUILD_FAILED_BIT, &dd->dd_flag) &&
-	    !test_bit(MTIP_DDF_SEC_LOCK_BIT, &dd->dd_flag)) {
-		rv = mtip_standby_immediate(dd->port);
-		if (rv)
+	    !test_bit(MTIP_DDF_SEC_LOCK_BIT, &dd->dd_flag))
+		if (mtip_standby_immediate(dd->port))
 			dev_warn(&dd->pdev->dev,
 				"STANDBY IMMEDIATE failed\n");
-	}
-	return rv;
 }
 
 /*
@@ -3420,7 +3422,8 @@ static int mtip_hw_shutdown(struct driver_data *dd)
 	 * Send standby immediate (E0h) to the drive so that it
 	 * saves its state.
 	 */
-	mtip_standby_drive(dd);
+	if (!dd->sr && dd->port)
+		mtip_standby_immediate(dd->port);
 
 	return 0;
 }
@@ -3443,7 +3446,7 @@ static int mtip_hw_suspend(struct driver_data *dd)
 	 * Send standby immediate (E0h) to the drive
 	 * so that it saves its state.
 	 */
-	if (mtip_standby_drive(dd) != 0) {
+	if (mtip_standby_immediate(dd->port) != 0) {
 		dev_err(&dd->pdev->dev,
 			"Failed standby-immediate command\n");
 		return -EFAULT;
@@ -3736,7 +3739,7 @@ static int mtip_submit_request(struct blk_mq_hw_ctx *hctx, struct request *rq)
 		int err;
 
 		err = mtip_send_trim(dd, blk_rq_pos(rq), blk_rq_sectors(rq));
-		blk_mq_end_io(rq, err);
+		blk_mq_end_request(rq, err);
 		return 0;
 	}
 
@@ -3772,12 +3775,15 @@ static bool mtip_check_unal_depth(struct blk_mq_hw_ctx *hctx,
 	return false;
 }
 
-static int mtip_queue_rq(struct blk_mq_hw_ctx *hctx, struct request *rq)
+static int mtip_queue_rq(struct blk_mq_hw_ctx *hctx, struct request *rq,
+		bool last)
 {
 	int ret;
 
 	if (unlikely(mtip_check_unal_depth(hctx, rq)))
 		return BLK_MQ_RQ_QUEUE_BUSY;
+
+	blk_mq_start_request(rq);
 
 	ret = mtip_submit_request(hctx, rq);
 	if (likely(!ret))
@@ -3915,7 +3921,6 @@ skip_create_disk:
 	if (rv) {
 		dev_err(&dd->pdev->dev,
 			"Unable to allocate request queue\n");
-		rv = -ENOMEM;
 		goto block_queue_alloc_init_error;
 	}
 
@@ -3949,6 +3954,7 @@ skip_create_disk:
 
 	/* Set device limits. */
 	set_bit(QUEUE_FLAG_NONROT, &dd->queue->queue_flags);
+	clear_bit(QUEUE_FLAG_ADD_RANDOM, &dd->queue->queue_flags);
 	blk_queue_max_segments(dd->queue, MTIP_MAX_SG);
 	blk_queue_physical_block_size(dd->queue, 4096);
 	blk_queue_max_hw_sectors(dd->queue, 0xffff);
@@ -4629,7 +4635,7 @@ static void mtip_pci_shutdown(struct pci_dev *pdev)
 }
 
 /* Table of device ids supported by this driver. */
-static DEFINE_PCI_DEVICE_TABLE(mtip_pci_tbl) = {
+static const struct pci_device_id mtip_pci_tbl[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_MICRON, P320H_DEVICE_ID) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_MICRON, P320M_DEVICE_ID) },
 	{ PCI_DEVICE(PCI_VENDOR_ID_MICRON, P320S_DEVICE_ID) },

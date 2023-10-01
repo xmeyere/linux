@@ -533,11 +533,6 @@ static unsigned int sccnxp_tx_empty(struct uart_port *port)
 	return (val & SR_TXEMT) ? TIOCSER_TEMT : 0;
 }
 
-static void sccnxp_enable_ms(struct uart_port *port)
-{
-	/* Do nothing */
-}
-
 static void sccnxp_set_mctrl(struct uart_port *port, unsigned int mctrl)
 {
 	struct sccnxp_port *s = dev_get_drvdata(port->dev);
@@ -790,7 +785,6 @@ static const struct uart_ops sccnxp_ops = {
 	.stop_tx	= sccnxp_stop_tx,
 	.start_tx	= sccnxp_start_tx,
 	.stop_rx	= sccnxp_stop_rx,
-	.enable_ms	= sccnxp_enable_ms,
 	.break_ctl	= sccnxp_break_ctl,
 	.startup	= sccnxp_startup,
 	.shutdown	= sccnxp_shutdown,
@@ -890,19 +884,14 @@ static int sccnxp_probe(struct platform_device *pdev)
 
 	clk = devm_clk_get(&pdev->dev, NULL);
 	if (IS_ERR(clk)) {
-		ret = PTR_ERR(clk);
-		if (ret == -EPROBE_DEFER)
+		if (PTR_ERR(clk) == -EPROBE_DEFER) {
+			ret = -EPROBE_DEFER;
 			goto err_out;
-		uartclk = 0;
-	} else {
-		clk_prepare_enable(clk);
-		uartclk = clk_get_rate(clk);
-	}
-
-	if (!uartclk) {
+		}
 		dev_notice(&pdev->dev, "Using default clock frequency\n");
 		uartclk = s->chip->freq_std;
-	}
+	} else
+		uartclk = clk_get_rate(clk);
 
 	/* Check input frequency */
 	if ((uartclk < s->chip->freq_min) || (uartclk > s->chip->freq_max)) {

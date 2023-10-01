@@ -239,10 +239,9 @@ static inline int sock_send_bvec(struct nbd_device *nbd, struct bio_vec *bvec,
 /* always call with the tx_lock held */
 static int nbd_send_req(struct nbd_device *nbd, struct request *req)
 {
-	int result;
+	int result, flags;
 	struct nbd_request request;
 	unsigned long size = blk_rq_bytes(req);
-	struct bio *bio;
 
 	memset(&request, 0, sizeof(request));
 	request.magic = htonl(NBD_REQUEST_MAGIC);
@@ -267,19 +266,17 @@ static int nbd_send_req(struct nbd_device *nbd, struct request *req)
 		goto error_out;
 	}
 
-	if (nbd_cmd(req) != NBD_CMD_WRITE)
-		return 0;
-
-	bio = req->bio;
-	while (bio) {
-		struct bio *next = bio->bi_next;
-		struct bvec_iter iter;
+	if (nbd_cmd(req) == NBD_CMD_WRITE) {
+		struct req_iterator iter;
 		struct bio_vec bvec;
-
-		bio_for_each_segment(bvec, bio, iter) {
-			bool is_last = !next && bio_iter_last(bvec, iter);
-			int flags = is_last ? 0 : MSG_MORE;
-
+		/*
+		 * we are really probing at internals to determine
+		 * whether to set MSG_MORE or not...
+		 */
+		rq_for_each_segment(bvec, req, iter) {
+			flags = 0;
+			if (!rq_iter_last(bvec, iter))
+				flags = MSG_MORE;
 			dprintk(DBG_TX, "%s: request %p: sending %d bytes data\n",
 					nbd->disk->disk_name, req, bvec.bv_len);
 			result = sock_send_bvec(nbd, &bvec, flags);
@@ -289,16 +286,7 @@ static int nbd_send_req(struct nbd_device *nbd, struct request *req)
 					result);
 				goto error_out;
 			}
-			/*
-			 * The completion might already have come in,
-			 * so break for the last one instead of letting
-			 * the iterator do it. This prevents use-after-free
-			 * of the bio.
-			 */
-			if (is_last)
-				break;
 		}
-		bio = next;
 	}
 	return 0;
 
@@ -590,8 +578,8 @@ static void do_nbd_request(struct request_queue *q)
 		BUG_ON(nbd->magic != NBD_MAGIC);
 
 		if (unlikely(!nbd->sock)) {
-			dev_err_ratelimited(disk_to_dev(nbd->disk),
-					    "Attempted send on closed socket\n");
+			dev_err(disk_to_dev(nbd->disk),
+				"Attempted send on closed socket\n");
 			req->errors++;
 			nbd_end_request(req);
 			spin_lock_irq(q->queue_lock);
@@ -667,9 +655,6 @@ static int __nbd_ioctl(struct block_device *bdev, struct nbd_device *nbd,
 	}
 
 	case NBD_SET_BLKSIZE:
-		if (!arg || !is_power_of_2(arg) || arg < 512 ||
-		    arg > PAGE_SIZE)
-			return -EINVAL;
 		nbd->blksize = arg;
 		nbd->bytesize &= ~(nbd->blksize-1);
 		bdev->bd_inode->i_size = nbd->bytesize;
@@ -818,6 +803,10 @@ static int __init nbd_init(void)
 		return -EINVAL;
 	}
 
+	nbd_dev = kcalloc(nbds_max, sizeof(*nbd_dev), GFP_KERNEL);
+	if (!nbd_dev)
+		return -ENOMEM;
+
 	part_shift = 0;
 	if (max_part > 0) {
 		part_shift = fls(max_part);
@@ -839,10 +828,6 @@ static int __init nbd_init(void)
 	if (nbds_max > 1UL << (MINORBITS - part_shift))
 		return -EINVAL;
 
-	nbd_dev = kcalloc(nbds_max, sizeof(*nbd_dev), GFP_KERNEL);
-	if (!nbd_dev)
-		return -ENOMEM;
-
 	for (i = 0; i < nbds_max; i++) {
 		struct gendisk *disk = alloc_disk(1 << part_shift);
 		if (!disk)
@@ -862,6 +847,7 @@ static int __init nbd_init(void)
 		 * Tell the block layer that we are not a rotational device
 		 */
 		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, disk->queue);
+		queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, disk->queue);
 		disk->queue->limits.discard_granularity = 512;
 		disk->queue->limits.max_discard_sectors = UINT_MAX;
 		disk->queue->limits.discard_zeroes_data = 0;

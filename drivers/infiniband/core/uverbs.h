@@ -85,7 +85,7 @@
  */
 
 struct ib_uverbs_device {
-	atomic_t				refcount;
+	struct kref				ref;
 	int					num_comp_vectors;
 	struct completion			comp;
 	struct device			       *dev;
@@ -94,7 +94,6 @@ struct ib_uverbs_device {
 	struct cdev			        cdev;
 	struct rb_root				xrcd_tree;
 	struct mutex				xrcd_tree_mutex;
-	struct kobject				kobj;
 };
 
 struct ib_uverbs_event_file {
@@ -222,6 +221,7 @@ IB_UVERBS_DECLARE_CMD(query_port);
 IB_UVERBS_DECLARE_CMD(alloc_pd);
 IB_UVERBS_DECLARE_CMD(dealloc_pd);
 IB_UVERBS_DECLARE_CMD(reg_mr);
+IB_UVERBS_DECLARE_CMD(rereg_mr);
 IB_UVERBS_DECLARE_CMD(dereg_mr);
 IB_UVERBS_DECLARE_CMD(alloc_mw);
 IB_UVERBS_DECLARE_CMD(dealloc_mw);

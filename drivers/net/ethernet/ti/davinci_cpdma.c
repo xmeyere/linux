@@ -82,7 +82,7 @@ struct cpdma_desc {
 
 struct cpdma_desc_pool {
 	phys_addr_t		phys;
-	dma_addr_t		hw_addr;
+	u32			hw_addr;
 	void __iomem		*iomap;		/* ioremap map */
 	void			*cpumap;	/* dma_alloc map */
 	int			desc_size, mem_size;
@@ -152,7 +152,7 @@ struct cpdma_chan {
  * abstract out these details
  */
 static struct cpdma_desc_pool *
-cpdma_desc_pool_create(struct device *dev, u32 phys, dma_addr_t hw_addr,
+cpdma_desc_pool_create(struct device *dev, u32 phys, u32 hw_addr,
 				int size, int align)
 {
 	int bitmap_size;
@@ -176,13 +176,13 @@ cpdma_desc_pool_create(struct device *dev, u32 phys, dma_addr_t hw_addr,
 
 	if (phys) {
 		pool->phys  = phys;
-		pool->iomap = ioremap(phys, size); /* should be memremap? */
+		pool->iomap = ioremap(phys, size);
 		pool->hw_addr = hw_addr;
 	} else {
-		pool->cpumap = dma_alloc_coherent(dev, size, &pool->hw_addr,
+		pool->cpumap = dma_alloc_coherent(dev, size, &pool->phys,
 						  GFP_KERNEL);
-		pool->iomap = (void __iomem __force *)pool->cpumap;
-		pool->phys = pool->hw_addr; /* assumes no IOMMU, don't use this value */
+		pool->iomap = pool->cpumap;
+		pool->hw_addr = pool->phys;
 	}
 
 	if (pool->iomap)
@@ -193,12 +193,9 @@ fail:
 
 static void cpdma_desc_pool_destroy(struct cpdma_desc_pool *pool)
 {
-	unsigned long flags;
-
 	if (!pool)
 		return;
 
-	spin_lock_irqsave(&pool->lock, flags);
 	WARN_ON(pool->used_desc);
 	if (pool->cpumap) {
 		dma_free_coherent(pool->dev, pool->mem_size, pool->cpumap,
@@ -206,7 +203,6 @@ static void cpdma_desc_pool_destroy(struct cpdma_desc_pool *pool)
 	} else {
 		iounmap(pool->iomap);
 	}
-	spin_unlock_irqrestore(&pool->lock, flags);
 }
 
 static inline dma_addr_t desc_phys(struct cpdma_desc_pool *pool,
@@ -503,7 +499,7 @@ struct cpdma_chan *cpdma_chan_create(struct cpdma_ctlr *ctlr, int chan_num,
 	unsigned long flags;
 
 	if (__chan_linear(chan_num) >= ctlr->num_chan)
-		return ERR_PTR(-EINVAL);
+		return NULL;
 
 	chan = devm_kzalloc(ctlr->dev, sizeof(*chan), GFP_KERNEL);
 	if (!chan)
@@ -561,7 +557,6 @@ int cpdma_chan_destroy(struct cpdma_chan *chan)
 		cpdma_chan_stop(chan);
 	ctlr->channels[chan->chan_num] = NULL;
 	spin_unlock_irqrestore(&ctlr->lock, flags);
-	kfree(chan);
 	return 0;
 }
 EXPORT_SYMBOL_GPL(cpdma_chan_destroy);

@@ -43,7 +43,6 @@
 #include <linux/timer.h>
 #include <linux/semaphore.h>
 #include <linux/workqueue.h>
-#include <linux/rwsem.h>
 
 #include <linux/mlx4/device.h>
 #include <linux/mlx4/driver.h>
@@ -62,11 +61,6 @@
 #define MLX4_FS_NUM_MCG			(1 << 17)
 
 #define INIT_HCA_TPT_MW_ENABLE          (1 << 7)
-
-#define MLX4_NUM_UP		8
-#define MLX4_NUM_TC		8
-#define MLX4_RATELIMIT_UNITS 3 /* 100 Mbps */
-#define MLX4_RATELIMIT_DEFAULT 0xffff
 
 struct mlx4_set_port_prio2tc_context {
 	u8 prio2tc[4];
@@ -153,10 +147,9 @@ enum mlx4_resource {
 	RES_MTT,
 	RES_MAC,
 	RES_VLAN,
-	RES_NPORT_ID,
+	RES_EQ,
 	RES_COUNTER,
 	RES_FS_RULE,
-	RES_EQ,
 	MLX4_NUM_OF_RESOURCE_TYPE
 };
 
@@ -281,6 +274,8 @@ struct mlx4_icm_table {
 #define MLX4_MPT_FLAG_PHYSICAL	    (1 <<  9)
 #define MLX4_MPT_FLAG_REGION	    (1 <<  8)
 
+#define MLX4_MPT_PD_MASK	    (0x1FFFFUL)
+#define MLX4_MPT_PD_VF_MASK	    (0xFE0000UL)
 #define MLX4_MPT_PD_FLAG_FAST_REG   (1 << 27)
 #define MLX4_MPT_PD_FLAG_RAE	    (1 << 28)
 #define MLX4_MPT_PD_FLAG_EN_INV	    (3 << 24)
@@ -289,6 +284,9 @@ struct mlx4_icm_table {
 
 #define MLX4_MPT_STATUS_SW		0xF0
 #define MLX4_MPT_STATUS_HW		0x00
+
+#define MLX4_CQE_SIZE_MASK_STRIDE	0x3
+#define MLX4_EQE_SIZE_MASK_STRIDE	0x30
 
 /*
  * Must be packed because mtt_seg is 64 bits but only aligned to 32 bits.
@@ -518,8 +516,8 @@ struct slave_list {
 struct resource_allocator {
 	spinlock_t alloc_lock; /* protect quotas */
 	union {
-		unsigned int res_reserved;
-		unsigned int res_port_rsvd[MLX4_MAX_PORTS];
+		int res_reserved;
+		int res_port_rsvd[MLX4_MAX_PORTS];
 	};
 	union {
 		int res_free;
@@ -600,7 +598,6 @@ struct mlx4_cmd {
 	struct mutex		slave_cmd_mutex;
 	struct semaphore	poll_sem;
 	struct semaphore	event_sem;
-	struct rw_semaphore	switch_sem;
 	int			max_cmds;
 	spinlock_t		context_lock;
 	int			free_head;
@@ -1249,6 +1246,8 @@ int mlx4_SET_VLAN_FLTR_wrapper(struct mlx4_dev *dev, int slave,
 			       struct mlx4_cmd_info *cmd);
 int mlx4_common_set_vlan_fltr(struct mlx4_dev *dev, int function,
 				     int port, void *buf);
+int mlx4_common_dump_eth_stats(struct mlx4_dev *dev, int slave, u32 in_mod,
+				struct mlx4_cmd_mailbox *outbox);
 int mlx4_DUMP_ETH_STATS_wrapper(struct mlx4_dev *dev, int slave,
 				   struct mlx4_vhcr *vhcr,
 				   struct mlx4_cmd_mailbox *inbox,
@@ -1312,5 +1311,6 @@ void mlx4_init_quotas(struct mlx4_dev *dev);
 int mlx4_get_slave_num_gids(struct mlx4_dev *dev, int slave, int port);
 /* Returns the VF index of slave */
 int mlx4_get_vf_indx(struct mlx4_dev *dev, int slave);
+int mlx4_config_mad_demux(struct mlx4_dev *dev);
 
 #endif /* MLX4_H */

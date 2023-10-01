@@ -22,9 +22,7 @@
 #include <linux/xattr.h>
 #include <linux/integrity.h>
 #include <linux/evm.h>
-#include <linux/magic.h>
 #include <crypto/hash.h>
-#include <crypto/algapi.h>
 #include "evm.h"
 
 int evm_initialized;
@@ -128,14 +126,15 @@ static enum integrity_status evm_verify_hmac(struct dentry *dentry,
 	rc = vfs_getxattr_alloc(dentry, XATTR_NAME_EVM, (char **)&xattr_data, 0,
 				GFP_NOFS);
 	if (rc <= 0) {
-		if (rc == 0)
-			evm_status = INTEGRITY_FAIL; /* empty */
-		else if (rc == -ENODATA) {
+		evm_status = INTEGRITY_FAIL;
+		if (rc == -ENODATA) {
 			rc = evm_find_protected_xattrs(dentry);
 			if (rc > 0)
 				evm_status = INTEGRITY_NOLABEL;
 			else if (rc == 0)
 				evm_status = INTEGRITY_NOXATTRS; /* new file */
+		} else if (rc == -EOPNOTSUPP) {
+			evm_status = INTEGRITY_UNKNOWN;
 		}
 		goto out;
 	}
@@ -149,7 +148,7 @@ static enum integrity_status evm_verify_hmac(struct dentry *dentry,
 				   xattr_value_len, calc.digest);
 		if (rc)
 			break;
-		rc = crypto_memneq(xattr_data->digest, calc.digest,
+		rc = memcmp(xattr_data->digest, calc.digest,
 			    sizeof(calc.digest));
 		if (rc)
 			rc = -EINVAL;
@@ -292,17 +291,6 @@ static int evm_protect_xattr(struct dentry *dentry, const char *xattr_name,
 		iint = integrity_iint_find(dentry->d_inode);
 		if (iint && (iint->flags & IMA_NEW_FILE))
 			return 0;
-
-		/* exception for pseudo filesystems */
-		if (dentry->d_inode->i_sb->s_magic == TMPFS_MAGIC
-		    || dentry->d_inode->i_sb->s_magic == SYSFS_MAGIC)
-			return 0;
-
-		integrity_audit_msg(AUDIT_INTEGRITY_METADATA,
-				    dentry->d_inode, dentry->d_name.name,
-				    "update_metadata",
-				    integrity_status_msg[evm_status],
-				    -EPERM, 0);
 	}
 out:
 	if (evm_status != INTEGRITY_PASS)
@@ -375,7 +363,6 @@ void evm_inode_post_setxattr(struct dentry *dentry, const char *xattr_name,
 		return;
 
 	evm_update_evmxattr(dentry, xattr_name, xattr_value, xattr_value_len);
-	return;
 }
 
 /**
@@ -395,7 +382,6 @@ void evm_inode_post_removexattr(struct dentry *dentry, const char *xattr_name)
 	mutex_lock(&inode->i_mutex);
 	evm_update_evmxattr(dentry, xattr_name, NULL, 0);
 	mutex_unlock(&inode->i_mutex);
-	return;
 }
 
 /**
@@ -437,7 +423,6 @@ void evm_inode_post_setattr(struct dentry *dentry, int ia_valid)
 
 	if (ia_valid & (ATTR_MODE | ATTR_UID | ATTR_GID))
 		evm_update_evmxattr(dentry, NULL, NULL, 0);
-	return;
 }
 
 /*

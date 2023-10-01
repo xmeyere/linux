@@ -18,6 +18,7 @@
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/vfio.h>
+#include "vfio.h"
 
 struct kvm_vfio_group {
 	struct list_head node;
@@ -44,22 +45,6 @@ static struct vfio_group *kvm_vfio_group_get_external_user(struct file *filep)
 	symbol_put(vfio_group_get_external_user);
 
 	return vfio_group;
-}
-
-static bool kvm_vfio_external_group_match_file(struct vfio_group *group,
-					       struct file *filep)
-{
-	bool ret, (*fn)(struct vfio_group *, struct file *);
-
-	fn = symbol_get(vfio_external_group_match_file);
-	if (!fn)
-		return false;
-
-	ret = fn(group, filep);
-
-	symbol_put(vfio_external_group_match_file);
-
-	return ret;
 }
 
 static void kvm_vfio_group_put_external_user(struct vfio_group *vfio_group)
@@ -184,13 +169,18 @@ static int kvm_vfio_set_group(struct kvm_device *dev, long attr, u64 arg)
 		if (!f.file)
 			return -EBADF;
 
+		vfio_group = kvm_vfio_group_get_external_user(f.file);
+		fdput(f);
+
+		if (IS_ERR(vfio_group))
+			return PTR_ERR(vfio_group);
+
 		ret = -ENOENT;
 
 		mutex_lock(&kv->lock);
 
 		list_for_each_entry(kvg, &kv->group_list, node) {
-			if (!kvm_vfio_external_group_match_file(kvg->vfio_group,
-								f.file))
+			if (kvg->vfio_group != vfio_group)
 				continue;
 
 			list_del(&kvg->node);
@@ -202,7 +192,7 @@ static int kvm_vfio_set_group(struct kvm_device *dev, long attr, u64 arg)
 
 		mutex_unlock(&kv->lock);
 
-		fdput(f);
+		kvm_vfio_group_put_external_user(vfio_group);
 
 		kvm_vfio_update_coherency(dev);
 
@@ -257,6 +247,16 @@ static void kvm_vfio_destroy(struct kvm_device *dev)
 	kfree(dev); /* alloc by kvm_ioctl_create_device, free by .destroy */
 }
 
+static int kvm_vfio_create(struct kvm_device *dev, u32 type);
+
+static struct kvm_device_ops kvm_vfio_ops = {
+	.name = "kvm-vfio",
+	.create = kvm_vfio_create,
+	.destroy = kvm_vfio_destroy,
+	.set_attr = kvm_vfio_set_attr,
+	.has_attr = kvm_vfio_has_attr,
+};
+
 static int kvm_vfio_create(struct kvm_device *dev, u32 type)
 {
 	struct kvm_device *tmp;
@@ -279,10 +279,12 @@ static int kvm_vfio_create(struct kvm_device *dev, u32 type)
 	return 0;
 }
 
-struct kvm_device_ops kvm_vfio_ops = {
-	.name = "kvm-vfio",
-	.create = kvm_vfio_create,
-	.destroy = kvm_vfio_destroy,
-	.set_attr = kvm_vfio_set_attr,
-	.has_attr = kvm_vfio_has_attr,
-};
+int kvm_vfio_ops_init(void)
+{
+	return kvm_register_device_ops(&kvm_vfio_ops, KVM_DEV_TYPE_VFIO);
+}
+
+void kvm_vfio_ops_exit(void)
+{
+	kvm_unregister_device_ops(KVM_DEV_TYPE_VFIO);
+}

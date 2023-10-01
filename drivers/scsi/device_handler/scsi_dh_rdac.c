@@ -274,7 +274,7 @@ static struct request *get_rdac_req(struct scsi_device *sdev,
 
 	rq = blk_get_request(q, rw, GFP_NOIO);
 
-	if (!rq) {
+	if (IS_ERR(rq)) {
 		sdev_printk(KERN_INFO, sdev,
 				"get_rdac_req: blk_get_request failed.\n");
 		return NULL;
@@ -569,7 +569,7 @@ static int mode_select_handle_sense(struct scsi_device *sdev,
 			/*
 			 * Command Lock contention
 			 */
-			err = SCSI_DH_IMM_RETRY;
+			err = SCSI_DH_RETRY;
 		break;
 	default:
 		break;
@@ -618,8 +618,6 @@ retry:
 	if (err != SCSI_DH_OK) {
 		err = mode_select_handle_sense(sdev, h->sense);
 		if (err == SCSI_DH_RETRY && retry_cnt--)
-			goto retry;
-		if (err == SCSI_DH_IMM_RETRY)
 			goto retry;
 	}
 	if (err == SCSI_DH_OK) {

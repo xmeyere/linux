@@ -29,6 +29,7 @@
 #include <asm/bitsperlong.h>
 
 #ifdef __KERNEL__
+u32 eth_get_headlen(void *data, unsigned int max_len);
 __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev);
 extern const struct header_ops eth_header_ops;
 
@@ -72,7 +73,7 @@ static inline bool is_link_local_ether_addr(const u8 *addr)
 
 #if defined(CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS)
 	return (((*(const u32 *)addr) ^ (*(const u32 *)b)) |
-		(__force int)((a[2] ^ b[2]) & m)) == 0;
+		((a[2] ^ b[2]) & m)) == 0;
 #else
 	return ((a[0] ^ b[0]) | (a[1] ^ b[1]) | ((a[2] ^ b[2]) & m)) == 0;
 #endif

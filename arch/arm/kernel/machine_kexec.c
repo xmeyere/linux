@@ -40,9 +40,6 @@ int machine_kexec_prepare(struct kimage *image)
 	__be32 header;
 	int i, err;
 
-	image->arch.kernel_r2 = image->start - KEXEC_ARM_ZIMAGE_OFFSET
-				     + KEXEC_ARM_ATAGS_OFFSET;
-
 	/*
 	 * Validate that if the current HW supports SMP, then the SW supports
 	 * and implements CPU hotplug for the current HW. If not, we won't be
@@ -66,8 +63,8 @@ int machine_kexec_prepare(struct kimage *image)
 		if (err)
 			return err;
 
-		if (header == cpu_to_be32(OF_DT_HEADER))
-			image->arch.kernel_r2 = current_segment->mem;
+		if (be32_to_cpu(header) == OF_DT_HEADER)
+			kexec_boot_atags = current_segment->mem;
 	}
 	return 0;
 }
@@ -169,7 +166,9 @@ void machine_kexec(struct kimage *image)
 	kexec_start_address = image->start;
 	kexec_indirection_page = page_list;
 	kexec_mach_type = machine_arch_type;
-	kexec_boot_atags = image->arch.kernel_r2;
+	if (!kexec_boot_atags)
+		kexec_boot_atags = image->start - KEXEC_ARM_ZIMAGE_OFFSET + KEXEC_ARM_ATAGS_OFFSET;
+
 
 	/* copy our kernel relocation code to the control code page */
 	reboot_entry = fncpy(reboot_code_buffer,

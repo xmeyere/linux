@@ -70,7 +70,6 @@ struct clk_sam9x5_slow {
 
 #define to_clk_sam9x5_slow(hw) container_of(hw, struct clk_sam9x5_slow, hw)
 
-static struct clk *slow_clk;
 
 static int clk_slow_osc_prepare(struct clk_hw *hw)
 {
@@ -83,10 +82,7 @@ static int clk_slow_osc_prepare(struct clk_hw *hw)
 
 	writel(tmp | AT91_SCKC_OSC32EN, sckcr);
 
-	if (system_state < SYSTEM_RUNNING)
-		udelay(osc->startup_usec);
-	else
-		usleep_range(osc->startup_usec, osc->startup_usec + 1);
+	usleep_range(osc->startup_usec, osc->startup_usec + 1);
 
 	return 0;
 }
@@ -205,10 +201,7 @@ static int clk_slow_rc_osc_prepare(struct clk_hw *hw)
 
 	writel(readl(sckcr) | AT91_SCKC_RCEN, sckcr);
 
-	if (system_state < SYSTEM_RUNNING)
-		udelay(osc->startup_usec);
-	else
-		usleep_range(osc->startup_usec, osc->startup_usec + 1);
+	usleep_range(osc->startup_usec, osc->startup_usec + 1);
 
 	return 0;
 }
@@ -317,10 +310,7 @@ static int clk_sam9x5_slow_set_parent(struct clk_hw *hw, u8 index)
 
 	writel(tmp, sckcr);
 
-	if (system_state < SYSTEM_RUNNING)
-		udelay(SLOWCK_SW_TIME_USEC);
-	else
-		usleep_range(SLOWCK_SW_TIME_USEC, SLOWCK_SW_TIME_USEC + 1);
+	usleep_range(SLOWCK_SW_TIME_USEC, SLOWCK_SW_TIME_USEC + 1);
 
 	return 0;
 }
@@ -367,8 +357,6 @@ at91_clk_register_sam9x5_slow(void __iomem *sckcr,
 	clk = clk_register(NULL, &slowck->hw);
 	if (IS_ERR(clk))
 		kfree(slowck);
-	else
-		slow_clk = clk;
 
 	return clk;
 }
@@ -445,8 +433,6 @@ at91_clk_register_sam9260_slow(struct at91_pmc *pmc,
 	clk = clk_register(NULL, &slowck->hw);
 	if (IS_ERR(clk))
 		kfree(slowck);
-	else
-		slow_clk = clk;
 
 	return clk;
 }
@@ -461,7 +447,7 @@ void __init of_at91sam9260_clk_slow_setup(struct device_node *np,
 	int i;
 
 	num_parents = of_count_phandle_with_args(np, "clocks", "#clock-cells");
-	if (num_parents <= 0 || num_parents > 1)
+	if (num_parents != 2)
 		return;
 
 	for (i = 0; i < num_parents; ++i) {
@@ -479,25 +465,3 @@ void __init of_at91sam9260_clk_slow_setup(struct device_node *np,
 
 	of_clk_add_provider(np, of_clk_src_simple_get, clk);
 }
-
-/*
- * FIXME: All slow clk users are not properly claiming it (get + prepare +
- * enable) before using it.
- * If all users properly claiming this clock decide that they don't need it
- * anymore (or are removed), it is disabled while faulty users are still
- * requiring it, and the system hangs.
- * Prevent this clock from being disabled until all users are properly
- * requesting it.
- * Once this is done we should remove this function and the slow_clk variable.
- */
-static int __init of_at91_clk_slow_retain(void)
-{
-	if (!slow_clk)
-		return 0;
-
-	__clk_get(slow_clk);
-	clk_prepare_enable(slow_clk);
-
-	return 0;
-}
-arch_initcall(of_at91_clk_slow_retain);

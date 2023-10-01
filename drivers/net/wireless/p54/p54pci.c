@@ -32,7 +32,7 @@ MODULE_LICENSE("GPL");
 MODULE_ALIAS("prism54pci");
 MODULE_FIRMWARE("isl3886pci");
 
-static DEFINE_PCI_DEVICE_TABLE(p54p_table) = {
+static const struct pci_device_id p54p_table[] = {
 	/* Intersil PRISM Duette/Prism GT Wireless LAN adapter */
 	{ PCI_DEVICE(0x1260, 0x3890) },
 	/* 3COM 3CRWE154G72 Wireless LAN adapter */
@@ -551,7 +551,7 @@ static int p54p_probe(struct pci_dev *pdev,
 	err = pci_enable_device(pdev);
 	if (err) {
 		dev_err(&pdev->dev, "Cannot enable new PCI device\n");
-		goto err_put;
+		return err;
 	}
 
 	mem_addr = pci_resource_start(pdev, 0);
@@ -636,7 +636,6 @@ static int p54p_probe(struct pci_dev *pdev,
 	pci_release_regions(pdev);
  err_disable_dev:
 	pci_disable_device(pdev);
-err_put:
 	pci_dev_put(pdev);
 	return err;
 }

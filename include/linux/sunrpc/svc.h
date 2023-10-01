@@ -236,7 +236,7 @@ struct svc_rqst {
 	struct svc_cred		rq_cred;	/* auth info */
 	void *			rq_xprt_ctxt;	/* transport specific context ptr */
 	struct svc_deferred_req*rq_deferred;	/* deferred request we are replaying */
-	int			rq_usedeferral;	/* use deferral */
+	bool			rq_usedeferral;	/* use deferral */
 
 	size_t			rq_xprt_hlen;	/* xprt header len */
 	struct xdr_buf		rq_arg;
@@ -277,17 +277,13 @@ struct svc_rqst {
 	struct auth_domain *	rq_gssclient;	/* "gss/"-style peer info */
 	int			rq_cachetype;
 	struct svc_cacherep *	rq_cacherep;	/* cache info */
-	int			rq_splice_ok;   /* turned off in gss privacy
+	bool			rq_splice_ok;   /* turned off in gss privacy
 						 * to prevent encrypting page
 						 * cache pages */
-	wait_queue_head_t	rq_wait;	/* synchronization */
 	struct task_struct	*rq_task;	/* service thread */
-	struct net		*rq_bc_net;	/* pointer to backchannel's
-						 * net namespace
-						 */
 };
 
-#define SVC_NET(rqst) (rqst->rq_xprt ? rqst->rq_xprt->xpt_net : rqst->rq_bc_net)
+#define SVC_NET(svc_rqst)	(svc_rqst->rq_xprt->xpt_net)
 
 /*
  * Rigorous type checking on sockaddr type conversions

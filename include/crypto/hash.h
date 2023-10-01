@@ -58,6 +58,11 @@ struct shash_desc {
 	void *__ctx[] CRYPTO_MINALIGN_ATTR;
 };
 
+#define SHASH_DESC_ON_STACK(shash, ctx)				  \
+	char __##shash##_desc[sizeof(struct shash_desc) +	  \
+		crypto_shash_descsize(ctx)] CRYPTO_MINALIGN_ATTR; \
+	struct shash_desc *shash = (struct shash_desc *)__##shash##_desc
+
 struct shash_alg {
 	int (*init)(struct shash_desc *desc);
 	int (*update)(struct shash_desc *desc, const u8 *data,
@@ -181,7 +186,6 @@ static inline void *ahash_request_ctx(struct ahash_request *req)
 
 int crypto_ahash_setkey(struct crypto_ahash *tfm, const u8 *key,
 			unsigned int keylen);
-
 int crypto_ahash_finup(struct ahash_request *req);
 int crypto_ahash_final(struct ahash_request *req);
 int crypto_ahash_digest(struct ahash_request *req);
@@ -193,22 +197,12 @@ static inline int crypto_ahash_export(struct ahash_request *req, void *out)
 
 static inline int crypto_ahash_import(struct ahash_request *req, const void *in)
 {
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
-
-	if (crypto_ahash_get_flags(tfm) & CRYPTO_TFM_NEED_KEY)
-		return -ENOKEY;
-
-	return tfm->import(req, in);
+	return crypto_ahash_reqtfm(req)->import(req, in);
 }
 
 static inline int crypto_ahash_init(struct ahash_request *req)
 {
-	struct crypto_ahash *tfm = crypto_ahash_reqtfm(req);
-
-	if (crypto_ahash_get_flags(tfm) & CRYPTO_TFM_NEED_KEY)
-		return -ENOKEY;
-
-	return tfm->init(req);
+	return crypto_ahash_reqtfm(req)->init(req);
 }
 
 static inline int crypto_ahash_update(struct ahash_request *req)
@@ -249,10 +243,10 @@ static inline struct ahash_request *ahash_request_cast(
 
 static inline void ahash_request_set_callback(struct ahash_request *req,
 					      u32 flags,
-					      crypto_completion_t complete,
+					      crypto_completion_t compl,
 					      void *data)
 {
-	req->base.complete = complete;
+	req->base.complete = compl;
 	req->base.data = data;
 	req->base.flags = flags;
 }
@@ -347,22 +341,12 @@ static inline int crypto_shash_export(struct shash_desc *desc, void *out)
 
 static inline int crypto_shash_import(struct shash_desc *desc, const void *in)
 {
-	struct crypto_shash *tfm = desc->tfm;
-
-	if (crypto_shash_get_flags(tfm) & CRYPTO_TFM_NEED_KEY)
-		return -ENOKEY;
-
-	return crypto_shash_alg(tfm)->import(desc, in);
+	return crypto_shash_alg(desc->tfm)->import(desc, in);
 }
 
 static inline int crypto_shash_init(struct shash_desc *desc)
 {
-	struct crypto_shash *tfm = desc->tfm;
-
-	if (crypto_shash_get_flags(tfm) & CRYPTO_TFM_NEED_KEY)
-		return -ENOKEY;
-
-	return crypto_shash_alg(tfm)->init(desc);
+	return crypto_shash_alg(desc->tfm)->init(desc);
 }
 
 int crypto_shash_update(struct shash_desc *desc, const u8 *data,

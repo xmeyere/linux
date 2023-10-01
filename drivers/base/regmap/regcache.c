@@ -213,7 +213,7 @@ int regcache_read(struct regmap *map,
 		ret = map->cache_ops->read(map, reg, value);
 
 		if (ret == 0)
-			trace_regmap_reg_read_cache(map, reg, *value);
+			trace_regmap_reg_read_cache(map->dev, reg, *value);
 
 		return ret;
 	}
@@ -269,8 +269,11 @@ static int regcache_default_sync(struct regmap *map, unsigned int min,
 		map->cache_bypass = 1;
 		ret = _regmap_write(map, reg, val);
 		map->cache_bypass = 0;
-		if (ret)
+		if (ret) {
+			dev_err(map->dev, "Unable to sync register %#x. %d\n",
+				reg, ret);
 			return ret;
+		}
 		dev_dbg(map->dev, "Synced register %#x, value %#x\n", reg, val);
 	}
 
@@ -303,7 +306,7 @@ int regcache_sync(struct regmap *map)
 	dev_dbg(map->dev, "Syncing %s cache\n",
 		map->cache_ops->name);
 	name = map->cache_ops->name;
-	trace_regcache_sync(map, name, "start");
+	trace_regcache_sync(map->dev, name, "start");
 
 	if (!map->cache_dirty)
 		goto out;
@@ -338,7 +341,7 @@ out:
 
 	regmap_async_complete(map);
 
-	trace_regcache_sync(map, name, "stop");
+	trace_regcache_sync(map->dev, name, "stop");
 
 	return ret;
 }
@@ -373,7 +376,7 @@ int regcache_sync_region(struct regmap *map, unsigned int min,
 	name = map->cache_ops->name;
 	dev_dbg(map->dev, "Syncing %s cache from %d-%d\n", name, min, max);
 
-	trace_regcache_sync(map, name, "start region");
+	trace_regcache_sync(map->dev, name, "start region");
 
 	if (!map->cache_dirty)
 		goto out;
@@ -393,7 +396,7 @@ out:
 
 	regmap_async_complete(map);
 
-	trace_regcache_sync(map, name, "stop region");
+	trace_regcache_sync(map->dev, name, "stop region");
 
 	return ret;
 }
@@ -420,7 +423,7 @@ int regcache_drop_region(struct regmap *map, unsigned int min,
 
 	map->lock(map->lock_arg);
 
-	trace_regcache_drop_region(map, min, max);
+	trace_regcache_drop_region(map->dev, min, max);
 
 	ret = map->cache_ops->drop(map, min, max);
 
@@ -447,7 +450,7 @@ void regcache_cache_only(struct regmap *map, bool enable)
 	map->lock(map->lock_arg);
 	WARN_ON(map->cache_bypass && enable);
 	map->cache_only = enable;
-	trace_regmap_cache_only(map, enable);
+	trace_regmap_cache_only(map->dev, enable);
 	map->unlock(map->lock_arg);
 }
 EXPORT_SYMBOL_GPL(regcache_cache_only);
@@ -473,7 +476,7 @@ EXPORT_SYMBOL_GPL(regcache_mark_dirty);
  * regcache_cache_bypass: Put a register map into cache bypass mode
  *
  * @map: map to configure
- * @cache_bypass: flag if changes should not be written to the cache
+ * @cache_bypass: flag if changes should not be written to the hardware
  *
  * When a register map is marked with the cache bypass option, writes
  * to the register map API will only update the hardware and not the
@@ -485,7 +488,7 @@ void regcache_cache_bypass(struct regmap *map, bool enable)
 	map->lock(map->lock_arg);
 	WARN_ON(map->cache_only && enable);
 	map->cache_bypass = enable;
-	trace_regmap_cache_bypass(map, enable);
+	trace_regmap_cache_bypass(map->dev, enable);
 	map->unlock(map->lock_arg);
 }
 EXPORT_SYMBOL_GPL(regcache_cache_bypass);
@@ -615,8 +618,11 @@ static int regcache_sync_block_single(struct regmap *map, void *block,
 		ret = _regmap_write(map, regtmp, val);
 
 		map->cache_bypass = 0;
-		if (ret != 0)
+		if (ret != 0) {
+			dev_err(map->dev, "Unable to sync register %#x. %d\n",
+				regtmp, ret);
 			return ret;
+		}
 		dev_dbg(map->dev, "Synced register %#x, value %#x\n",
 			regtmp, val);
 	}
@@ -641,6 +647,9 @@ static int regcache_sync_block_raw_flush(struct regmap *map, const void **data,
 	map->cache_bypass = 1;
 
 	ret = _regmap_raw_write(map, base, *data, count * val_bytes);
+	if (ret)
+		dev_err(map->dev, "Unable to sync registers %#x-%#x. %d\n",
+			base, cur - map->reg_stride, ret);
 
 	map->cache_bypass = 0;
 

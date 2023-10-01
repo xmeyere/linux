@@ -64,14 +64,6 @@ enum {
 #define GUID_TBL_BLK_NUM_ENTRIES 8
 #define GUID_TBL_BLK_SIZE (GUID_TBL_ENTRY_SIZE * GUID_TBL_BLK_NUM_ENTRIES)
 
-/* Counters should be saturate once they reach their maximum value */
-#define ASSIGN_32BIT_COUNTER(counter, value) do {\
-	if ((value) > U32_MAX)			 \
-		counter = cpu_to_be32(U32_MAX); \
-	else					 \
-		counter = cpu_to_be32(value);	 \
-} while (0)
-
 struct mlx4_mad_rcv_buf {
 	struct ib_grh grh;
 	u8 payload[256];
@@ -531,7 +523,7 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 		tun_tx_ix = (++tun_qp->tx_ix_head) & (MLX4_NUM_TUNNEL_BUFS - 1);
 	spin_unlock(&tun_qp->tx_lock);
 	if (ret)
-		goto end;
+		goto out;
 
 	tun_mad = (struct mlx4_rcv_tunnel_mad *) (tun_qp->tx_ring[tun_tx_ix].buf.addr);
 	if (tun_qp->tx_ring[tun_tx_ix].ah)
@@ -600,15 +592,9 @@ int mlx4_ib_send_to_slave(struct mlx4_ib_dev *dev, int slave, u8 port,
 	wr.send_flags = IB_SEND_SIGNALED;
 
 	ret = ib_post_send(src_qp, &wr, &bad_wr);
-	if (!ret)
-		return 0;
- out:
-	spin_lock(&tun_qp->tx_lock);
-	tun_qp->tx_ix_tail++;
-	spin_unlock(&tun_qp->tx_lock);
-	tun_qp->tx_ring[tun_tx_ix].ah = NULL;
-end:
-	ib_destroy_ah(ah);
+out:
+	if (ret)
+		ib_destroy_ah(ah);
 	return ret;
 }
 
@@ -820,14 +806,10 @@ static int ib_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
 static void edit_counter(struct mlx4_counter *cnt,
 					struct ib_pma_portcounters *pma_cnt)
 {
-	ASSIGN_32BIT_COUNTER(pma_cnt->port_xmit_data,
-			     (be64_to_cpu(cnt->tx_bytes) >> 2));
-	ASSIGN_32BIT_COUNTER(pma_cnt->port_rcv_data,
-			     (be64_to_cpu(cnt->rx_bytes) >> 2));
-	ASSIGN_32BIT_COUNTER(pma_cnt->port_xmit_packets,
-			     be64_to_cpu(cnt->tx_frames));
-	ASSIGN_32BIT_COUNTER(pma_cnt->port_rcv_packets,
-			     be64_to_cpu(cnt->rx_frames));
+	pma_cnt->port_xmit_data = cpu_to_be32((be64_to_cpu(cnt->tx_bytes)>>2));
+	pma_cnt->port_rcv_data  = cpu_to_be32((be64_to_cpu(cnt->rx_bytes)>>2));
+	pma_cnt->port_xmit_packets = cpu_to_be32(be64_to_cpu(cnt->tx_frames));
+	pma_cnt->port_rcv_packets  = cpu_to_be32(be64_to_cpu(cnt->rx_frames));
 }
 
 static int iboe_process_mad(struct ib_device *ibdev, int mad_flags, u8 port_num,
@@ -909,7 +891,7 @@ int mlx4_ib_mad_init(struct mlx4_ib_dev *dev)
 				agent = ib_register_mad_agent(&dev->ib_dev, p + 1,
 							      q ? IB_QPT_GSI : IB_QPT_SMI,
 							      NULL, 0, send_handler,
-							      NULL, NULL);
+							      NULL, NULL, 0);
 				if (IS_ERR(agent)) {
 					ret = PTR_ERR(agent);
 					goto err;
@@ -1062,27 +1044,6 @@ void handle_port_mgmt_change_event(struct work_struct *work)
 
 		/* Generate GUID changed event */
 		if (changed_attr & MLX4_EQ_PORT_INFO_GID_PFX_CHANGE_MASK) {
-			if (mlx4_is_master(dev->dev)) {
-				union ib_gid gid;
-				int err = 0;
-
-				if (!eqe->event.port_mgmt_change.params.port_info.gid_prefix)
-					err = __mlx4_ib_query_gid(&dev->ib_dev, port, 0, &gid, 1);
-				else
-					gid.global.subnet_prefix =
-						eqe->event.port_mgmt_change.params.port_info.gid_prefix;
-				if (err) {
-					pr_warn("Could not change QP1 subnet prefix for port %d: query_gid error (%d)\n",
-						port, err);
-				} else {
-					pr_debug("Changing QP1 subnet prefix for port %d. old=0x%llx. new=0x%llx\n",
-						 port,
-						 (u64)atomic64_read(&dev->sriov.demux[port - 1].subnet_prefix),
-						 be64_to_cpu(gid.global.subnet_prefix));
-					atomic64_set(&dev->sriov.demux[port - 1].subnet_prefix,
-						     be64_to_cpu(gid.global.subnet_prefix));
-				}
-			}
 			mlx4_ib_dispatch_event(dev, port, IB_EVENT_GID_CHANGE);
 			/*if master, notify all slaves*/
 			if (mlx4_is_master(dev->dev))
@@ -1283,15 +1244,9 @@ int mlx4_ib_send_to_wire(struct mlx4_ib_dev *dev, int slave, u8 port,
 
 
 	ret = ib_post_send(send_qp, &wr, &bad_wr);
-	if (!ret)
-		return 0;
-
-	spin_lock(&sqp->tx_lock);
-	sqp->tx_ix_tail++;
-	spin_unlock(&sqp->tx_lock);
-	sqp->tx_ring[wire_tx_ix].ah = NULL;
 out:
-	ib_destroy_ah(ah);
+	if (ret)
+		ib_destroy_ah(ah);
 	return ret;
 }
 
@@ -1398,17 +1353,14 @@ static void mlx4_ib_multiplex_mad(struct mlx4_ib_demux_pv_ctx *ctx, struct ib_wc
 	 * stadard address handle by decoding the tunnelled mlx4_ah fields */
 	memcpy(&ah.av, &tunnel->hdr.av, sizeof (struct mlx4_av));
 	ah.ibah.device = ctx->ib_dev;
-
-	port = be32_to_cpu(ah.av.ib.port_pd) >> 24;
-	port = mlx4_slave_convert_port(dev->dev, slave, port);
-	if (port < 0)
-		return;
-	ah.av.ib.port_pd = cpu_to_be32(port << 24 | (be32_to_cpu(ah.av.ib.port_pd) & 0xffffff));
-
 	mlx4_ib_query_ah(&ah.ibah, &ah_attr);
 	if (ah_attr.ah_flags & IB_AH_GRH)
 		fill_in_real_sgid_index(dev, slave, ctx->port, &ah_attr);
 
+	port = mlx4_slave_convert_port(dev->dev, slave, ah_attr.port_num);
+	if (port < 0)
+		return;
+	ah_attr.port_num = port;
 	memcpy(ah_attr.dmac, tunnel->hdr.mac, 6);
 	ah_attr.vlan_id = be16_to_cpu(tunnel->hdr.vlan);
 	/* if slave have default vlan use it */
@@ -1748,6 +1700,7 @@ static void mlx4_ib_sqp_comp_worker(struct work_struct *work)
 					       "buf:%lld\n", wc.wr_id);
 				break;
 			default:
+				BUG_ON(1);
 				break;
 			}
 		} else  {
@@ -2154,8 +2107,6 @@ int mlx4_ib_init_sriov(struct mlx4_ib_dev *dev)
 		if (err)
 			goto demux_err;
 		dev->sriov.demux[i].guid_cache[0] = gid.global.interface_id;
-		atomic64_set(&dev->sriov.demux[i].subnet_prefix,
-			     be64_to_cpu(gid.global.subnet_prefix));
 		err = alloc_pv_object(dev, mlx4_master_func_num(dev->dev), i + 1,
 				      &dev->sriov.sqps[i]);
 		if (err)

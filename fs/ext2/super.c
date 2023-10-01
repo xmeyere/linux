@@ -161,7 +161,7 @@ static struct kmem_cache * ext2_inode_cachep;
 static struct inode *ext2_alloc_inode(struct super_block *sb)
 {
 	struct ext2_inode_info *ei;
-	ei = (struct ext2_inode_info *)kmem_cache_alloc(ext2_inode_cachep, GFP_KERNEL);
+	ei = kmem_cache_alloc(ext2_inode_cachep, GFP_KERNEL);
 	if (!ei)
 		return NULL;
 	ei->i_block_alloc_info = NULL;
@@ -701,8 +701,7 @@ static loff_t ext2_max_size(int bits)
 {
 	loff_t res = EXT2_NDIR_BLOCKS;
 	int meta_blocks;
-	unsigned int upper_limit;
-	unsigned int ppb = 1 << (bits-2);
+	loff_t upper_limit;
 
 	/* This is calculated to be the largest file size for a
 	 * dense, file such that the total number of
@@ -716,34 +715,24 @@ static loff_t ext2_max_size(int bits)
 	/* total blocks in file system block size */
 	upper_limit >>= (bits - 9);
 
-	/* Compute how many blocks we can address by block tree */
+
+	/* indirect blocks */
+	meta_blocks = 1;
+	/* double indirect blocks */
+	meta_blocks += 1 + (1LL << (bits-2));
+	/* tripple indirect blocks */
+	meta_blocks += 1 + (1LL << (bits-2)) + (1LL << (2*(bits-2)));
+
+	upper_limit -= meta_blocks;
+	upper_limit <<= bits;
+
 	res += 1LL << (bits-2);
 	res += 1LL << (2*(bits-2));
 	res += 1LL << (3*(bits-2));
-	/* Does block tree limit file size? */
-	if (res < upper_limit)
-		goto check_lfs;
-
-	res = upper_limit;
-	/* How many metadata blocks are needed for addressing upper_limit? */
-	upper_limit -= EXT2_NDIR_BLOCKS;
-	/* indirect blocks */
-	meta_blocks = 1;
-	upper_limit -= ppb;
-	/* double indirect blocks */
-	if (upper_limit < ppb * ppb) {
-		meta_blocks += 1 + DIV_ROUND_UP(upper_limit, ppb);
-		res -= meta_blocks;
-		goto check_lfs;
-	}
-	meta_blocks += 1 + ppb;
-	upper_limit -= ppb * ppb;
-	/* tripple indirect blocks for the rest */
-	meta_blocks += 1 + DIV_ROUND_UP(upper_limit, ppb) +
-		DIV_ROUND_UP(upper_limit, ppb*ppb);
-	res -= meta_blocks;
-check_lfs:
 	res <<= bits;
+	if (res > upper_limit)
+		res = upper_limit;
+
 	if (res > MAX_LFS_FILESIZE)
 		res = MAX_LFS_FILESIZE;
 
@@ -1078,14 +1067,14 @@ static int ext2_fill_super(struct super_block *sb, void *data, int silent)
 	ext2_rsv_window_add(sb, &sbi->s_rsv_window_head);
 
 	err = percpu_counter_init(&sbi->s_freeblocks_counter,
-				ext2_count_free_blocks(sb));
+				ext2_count_free_blocks(sb), GFP_KERNEL);
 	if (!err) {
 		err = percpu_counter_init(&sbi->s_freeinodes_counter,
-				ext2_count_free_inodes(sb));
+				ext2_count_free_inodes(sb), GFP_KERNEL);
 	}
 	if (!err) {
 		err = percpu_counter_init(&sbi->s_dirs_counter,
-				ext2_count_dirs(sb));
+				ext2_count_dirs(sb), GFP_KERNEL);
 	}
 	if (err) {
 		ext2_msg(sb, KERN_ERR, "error: insufficient memory");

@@ -15,6 +15,33 @@
 #include "trace.h"
 #include "trace_output.h"
 
+static bool kill_ftrace_graph;
+
+/**
+ * ftrace_graph_is_dead - returns true if ftrace_graph_stop() was called
+ *
+ * ftrace_graph_stop() is called when a severe error is detected in
+ * the function graph tracing. This function is called by the critical
+ * paths of function graph to keep those paths from doing any more harm.
+ */
+bool ftrace_graph_is_dead(void)
+{
+	return kill_ftrace_graph;
+}
+
+/**
+ * ftrace_graph_stop - set to permanently disable function graph tracincg
+ *
+ * In case of an error int function graph tracing, this is called
+ * to try to keep function graph tracing from causing any more harm.
+ * Usually this is pretty severe and this is called to try to at least
+ * get a warning out to the user.
+ */
+void ftrace_graph_stop(void)
+{
+	kill_ftrace_graph = true;
+}
+
 /* When set, irq functions will be ignored */
 static int ftrace_graph_skip_irqs;
 
@@ -91,6 +118,9 @@ ftrace_push_return_trace(unsigned long ret, unsigned long func, int *depth,
 {
 	unsigned long long calltime;
 	int index;
+
+	if (unlikely(ftrace_graph_is_dead()))
+		return -EBUSY;
 
 	if (!current->ret_stack)
 		return -EBUSY;
@@ -323,7 +353,7 @@ int trace_graph_entry(struct ftrace_graph_ent *trace)
 	return ret;
 }
 
-int trace_graph_thresh_entry(struct ftrace_graph_ent *trace)
+static int trace_graph_thresh_entry(struct ftrace_graph_ent *trace)
 {
 	if (tracing_thresh)
 		return 1;
@@ -412,7 +442,7 @@ void set_graph_array(struct trace_array *tr)
 	smp_mb();
 }
 
-void trace_graph_thresh_return(struct ftrace_graph_ret *trace)
+static void trace_graph_thresh_return(struct ftrace_graph_ret *trace)
 {
 	if (tracing_thresh &&
 	    (trace->rettime - trace->calltime < tracing_thresh))
@@ -443,6 +473,12 @@ static void graph_trace_reset(struct trace_array *tr)
 {
 	tracing_stop_cmdline_record();
 	unregister_ftrace_graph();
+}
+
+static int graph_trace_update_thresh(struct trace_array *tr)
+{
+	graph_trace_reset(tr);
+	return graph_trace_init(tr);
 }
 
 static int max_bytes_for_cpu;
@@ -828,7 +864,6 @@ print_graph_entry_leaf(struct trace_iterator *iter,
 	struct ftrace_graph_ret *graph_ret;
 	struct ftrace_graph_ent *call;
 	unsigned long long duration;
-	int cpu = iter->cpu;
 	int ret;
 	int i;
 
@@ -838,12 +873,9 @@ print_graph_entry_leaf(struct trace_iterator *iter,
 
 	if (data) {
 		struct fgraph_cpu_data *cpu_data;
+		int cpu = iter->cpu;
 
 		cpu_data = per_cpu_ptr(data->cpu_data, cpu);
-
-		/* If a graph tracer ignored set_graph_notrace */
-		if (call->depth < -1)
-			call->depth += FTRACE_NOTRACE_DEPTH;
 
 		/*
 		 * Comments display at + 1 to depth. Since
@@ -853,8 +885,7 @@ print_graph_entry_leaf(struct trace_iterator *iter,
 		cpu_data->depth = call->depth - 1;
 
 		/* No need to keep this function around for this depth */
-		if (call->depth < FTRACE_RETFUNC_DEPTH &&
-		    !WARN_ON_ONCE(call->depth < 0))
+		if (call->depth < FTRACE_RETFUNC_DEPTH)
 			cpu_data->enter_funcs[call->depth] = 0;
 	}
 
@@ -874,11 +905,6 @@ print_graph_entry_leaf(struct trace_iterator *iter,
 	if (!ret)
 		return TRACE_TYPE_PARTIAL_LINE;
 
-	ret = print_graph_irq(iter, graph_ret->func, TRACE_GRAPH_RET,
-			      cpu, iter->ent->pid, flags);
-	if (ret == TRACE_TYPE_PARTIAL_LINE)
-		return ret;
-
 	return TRACE_TYPE_HANDLED;
 }
 
@@ -896,16 +922,11 @@ print_graph_entry_nested(struct trace_iterator *iter,
 		struct fgraph_cpu_data *cpu_data;
 		int cpu = iter->cpu;
 
-		/* If a graph tracer ignored set_graph_notrace */
-		if (call->depth < -1)
-			call->depth += FTRACE_NOTRACE_DEPTH;
-
 		cpu_data = per_cpu_ptr(data->cpu_data, cpu);
 		cpu_data->depth = call->depth;
 
 		/* Save this function pointer to see if the exit matches */
-		if (call->depth < FTRACE_RETFUNC_DEPTH &&
-		    !WARN_ON_ONCE(call->depth < 0))
+		if (call->depth < FTRACE_RETFUNC_DEPTH)
 			cpu_data->enter_funcs[call->depth] = call->func;
 	}
 
@@ -1158,8 +1179,7 @@ print_graph_return(struct ftrace_graph_ret *trace, struct trace_seq *s,
 		 */
 		cpu_data->depth = trace->depth - 1;
 
-		if (trace->depth < FTRACE_RETFUNC_DEPTH &&
-		    !WARN_ON_ONCE(trace->depth < 0)) {
+		if (trace->depth < FTRACE_RETFUNC_DEPTH) {
 			if (cpu_data->enter_funcs[trace->depth] != trace->func)
 				func_match = 0;
 			cpu_data->enter_funcs[trace->depth] = 0;
@@ -1415,7 +1435,7 @@ static void __print_graph_headers_flags(struct seq_file *s, u32 flags)
 	seq_printf(s, "               |   |   |   |\n");
 }
 
-void print_graph_headers(struct seq_file *s)
+static void print_graph_headers(struct seq_file *s)
 {
 	print_graph_headers_flags(s, tracer_flags.val);
 }
@@ -1511,6 +1531,7 @@ static struct trace_event graph_trace_ret_event = {
 
 static struct tracer graph_trace __tracer_data = {
 	.name		= "function_graph",
+	.update_thresh	= graph_trace_update_thresh,
 	.open		= graph_trace_open,
 	.pipe_open	= graph_trace_open,
 	.close		= graph_trace_close,

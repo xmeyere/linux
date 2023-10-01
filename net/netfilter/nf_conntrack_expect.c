@@ -83,7 +83,8 @@ static unsigned int nf_ct_expect_dst_hash(const struct nf_conntrack_tuple *tuple
 	hash = jhash2(tuple->dst.u3.all, ARRAY_SIZE(tuple->dst.u3.all),
 		      (((tuple->dst.protonum ^ tuple->src.l3num) << 16) |
 		       (__force __u16)tuple->dst.u.all) ^ nf_conntrack_hash_rnd);
-	return ((u64)hash * nf_ct_expect_hsize) >> 32;
+
+	return reciprocal_scale(hash, nf_ct_expect_hsize);
 }
 
 struct nf_conntrack_expect *
@@ -218,8 +219,7 @@ static inline int expect_clash(const struct nf_conntrack_expect *a,
 			a->mask.src.u3.all[count] & b->mask.src.u3.all[count];
 	}
 
-	return nf_ct_tuple_mask_cmp(&a->tuple, &b->tuple, &intersect_mask) &&
-	       nf_ct_zone(a->master) == nf_ct_zone(b->master);
+	return nf_ct_tuple_mask_cmp(&a->tuple, &b->tuple, &intersect_mask);
 }
 
 static inline int expect_matches(const struct nf_conntrack_expect *a,
@@ -556,7 +556,7 @@ static int exp_seq_show(struct seq_file *s, void *v)
 	helper = rcu_dereference(nfct_help(expect->master)->helper);
 	if (helper) {
 		seq_printf(s, "%s%s", expect->flags ? " " : "", helper->name);
-		if (helper->expect_policy[expect->class].name[0])
+		if (helper->expect_policy[expect->class].name)
 			seq_printf(s, "/%s",
 				   helper->expect_policy[expect->class].name);
 	}

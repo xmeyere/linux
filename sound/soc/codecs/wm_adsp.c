@@ -246,7 +246,7 @@ static int wm_adsp_fw_get(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	struct wm_adsp *adsp = snd_soc_codec_get_drvdata(codec);
 
-	ucontrol->value.enumerated.item[0] = adsp[e->shift_l].fw;
+	ucontrol->value.integer.value[0] = adsp[e->shift_l].fw;
 
 	return 0;
 }
@@ -258,16 +258,16 @@ static int wm_adsp_fw_put(struct snd_kcontrol *kcontrol,
 	struct soc_enum *e = (struct soc_enum *)kcontrol->private_value;
 	struct wm_adsp *adsp = snd_soc_codec_get_drvdata(codec);
 
-	if (ucontrol->value.enumerated.item[0] == adsp[e->shift_l].fw)
+	if (ucontrol->value.integer.value[0] == adsp[e->shift_l].fw)
 		return 0;
 
-	if (ucontrol->value.enumerated.item[0] >= WM_ADSP_NUM_FW)
+	if (ucontrol->value.integer.value[0] >= WM_ADSP_NUM_FW)
 		return -EINVAL;
 
 	if (adsp[e->shift_l].running)
 		return -EBUSY;
 
-	adsp[e->shift_l].fw = ucontrol->value.enumerated.item[0];
+	adsp[e->shift_l].fw = ucontrol->value.integer.value[0];
 
 	return 0;
 }
@@ -532,7 +532,7 @@ static int wm_adsp_load(struct wm_adsp *dsp)
 	const struct wmfw_region *region;
 	const struct wm_adsp_region *mem;
 	const char *region_name;
-	char *file, *text = NULL;
+	char *file, *text;
 	struct wm_adsp_buf *buf;
 	unsigned int reg;
 	int regions = 0;
@@ -622,7 +622,7 @@ static int wm_adsp_load(struct wm_adsp *dsp)
 		 le64_to_cpu(footer->timestamp));
 
 	while (pos < firmware->size &&
-	       sizeof(*region) < firmware->size - pos) {
+	       pos - firmware->size > sizeof(*region)) {
 		region = (void *)&(firmware->data[pos]);
 		region_name = "Unknown";
 		reg = 0;
@@ -677,21 +677,10 @@ static int wm_adsp_load(struct wm_adsp *dsp)
 			 regions, le32_to_cpu(region->len), offset,
 			 region_name);
 
-		if (le32_to_cpu(region->len) >
-		    firmware->size - pos - sizeof(*region)) {
-			adsp_err(dsp,
-				 "%s.%d: %s region len %d bytes exceeds file length %zu\n",
-				 file, regions, region_name,
-				 le32_to_cpu(region->len), firmware->size);
-			ret = -EINVAL;
-			goto out_fw;
-		}
-
 		if (text) {
 			memcpy(text, region->data, le32_to_cpu(region->len));
 			adsp_info(dsp, "%s: %s\n", file, text);
 			kfree(text);
-			text = NULL;
 		}
 
 		if (reg) {
@@ -748,7 +737,6 @@ out_fw:
 	regmap_async_complete(regmap);
 	wm_adsp_buf_free(&buf_list);
 	release_firmware(firmware);
-	kfree(text);
 out:
 	kfree(file);
 
@@ -1248,7 +1236,7 @@ static int wm_adsp_load_coeff(struct wm_adsp *dsp)
 
 	blocks = 0;
 	while (pos < firmware->size &&
-	       sizeof(*blk) < firmware->size - pos) {
+	       pos - firmware->size > sizeof(*blk)) {
 		blk = (void*)(&firmware->data[pos]);
 
 		type = le16_to_cpu(blk->type);
@@ -1328,17 +1316,6 @@ static int wm_adsp_load_coeff(struct wm_adsp *dsp)
 		}
 
 		if (reg) {
-			if (le32_to_cpu(blk->len) >
-			    firmware->size - pos - sizeof(*blk)) {
-				adsp_err(dsp,
-					 "%s.%d: %s region len %d bytes exceeds file length %zu\n",
-					 file, blocks, region_name,
-					 le32_to_cpu(blk->len),
-					 firmware->size);
-				ret = -EINVAL;
-				goto out_fw;
-			}
-
 			buf = wm_adsp_buf_alloc(blk->data,
 						le32_to_cpu(blk->len),
 						&buf_list);
@@ -1406,7 +1383,7 @@ int wm_adsp1_event(struct snd_soc_dapm_widget *w,
 	int ret;
 	int val;
 
-	dsp->card = codec->card;
+	dsp->card = codec->component.card;
 
 	switch (event) {
 	case SND_SOC_DAPM_POST_PMU:
@@ -1641,7 +1618,7 @@ int wm_adsp2_early_event(struct snd_soc_dapm_widget *w,
 	struct wm_adsp *dsps = snd_soc_codec_get_drvdata(codec);
 	struct wm_adsp *dsp = &dsps[w->shift];
 
-	dsp->card = codec->card;
+	dsp->card = codec->component.card;
 
 	switch (event) {
 	case SND_SOC_DAPM_PRE_PMU:

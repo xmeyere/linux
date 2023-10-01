@@ -47,8 +47,6 @@
 #define ADT7516_MSB_AIN3		0xA
 #define ADT7516_MSB_AIN4		0xB
 #define ADT7316_DA_DATA_BASE		0x10
-#define ADT7316_DA_10_BIT_LSB_SHIFT	6
-#define ADT7316_DA_12_BIT_LSB_SHIFT	4
 #define ADT7316_DA_MSB_DATA_REGS	4
 #define ADT7316_LSB_DAC_A		0x10
 #define ADT7316_MSB_DAC_A		0x11
@@ -61,8 +59,8 @@
 #define ADT7316_CONFIG1			0x18
 #define ADT7316_CONFIG2			0x19
 #define ADT7316_CONFIG3			0x1A
-#define ADT7316_DAC_CONFIG		0x1B
-#define ADT7316_LDAC_CONFIG		0x1C
+#define ADT7316_LDAC_CONFIG		0x1B
+#define ADT7316_DAC_CONFIG		0x1C
 #define ADT7316_INT_MASK1		0x1D
 #define ADT7316_INT_MASK2		0x1E
 #define ADT7316_IN_TEMP_OFFSET		0x1F
@@ -119,7 +117,7 @@
  */
 #define ADT7316_ADCLK_22_5		0x1
 #define ADT7316_DA_HIGH_RESOLUTION	0x2
-#define ADT7316_DA_EN_VIA_DAC_LDCA	0x8
+#define ADT7316_DA_EN_VIA_DAC_LDCA	0x4
 #define ADT7516_AIN_IN_VREF		0x10
 #define ADT7316_EN_IN_TEMP_PROP_DACA	0x20
 #define ADT7316_EN_EX_TEMP_PROP_DACB	0x40
@@ -265,8 +263,8 @@ static ssize_t adt7316_store_enabled(struct device *dev,
 
 	if (_adt7316_store_enabled(chip, enable) < 0)
 		return -EIO;
-	else
-		return len;
+
+	return len;
 }
 
 static IIO_DEVICE_ATTR(enabled, S_IRUGO | S_IWUSR,
@@ -327,8 +325,8 @@ static ssize_t adt7316_show_mode(struct device *dev,
 
 	if (chip->config2 & ADT7316_AD_SINGLE_CH_MODE)
 		return sprintf(buf, "single_channel\n");
-	else
-		return sprintf(buf, "round_robin\n");
+
+	return sprintf(buf, "round_robin\n");
 }
 
 static ssize_t adt7316_store_mode(struct device *dev,
@@ -387,18 +385,18 @@ static ssize_t adt7316_show_ad_channel(struct device *dev,
 		if (((chip->id & ID_FAMILY_MASK) == ID_ADT75XX) &&
 			(chip->config1 & ADT7516_SEL_AIN1_2_EX_TEMP_MASK) == 0)
 			return sprintf(buf, "2 - AIN1\n");
-		else
-			return sprintf(buf, "2 - External Temperature\n");
+
+		return sprintf(buf, "2 - External Temperature\n");
 	case ADT7516_AD_SINGLE_CH_AIN2:
 		if ((chip->config1 & ADT7516_SEL_AIN1_2_EX_TEMP_MASK) == 0)
 			return sprintf(buf, "3 - AIN2\n");
-		else
-			return sprintf(buf, "N/A\n");
+
+		return sprintf(buf, "N/A\n");
 	case ADT7516_AD_SINGLE_CH_AIN3:
 		if (chip->config1 & ADT7516_SEL_AIN3)
 			return sprintf(buf, "4 - AIN3\n");
-		else
-			return sprintf(buf, "N/A\n");
+
+		return sprintf(buf, "N/A\n");
 	case ADT7516_AD_SINGLE_CH_AIN4:
 		return sprintf(buf, "5 - AIN4\n");
 	default:
@@ -637,7 +635,9 @@ static ssize_t adt7316_show_da_high_resolution(struct device *dev,
 	struct adt7316_chip_info *chip = iio_priv(dev_info);
 
 	if (chip->config3 & ADT7316_DA_HIGH_RESOLUTION) {
-		if (chip->id != ID_ADT7318 && chip->id != ID_ADT7519)
+		if (chip->id == ID_ADT7316 || chip->id == ID_ADT7516)
+			return sprintf(buf, "1 (12 bits)\n");
+		else if (chip->id == ID_ADT7317 || chip->id == ID_ADT7517)
 			return sprintf(buf, "1 (10 bits)\n");
 	}
 
@@ -654,12 +654,16 @@ static ssize_t adt7316_store_da_high_resolution(struct device *dev,
 	u8 config3;
 	int ret;
 
-	if (chip->id == ID_ADT7318 || chip->id == ID_ADT7519)
-		return -EPERM;
+	chip->dac_bits = 8;
 
-	config3 = chip->config3 & (~ADT7316_DA_HIGH_RESOLUTION);
-	if (buf[0] == '1')
-		config3 |= ADT7316_DA_HIGH_RESOLUTION;
+	if (buf[0] == '1') {
+		config3 = chip->config3 | ADT7316_DA_HIGH_RESOLUTION;
+		if (chip->id == ID_ADT7316 || chip->id == ID_ADT7516)
+			chip->dac_bits = 12;
+		else if (chip->id == ID_ADT7317 || chip->id == ID_ADT7517)
+			chip->dac_bits = 10;
+	} else
+		config3 = chip->config3 & (~ADT7316_DA_HIGH_RESOLUTION);
 
 	ret = chip->bus.write(chip->bus.client, ADT7316_CONFIG3, config3);
 	if (ret)
@@ -852,20 +856,19 @@ static ssize_t adt7316_show_DAC_update_mode(struct device *dev,
 
 	if (!(chip->config3 & ADT7316_DA_EN_VIA_DAC_LDCA))
 		return sprintf(buf, "manual\n");
-	else {
-		switch (chip->dac_config & ADT7316_DA_EN_MODE_MASK) {
-		case ADT7316_DA_EN_MODE_SINGLE:
-			return sprintf(buf,
-				"0 - auto at any MSB DAC writing\n");
-		case ADT7316_DA_EN_MODE_AB_CD:
-			return sprintf(buf,
-				"1 - auto at MSB DAC AB and CD writing\n");
-		case ADT7316_DA_EN_MODE_ABCD:
-			return sprintf(buf,
-				"2 - auto at MSB DAC ABCD writing\n");
-		default: /* ADT7316_DA_EN_MODE_LDAC */
-			return sprintf(buf, "3 - manual\n");
-		}
+
+	switch (chip->dac_config & ADT7316_DA_EN_MODE_MASK) {
+	case ADT7316_DA_EN_MODE_SINGLE:
+		return sprintf(buf,
+			"0 - auto at any MSB DAC writing\n");
+	case ADT7316_DA_EN_MODE_AB_CD:
+		return sprintf(buf,
+			"1 - auto at MSB DAC AB and CD writing\n");
+	case ADT7316_DA_EN_MODE_ABCD:
+		return sprintf(buf,
+			"2 - auto at MSB DAC ABCD writing\n");
+	default: /* ADT7316_DA_EN_MODE_LDAC */
+		return sprintf(buf, "3 - manual\n");
 	}
 }
 
@@ -1089,7 +1092,7 @@ static ssize_t adt7316_store_DAC_internal_Vref(struct device *dev,
 		ldac_config = chip->ldac_config & (~ADT7516_DAC_IN_VREF_MASK);
 		if (data & 0x1)
 			ldac_config |= ADT7516_DAC_AB_IN_VREF;
-		if (data & 0x2)
+		else if (data & 0x2)
 			ldac_config |= ADT7516_DAC_CD_IN_VREF;
 	} else {
 		ret = kstrtou8(buf, 16, &data);
@@ -1176,8 +1179,8 @@ static ssize_t adt7316_show_ad(struct adt7316_chip_info *chip,
 
 		if ((chip->id & ID_FAMILY_MASK) == ID_ADT75XX)
 			return sprintf(buf, "%d\n", data);
-		else
-			break;
+
+		break;
 	}
 
 	if (data & ADT7316_T_VALUE_SIGN) {
@@ -1411,7 +1414,7 @@ static IIO_DEVICE_ATTR(ex_analog_temp_offset, S_IRUGO | S_IWUSR,
 static ssize_t adt7316_show_DAC(struct adt7316_chip_info *chip,
 		int channel, char *buf)
 {
-	u16 data = 0;
+	u16 data;
 	u8 msb, lsb, offset;
 	int ret;
 
@@ -1436,11 +1439,7 @@ static ssize_t adt7316_show_DAC(struct adt7316_chip_info *chip,
 	if (ret)
 		return -EIO;
 
-	if (chip->dac_bits == 12)
-		data = lsb >> ADT7316_DA_12_BIT_LSB_SHIFT;
-	else if (chip->dac_bits == 10)
-		data = lsb >> ADT7316_DA_10_BIT_LSB_SHIFT;
-	data |= msb << offset;
+	data = (msb << offset) + (lsb & ((1 << offset) - 1));
 
 	return sprintf(buf, "%d\n", data);
 }
@@ -1448,7 +1447,7 @@ static ssize_t adt7316_show_DAC(struct adt7316_chip_info *chip,
 static ssize_t adt7316_store_DAC(struct adt7316_chip_info *chip,
 		int channel, const char *buf, size_t len)
 {
-	u8 msb, lsb, lsb_reg, offset;
+	u8 msb, lsb, offset;
 	u16 data;
 	int ret;
 
@@ -1466,13 +1465,9 @@ static ssize_t adt7316_store_DAC(struct adt7316_chip_info *chip,
 		return -EINVAL;
 
 	if (chip->dac_bits > 8) {
-		lsb = data & ((1 << offset) - 1);
-		if (chip->dac_bits == 12)
-			lsb_reg = lsb << ADT7316_DA_12_BIT_LSB_SHIFT;
-		else
-			lsb_reg = lsb << ADT7316_DA_10_BIT_LSB_SHIFT;
+		lsb = data & (1 << offset);
 		ret = chip->bus.write(chip->bus.client,
-			ADT7316_DA_DATA_BASE + channel * 2, lsb_reg);
+			ADT7316_DA_DATA_BASE + channel * 2, lsb);
 		if (ret)
 			return -EIO;
 	}
@@ -1652,8 +1647,8 @@ static ssize_t adt7316_show_bus_type(struct device *dev,
 
 	if (stat)
 		return sprintf(buf, "spi\n");
-	else
-		return sprintf(buf, "i2c\n");
+
+	return sprintf(buf, "i2c\n");
 }
 
 static IIO_DEVICE_ATTR(bus_type, S_IRUGO, adt7316_show_bus_type, NULL, 0);
@@ -2133,15 +2128,8 @@ int adt7316_probe(struct device *dev, struct adt7316_bus *bus,
 	else
 		return -ENODEV;
 
-	if (chip->id == ID_ADT7316 || chip->id == ID_ADT7516)
-		chip->dac_bits = 12;
-	else if (chip->id == ID_ADT7317 || chip->id == ID_ADT7517)
-		chip->dac_bits = 10;
-	else
-		chip->dac_bits = 8;
-
 	chip->ldac_pin = adt7316_platform_data[1];
-	if (!chip->ldac_pin) {
+	if (chip->ldac_pin) {
 		chip->config3 |= ADT7316_DA_EN_VIA_DAC_LDCA;
 		if ((chip->id & ID_FAMILY_MASK) == ID_ADT75XX)
 			chip->config1 |= ADT7516_SEL_AIN3;
@@ -2196,6 +2184,5 @@ int adt7316_probe(struct device *dev, struct adt7316_bus *bus,
 EXPORT_SYMBOL(adt7316_probe);
 
 MODULE_AUTHOR("Sonic Zhang <sonic.zhang@analog.com>");
-MODULE_DESCRIPTION("Analog Devices ADT7316/7/8 and ADT7516/7/9 digital"
-			" temperature sensor, ADC and DAC driver");
+MODULE_DESCRIPTION("Analog Devices ADT7316/7/8 and ADT7516/7/9 digital temperature sensor, ADC and DAC driver");
 MODULE_LICENSE("GPL v2");

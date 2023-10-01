@@ -55,12 +55,10 @@ void exit_thread_runtime_instr(void)
 
 	if (!task->thread.ri_cb)
 		return;
-	preempt_disable();
 	disable_runtime_instr();
 	kfree(task->thread.ri_cb);
 	task->thread.ri_signum = 0;
 	task->thread.ri_cb = NULL;
-	preempt_enable();
 }
 
 static void runtime_instr_int_handler(struct ext_code ext_code,
@@ -102,7 +100,9 @@ SYSCALL_DEFINE2(s390_runtime_instr, int, command, int, signum)
 		return -EOPNOTSUPP;
 
 	if (command == S390_RUNTIME_INSTR_STOP) {
+		preempt_disable();
 		exit_thread_runtime_instr();
+		preempt_enable();
 		return 0;
 	}
 

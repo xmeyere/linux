@@ -127,8 +127,6 @@ struct n_tty_data {
 	struct mutex output_lock;
 };
 
-#define MASK(x) ((x) & (N_TTY_BUF_SIZE - 1))
-
 static inline size_t read_cnt(struct n_tty_data *ldata)
 {
 	return ldata->read_head - ldata->read_tail;
@@ -146,7 +144,6 @@ static inline unsigned char *read_buf_addr(struct n_tty_data *ldata, size_t i)
 
 static inline unsigned char echo_buf(struct n_tty_data *ldata, size_t i)
 {
-	smp_rmb(); /* Matches smp_wmb() in add_echo_byte(). */
 	return ldata->echo_buf[i & (N_TTY_BUF_SIZE - 1)];
 }
 
@@ -162,17 +159,6 @@ static inline int tty_put_user(struct tty_struct *tty, unsigned char x,
 
 	tty_audit_add_data(tty, &x, 1, ldata->icanon);
 	return put_user(x, ptr);
-}
-
-static inline int tty_copy_to_user(struct tty_struct *tty,
-					void __user *to,
-					const void *from,
-					unsigned long n)
-{
-	struct n_tty_data *ldata = tty->disc_data;
-
-	tty_audit_add_data(tty, to, n, ldata->icanon);
-	return copy_to_user(to, from, n);
 }
 
 static int receive_room(struct tty_struct *tty)
@@ -261,6 +247,8 @@ static void n_tty_write_wakeup(struct tty_struct *tty)
 
 static void n_tty_check_throttle(struct tty_struct *tty)
 {
+	if (tty->driver->type == TTY_DRIVER_TYPE_PTY)
+		return;
 	/*
 	 * Check the remaining room for the input canonicalization
 	 * mode.  We don't want to throttle the driver if we're in
@@ -280,13 +268,16 @@ static void n_tty_check_throttle(struct tty_struct *tty)
 
 static void n_tty_check_unthrottle(struct tty_struct *tty)
 {
-	if (tty->driver->type == TTY_DRIVER_TYPE_PTY) {
+	if (tty->driver->type == TTY_DRIVER_TYPE_PTY &&
+	    tty->link->ldisc->ops->write_wakeup == n_tty_write_wakeup) {
 		if (chars_in_buffer(tty) > TTY_THRESHOLD_UNTHROTTLE)
 			return;
 		if (!tty->count)
 			return;
 		n_tty_set_room(tty);
-		tty_wakeup(tty->link);
+		n_tty_write_wakeup(tty->link);
+		if (waitqueue_active(&tty->link->write_wait))
+			wake_up_interruptible_poll(&tty->link->write_wait, POLLOUT);
 		return;
 	}
 
@@ -330,8 +321,7 @@ static void n_tty_check_unthrottle(struct tty_struct *tty)
 
 static inline void put_tty_queue(unsigned char c, struct n_tty_data *ldata)
 {
-	*read_buf_addr(ldata, ldata->read_head) = c;
-	ldata->read_head++;
+	*read_buf_addr(ldata, ldata->read_head++) = c;
 }
 
 /**
@@ -348,6 +338,8 @@ static inline void put_tty_queue(unsigned char c, struct n_tty_data *ldata)
 static void reset_buffer_flags(struct n_tty_data *ldata)
 {
 	ldata->read_head = ldata->canon_head = ldata->read_tail = 0;
+	ldata->echo_head = ldata->echo_tail = ldata->echo_commit = 0;
+	ldata->echo_mark = 0;
 	ldata->line_start = 0;
 
 	ldata->erasing = 0;
@@ -362,7 +354,8 @@ static void n_tty_packet_mode_flush(struct tty_struct *tty)
 	spin_lock_irqsave(&tty->ctrl_lock, flags);
 	if (tty->link->packet) {
 		tty->ctrl_status |= TIOCPKT_FLUSHREAD;
-		wake_up_interruptible(&tty->link->read_wait);
+		if (waitqueue_active(&tty->link->read_wait))
+			wake_up_interruptible(&tty->link->read_wait);
 	}
 	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
 }
@@ -668,19 +661,12 @@ static size_t __process_echoes(struct tty_struct *tty)
 	old_space = space = tty_write_room(tty);
 
 	tail = ldata->echo_tail;
-	while (MASK(ldata->echo_commit) != MASK(tail)) {
+	while (ldata->echo_commit != tail) {
 		c = echo_buf(ldata, tail);
 		if (c == ECHO_OP_START) {
 			unsigned char op;
 			int no_space_left = 0;
 
-			/*
-			 * Since add_echo_byte() is called without holding
-			 * output_lock, we might see only portion of multi-byte
-			 * operation.
-			 */
-			if (MASK(ldata->echo_commit) == MASK(tail + 1))
-				goto not_yet_stored;
 			/*
 			 * If the buffer byte is the start of a multi-byte
 			 * operation, get the next byte, which is either the
@@ -692,8 +678,6 @@ static size_t __process_echoes(struct tty_struct *tty)
 				unsigned int num_chars, num_bs;
 
 			case ECHO_OP_ERASE_TAB:
-				if (MASK(ldata->echo_commit) == MASK(tail + 2))
-					goto not_yet_stored;
 				num_chars = echo_buf(ldata, tail + 2);
 
 				/*
@@ -788,8 +772,7 @@ static size_t __process_echoes(struct tty_struct *tty)
 	/* If the echo buffer is nearly full (so that the possibility exists
 	 * of echo overrun before the next commit), then discard enough
 	 * data at the tail to prevent a subsequent overrun */
-	while (ldata->echo_commit > tail &&
-	       ldata->echo_commit - tail >= ECHO_DISCARD_WATERMARK) {
+	while (ldata->echo_commit - tail >= ECHO_DISCARD_WATERMARK) {
 		if (echo_buf(ldata, tail) == ECHO_OP_START) {
 			if (echo_buf(ldata, tail + 1) == ECHO_OP_ERASE_TAB)
 				tail += 3;
@@ -799,7 +782,6 @@ static size_t __process_echoes(struct tty_struct *tty)
 			tail++;
 	}
 
- not_yet_stored:
 	ldata->echo_tail = tail;
 	return old_space - space;
 }
@@ -810,7 +792,6 @@ static void commit_echoes(struct tty_struct *tty)
 	size_t nr, old, echoed;
 	size_t head;
 
-	mutex_lock(&ldata->output_lock);
 	head = ldata->echo_head;
 	ldata->echo_mark = head;
 	old = ldata->echo_commit - ldata->echo_tail;
@@ -819,12 +800,10 @@ static void commit_echoes(struct tty_struct *tty)
 	 * is over the threshold (and try again each time another
 	 * block is accumulated) */
 	nr = head - ldata->echo_tail;
-	if (nr < ECHO_COMMIT_WATERMARK ||
-	    (nr % ECHO_BLOCK > old % ECHO_BLOCK)) {
-		mutex_unlock(&ldata->output_lock);
+	if (nr < ECHO_COMMIT_WATERMARK || (nr % ECHO_BLOCK > old % ECHO_BLOCK))
 		return;
-	}
 
+	mutex_lock(&ldata->output_lock);
 	ldata->echo_commit = head;
 	echoed = __process_echoes(tty);
 	mutex_unlock(&ldata->output_lock);
@@ -875,9 +854,7 @@ static void flush_echoes(struct tty_struct *tty)
 
 static inline void add_echo_byte(unsigned char c, struct n_tty_data *ldata)
 {
-	*echo_buf_addr(ldata, ldata->echo_head) = c;
-	smp_wmb(); /* Matches smp_rmb() in echo_buf(). */
-	ldata->echo_head++;
+	*echo_buf_addr(ldata, ldata->echo_head++) = c;
 }
 
 /**
@@ -1049,15 +1026,14 @@ static void eraser(unsigned char c, struct tty_struct *tty)
 	}
 
 	seen_alnums = 0;
-	while (MASK(ldata->read_head) != MASK(ldata->canon_head)) {
+	while (ldata->read_head != ldata->canon_head) {
 		head = ldata->read_head;
 
 		/* erase a single possibly multibyte character */
 		do {
 			head--;
 			c = read_buf(ldata, head);
-		} while (is_continuation(c, tty) &&
-			 MASK(head) != MASK(ldata->canon_head));
+		} while (is_continuation(c, tty) && head != ldata->canon_head);
 
 		/* do not partially erase */
 		if (is_continuation(c, tty))
@@ -1099,7 +1075,7 @@ static void eraser(unsigned char c, struct tty_struct *tty)
 				 * This info is used to go back the correct
 				 * number of columns.
 				 */
-				while (MASK(tail) != MASK(ldata->canon_head)) {
+				while (tail != ldata->canon_head) {
 					tail--;
 					c = read_buf(ldata, tail);
 					if (c == '\t') {
@@ -1190,7 +1166,7 @@ static void n_tty_receive_break(struct tty_struct *tty)
 	}
 	put_tty_queue('\0', ldata);
 	if (waitqueue_active(&tty->read_wait))
-		wake_up_interruptible(&tty->read_wait);
+		wake_up_interruptible_poll(&tty->read_wait, POLLIN);
 }
 
 /**
@@ -1250,7 +1226,7 @@ static void n_tty_receive_parity_error(struct tty_struct *tty, unsigned char c)
 	} else
 		put_tty_queue(c, ldata);
 	if (waitqueue_active(&tty->read_wait))
-		wake_up_interruptible(&tty->read_wait);
+		wake_up_interruptible_poll(&tty->read_wait, POLLIN);
 }
 
 static void
@@ -1359,7 +1335,7 @@ n_tty_receive_char_special(struct tty_struct *tty, unsigned char c)
 			finish_erasing(ldata);
 			echo_char(c, tty);
 			echo_char_raw('\n', ldata);
-			while (MASK(tail) != MASK(ldata->read_head)) {
+			while (tail != ldata->read_head) {
 				echo_char(read_buf(ldata, tail), tty);
 				tail++;
 			}
@@ -1401,7 +1377,8 @@ handle_newline:
 			put_tty_queue(c, ldata);
 			ldata->canon_head = ldata->read_head;
 			kill_fasync(&tty->fasync, SIGIO, POLL_IN);
-			wake_up_interruptible(&tty->read_wait);
+			if (waitqueue_active(&tty->read_wait))
+				wake_up_interruptible_poll(&tty->read_wait, POLLIN);
 			return 0;
 		}
 	}
@@ -1533,6 +1510,23 @@ n_tty_receive_char_lnext(struct tty_struct *tty, unsigned char c, char flag)
 	} else
 		n_tty_receive_char_flagged(tty, c, flag);
 }
+
+/**
+ *	n_tty_receive_buf	-	data receive
+ *	@tty: terminal device
+ *	@cp: buffer
+ *	@fp: flag buffer
+ *	@count: characters
+ *
+ *	Called by the terminal driver when a block of characters has
+ *	been received. This function must be called from soft contexts
+ *	not from interrupt context. The driver is responsible for making
+ *	calls one at a time and in order (or using flush_to_ldisc)
+ *
+ *	n_tty_receive_buf()/producer path:
+ *		claims non-exclusive termios_rwsem
+ *		publishes read_head and canon_head
+ */
 
 static void
 n_tty_receive_buf_real_raw(struct tty_struct *tty, const unsigned char *cp,
@@ -1684,89 +1678,29 @@ static void __receive_buf(struct tty_struct *tty, const unsigned char *cp,
 	if ((!ldata->icanon && (read_cnt(ldata) >= ldata->minimum_to_wake)) ||
 		L_EXTPROC(tty)) {
 		kill_fasync(&tty->fasync, SIGIO, POLL_IN);
-		wake_up_interruptible(&tty->read_wait);
+		if (waitqueue_active(&tty->read_wait))
+			wake_up_interruptible_poll(&tty->read_wait, POLLIN);
 	}
 }
 
-/**
- *	n_tty_receive_buf_common	-	process input
- *	@tty: device to receive input
- *	@cp: input chars
- *	@fp: flags for each char (if NULL, all chars are TTY_NORMAL)
- *	@count: number of input chars in @cp
- *
- *	Called by the terminal driver when a block of characters has
- *	been received. This function must be called from soft contexts
- *	not from interrupt context. The driver is responsible for making
- *	calls one at a time and in order (or using flush_to_ldisc)
- *
- *	Returns the # of input chars from @cp which were processed.
- *
- *	In canonical mode, the maximum line length is 4096 chars (including
- *	the line termination char); lines longer than 4096 chars are
- *	truncated. After 4095 chars, input data is still processed but
- *	not stored. Overflow processing ensures the tty can always
- *	receive more input until at least one line can be read.
- *
- *	In non-canonical mode, the read buffer will only accept 4095 chars;
- *	this provides the necessary space for a newline char if the input
- *	mode is switched to canonical.
- *
- *	Note it is possible for the read buffer to _contain_ 4096 chars
- *	in non-canonical mode: the read buffer could already contain the
- *	maximum canon line of 4096 chars when the mode is switched to
- *	non-canonical.
- *
- *	n_tty_receive_buf()/producer path:
- *		claims non-exclusive termios_rwsem
- *		publishes commit_head or canon_head
- */
 static int
 n_tty_receive_buf_common(struct tty_struct *tty, const unsigned char *cp,
 			 char *fp, int count, int flow)
 {
 	struct n_tty_data *ldata = tty->disc_data;
-	int room, n, rcvd = 0, overflow;
+	int room, n, rcvd = 0;
 
 	down_read(&tty->termios_rwsem);
 
 	while (1) {
-		/*
-		 * When PARMRK is set, each input char may take up to 3 chars
-		 * in the read buf; reduce the buffer space avail by 3x
-		 *
-		 * If we are doing input canonicalization, and there are no
-		 * pending newlines, let characters through without limit, so
-		 * that erase characters will be handled.  Other excess
-		 * characters will be beeped.
-		 *
-		 * paired with store in *_copy_from_read_buf() -- guarantees
-		 * the consumer has loaded the data in read_buf up to the new
-		 * read_tail (so this producer will not overwrite unread data)
-		 */
-		size_t tail = ldata->read_tail;
-
-		room = N_TTY_BUF_SIZE - (ldata->read_head - tail);
-		if (I_PARMRK(tty))
-			room = (room + 2) / 3;
-		room--;
-		if (room <= 0) {
-			overflow = ldata->icanon && ldata->canon_head == tail;
-			if (overflow && room < 0)
-				ldata->read_head--;
-			room = overflow;
-			ldata->no_room = flow && !room;
-		} else
-			overflow = 0;
-
+		room = receive_room(tty);
 		n = min(count, room);
-		if (!n)
+		if (!n) {
+			if (flow && !room)
+				ldata->no_room = 1;
 			break;
-
-		/* ignore parity errors if handling overflow */
-		if (!overflow || !fp || *fp != TTY_PARITY)
-			__receive_buf(tty, cp, fp, n);
-
+		}
+		__receive_buf(tty, cp, fp, n);
 		cp += n;
 		if (fp)
 			fp += n;
@@ -1775,17 +1709,7 @@ n_tty_receive_buf_common(struct tty_struct *tty, const unsigned char *cp,
 	}
 
 	tty->receive_room = room;
-
-	/* Unthrottle if handling overflow on pty */
-	if (tty->driver->type == TTY_DRIVER_TYPE_PTY) {
-		if (overflow) {
-			tty_set_flow_change(tty, TTY_UNTHROTTLE_SAFE);
-			tty_unthrottle_safe(tty);
-			__tty_set_flow_change(tty, 0);
-		}
-	} else
-		n_tty_check_throttle(tty);
-
+	n_tty_check_throttle(tty);
 	up_read(&tty->termios_rwsem);
 
 	return rcvd;
@@ -1827,7 +1751,7 @@ static void n_tty_set_termios(struct tty_struct *tty, struct ktermios *old)
 {
 	struct n_tty_data *ldata = tty->disc_data;
 
-	if (!old || (old->c_lflag ^ tty->termios.c_lflag) & (ICANON | EXTPROC)) {
+	if (!old || (old->c_lflag ^ tty->termios.c_lflag) & ICANON) {
 		bitmap_zero(ldata->read_flags, N_TTY_BUF_SIZE);
 		ldata->line_start = ldata->read_tail;
 		if (!L_ICANON(tty) || !read_cnt(ldata)) {
@@ -1903,8 +1827,10 @@ static void n_tty_set_termios(struct tty_struct *tty, struct ktermios *old)
 	}
 
 	/* The termios change make the tty ready for I/O */
-	wake_up_interruptible(&tty->write_wait);
-	wake_up_interruptible(&tty->read_wait);
+	if (waitqueue_active(&tty->write_wait))
+		wake_up_interruptible(&tty->write_wait);
+	if (waitqueue_active(&tty->read_wait))
+		wake_up_interruptible(&tty->read_wait);
 }
 
 /**
@@ -1943,22 +1869,31 @@ static int n_tty_open(struct tty_struct *tty)
 	struct n_tty_data *ldata;
 
 	/* Currently a malloc failure here can panic */
-	ldata = vzalloc(sizeof(*ldata));
+	ldata = vmalloc(sizeof(*ldata));
 	if (!ldata)
-		return -ENOMEM;
+		goto err;
 
 	ldata->overrun_time = jiffies;
 	mutex_init(&ldata->atomic_read_lock);
 	mutex_init(&ldata->output_lock);
 
 	tty->disc_data = ldata;
+	reset_buffer_flags(tty->disc_data);
+	ldata->column = 0;
+	ldata->canon_column = 0;
 	ldata->minimum_to_wake = 1;
+	ldata->num_overrun = 0;
+	ldata->no_room = 0;
+	ldata->lnext = 0;
 	tty->closing = 0;
 	/* indicate buffer work may resume */
 	clear_bit(TTY_LDISC_HALTED, &tty->flags);
 	n_tty_set_termios(tty, NULL);
 	tty_unthrottle(tty);
+
 	return 0;
+err:
+	return -ENOMEM;
 }
 
 static inline int input_available_p(struct tty_struct *tty, int poll)
@@ -2054,12 +1989,12 @@ static int canon_copy_from_read_buf(struct tty_struct *tty,
 	size_t eol;
 	size_t tail;
 	int ret, found = 0;
+	bool eof_push = 0;
 
 	/* N.B. avoid overrun if nr == 0 */
-	if (!*nr)
+	n = min(*nr, read_cnt(ldata));
+	if (!n)
 		return 0;
-
-	n = min(*nr + 1, read_cnt(ldata));
 
 	tail = ldata->read_tail & (N_TTY_BUF_SIZE - 1);
 	size = min_t(size_t, tail + n, N_TTY_BUF_SIZE);
@@ -2081,23 +2016,24 @@ static int canon_copy_from_read_buf(struct tty_struct *tty,
 	n = eol - tail;
 	if (n > 4096)
 		n += 4096;
-	c = n + found;
+	n += found;
+	c = n;
 
-	if (!found || read_buf(ldata, eol) != __DISABLED_CHAR) {
-		c = min(*nr, c);
-		n = c;
+	if (found && !ldata->push && read_buf(ldata, eol) == __DISABLED_CHAR) {
+		n--;
+		eof_push = !n && ldata->read_tail != ldata->line_start;
 	}
 
 	n_tty_trace("%s: eol:%zu found:%d n:%zu c:%zu size:%zu more:%zu\n",
 		    __func__, eol, found, n, c, size, more);
 
 	if (n > size) {
-		ret = tty_copy_to_user(tty, *b, read_buf_addr(ldata, tail), size);
+		ret = copy_to_user(*b, read_buf_addr(ldata, tail), size);
 		if (ret)
 			return -EFAULT;
-		ret = tty_copy_to_user(tty, *b + size, ldata->read_buf, n - size);
+		ret = copy_to_user(*b + size, ldata->read_buf, n - size);
 	} else
-		ret = tty_copy_to_user(tty, *b, read_buf_addr(ldata, tail), n);
+		ret = copy_to_user(*b, read_buf_addr(ldata, tail), n);
 
 	if (ret)
 		return -EFAULT;
@@ -2116,7 +2052,7 @@ static int canon_copy_from_read_buf(struct tty_struct *tty,
 			ldata->push = 0;
 		tty_audit_push(tty);
 	}
-	return 0;
+	return eof_push ? -EAGAIN : 0;
 }
 
 extern ssize_t redirected_tty_write(struct file *, const char __user *,
@@ -2260,21 +2196,16 @@ static ssize_t n_tty_read(struct tty_struct *tty, struct file *file,
 			ldata->minimum_to_wake = (minimum - (b - buf));
 
 		if (!input_available_p(tty, 0)) {
-			up_read(&tty->termios_rwsem);
-			tty_flush_to_ldisc(tty);
-			down_read(&tty->termios_rwsem);
-			if (!input_available_p(tty, 0)) {
-				if (test_bit(TTY_OTHER_CLOSED, &tty->flags)) {
+			if (test_bit(TTY_OTHER_CLOSED, &tty->flags)) {
+				up_read(&tty->termios_rwsem);
+				tty_flush_to_ldisc(tty);
+				down_read(&tty->termios_rwsem);
+				if (!input_available_p(tty, 0)) {
 					retval = -EIO;
 					break;
 				}
+			} else {
 				if (tty_hung_up_p(file))
-					break;
-				/*
-				 * Abort readers for ttys which never actually
-				 * get hung up.  See __tty_hangup().
-				 */
-				if (test_bit(TTY_HUPPING, &tty->flags))
 					break;
 				if (!timeout)
 					break;
@@ -2309,7 +2240,10 @@ static ssize_t n_tty_read(struct tty_struct *tty, struct file *file,
 
 		if (ldata->icanon && !L_EXTPROC(tty)) {
 			retval = canon_copy_from_read_buf(tty, &b, &nr);
-			if (retval)
+			if (retval == -EAGAIN) {
+				retval = 0;
+				continue;
+			} else if (retval)
 				break;
 		} else {
 			int uncopied;
@@ -2479,17 +2413,17 @@ static unsigned int n_tty_poll(struct tty_struct *tty, struct file *file,
 
 	poll_wait(file, &tty->read_wait, wait);
 	poll_wait(file, &tty->write_wait, wait);
+	if (test_bit(TTY_OTHER_CLOSED, &tty->flags))
+		mask |= POLLHUP;
 	if (input_available_p(tty, 1))
 		mask |= POLLIN | POLLRDNORM;
-	else {
+	else if (mask & POLLHUP) {
 		tty_flush_to_ldisc(tty);
 		if (input_available_p(tty, 1))
 			mask |= POLLIN | POLLRDNORM;
 	}
 	if (tty->packet && tty->link->ctrl_status)
 		mask |= POLLPRI | POLLIN | POLLRDNORM;
-	if (test_bit(TTY_OTHER_CLOSED, &tty->flags))
-		mask |= POLLHUP;
 	if (tty_hung_up_p(file))
 		mask |= POLLHUP;
 	if (!(mask & (POLLHUP | POLLIN | POLLRDNORM))) {
@@ -2515,7 +2449,7 @@ static unsigned long inq_canon(struct n_tty_data *ldata)
 	tail = ldata->read_tail;
 	nr = head - tail;
 	/* Skip EOF-chars.. */
-	while (MASK(head) != MASK(tail)) {
+	while (head != tail) {
 		if (test_bit(tail & (N_TTY_BUF_SIZE - 1), ldata->read_flags) &&
 		    read_buf(ldata, tail) == __DISABLED_CHAR)
 			nr--;
@@ -2535,7 +2469,7 @@ static int n_tty_ioctl(struct tty_struct *tty, struct file *file,
 		return put_user(tty_chars_in_buffer(tty), (int __user *) arg);
 	case TIOCINQ:
 		down_write(&tty->termios_rwsem);
-		if (L_ICANON(tty) && !L_EXTPROC(tty))
+		if (L_ICANON(tty))
 			retval = inq_canon(ldata);
 		else
 			retval = read_cnt(ldata);

@@ -112,11 +112,8 @@ int kvm_handle_mmio_return(struct kvm_vcpu *vcpu, struct kvm_run *run)
 			data = (data ^ mask) - mask;
 		}
 
-		if (!vcpu->arch.mmio_decode.sixty_four)
-			data = data & 0xffffffff;
-
 		trace_kvm_mmio(KVM_TRACE_MMIO_READ, len, run->mmio.phys_addr,
-			       &data);
+			       data);
 		data = vcpu_data_host_to_guest(vcpu, data, len);
 		*vcpu_reg(vcpu, vcpu->arch.mmio_decode.rt) = data;
 	}
@@ -130,7 +127,6 @@ static int decode_hsr(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	unsigned long rt;
 	int len;
 	bool is_write, sign_extend;
-	bool sixty_four;
 
 	if (kvm_vcpu_dabt_isextabt(vcpu)) {
 		/* cache operation on I/O addr, tell guest unsupported */
@@ -150,7 +146,6 @@ static int decode_hsr(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 
 	is_write = kvm_vcpu_dabt_iswrite(vcpu);
 	sign_extend = kvm_vcpu_dabt_issext(vcpu);
-	sixty_four = kvm_vcpu_dabt_issf(vcpu);
 	rt = kvm_vcpu_dabt_get_rd(vcpu);
 
 	mmio->is_write = is_write;
@@ -158,7 +153,6 @@ static int decode_hsr(struct kvm_vcpu *vcpu, phys_addr_t fault_ipa,
 	mmio->len = len;
 	vcpu->arch.mmio_decode.sign_extend = sign_extend;
 	vcpu->arch.mmio_decode.rt = rt;
-	vcpu->arch.mmio_decode.sixty_four = sixty_four;
 
 	/*
 	 * The MMIO instruction is emulated and should not be re-executed
@@ -198,7 +192,7 @@ int io_mem_abort(struct kvm_vcpu *vcpu, struct kvm_run *run,
 	trace_kvm_mmio((mmio.is_write) ? KVM_TRACE_MMIO_WRITE :
 					 KVM_TRACE_MMIO_READ_UNSATISFIED,
 			mmio.len, fault_ipa,
-			(mmio.is_write) ? &data : NULL);
+			(mmio.is_write) ? data : 0);
 
 	if (mmio.is_write)
 		mmio_write_buf(mmio.data, mmio.len, data);

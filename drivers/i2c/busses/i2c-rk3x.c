@@ -208,7 +208,7 @@ static void rk3x_i2c_prepare_read(struct rk3x_i2c *i2c)
 	 * The hw can read up to 32 bytes at a time. If we need more than one
 	 * chunk, send an ACK after the last byte of the current chunk.
 	 */
-	if (unlikely(len > 32)) {
+	if (len > 32) {
 		len = 32;
 		con &= ~REG_CON_LASTACK;
 	} else {
@@ -403,7 +403,7 @@ static irqreturn_t rk3x_i2c_irq(int irqno, void *dev_id)
 	}
 
 	/* is there anything left to handle? */
-	if (unlikely((ipd & REG_INT_ALL) == 0))
+	if ((ipd & REG_INT_ALL) == 0)
 		goto out;
 
 	switch (i2c->state) {
@@ -588,7 +588,7 @@ static int rk3x_i2c_xfer(struct i2c_adapter *adap,
 	clk_disable(i2c->clk);
 	spin_unlock_irqrestore(&i2c->lock, flags);
 
-	return ret < 0 ? ret : num;
+	return ret;
 }
 
 static u32 rk3x_i2c_func(struct i2c_adapter *adap)

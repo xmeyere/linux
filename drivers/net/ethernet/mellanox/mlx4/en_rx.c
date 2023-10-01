@@ -76,10 +76,10 @@ static int mlx4_alloc_pages(struct mlx4_en_priv *priv,
 	page_alloc->dma = dma;
 	page_alloc->page_offset = frag_info->frag_align;
 	/* Not doing get_page() for each frag is a big win
-	 * on asymetric workloads.
+	 * on asymetric workloads. Note we can not use atomic_set().
 	 */
-	atomic_set(&page->_count,
-		   page_alloc->page_size / frag_info->frag_stride);
+	atomic_add(page_alloc->page_size / frag_info->frag_stride - 1,
+		   &page->_count);
 	return 0;
 }
 
@@ -237,12 +237,6 @@ static int mlx4_en_prepare_rx_desc(struct mlx4_en_priv *priv,
 	return mlx4_en_alloc_frags(priv, rx_desc, frags, ring->page_alloc, gfp);
 }
 
-static inline bool mlx4_en_is_ring_empty(struct mlx4_en_rx_ring *ring)
-{
-	BUG_ON((u32)(ring->prod - ring->cons) > ring->actual_size);
-	return ring->prod == ring->cons;
-}
-
 static inline void mlx4_en_update_rx_prod_db(struct mlx4_en_rx_ring *ring)
 {
 	*ring->wqres.db.db = cpu_to_be32(ring->prod & 0xffff);
@@ -314,7 +308,8 @@ static void mlx4_en_free_rx_buf(struct mlx4_en_priv *priv,
 	       ring->cons, ring->prod);
 
 	/* Unmap and free Rx buffers */
-	while (!mlx4_en_is_ring_empty(ring)) {
+	BUG_ON((u32) (ring->prod - ring->cons) > ring->actual_size);
+	while (ring->cons != ring->prod) {
 		index = ring->cons & ring->size_mask;
 		en_dbg(DRV, priv, "Processing descriptor:%d\n", index);
 		mlx4_en_free_rx_desc(priv, ring, index);
@@ -340,8 +335,9 @@ void mlx4_en_set_num_rx_rings(struct mlx4_en_dev *mdev)
 					   dev->caps.comp_pool/
 					   dev->caps.num_ports) - 1;
 
-		num_rx_rings = min_t(int, num_of_eqs,
-				     netif_get_num_default_rss_queues());
+		num_rx_rings = mlx4_low_memory_profile() ? MIN_RX_RINGS :
+			min_t(int, num_of_eqs,
+			      netif_get_num_default_rss_queues());
 		mdev->profile.prof[i].rx_ring_num =
 			rounddown_pow_of_two(num_rx_rings);
 	}
@@ -437,14 +433,8 @@ int mlx4_en_activate_rx_rings(struct mlx4_en_priv *priv)
 		ring->cqn = priv->rx_cq[ring_ind]->mcq.cqn;
 
 		ring->stride = stride;
-		if (ring->stride <= TXBB_SIZE) {
-			/* Stamp first unused send wqe */
-			__be32 *ptr = (__be32 *)ring->buf;
-			__be32 stamp = cpu_to_be32(1 << STAMP_SHIFT);
-			*ptr = stamp;
-			/* Move pointer to start of rx section */
+		if (ring->stride <= TXBB_SIZE)
 			ring->buf += TXBB_SIZE;
-		}
 
 		ring->log_stride = ffs(ring->stride) - 1;
 		ring->buf_size = ring->size * ring->stride;
@@ -492,26 +482,6 @@ err_allocator:
 		ring_ind--;
 	}
 	return err;
-}
-
-/* We recover from out of memory by scheduling our napi poll
- * function (mlx4_en_process_cq), which tries to allocate
- * all missing RX buffers (call to mlx4_en_refill_rx_buffers).
- */
-void mlx4_en_recover_from_oom(struct mlx4_en_priv *priv)
-{
-	int ring;
-
-	if (!priv->port_up)
-		return;
-
-	for (ring = 0; ring < priv->rx_ring_num; ring++) {
-		if (mlx4_en_is_ring_empty(priv->rx_ring[ring])) {
-			local_bh_disable();
-			napi_reschedule(&priv->rx_cq[ring]->napi);
-			local_bh_enable();
-		}
-	}
 }
 
 void mlx4_en_destroy_rx_ring(struct mlx4_en_priv *priv,
@@ -565,10 +535,10 @@ static int mlx4_en_complete_rx_desc(struct mlx4_en_priv *priv,
 		dma_sync_single_for_cpu(priv->ddev, dma, frag_info->frag_size,
 					DMA_FROM_DEVICE);
 
-		__skb_fill_page_desc(skb, nr, frags[nr].page,
-				     frags[nr].page_offset,
-				     frag_info->frag_size);
-
+		/* Save page reference in skb */
+		__skb_frag_set_page(&skb_frags_rx[nr], frags[nr].page);
+		skb_frag_size_set(&skb_frags_rx[nr], frag_info->frag_size);
+		skb_frags_rx[nr].page_offset = frags[nr].page_offset;
 		skb->truesize += frag_info->frag_stride;
 		frags[nr].page = NULL;
 	}
@@ -618,6 +588,8 @@ static struct sk_buff *mlx4_en_rx_skb(struct mlx4_en_priv *priv,
 		skb_copy_to_linear_data(skb, va, length);
 		skb->tail += length;
 	} else {
+		unsigned int pull_len;
+
 		/* Move relevant fragments to skb */
 		used_frags = mlx4_en_complete_rx_desc(priv, rx_desc, frags,
 							skb, length);
@@ -627,16 +599,17 @@ static struct sk_buff *mlx4_en_rx_skb(struct mlx4_en_priv *priv,
 		}
 		skb_shinfo(skb)->nr_frags = used_frags;
 
+		pull_len = eth_get_headlen(va, SMALL_PACKET_SIZE);
 		/* Copy headers into the skb linear buffer */
-		memcpy(skb->data, va, HEADER_COPY_SIZE);
-		skb->tail += HEADER_COPY_SIZE;
+		memcpy(skb->data, va, pull_len);
+		skb->tail += pull_len;
 
 		/* Skip headers in first fragment */
-		skb_shinfo(skb)->frags[0].page_offset += HEADER_COPY_SIZE;
+		skb_shinfo(skb)->frags[0].page_offset += pull_len;
 
 		/* Adjust size of first fragment */
-		skb_frag_size_sub(&skb_shinfo(skb)->frags[0], HEADER_COPY_SIZE);
-		skb->data_len = length - HEADER_COPY_SIZE;
+		skb_frag_size_sub(&skb_shinfo(skb)->frags[0], pull_len);
+		skb->data_len = length - pull_len;
 	}
 	return skb;
 }
@@ -698,7 +671,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 	 * descriptor offset can be deduced from the CQE index instead of
 	 * reading 'cqe->index' */
 	index = cq->mcq.cons_index & ring->size_mask;
-	cqe = &cq->buf[(index << factor) + factor];
+	cqe = mlx4_en_get_cqe(cq->buf, index, priv->cqe_size) + factor;
 
 	/* Process all completed CQEs */
 	while (XNOR(cqe->owner_sr_opcode & MLX4_CQE_OWNER_MASK,
@@ -799,7 +772,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 					gro_skb->ip_summed = CHECKSUM_UNNECESSARY;
 
 					if (l2_tunnel)
-						gro_skb->encapsulation = 1;
+						gro_skb->csum_level = 1;
 					if ((cqe->vlan_my_qpn &
 					    cpu_to_be32(MLX4_CQE_VLAN_PRESENT_MASK)) &&
 					    (dev->features & NETIF_F_HW_VLAN_CTAG_RX)) {
@@ -844,7 +817,7 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 			goto next;
 		}
 
-		if (unlikely(priv->validate_loopback)) {
+                if (unlikely(priv->validate_loopback)) {
 			validate_loopback(priv, skb);
 			goto next;
 		}
@@ -853,8 +826,8 @@ int mlx4_en_process_rx_cq(struct net_device *dev, struct mlx4_en_cq *cq, int bud
 		skb->protocol = eth_type_trans(skb, dev);
 		skb_record_rx_queue(skb, cq->ring);
 
-		if (l2_tunnel)
-			skb->encapsulation = 1;
+		if (l2_tunnel && ip_summed == CHECKSUM_UNNECESSARY)
+			skb->csum_level = 1;
 
 		if (dev->features & NETIF_F_RXHASH)
 			skb_set_hash(skb,
@@ -885,7 +858,7 @@ next:
 
 		++cq->mcq.cons_index;
 		index = (cq->mcq.cons_index) & ring->size_mask;
-		cqe = &cq->buf[(index << factor) + factor];
+		cqe = mlx4_en_get_cqe(cq->buf, index, priv->cqe_size) + factor;
 		if (++polled == budget)
 			goto out;
 	}
@@ -964,7 +937,7 @@ static const int frag_sizes[] = {
 void mlx4_en_calc_rx_buf(struct net_device *dev)
 {
 	struct mlx4_en_priv *priv = netdev_priv(dev);
-	int eff_mtu = dev->mtu + ETH_HLEN + VLAN_HLEN + ETH_LLC_SNAP_SIZE;
+	int eff_mtu = dev->mtu + ETH_HLEN + VLAN_HLEN;
 	int buf_size = 0;
 	int i = 0;
 
@@ -993,8 +966,7 @@ void mlx4_en_calc_rx_buf(struct net_device *dev)
 	en_dbg(DRV, priv, "Rx buffer scatter-list (effective-mtu:%d num_frags:%d):\n",
 	       eff_mtu, priv->num_frags);
 	for (i = 0; i < priv->num_frags; i++) {
-		en_dbg(DRV,
-		       priv,
+		en_err(priv,
 		       "  frag:%d - size:%d prefix:%d align:%d stride:%d\n",
 		       i,
 		       priv->frag_info[i].frag_size,

@@ -348,6 +348,8 @@ static int __rtc_set_alarm(struct rtc_device *rtc, struct rtc_wkalrm *alarm)
 
 	/* Make sure we're not setting alarms in the past */
 	err = __rtc_read_time(rtc, &tm);
+	if (err)
+		return err;
 	rtc_tm_to_time(&tm, &now);
 	if (scheduled <= now)
 		return -ETIME;
@@ -492,9 +494,10 @@ out:
 	mutex_unlock(&rtc->ops_lock);
 #ifdef CONFIG_RTC_INTF_DEV_UIE_EMUL
 	/*
-	 * Enable emulation if the driver returned -EINVAL to signal that it has
-	 * been configured without interrupts or they are not available at the
-	 * moment.
+	 * Enable emulation if the driver did not provide
+	 * the update_irq_enable function pointer or if returned
+	 * -EINVAL to signal that it has been configured without
+	 * interrupts or that are not available at the moment.
 	 */
 	if (err == -EINVAL)
 		err = rtc_dev_update_irq_enable_emul(rtc, enabled);
@@ -777,23 +780,9 @@ EXPORT_SYMBOL_GPL(rtc_irq_set_freq);
  */
 static int rtc_timer_enqueue(struct rtc_device *rtc, struct rtc_timer *timer)
 {
-	struct timerqueue_node *next = timerqueue_getnext(&rtc->timerqueue);
-	struct rtc_time tm;
-	ktime_t now;
-
 	timer->enabled = 1;
-	__rtc_read_time(rtc, &tm);
-	now = rtc_tm_to_ktime(tm);
-
-	/* Skip over expired timers */
-	while (next) {
-		if (next->expires.tv64 >= now.tv64)
-			break;
-		next = timerqueue_iterate_next(next);
-	}
-
 	timerqueue_add(&rtc->timerqueue, &timer->node);
-	if (!next || ktime_before(timer->node.expires, next->expires)) {
+	if (&timer->node == timerqueue_getnext(&rtc->timerqueue)) {
 		struct rtc_wkalrm alarm;
 		int err;
 		alarm.time = rtc_ktime_to_tm(timer->node.expires);

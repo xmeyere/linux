@@ -496,6 +496,8 @@ static int __cfg80211_set_encryption(struct cfg80211_registered_device *rdev,
 			err = 0;
 		if (!err) {
 			if (!addr) {
+				memset(wdev->wext.keys->data[idx], 0,
+				       sizeof(wdev->wext.keys->data[idx]));
 				wdev->wext.keys->params[idx].key_len = 0;
 				wdev->wext.keys->params[idx].cipher = 0;
 			}
@@ -1273,7 +1275,8 @@ static int cfg80211_wext_giwrate(struct net_device *dev,
 {
 	struct wireless_dev *wdev = dev->ieee80211_ptr;
 	struct cfg80211_registered_device *rdev = wiphy_to_rdev(wdev->wiphy);
-	struct station_info sinfo = {};
+	/* we are under RTNL - globally locked - so can use a static struct */
+	static struct station_info sinfo;
 	u8 addr[ETH_ALEN];
 	int err;
 
@@ -1329,8 +1332,6 @@ static struct iw_statistics *cfg80211_wireless_stats(struct net_device *dev)
 	}
 	memcpy(bssid, wdev->current_bss->pub.bssid, ETH_ALEN);
 	wdev_unlock(wdev);
-
-	memset(&sinfo, 0, sizeof(sinfo));
 
 	if (rdev_get_station(rdev, dev, bssid, &sinfo))
 		return NULL;

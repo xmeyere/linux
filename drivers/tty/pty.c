@@ -24,6 +24,7 @@
 #include <linux/devpts_fs.h>
 #include <linux/slab.h>
 #include <linux/mutex.h>
+#include <linux/poll.h>
 
 
 #ifdef CONFIG_UNIX98_PTYS
@@ -209,9 +210,6 @@ static int pty_signal(struct tty_struct *tty, int sig)
 	unsigned long flags;
 	struct pid *pgrp;
 
-	if (sig != SIGINT && sig != SIGQUIT && sig != SIGTSTP)
-		return -EINVAL;
-
 	if (tty->link) {
 		spin_lock_irqsave(&tty->link->ctrl_lock, flags);
 		pgrp = get_pid(tty->link->pgrp);
@@ -313,6 +311,42 @@ static int pty_resize(struct tty_struct *tty,  struct winsize *ws)
 done:
 	mutex_unlock(&tty->winsize_mutex);
 	return 0;
+}
+
+/**
+ *	pty_start - start() handler
+ *	pty_stop  - stop() handler
+ *	@tty: tty being flow-controlled
+ *
+ *	Propagates the TIOCPKT status to the master pty.
+ *
+ *	NB: only the master pty can be in packet mode so only the slave
+ *	    needs start()/stop() handlers
+ */
+static void pty_start(struct tty_struct *tty)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&tty->ctrl_lock, flags);
+	if (tty->link && tty->link->packet) {
+		tty->ctrl_status &= ~TIOCPKT_STOP;
+		tty->ctrl_status |= TIOCPKT_START;
+		wake_up_interruptible_poll(&tty->link->read_wait, POLLIN);
+	}
+	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
+}
+
+static void pty_stop(struct tty_struct *tty)
+{
+	unsigned long flags;
+
+	spin_lock_irqsave(&tty->ctrl_lock, flags);
+	if (tty->link && tty->link->packet) {
+		tty->ctrl_status &= ~TIOCPKT_START;
+		tty->ctrl_status |= TIOCPKT_STOP;
+		wake_up_interruptible_poll(&tty->link->read_wait, POLLIN);
+	}
+	spin_unlock_irqrestore(&tty->ctrl_lock, flags);
 }
 
 /**
@@ -474,6 +508,8 @@ static const struct tty_operations slave_pty_ops_bsd = {
 	.set_termios = pty_set_termios,
 	.cleanup = pty_cleanup,
 	.resize = pty_resize,
+	.start = pty_start,
+	.stop = pty_stop,
 	.remove = pty_remove
 };
 
@@ -616,14 +652,7 @@ static void pty_unix98_remove(struct tty_driver *driver, struct tty_struct *tty)
 /* this is called once with whichever end is closed last */
 static void pty_unix98_shutdown(struct tty_struct *tty)
 {
-	struct inode *ptmx_inode;
-
-	if (tty->driver->subtype == PTY_TYPE_MASTER)
-		ptmx_inode = tty->driver_data;
-	else
-		ptmx_inode = tty->link->driver_data;
-	devpts_kill_index(ptmx_inode, tty->index);
-	devpts_del_ref(ptmx_inode);
+	devpts_kill_index(tty->driver_data, tty->index);
 }
 
 static const struct tty_operations ptm_unix98_ops = {
@@ -656,6 +685,8 @@ static const struct tty_operations pty_unix98_ops = {
 	.chars_in_buffer = pty_chars_in_buffer,
 	.unthrottle = pty_unthrottle,
 	.set_termios = pty_set_termios,
+	.start = pty_start,
+	.stop = pty_stop,
 	.shutdown = pty_unix98_shutdown,
 	.cleanup = pty_cleanup,
 };
@@ -713,18 +744,6 @@ static int ptmx_open(struct inode *inode, struct file *filp)
 
 	set_bit(TTY_PTY_LOCK, &tty->flags); /* LOCK THE SLAVE */
 	tty->driver_data = inode;
-
-	/*
-	 * In the case where all references to ptmx inode are dropped and we
-	 * still have /dev/tty opened pointing to the master/slave pair (ptmx
-	 * is closed/released before /dev/tty), we must make sure that the inode
-	 * is still valid when we call the final pty_unix98_shutdown, thus we
-	 * hold an additional reference to the ptmx inode. For the same /dev/tty
-	 * last close case, we also need to make sure the super_block isn't
-	 * destroyed (devpts instance unmounted), before /dev/tty is closed and
-	 * on its release devpts_kill_index is called.
-	 */
-	devpts_add_ref(inode);
 
 	tty_add_file(tty, filp);
 

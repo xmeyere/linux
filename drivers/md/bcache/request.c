@@ -87,10 +87,8 @@ static void bch_data_insert_keys(struct closure *cl)
 	if (journal_ref)
 		atomic_dec_bug(journal_ref);
 
-	if (!op->insert_data_done) {
+	if (!op->insert_data_done)
 		continue_at(cl, bch_data_insert_start, op->wq);
-		return;
-	}
 
 	bch_keylist_free(&op->insert_keys);
 	closure_return(cl);
@@ -195,13 +193,13 @@ static void bch_data_insert_start(struct closure *cl)
 	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
 	struct bio *bio = op->bio, *n;
 
-	if (op->bypass)
-		return bch_data_invalidate(cl);
-
 	if (atomic_sub_return(bio_sectors(bio), &op->c->sectors_to_gc) < 0) {
 		set_gc_sectors(op->c);
 		wake_up_gc(op->c);
 	}
+
+	if (op->bypass)
+		return bch_data_invalidate(cl);
 
 	/*
 	 * Journal writes are marked REQ_FLUSH; if the original write was a
@@ -217,10 +215,8 @@ static void bch_data_insert_start(struct closure *cl)
 		/* 1 for the device pointer and 1 for the chksum */
 		if (bch_keylist_realloc(&op->insert_keys,
 					3 + (op->csum ? 1 : 0),
-					op->c)) {
+					op->c))
 			continue_at(cl, bch_data_insert_keys, op->wq);
-			return;
-		}
 
 		k = op->insert_keys.top;
 		bkey_init(k);
@@ -258,7 +254,6 @@ static void bch_data_insert_start(struct closure *cl)
 
 	op->insert_data_done = true;
 	continue_at(cl, bch_data_insert_keys, op->wq);
-	return;
 err:
 	/* bch_alloc_sectors() blocks if s->writeback = true */
 	BUG_ON(op->writeback);
@@ -316,7 +311,8 @@ void bch_data_insert(struct closure *cl)
 {
 	struct data_insert_op *op = container_of(cl, struct data_insert_op, cl);
 
-	trace_bcache_write(op->bio, op->writeback, op->bypass);
+	trace_bcache_write(op->c, op->inode, op->bio,
+			   op->writeback, op->bypass);
 
 	bch_keylist_init(&op->insert_keys);
 	bio_get(op->bio);
@@ -400,6 +396,12 @@ static bool check_should_bypass(struct cached_dev *dc, struct bio *bio)
 	if (!congested && !dc->sequential_cutoff)
 		goto rescale;
 
+	if (!congested &&
+	    mode == CACHE_MODE_WRITEBACK &&
+	    (bio->bi_rw & REQ_WRITE) &&
+	    (bio->bi_rw & REQ_SYNC))
+		goto rescale;
+
 	spin_lock(&dc->io_lock);
 
 	hlist_for_each_entry(i, iohash(dc, bio->bi_iter.bi_sector), hash)
@@ -462,7 +464,6 @@ struct search {
 	unsigned		recoverable:1;
 	unsigned		write:1;
 	unsigned		read_dirty_data:1;
-	unsigned		cache_missed:1;
 
 	unsigned long		start_time;
 
@@ -574,10 +575,8 @@ static void cache_lookup(struct closure *cl)
 	ret = bch_btree_map_keys(&s->op, s->iop.c,
 				 &KEY(s->iop.inode, bio->bi_iter.bi_sector, 0),
 				 cache_lookup_fn, MAP_END_KEY);
-	if (ret == -EAGAIN) {
+	if (ret == -EAGAIN)
 		continue_at(cl, cache_lookup, bcache_wq);
-		return;
-	}
 
 	closure_return(cl);
 }
@@ -652,7 +651,6 @@ static inline struct search *search_alloc(struct bio *bio,
 
 	s->orig_bio		= bio;
 	s->cache_miss		= NULL;
-	s->cache_missed		= 0;
 	s->d			= d;
 	s->recoverable		= 1;
 	s->write		= (bio->bi_rw & REQ_WRITE) != 0;
@@ -708,14 +706,7 @@ static void cached_dev_read_error(struct closure *cl)
 	struct search *s = container_of(cl, struct search, cl);
 	struct bio *bio = &s->bio.bio;
 
-	/*
-	 * If read request hit dirty data (s->read_dirty_data is true),
-	 * then recovery a failed read request from cached device may
-	 * get a stale data back. So read failure recovery is only
-	 * permitted when read request hit clean data in cache device,
-	 * or when cache read race happened.
-	 */
-	if (s->recoverable && !s->read_dirty_data) {
+	if (s->recoverable) {
 		/* Retry from the backing device: */
 		trace_bcache_read_retry(s->orig_bio);
 
@@ -776,7 +767,7 @@ static void cached_dev_read_done_bh(struct closure *cl)
 	struct cached_dev *dc = container_of(s->d, struct cached_dev, disk);
 
 	bch_mark_cache_accounting(s->iop.c, s->d,
-				  !s->cache_missed, s->iop.bypass);
+				  !s->cache_miss, s->iop.bypass);
 	trace_bcache_read(s->orig_bio, !s->cache_miss, s->iop.bypass);
 
 	if (s->iop.error)
@@ -794,8 +785,6 @@ static int cached_dev_cache_miss(struct btree *b, struct search *s,
 	unsigned reada = 0;
 	struct cached_dev *dc = container_of(s->d, struct cached_dev, disk);
 	struct bio *miss, *cache_bio;
-
-	s->cache_missed = 1;
 
 	if (s->cache_miss || s->iop.bypass) {
 		miss = bio_next_split(bio, sectors, GFP_NOIO, s->d->bio_split);
@@ -1106,7 +1095,6 @@ static void flash_dev_make_request(struct request_queue *q, struct bio *bio)
 		continue_at_nobarrier(&s->cl,
 				      flash_dev_nodata,
 				      bcache_wq);
-		return;
 	} else if (rw) {
 		bch_keybuf_check_overlapping(&s->iop.c->moving_gc_keys,
 					&KEY(d->id, bio->bi_iter.bi_sector, 0),

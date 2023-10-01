@@ -47,8 +47,10 @@ struct pt_regs {
 
 struct task_struct;
 
-extern int ptrace_getregs(struct task_struct *child, __s64 __user *data);
-extern int ptrace_setregs(struct task_struct *child, __s64 __user *data);
+extern int ptrace_getregs(struct task_struct *child,
+	struct user_pt_regs __user *data);
+extern int ptrace_setregs(struct task_struct *child,
+	struct user_pt_regs __user *data);
 
 extern int ptrace_getfpregs(struct task_struct *child, __u32 __user *data);
 extern int ptrace_setfpregs(struct task_struct *child, __u32 __user *data);
@@ -70,7 +72,7 @@ static inline int is_syscall_success(struct pt_regs *regs)
 
 static inline long regs_return_value(struct pt_regs *regs)
 {
-	if (is_syscall_success(regs) || !user_mode(regs))
+	if (is_syscall_success(regs))
 		return regs->regs[2];
 	else
 		return -regs->regs[2];

@@ -178,9 +178,24 @@ smb2_check_message(char *buf, unsigned int length)
 		/* Windows 7 server returns 24 bytes more */
 		if (clc_len + 20 == len && command == SMB2_OPLOCK_BREAK_HE)
 			return 0;
-		/* server can return one byte more */
+		/* server can return one byte more due to implied bcc[0] */
 		if (clc_len == 4 + len + 1)
 			return 0;
+
+		/*
+		 * MacOS server pads after SMB2.1 write response with 3 bytes
+		 * of junk. Other servers match RFC1001 len to actual
+		 * SMB2/SMB3 frame length (header + smb2 response specific data)
+		 * Log the server error (once), but allow it and continue
+		 * since the frame is parseable.
+		 */
+		if (clc_len < 4 /* RFC1001 header size */ + len) {
+			printk_once(KERN_WARNING
+				"SMB2 server sent bad RFC1001 len %d not %d\n",
+				len, clc_len - 4);
+			return 0;
+		}
+
 		return 1;
 	}
 	return 0;
@@ -364,6 +379,14 @@ cifs_convert_path_to_utf16(const char *from, struct cifs_sb_info *cifs_sb)
 	int len;
 	const char *start_of_path;
 	__le16 *to;
+	int map_type;
+
+	if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SFM_CHR)
+		map_type = SFM_MAP_UNI_RSVD;
+	else if (cifs_sb->mnt_cifs_flags & CIFS_MOUNT_MAP_SPECIAL_CHR)
+		map_type = SFU_MAP_UNI_RSVD;
+	else
+		map_type = NO_MAP_UNI_RSVD;
 
 	/* Windows doesn't allow paths beginning with \ */
 	if (from[0] == '\\')
@@ -371,9 +394,7 @@ cifs_convert_path_to_utf16(const char *from, struct cifs_sb_info *cifs_sb)
 	else
 		start_of_path = from;
 	to = cifs_strndup_to_utf16(start_of_path, PATH_MAX, &len,
-				   cifs_sb->local_nls,
-				   cifs_sb->mnt_cifs_flags &
-					CIFS_MOUNT_MAP_SPECIAL_CHR);
+				   cifs_sb->local_nls, map_type);
 	return to;
 }
 
@@ -420,6 +441,7 @@ smb2_tcon_has_lease(struct cifs_tcon *tcon, struct smb2_lease_break *rsp,
 	__u8 lease_state;
 	struct list_head *tmp;
 	struct cifsFileInfo *cfile;
+	struct TCP_Server_Info *server = tcon->ses->server;
 	struct cifs_pending_open *open;
 	struct cifsInodeInfo *cinode;
 	int ack_req = le32_to_cpu(rsp->Flags &
@@ -436,29 +458,17 @@ smb2_tcon_has_lease(struct cifs_tcon *tcon, struct smb2_lease_break *rsp,
 			continue;
 
 		cifs_dbg(FYI, "found in the open list\n");
-		cifs_dbg(FYI, "lease key match, lease break 0x%d\n",
+		cifs_dbg(FYI, "lease key match, lease break 0x%x\n",
 			 le32_to_cpu(rsp->NewLeaseState));
+
+		server->ops->set_oplock_level(cinode, lease_state, 0, NULL);
 
 		if (ack_req)
 			cfile->oplock_break_cancelled = false;
 		else
 			cfile->oplock_break_cancelled = true;
 
-		set_bit(CIFS_INODE_PENDING_OPLOCK_BREAK, &cinode->flags);
-
-		/*
-		 * Set or clear flags depending on the lease state being READ.
-		 * HANDLE caching flag should be added when the client starts
-		 * to defer closing remote file handles with HANDLE leases.
-		 */
-		if (lease_state & SMB2_LEASE_READ_CACHING_HE)
-			set_bit(CIFS_INODE_DOWNGRADE_OPLOCK_TO_L2,
-				&cinode->flags);
-		else
-			clear_bit(CIFS_INODE_DOWNGRADE_OPLOCK_TO_L2,
-				  &cinode->flags);
-
-		cifs_queue_oplock_break(cfile);
+		queue_work(cifsiod_wq, &cfile->oplock_break);
 		kfree(lw);
 		return true;
 	}
@@ -478,7 +488,7 @@ smb2_tcon_has_lease(struct cifs_tcon *tcon, struct smb2_lease_break *rsp,
 		}
 
 		cifs_dbg(FYI, "found in the pending open list\n");
-		cifs_dbg(FYI, "lease key match, lease break 0x%d\n",
+		cifs_dbg(FYI, "lease key match, lease break 0x%x\n",
 			 le32_to_cpu(rsp->NewLeaseState));
 
 		open->oplock = lease_state;
@@ -513,19 +523,19 @@ smb2_is_valid_lease_break(char *buffer)
 		list_for_each(tmp1, &server->smb_ses_list) {
 			ses = list_entry(tmp1, struct cifs_ses, smb_ses_list);
 
+			spin_lock(&cifs_file_list_lock);
 			list_for_each(tmp2, &ses->tcon_list) {
 				tcon = list_entry(tmp2, struct cifs_tcon,
 						  tcon_list);
-				spin_lock(&tcon->open_file_lock);
 				cifs_stats_inc(
 				    &tcon->stats.cifs_stats.num_oplock_brks);
 				if (smb2_tcon_has_lease(tcon, rsp, lw)) {
-					spin_unlock(&tcon->open_file_lock);
+					spin_unlock(&cifs_file_list_lock);
 					spin_unlock(&cifs_tcp_ses_lock);
 					return true;
 				}
-				spin_unlock(&tcon->open_file_lock);
 			}
+			spin_unlock(&cifs_file_list_lock);
 		}
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
@@ -557,17 +567,17 @@ smb2_is_valid_oplock_break(char *buffer, struct TCP_Server_Info *server)
 			return false;
 	}
 
-	cifs_dbg(FYI, "oplock level 0x%d\n", rsp->OplockLevel);
+	cifs_dbg(FYI, "oplock level 0x%x\n", rsp->OplockLevel);
 
 	/* look up tcon based on tid & uid */
 	spin_lock(&cifs_tcp_ses_lock);
 	list_for_each(tmp, &server->smb_ses_list) {
 		ses = list_entry(tmp, struct cifs_ses, smb_ses_list);
-
 		list_for_each(tmp1, &ses->tcon_list) {
 			tcon = list_entry(tmp1, struct cifs_tcon, tcon_list);
 
-			spin_lock(&tcon->open_file_lock);
+			cifs_stats_inc(&tcon->stats.cifs_stats.num_oplock_brks);
+			spin_lock(&cifs_file_list_lock);
 			list_for_each(tmp2, &tcon->openFileList) {
 				cfile = list_entry(tmp2, struct cifsFileInfo,
 						     tlist);
@@ -578,10 +588,8 @@ smb2_is_valid_oplock_break(char *buffer, struct TCP_Server_Info *server)
 					continue;
 
 				cifs_dbg(FYI, "file id match, oplock break\n");
-				cifs_stats_inc(
-				    &tcon->stats.cifs_stats.num_oplock_brks);
 				cinode = CIFS_I(cfile->dentry->d_inode);
-				spin_lock(&cfile->file_info_lock);
+
 				if (!CIFS_CACHE_WRITE(cinode) &&
 				    rsp->OplockLevel == SMB2_OPLOCK_LEVEL_NONE)
 					cfile->oplock_break_cancelled = true;
@@ -603,62 +611,20 @@ smb2_is_valid_oplock_break(char *buffer, struct TCP_Server_Info *server)
 					clear_bit(
 					   CIFS_INODE_DOWNGRADE_OPLOCK_TO_L2,
 					   &cinode->flags);
-				spin_unlock(&cfile->file_info_lock);
 
-				cifs_queue_oplock_break(cfile);
+				queue_work(cifsiod_wq, &cfile->oplock_break);
 
-				spin_unlock(&tcon->open_file_lock);
+				spin_unlock(&cifs_file_list_lock);
 				spin_unlock(&cifs_tcp_ses_lock);
 				return true;
 			}
-			spin_unlock(&tcon->open_file_lock);
+			spin_unlock(&cifs_file_list_lock);
+			spin_unlock(&cifs_tcp_ses_lock);
+			cifs_dbg(FYI, "No matching file for oplock break\n");
+			return true;
 		}
 	}
 	spin_unlock(&cifs_tcp_ses_lock);
 	cifs_dbg(FYI, "Can not process oplock break for non-existent connection\n");
 	return false;
-}
-
-void
-smb2_cancelled_close_fid(struct work_struct *work)
-{
-	struct close_cancelled_open *cancelled = container_of(work,
-					struct close_cancelled_open, work);
-
-	cifs_dbg(VFS, "Close unmatched open\n");
-
-	SMB2_close(0, cancelled->tcon, cancelled->fid.persistent_fid,
-		   cancelled->fid.volatile_fid);
-	cifs_put_tcon(cancelled->tcon);
-	kfree(cancelled);
-}
-
-int
-smb2_handle_cancelled_mid(char *buffer, struct TCP_Server_Info *server)
-{
-	struct smb2_hdr *hdr = (struct smb2_hdr *)buffer;
-	struct smb2_create_rsp *rsp = (struct smb2_create_rsp *)buffer;
-	struct cifs_tcon *tcon;
-	struct close_cancelled_open *cancelled;
-
-	if (hdr->Command != SMB2_CREATE || hdr->Status != STATUS_SUCCESS)
-		return 0;
-
-	cancelled = kzalloc(sizeof(*cancelled), GFP_KERNEL);
-	if (!cancelled)
-		return -ENOMEM;
-
-	tcon = smb2_find_smb_tcon(server, hdr->SessionId, hdr->TreeId);
-	if (!tcon) {
-		kfree(cancelled);
-		return -ENOENT;
-	}
-
-	cancelled->fid.persistent_fid = rsp->PersistentFileId;
-	cancelled->fid.volatile_fid = rsp->VolatileFileId;
-	cancelled->tcon = tcon;
-	INIT_WORK(&cancelled->work, smb2_cancelled_close_fid);
-	queue_work(cifsiod_wq, &cancelled->work);
-
-	return 0;
 }

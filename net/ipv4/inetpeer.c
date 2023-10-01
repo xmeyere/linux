@@ -72,28 +72,9 @@ void inet_peer_base_init(struct inet_peer_base *bp)
 {
 	bp->root = peer_avl_empty_rcu;
 	seqlock_init(&bp->lock);
-	bp->flush_seq = ~0U;
 	bp->total = 0;
 }
 EXPORT_SYMBOL_GPL(inet_peer_base_init);
-
-static atomic_t v4_seq = ATOMIC_INIT(0);
-static atomic_t v6_seq = ATOMIC_INIT(0);
-
-static atomic_t *inetpeer_seq_ptr(int family)
-{
-	return (family == AF_INET ? &v4_seq : &v6_seq);
-}
-
-static inline void flush_check(struct inet_peer_base *base, int family)
-{
-	atomic_t *fp = inetpeer_seq_ptr(family);
-
-	if (unlikely(base->flush_seq != atomic_read(fp))) {
-		inetpeer_invalidate_tree(base);
-		base->flush_seq = atomic_read(fp);
-	}
-}
 
 #define PEER_MAXDEPTH 40 /* sufficient for about 2^27 nodes */
 
@@ -419,12 +400,7 @@ static int inet_peer_gc(struct inet_peer_base *base,
 		p = rcu_deref_locked(**stackptr, base);
 		if (atomic_read(&p->refcnt) == 0) {
 			smp_rmb();
-
-			/* The ACCESS_ONCE() pairs with the ACCESS_ONCE()
-			 * in inet_putpeer()
-			 */
-			delta = (__u32)jiffies - ACCESS_ONCE(p->dtime);
-
+			delta = (__u32)jiffies - p->dtime;
 			if (delta >= ttl &&
 			    atomic_cmpxchg(&p->refcnt, 0, -1) == 0) {
 				p->gc_next = gchead;
@@ -448,8 +424,6 @@ struct inet_peer *inet_getpeer(struct inet_peer_base *base,
 	struct inet_peer *p;
 	unsigned int sequence;
 	int invalidated, gccnt = 0;
-
-	flush_check(base, daddr->family);
 
 	/* Attempt a lockless lookup first.
 	 * Because of a concurrent writer, we might not find an existing entry.
@@ -490,7 +464,6 @@ relookup:
 		atomic_set(&p->rid, 0);
 		p->metrics[RTAX_LOCK-1] = INETPEER_METRICS_NEW;
 		p->rate_tokens = 0;
-		p->n_redirects = 0;
 		/* 60*HZ is arbitrary, but chosen enough high so that the first
 		 * calculation of tokens is at its maximum.
 		 */
@@ -509,10 +482,7 @@ EXPORT_SYMBOL_GPL(inet_getpeer);
 
 void inet_putpeer(struct inet_peer *p)
 {
-	/* The ACCESS_ONCE() pairs with itself (we run lockless)
-	 * and the ACCESS_ONCE() in inet_peer_gc()
-	 */
-	ACCESS_ONCE(p->dtime) = (__u32)jiffies;
+	p->dtime = (__u32)jiffies;
 	smp_mb__before_atomic();
 	atomic_dec(&p->refcnt);
 }

@@ -135,19 +135,7 @@
 #define pte_iterate_hashed_end() } while(0)
 
 #ifdef CONFIG_PPC_HAS_HASH_64K
-/*
- * We expect this to be called only for user addresses or kernel virtual
- * addresses other than the linear mapping.
- */
-#define pte_pagesize_index(mm, addr, pte)			\
-	({							\
-		unsigned int psize;				\
-		if (is_kernel_addr(addr))			\
-			psize = MMU_PAGE_4K;			\
-		else						\
-			psize = get_slice_psize(mm, addr);	\
-		psize;						\
-	})
+#define pte_pagesize_index(mm, addr, pte)	get_slice_psize(mm, addr)
 #else
 #define pte_pagesize_index(mm, addr, pte)	MMU_PAGE_4K
 #endif
@@ -340,11 +328,11 @@ static inline void __ptep_set_access_flags(pte_t *ptep, pte_t entry)
 #define pte_same(A,B)	(((pte_val(A) ^ pte_val(B)) & ~_PAGE_HPTEFLAGS) == 0)
 
 #define pte_ERROR(e) \
-	printk("%s:%d: bad pte %08lx.\n", __FILE__, __LINE__, pte_val(e))
+	pr_err("%s:%d: bad pte %08lx.\n", __FILE__, __LINE__, pte_val(e))
 #define pmd_ERROR(e) \
-	printk("%s:%d: bad pmd %08lx.\n", __FILE__, __LINE__, pmd_val(e))
+	pr_err("%s:%d: bad pmd %08lx.\n", __FILE__, __LINE__, pmd_val(e))
 #define pgd_ERROR(e) \
-	printk("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
+	pr_err("%s:%d: bad pgd %08lx.\n", __FILE__, __LINE__, pgd_val(e))
 
 /* Encode and de-code a swap entry */
 #define __swp_type(entry)	(((entry).val >> 1) & 0x3f)
@@ -352,6 +340,9 @@ static inline void __ptep_set_access_flags(pte_t *ptep, pte_t entry)
 #define __swp_entry(type, offset) ((swp_entry_t){((type)<< 1)|((offset)<<8)})
 #define __pte_to_swp_entry(pte)	((swp_entry_t){pte_val(pte) >> PTE_RPN_SHIFT})
 #define __swp_entry_to_pte(x)	((pte_t) { (x).val << PTE_RPN_SHIFT })
+#define pte_to_pgoff(pte)	(pte_val(pte) >> PTE_RPN_SHIFT)
+#define pgoff_to_pte(off)	((pte_t) {((off) << PTE_RPN_SHIFT)|_PAGE_FILE})
+#define PTE_FILE_MAX_BITS	(BITS_PER_LONG - PTE_RPN_SHIFT)
 
 void pgtable_cache_add(unsigned shift, void (*ctor)(void *));
 void pgtable_cache_init(void);
@@ -386,7 +377,7 @@ void pgtable_cache_init(void);
  * The last three bits are intentionally left to zero. This memory location
  * are also used as normal page PTE pointers. So if we have any pointers
  * left around while we collapse a hugepage, we need to make sure
- * _PAGE_PRESENT bit of that is zero when we look at them
+ * _PAGE_PRESENT and _PAGE_FILE bits of that are zero when we look at them
  */
 static inline unsigned int hpte_valid(unsigned char *hpte_slot_array, int index)
 {

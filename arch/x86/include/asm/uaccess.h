@@ -7,7 +7,6 @@
 #include <linux/compiler.h>
 #include <linux/thread_info.h>
 #include <linux/string.h>
-#include <linux/preempt_mask.h>
 #include <asm/asm.h>
 #include <asm/page.h>
 #include <asm/smap.h>
@@ -67,12 +66,6 @@ static inline bool __chk_range_not_ok(unsigned long addr, unsigned long size, un
 	__chk_range_not_ok((unsigned long __force)(addr), size, limit); \
 })
 
-#ifdef CONFIG_DEBUG_ATOMIC_SLEEP
-# define WARN_ON_IN_IRQ()	WARN_ON_ONCE(!in_task())
-#else
-# define WARN_ON_IN_IRQ()
-#endif
-
 /**
  * access_ok: - Checks if a user space pointer is valid
  * @type: Type of access: %VERIFY_READ or %VERIFY_WRITE.  Note that
@@ -92,11 +85,8 @@ static inline bool __chk_range_not_ok(unsigned long addr, unsigned long size, un
  * checks that the pointer is in the user space range - after calling
  * this function, memory access functions may still return -EFAULT.
  */
-#define access_ok(type, addr, size)					\
-({									\
-	WARN_ON_IN_IRQ();						\
-	likely(!__range_not_ok(addr, size, user_addr_max()));		\
-})
+#define access_ok(type, addr, size) \
+	likely(!__range_not_ok(addr, size, user_addr_max()))
 
 /*
  * The exception table consists of pairs of addresses relative to the
@@ -142,14 +132,6 @@ extern int __get_user_2(void);
 extern int __get_user_4(void);
 extern int __get_user_8(void);
 extern int __get_user_bad(void);
-
-#define __uaccess_begin() stac()
-#define __uaccess_end()   clac()
-#define __uaccess_begin_nospec()	\
-({					\
-	stac();				\
-	barrier_nospec();		\
-})
 
 /*
  * This is a type: either unsigned long, if the argument fits into
@@ -209,10 +191,10 @@ __typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
 
 #ifdef CONFIG_X86_32
 #define __put_user_asm_u64(x, addr, err, errret)			\
-	asm volatile("\n"						\
+	asm volatile(ASM_STAC "\n"					\
 		     "1:	movl %%eax,0(%2)\n"			\
 		     "2:	movl %%edx,4(%2)\n"			\
-		     "3:"						\
+		     "3: " ASM_CLAC "\n"				\
 		     ".section .fixup,\"ax\"\n"				\
 		     "4:	movl %3,%0\n"				\
 		     "	jmp 3b\n"					\
@@ -223,10 +205,10 @@ __typeof__(__builtin_choose_expr(sizeof(x) > sizeof(0UL), 0ULL, 0UL))
 		     : "A" (x), "r" (addr), "i" (errret), "0" (err))
 
 #define __put_user_asm_ex_u64(x, addr)					\
-	asm volatile("\n"						\
+	asm volatile(ASM_STAC "\n"					\
 		     "1:	movl %%eax,0(%1)\n"			\
 		     "2:	movl %%edx,4(%1)\n"			\
-		     "3:"						\
+		     "3: " ASM_CLAC "\n"				\
 		     _ASM_EXTABLE_EX(1b, 2b)				\
 		     _ASM_EXTABLE_EX(2b, 3b)				\
 		     : : "A" (x), "r" (addr))
@@ -311,17 +293,14 @@ do {									\
 		__put_user_asm(x, ptr, retval, "l", "k", "ir", errret);	\
 		break;							\
 	case 8:								\
-		__put_user_asm_u64(x, ptr, retval, errret);		\
+		__put_user_asm_u64((__typeof__(*ptr))(x), ptr, retval,	\
+				   errret);				\
 		break;							\
 	default:							\
 		__put_user_bad();					\
 	}								\
 } while (0)
 
-/*
- * This doesn't do __uaccess_begin/end - the exception handling
- * around it must do that.
- */
 #define __put_user_size_ex(x, ptr, size)				\
 do {									\
 	__chk_user_ptr(ptr);						\
@@ -350,7 +329,7 @@ do {									\
 #define __get_user_asm_u64(x, ptr, retval, errret) \
 	 __get_user_asm(x, ptr, retval, "q", "", "=r", errret)
 #define __get_user_asm_ex_u64(x, ptr) \
-	 __get_user_asm_ex(x, ptr, "q", "", "=&r")
+	 __get_user_asm_ex(x, ptr, "q", "", "=r")
 #endif
 
 #define __get_user_size(x, ptr, size, retval, errret)			\
@@ -376,9 +355,9 @@ do {									\
 } while (0)
 
 #define __get_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
-	asm volatile("\n"						\
+	asm volatile(ASM_STAC "\n"					\
 		     "1:	mov"itype" %2,%"rtype"1\n"		\
-		     "2:\n"						\
+		     "2: " ASM_CLAC "\n"				\
 		     ".section .fixup,\"ax\"\n"				\
 		     "3:	mov %3,%0\n"				\
 		     "	xor"itype" %"rtype"1,%"rtype"1\n"		\
@@ -388,22 +367,18 @@ do {									\
 		     : "=r" (err), ltype(x)				\
 		     : "m" (__m(addr)), "i" (errret), "0" (err))
 
-/*
- * This doesn't do __uaccess_begin/end - the exception handling
- * around it must do that.
- */
 #define __get_user_size_ex(x, ptr, size)				\
 do {									\
 	__chk_user_ptr(ptr);						\
 	switch (size) {							\
 	case 1:								\
-		__get_user_asm_ex(x, ptr, "b", "b", "=&q");		\
+		__get_user_asm_ex(x, ptr, "b", "b", "=q");		\
 		break;							\
 	case 2:								\
-		__get_user_asm_ex(x, ptr, "w", "w", "=&r");		\
+		__get_user_asm_ex(x, ptr, "w", "w", "=r");		\
 		break;							\
 	case 4:								\
-		__get_user_asm_ex(x, ptr, "l", "k", "=&r");		\
+		__get_user_asm_ex(x, ptr, "l", "k", "=r");		\
 		break;							\
 	case 8:								\
 		__get_user_asm_ex_u64(x, ptr);				\
@@ -417,17 +392,12 @@ do {									\
 	asm volatile("1:	mov"itype" %1,%"rtype"0\n"		\
 		     "2:\n"						\
 		     _ASM_EXTABLE_EX(1b, 2b)				\
-		     : ltype(x) : "m" (__m(addr)), "0" (0))
+		     : ltype(x) : "m" (__m(addr)))
 
 #define __put_user_nocheck(x, ptr, size)			\
 ({								\
 	int __pu_err;						\
-	__typeof__(*(ptr)) __pu_val = (x);			\
-	__typeof__(ptr) __pu_ptr = (ptr);			\
-	__typeof__(size) __pu_size = (size);			\
-	__uaccess_begin();					\
-	__put_user_size(__pu_val, __pu_ptr, __pu_size, __pu_err, -EFAULT); \
-	__uaccess_end();					\
+	__put_user_size((x), (ptr), (size), __pu_err, -EFAULT);	\
 	__pu_err;						\
 })
 
@@ -435,9 +405,7 @@ do {									\
 ({									\
 	int __gu_err;							\
 	unsigned long __gu_val;						\
-	__uaccess_begin_nospec();					\
 	__get_user_size(__gu_val, (ptr), (size), __gu_err, -EFAULT);	\
-	__uaccess_end();						\
 	(x) = (__force __typeof__(*(ptr)))__gu_val;			\
 	__gu_err;							\
 })
@@ -452,9 +420,9 @@ struct __large_struct { unsigned long buf[100]; };
  * aliasing issues.
  */
 #define __put_user_asm(x, addr, err, itype, rtype, ltype, errret)	\
-	asm volatile("\n"						\
+	asm volatile(ASM_STAC "\n"					\
 		     "1:	mov"itype" %"rtype"1,%2\n"		\
-		     "2:\n"						\
+		     "2: " ASM_CLAC "\n"				\
 		     ".section .fixup,\"ax\"\n"				\
 		     "3:	mov %3,%0\n"				\
 		     "	jmp 2b\n"					\
@@ -474,15 +442,11 @@ struct __large_struct { unsigned long buf[100]; };
  */
 #define uaccess_try	do {						\
 	current_thread_info()->uaccess_err = 0;				\
-	__uaccess_begin();						\
+	stac();								\
 	barrier();
 
-#define uaccess_try_nospec do {						\
-	current_thread_info()->uaccess_err = 0;				\
-	__uaccess_begin_nospec();					\
-
 #define uaccess_catch(err)						\
-	__uaccess_end();						\
+	clac();								\
 	(err) |= (current_thread_info()->uaccess_err ? -EFAULT : 0);	\
 } while (0)
 
@@ -543,7 +507,7 @@ struct __large_struct { unsigned long buf[100]; };
  *	get_user_ex(...);
  * } get_user_catch(err)
  */
-#define get_user_try		uaccess_try_nospec
+#define get_user_try		uaccess_try
 #define get_user_catch(err)	uaccess_catch(err)
 
 #define get_user_ex(x, ptr)	do {					\
@@ -578,13 +542,12 @@ extern void __cmpxchg_wrong_size(void)
 	__typeof__(ptr) __uval = (uval);				\
 	__typeof__(*(ptr)) __old = (old);				\
 	__typeof__(*(ptr)) __new = (new);				\
-	__uaccess_begin_nospec();					\
 	switch (size) {							\
 	case 1:								\
 	{								\
-		asm volatile("\n"					\
+		asm volatile("\t" ASM_STAC "\n"				\
 			"1:\t" LOCK_PREFIX "cmpxchgb %4, %2\n"		\
-			"2:\n"						\
+			"2:\t" ASM_CLAC "\n"				\
 			"\t.section .fixup, \"ax\"\n"			\
 			"3:\tmov     %3, %0\n"				\
 			"\tjmp     2b\n"				\
@@ -598,9 +561,9 @@ extern void __cmpxchg_wrong_size(void)
 	}								\
 	case 2:								\
 	{								\
-		asm volatile("\n"					\
+		asm volatile("\t" ASM_STAC "\n"				\
 			"1:\t" LOCK_PREFIX "cmpxchgw %4, %2\n"		\
-			"2:\n"						\
+			"2:\t" ASM_CLAC "\n"				\
 			"\t.section .fixup, \"ax\"\n"			\
 			"3:\tmov     %3, %0\n"				\
 			"\tjmp     2b\n"				\
@@ -614,9 +577,9 @@ extern void __cmpxchg_wrong_size(void)
 	}								\
 	case 4:								\
 	{								\
-		asm volatile("\n"					\
+		asm volatile("\t" ASM_STAC "\n"				\
 			"1:\t" LOCK_PREFIX "cmpxchgl %4, %2\n"		\
-			"2:\n"						\
+			"2:\t" ASM_CLAC "\n"				\
 			"\t.section .fixup, \"ax\"\n"			\
 			"3:\tmov     %3, %0\n"				\
 			"\tjmp     2b\n"				\
@@ -633,9 +596,9 @@ extern void __cmpxchg_wrong_size(void)
 		if (!IS_ENABLED(CONFIG_X86_64))				\
 			__cmpxchg_wrong_size();				\
 									\
-		asm volatile("\n"					\
+		asm volatile("\t" ASM_STAC "\n"				\
 			"1:\t" LOCK_PREFIX "cmpxchgq %4, %2\n"		\
-			"2:\n"						\
+			"2:\t" ASM_CLAC "\n"				\
 			"\t.section .fixup, \"ax\"\n"			\
 			"3:\tmov     %3, %0\n"				\
 			"\tjmp     2b\n"				\
@@ -650,7 +613,6 @@ extern void __cmpxchg_wrong_size(void)
 	default:							\
 		__cmpxchg_wrong_size();					\
 	}								\
-	__uaccess_end();						\
 	*__uval = __old;						\
 	__ret;								\
 })

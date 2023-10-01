@@ -30,7 +30,6 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 	struct linear_c *lc;
 	unsigned long long tmp;
 	char dummy;
-	int ret;
 
 	if (argc != 2) {
 		ti->error = "Invalid argument count";
@@ -43,15 +42,13 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 		return -ENOMEM;
 	}
 
-	ret = -EINVAL;
 	if (sscanf(argv[1], "%llu%c", &tmp, &dummy) != 1) {
 		ti->error = "dm-linear: Invalid device sector";
 		goto bad;
 	}
 	lc->start = tmp;
 
-	ret = dm_get_device(ti, argv[0], dm_table_get_mode(ti->table), &lc->dev);
-	if (ret) {
+	if (dm_get_device(ti, argv[0], dm_table_get_mode(ti->table), &lc->dev)) {
 		ti->error = "dm-linear: Device lookup failed";
 		goto bad;
 	}
@@ -64,7 +61,7 @@ static int linear_ctr(struct dm_target *ti, unsigned int argc, char **argv)
 
       bad:
 	kfree(lc);
-	return ret;
+	return -EINVAL;
 }
 
 static void linear_dtr(struct dm_target *ti)

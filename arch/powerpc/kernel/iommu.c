@@ -1037,7 +1037,7 @@ int iommu_tce_build(struct iommu_table *tbl, unsigned long entry,
 
 	/* if (unlikely(ret))
 		pr_err("iommu_tce: %s failed on hwaddr=%lx ioba=%lx kva=%lx ret=%d\n",
-			__func__, hwaddr, entry << IOMMU_PAGE_SHIFT(tbl),
+			__func__, hwaddr, entry << tbl->it_page_shift,
 				hwaddr, ret); */
 
 	return ret;
@@ -1056,7 +1056,7 @@ int iommu_put_tce_user_mode(struct iommu_table *tbl, unsigned long entry,
 			direction != DMA_TO_DEVICE, &page);
 	if (unlikely(ret != 1)) {
 		/* pr_err("iommu_tce: get_user_pages_fast failed tce=%lx ioba=%lx ret=%d\n",
-				tce, entry << IOMMU_PAGE_SHIFT(tbl), ret); */
+				tce, entry << tbl->it_page_shift, ret); */
 		return -EFAULT;
 	}
 	hwaddr = (unsigned long) page_address(page) + offset;
@@ -1175,30 +1175,4 @@ void iommu_del_device(struct device *dev)
 }
 EXPORT_SYMBOL_GPL(iommu_del_device);
 
-static int tce_iommu_bus_notifier(struct notifier_block *nb,
-                unsigned long action, void *data)
-{
-        struct device *dev = data;
-
-        switch (action) {
-        case BUS_NOTIFY_ADD_DEVICE:
-                return iommu_add_device(dev);
-        case BUS_NOTIFY_DEL_DEVICE:
-                if (dev->iommu_group)
-                        iommu_del_device(dev);
-                return 0;
-        default:
-                return 0;
-        }
-}
-
-static struct notifier_block tce_iommu_bus_nb = {
-        .notifier_call = tce_iommu_bus_notifier,
-};
-
-int __init tce_iommu_bus_notifier_init(void)
-{
-        bus_register_notifier(&pci_bus_type, &tce_iommu_bus_nb);
-        return 0;
-}
 #endif /* CONFIG_IOMMU_API */

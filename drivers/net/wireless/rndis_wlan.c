@@ -356,9 +356,9 @@ struct ndis_80211_pmkid {
 #define CAP_MODE_80211G		4
 #define CAP_MODE_MASK		7
 
-#define WORK_LINK_UP		0
-#define WORK_LINK_DOWN		1
-#define WORK_SET_MULTICAST_LIST	2
+#define WORK_LINK_UP		(1<<0)
+#define WORK_LINK_DOWN		(1<<1)
+#define WORK_SET_MULTICAST_LIST	(1<<2)
 
 #define RNDIS_WLAN_ALG_NONE	0
 #define RNDIS_WLAN_ALG_WEP	(1<<0)
@@ -2022,9 +2022,10 @@ static bool rndis_bss_info_update(struct usbnet *usbdev,
 	capability = le16_to_cpu(fixed->capabilities);
 	beacon_interval = le16_to_cpu(fixed->beacon_interval);
 
-	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid->mac,
-		timestamp, capability, beacon_interval, ie, ie_len, signal,
-		GFP_KERNEL);
+	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel,
+				  CFG80211_BSS_FTYPE_UNKNOWN, bssid->mac,
+				  timestamp, capability, beacon_interval,
+				  ie, ie_len, signal, GFP_KERNEL);
 	cfg80211_put_bss(priv->wdev.wiphy, bss);
 
 	return (bss != NULL);
@@ -2711,9 +2712,10 @@ static void rndis_wlan_craft_connected_bss(struct usbnet *usbdev, u8 *bssid,
 		bssid, (u32)timestamp, capability, beacon_period, ie_len,
 		ssid.essid, signal);
 
-	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel, bssid,
-		timestamp, capability, beacon_period, ie_buf, ie_len,
-		signal, GFP_KERNEL);
+	bss = cfg80211_inform_bss(priv->wdev.wiphy, channel,
+				  CFG80211_BSS_FTYPE_UNKNOWN, bssid,
+				  timestamp, capability, beacon_period,
+				  ie_buf, ie_len, signal, GFP_KERNEL);
 	cfg80211_put_bss(priv->wdev.wiphy, bss);
 }
 
@@ -2917,8 +2919,6 @@ static void rndis_wlan_auth_indication(struct usbnet *usbdev,
 
 	while (buflen >= sizeof(*auth_req)) {
 		auth_req = (void *)buf;
-		if (buflen < le32_to_cpu(auth_req->length))
-			return;
 		type = "unknown";
 		flags = le32_to_cpu(auth_req->flags);
 		pairwise_error = false;

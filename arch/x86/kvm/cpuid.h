@@ -3,7 +3,7 @@
 
 #include "x86.h"
 
-void kvm_update_cpuid(struct kvm_vcpu *vcpu);
+int kvm_update_cpuid(struct kvm_vcpu *vcpu);
 struct kvm_cpuid_entry2 *kvm_find_cpuid_entry(struct kvm_vcpu *vcpu,
 					      u32 function, u32 index);
 int kvm_dev_ioctl_get_cpuid(struct kvm_cpuid2 *cpuid,
@@ -88,6 +88,14 @@ static inline bool guest_cpuid_has_x2apic(struct kvm_vcpu *vcpu)
 	return best && (best->ecx & bit(X86_FEATURE_X2APIC));
 }
 
+static inline bool guest_cpuid_is_amd(struct kvm_vcpu *vcpu)
+{
+	struct kvm_cpuid_entry2 *best;
+
+	best = kvm_find_cpuid_entry(vcpu, 0, 0);
+	return best && best->ebx == X86EMUL_CPUID_VENDOR_AuthenticAMD_ebx;
+}
+
 static inline bool guest_cpuid_has_gbpages(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
@@ -96,51 +104,11 @@ static inline bool guest_cpuid_has_gbpages(struct kvm_vcpu *vcpu)
 	return best && (best->edx & bit(X86_FEATURE_GBPAGES));
 }
 
-static inline bool guest_cpuid_has_mpx(struct kvm_vcpu *vcpu)
+static inline bool guest_cpuid_has_rtm(struct kvm_vcpu *vcpu)
 {
 	struct kvm_cpuid_entry2 *best;
 
 	best = kvm_find_cpuid_entry(vcpu, 7, 0);
-	return best && (best->ebx & bit(X86_FEATURE_MPX));
+	return best && (best->ebx & bit(X86_FEATURE_RTM));
 }
-
-static inline bool guest_cpuid_has_ibpb(struct kvm_vcpu *vcpu)
-{
-	struct kvm_cpuid_entry2 *best;
-
-	best = kvm_find_cpuid_entry(vcpu, 0x80000008, 0);
-	if (best && (best->ebx & bit(X86_FEATURE_AMD_IBPB)))
-		return true;
-	best = kvm_find_cpuid_entry(vcpu, 7, 0);
-	return best && (best->edx & bit(X86_FEATURE_SPEC_CTRL));
-}
-
-static inline bool guest_cpuid_has_spec_ctrl(struct kvm_vcpu *vcpu)
-{
-	struct kvm_cpuid_entry2 *best;
-
-	best = kvm_find_cpuid_entry(vcpu, 0x80000008, 0);
-	if (best && (best->ebx & (bit(X86_FEATURE_AMD_IBRS | bit(X86_FEATURE_AMD_SSBD)))))
-		return true;
-	best = kvm_find_cpuid_entry(vcpu, 7, 0);
-	return best && (best->edx & (bit(X86_FEATURE_SPEC_CTRL) | bit(X86_FEATURE_SPEC_CTRL_SSBD)));
-}
-
-static inline bool guest_cpuid_has_arch_capabilities(struct kvm_vcpu *vcpu)
-{
-	struct kvm_cpuid_entry2 *best;
-
-	best = kvm_find_cpuid_entry(vcpu, 7, 0);
-	return best && (best->edx & bit(X86_FEATURE_ARCH_CAPABILITIES));
-}
-
-static inline bool guest_cpuid_has_virt_ssbd(struct kvm_vcpu *vcpu)
-{
-	struct kvm_cpuid_entry2 *best;
-
-	best = kvm_find_cpuid_entry(vcpu, 0x80000008, 0);
-	return best && (best->ebx & bit(X86_FEATURE_VIRT_SSBD));
-}
-
-
 #endif

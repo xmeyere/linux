@@ -211,9 +211,6 @@ static int tps_65023_probe(struct i2c_client *client,
 	int i;
 	int error;
 
-	if (!i2c_check_functionality(client->adapter, I2C_FUNC_SMBUS_BYTE_DATA))
-		return -EIO;
-
 	/**
 	 * init_data points to array of regulator_init structures
 	 * coming from the board-evm file.
@@ -293,7 +290,8 @@ static int tps_65023_probe(struct i2c_client *client,
 
 	/* Enable setting output voltage by I2C */
 	regmap_update_bits(tps->regmap, TPS65023_REG_CON_CTRL2,
-			   TPS65023_REG_CTRL2_CORE_ADJ, 0);
+					TPS65023_REG_CTRL2_CORE_ADJ,
+					TPS65023_REG_CTRL2_CORE_ADJ);
 
 	return 0;
 }

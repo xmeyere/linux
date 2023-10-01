@@ -408,25 +408,6 @@ static void tfifo_enqueue(struct sk_buff *nskb, struct Qdisc *sch)
 	sch->q.qlen++;
 }
 
-/* netem can't properly corrupt a megapacket (like we get from GSO), so instead
- * when we statistically choose to corrupt one, we instead segment it, returning
- * the first packet to be corrupted, and re-enqueue the remaining frames
- */
-static struct sk_buff *netem_segment(struct sk_buff *skb, struct Qdisc *sch)
-{
-	struct sk_buff *segs;
-	netdev_features_t features = netif_skb_features(skb);
-
-	segs = skb_gso_segment(skb, features & ~NETIF_F_GSO_MASK);
-
-	if (IS_ERR_OR_NULL(segs)) {
-		qdisc_reshape_fail(skb, sch);
-		return NULL;
-	}
-	consume_skb(skb);
-	return segs;
-}
-
 /*
  * Insert one skb into qdisc.
  * Note: parent depends on return value to account for queue length.
@@ -439,11 +420,7 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	/* We don't fill cb now as skb_unshare() may invalidate it */
 	struct netem_skb_cb *cb;
 	struct sk_buff *skb2;
-	struct sk_buff *segs = NULL;
-	unsigned int prev_len = qdisc_pkt_len(skb);
 	int count = 1;
-	int rc = NET_XMIT_SUCCESS;
-	int rc_drop = NET_XMIT_DROP;
 
 	/* Random duplication */
 	if (q->duplicate && q->duplicate >= get_crandom(&q->dup_cor))
@@ -452,12 +429,12 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	/* Drop packet? */
 	if (loss_event(q)) {
 		if (q->ecn && INET_ECN_set_ce(skb))
-			sch->qstats.drops++; /* mark packet */
+			qdisc_qstats_drop(sch); /* mark packet */
 		else
 			--count;
 	}
 	if (count == 0) {
-		sch->qstats.drops++;
+		qdisc_qstats_drop(sch);
 		kfree_skb(skb);
 		return NET_XMIT_SUCCESS | __NET_XMIT_BYPASS;
 	}
@@ -480,7 +457,6 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 
 		qdisc_enqueue_root(skb2, rootq);
 		q->duplicate = dupsave;
-		rc_drop = NET_XMIT_SUCCESS;
 	}
 
 	/*
@@ -490,40 +466,19 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 	 * do it now in software before we mangle it.
 	 */
 	if (q->corrupt && q->corrupt >= get_crandom(&q->corrupt_cor)) {
-		if (skb_is_gso(skb)) {
-			segs = netem_segment(skb, sch);
-			if (!segs)
-				return rc_drop;
-			qdisc_skb_cb(segs)->pkt_len = segs->len;
-		} else {
-			segs = skb;
-		}
-
-		skb = segs;
-		segs = segs->next;
-
 		if (!(skb = skb_unshare(skb, GFP_ATOMIC)) ||
 		    (skb->ip_summed == CHECKSUM_PARTIAL &&
-		     skb_checksum_help(skb))) {
-			rc = qdisc_drop(skb, sch);
-			skb = NULL;
-			goto finish_segs;
-		}
+		     skb_checksum_help(skb)))
+			return qdisc_drop(skb, sch);
 
 		skb->data[prandom_u32() % skb_headlen(skb)] ^=
 			1<<(prandom_u32() % 8);
 	}
 
-	if (unlikely(skb_queue_len(&sch->q) >= sch->limit)) {
-		/* qdisc_reshape_fail() can't handle segmented skb */
-		if (segs)
-			qdisc_drop_all(skb, sch);
-		else if (qdisc_reshape_fail(skb, sch) == NET_XMIT_SUCCESS)
-			return NET_XMIT_SUCCESS;
-		return rc_drop;
-	}
+	if (unlikely(skb_queue_len(&sch->q) >= sch->limit))
+		return qdisc_reshape_fail(skb, sch);
 
-	sch->qstats.backlog += qdisc_pkt_len(skb);
+	qdisc_qstats_backlog_inc(sch, skb);
 
 	cb = netem_skb_cb(skb);
 	if (q->gap == 0 ||		/* not doing reordering */
@@ -574,34 +529,6 @@ static int netem_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 		sch->qstats.requeues++;
 	}
 
-finish_segs:
-	if (segs) {
-		unsigned int len, last_len;
-		int nb;
-
-		len = skb ? skb->len : 0;
-		nb = skb ? 1 : 0;
-
-		while (segs) {
-			skb2 = segs->next;
-			segs->next = NULL;
-			qdisc_skb_cb(segs)->pkt_len = segs->len;
-			last_len = segs->len;
-			rc = qdisc_enqueue(segs, sch);
-			if (rc != NET_XMIT_SUCCESS) {
-				if (net_xmit_drop_count(rc))
-					sch->qstats.drops++;
-			} else {
-				nb++;
-				len += last_len;
-			}
-			segs = skb2;
-		}
-		/* Parent qdiscs accounted for 1 skb of size @prev_len */
-		qdisc_tree_reduce_backlog(sch, -(nb - 1), -(len - prev_len));
-	} else if (!skb) {
-		return NET_XMIT_DROP;
-	}
 	return NET_XMIT_SUCCESS;
 }
 
@@ -622,15 +549,14 @@ static unsigned int netem_drop(struct Qdisc *sch)
 			sch->q.qlen--;
 			skb->next = NULL;
 			skb->prev = NULL;
-			len = qdisc_pkt_len(skb);
-			sch->qstats.backlog -= len;
+			qdisc_qstats_backlog_dec(sch, skb);
 			kfree_skb(skb);
 		}
 	}
 	if (!len && q->qdisc && q->qdisc->ops->drop)
 	    len = q->qdisc->ops->drop(q->qdisc);
 	if (len)
-		sch->qstats.drops++;
+		qdisc_qstats_drop(sch);
 
 	return len;
 }
@@ -648,7 +574,7 @@ tfifo_dequeue:
 	skb = __skb_dequeue(&sch->q);
 	if (skb) {
 deliver:
-		sch->qstats.backlog -= qdisc_pkt_len(skb);
+		qdisc_qstats_backlog_dec(sch, skb);
 		qdisc_unthrottled(sch);
 		qdisc_bstats_update(sch, skb);
 		return skb;
@@ -679,14 +605,13 @@ deliver:
 #endif
 
 			if (q->qdisc) {
-				unsigned int pkt_len = qdisc_pkt_len(skb);
 				int err = qdisc_enqueue(skb, q->qdisc);
 
-				if (err != NET_XMIT_SUCCESS &&
-				    net_xmit_drop_count(err)) {
-					sch->qstats.drops++;
-					qdisc_tree_reduce_backlog(sch, 1,
-								  pkt_len);
+				if (unlikely(err != NET_XMIT_SUCCESS)) {
+					if (net_xmit_drop_count(err)) {
+						qdisc_qstats_drop(sch);
+						qdisc_tree_decrease_qlen(sch, 1);
+					}
 				}
 				goto tfifo_dequeue;
 			}
@@ -739,7 +664,7 @@ static int get_dist_table(struct Qdisc *sch, const struct nlattr *attr)
 	int i;
 	size_t s;
 
-	if (!n || n > NETEM_DIST_MAX)
+	if (n > NETEM_DIST_MAX)
 		return -EINVAL;
 
 	s = sizeof(struct disttable) + n * sizeof(s16);
@@ -972,10 +897,10 @@ static int netem_init(struct Qdisc *sch, struct nlattr *opt)
 	struct netem_sched_data *q = qdisc_priv(sch);
 	int ret;
 
-	qdisc_watchdog_init(&q->watchdog, sch);
-
 	if (!opt)
 		return -EINVAL;
+
+	qdisc_watchdog_init(&q->watchdog, sch);
 
 	q->loss_model = CLG_RANDOM;
 	ret = netem_change(sch, opt);
@@ -1124,7 +1049,15 @@ static int netem_graft(struct Qdisc *sch, unsigned long arg, struct Qdisc *new,
 {
 	struct netem_sched_data *q = qdisc_priv(sch);
 
-	*old = qdisc_replace(sch, new, &q->qdisc);
+	sch_tree_lock(sch);
+	*old = q->qdisc;
+	q->qdisc = new;
+	if (*old) {
+		qdisc_tree_decrease_qlen(*old, (*old)->q.qlen);
+		qdisc_reset(*old);
+	}
+	sch_tree_unlock(sch);
+
 	return 0;
 }
 

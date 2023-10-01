@@ -41,8 +41,20 @@ static inline int crypto_set_driver_name(struct crypto_alg *alg)
 	return 0;
 }
 
+static inline void crypto_check_module_sig(struct module *mod)
+{
+#ifdef CONFIG_CRYPTO_FIPS
+	if (fips_enabled && mod && !mod->sig_ok)
+		panic("Module %s signature verification failed in FIPS mode\n",
+		      mod->name);
+#endif
+	return;
+}
+
 static int crypto_check_alg(struct crypto_alg *alg)
 {
+	crypto_check_module_sig(alg->cra_module);
+
 	if (alg->cra_alignmask & (alg->cra_alignmask + 1))
 		return -EINVAL;
 
@@ -147,18 +159,6 @@ void crypto_remove_spawns(struct crypto_alg *alg, struct list_head *list,
 
 			spawn->alg = NULL;
 			spawns = &inst->alg.cra_users;
-
-			/*
-			 * We may encounter an unregistered instance here, since
-			 * an instance's spawns are set up prior to the instance
-			 * being registered.  An unregistered instance will have
-			 * NULL ->cra_users.next, since ->cra_users isn't
-			 * properly initialized until registration.  But an
-			 * unregistered instance cannot have any users, so treat
-			 * it the same as ->cra_users being empty.
-			 */
-			if (spawns->next == NULL)
-				break;
 		}
 	} while ((spawns = crypto_more_spawns(alg, &stack, &top,
 					      &secondary_spawns)));
@@ -337,7 +337,7 @@ static void crypto_wait_for_test(struct crypto_larval *larval)
 		crypto_alg_tested(larval->alg.cra_driver_name, 0);
 	}
 
-	err = wait_for_completion_killable(&larval->completion);
+	err = wait_for_completion_interruptible(&larval->completion);
 	WARN_ON(err);
 
 out:
@@ -349,7 +349,6 @@ int crypto_register_alg(struct crypto_alg *alg)
 	struct crypto_larval *larval;
 	int err;
 
-	alg->cra_flags &= ~CRYPTO_ALG_DEAD;
 	err = crypto_check_alg(alg);
 	if (err)
 		return err;
@@ -443,6 +442,8 @@ int crypto_register_template(struct crypto_template *tmpl)
 
 	down_write(&crypto_alg_sem);
 
+	crypto_check_module_sig(tmpl->module);
+
 	list_for_each_entry(q, &crypto_template_list, list) {
 		if (q == tmpl)
 			goto out;
@@ -508,8 +509,8 @@ static struct crypto_template *__crypto_lookup_template(const char *name)
 
 struct crypto_template *crypto_lookup_template(const char *name)
 {
-	return try_then_request_module(__crypto_lookup_template(name),
-				       "crypto-%s", name);
+	return try_then_request_module(__crypto_lookup_template(name), "%s",
+				       name);
 }
 EXPORT_SYMBOL_GPL(crypto_lookup_template);
 
@@ -618,9 +619,11 @@ EXPORT_SYMBOL_GPL(crypto_init_spawn2);
 
 void crypto_drop_spawn(struct crypto_spawn *spawn)
 {
+	if (!spawn->alg)
+		return;
+
 	down_write(&crypto_alg_sem);
-	if (spawn->alg)
-		list_del(&spawn->list);
+	list_del(&spawn->list);
 	up_write(&crypto_alg_sem);
 }
 EXPORT_SYMBOL_GPL(crypto_drop_spawn);
@@ -628,16 +631,22 @@ EXPORT_SYMBOL_GPL(crypto_drop_spawn);
 static struct crypto_alg *crypto_spawn_alg(struct crypto_spawn *spawn)
 {
 	struct crypto_alg *alg;
+	struct crypto_alg *alg2;
 
 	down_read(&crypto_alg_sem);
 	alg = spawn->alg;
-	if (alg && !crypto_mod_get(alg)) {
-		alg->cra_flags |= CRYPTO_ALG_DYING;
-		alg = NULL;
-	}
+	alg2 = alg;
+	if (alg2)
+		alg2 = crypto_mod_get(alg2);
 	up_read(&crypto_alg_sem);
 
-	return alg ?: ERR_PTR(-EAGAIN);
+	if (!alg2) {
+		if (alg)
+			crypto_shoot_alg(alg);
+		return ERR_PTR(-EAGAIN);
+	}
+
+	return alg;
 }
 
 struct crypto_tfm *crypto_spawn_tfm(struct crypto_spawn *spawn, u32 type,

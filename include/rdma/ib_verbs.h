@@ -491,20 +491,14 @@ struct ib_mr_init_attr {
 	u32	    flags;
 };
 
-enum ib_signature_type {
-	IB_SIG_TYPE_T10_DIF,
-};
-
 /**
- * T10-DIF Signature types
- * T10-DIF types are defined by SCSI
- * specifications.
+ * Signature types
+ * IB_SIG_TYPE_NONE: Unprotected.
+ * IB_SIG_TYPE_T10_DIF: Type T10-DIF
  */
-enum ib_t10_dif_type {
-	IB_T10DIF_NONE,
-	IB_T10DIF_TYPE1,
-	IB_T10DIF_TYPE2,
-	IB_T10DIF_TYPE3
+enum ib_signature_type {
+	IB_SIG_TYPE_NONE,
+	IB_SIG_TYPE_T10_DIF,
 };
 
 /**
@@ -520,24 +514,26 @@ enum ib_t10_dif_bg_type {
 /**
  * struct ib_t10_dif_domain - Parameters specific for T10-DIF
  *     domain.
- * @type: T10-DIF type (0|1|2|3)
  * @bg_type: T10-DIF block guard type (CRC|CSUM)
  * @pi_interval: protection information interval.
  * @bg: seed of guard computation.
  * @app_tag: application tag of guard block
  * @ref_tag: initial guard block reference tag.
- * @type3_inc_reftag: T10-DIF type 3 does not state
- *     about the reference tag, it is the user
- *     choice to increment it or not.
+ * @ref_remap: Indicate wethear the reftag increments each block
+ * @app_escape: Indicate to skip block check if apptag=0xffff
+ * @ref_escape: Indicate to skip block check if reftag=0xffffffff
+ * @apptag_check_mask: check bitmask of application tag.
  */
 struct ib_t10_dif_domain {
-	enum ib_t10_dif_type	type;
 	enum ib_t10_dif_bg_type bg_type;
 	u16			pi_interval;
 	u16			bg;
 	u16			app_tag;
 	u32			ref_tag;
-	bool			type3_inc_reftag;
+	bool			ref_remap;
+	bool			app_escape;
+	bool			ref_escape;
+	u16			apptag_check_mask;
 };
 
 /**
@@ -1097,7 +1093,8 @@ struct ib_mr_attr {
 enum ib_mr_rereg_flags {
 	IB_MR_REREG_TRANS	= 1,
 	IB_MR_REREG_PD		= (1<<1),
-	IB_MR_REREG_ACCESS	= (1<<2)
+	IB_MR_REREG_ACCESS	= (1<<2),
+	IB_MR_REREG_SUPPORTED	= ((IB_MR_REREG_ACCESS << 1) - 1)
 };
 
 /**
@@ -1547,6 +1544,13 @@ struct ib_device {
 						  u64 virt_addr,
 						  int mr_access_flags,
 						  struct ib_udata *udata);
+	int			   (*rereg_user_mr)(struct ib_mr *mr,
+						    int flags,
+						    u64 start, u64 length,
+						    u64 virt_addr,
+						    int mr_access_flags,
+						    struct ib_pd *pd,
+						    struct ib_udata *udata);
 	int                        (*query_mr)(struct ib_mr *mr,
 					       struct ib_mr_attr *mr_attr);
 	int                        (*dereg_mr)(struct ib_mr *mr);
@@ -1693,40 +1697,6 @@ int ib_query_port(struct ib_device *device,
 
 enum rdma_link_layer rdma_port_get_link_layer(struct ib_device *device,
 					       u8 port_num);
-
-/**
- * rdma_start_port - Return the first valid port number for the device
- * specified
- *
- * @device: Device to be checked
- *
- * Return start port number
- */
-static inline u8 rdma_start_port(const struct ib_device *device)
-{
-	return (device->node_type == RDMA_NODE_IB_SWITCH) ? 0 : 1;
-}
-
-/**
- * rdma_end_port - Return the last valid port number for the device
- * specified
- *
- * @device: Device to be checked
- *
- * Return last port number
- */
-static inline u8 rdma_end_port(const struct ib_device *device)
-{
-	return (device->node_type == RDMA_NODE_IB_SWITCH) ?
-		0 : device->phys_port_cnt;
-}
-
-static inline int rdma_is_port_valid(const struct ib_device *device,
-				     unsigned int port)
-{
-	return (port >= rdma_start_port(device) &&
-		port <= rdma_end_port(device));
-}
 
 int ib_query_gid(struct ib_device *device,
 		 u8 port_num, int index, union ib_gid *gid);

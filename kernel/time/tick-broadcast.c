@@ -554,7 +554,7 @@ int tick_resume_broadcast_oneshot(struct clock_event_device *bc)
 void tick_check_oneshot_broadcast_this_cpu(void)
 {
 	if (cpumask_test_cpu(smp_processor_id(), tick_broadcast_oneshot_mask)) {
-		struct tick_device *td = &__get_cpu_var(tick_cpu_device);
+		struct tick_device *td = this_cpu_ptr(&tick_cpu_device);
 
 		/*
 		 * We might be in the middle of switching over from
@@ -585,14 +585,6 @@ again:
 	now = ktime_get();
 	/* Find all expired events */
 	for_each_cpu(cpu, tick_broadcast_oneshot_mask) {
-		/*
-		 * Required for !SMP because for_each_cpu() reports
-		 * unconditionally CPU0 as set on UP kernels.
-		 */
-		if (!IS_ENABLED(CONFIG_SMP) &&
-		    cpumask_empty(tick_broadcast_oneshot_mask))
-			break;
-
 		td = &per_cpu(tick_cpu_device, cpu);
 		if (td->evtdev->next_event.tv64 <= now.tv64) {
 			cpumask_set_cpu(cpu, tmpmask);

@@ -50,7 +50,7 @@ static struct inet_protosw pingv6_protosw = {
 	.type =      SOCK_DGRAM,
 	.protocol =  IPPROTO_ICMPV6,
 	.prot =      &pingv6_prot,
-	.ops =       &inet6_sockraw_ops,
+	.ops =       &inet6_dgram_ops,
 	.flags =     INET_PROTOSW_REUSE,
 };
 
@@ -102,10 +102,9 @@ int ping_v6_sendmsg(struct kiocb *iocb, struct sock *sk, struct msghdr *msg,
 
 	if (msg->msg_name) {
 		DECLARE_SOCKADDR(struct sockaddr_in6 *, u, msg->msg_name);
-		if (msg->msg_namelen < sizeof(*u))
+		if (msg->msg_namelen < sizeof(struct sockaddr_in6) ||
+		    u->sin6_family != AF_INET6) {
 			return -EINVAL;
-		if (u->sin6_family != AF_INET6) {
-			return -EAFNOSUPPORT;
 		}
 		if (sk->sk_bound_dev_if &&
 		    sk->sk_bound_dev_if != u->sin6_scope_id) {
@@ -230,7 +229,7 @@ static int __net_init ping_v6_proc_init_net(struct net *net)
 	return ping_proc_register(net, &ping_v6_seq_afinfo);
 }
 
-static void __net_exit ping_v6_proc_exit_net(struct net *net)
+static void __net_init ping_v6_proc_exit_net(struct net *net)
 {
 	return ping_proc_unregister(net, &ping_v6_seq_afinfo);
 }

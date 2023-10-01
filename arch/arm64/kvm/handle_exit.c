@@ -34,7 +34,7 @@ static int handle_hvc(struct kvm_vcpu *vcpu, struct kvm_run *run)
 
 	ret = kvm_psci_call(vcpu);
 	if (ret < 0) {
-		*vcpu_reg(vcpu, 0) = ~0UL;
+		kvm_inject_undefined(vcpu);
 		return 1;
 	}
 
@@ -43,16 +43,7 @@ static int handle_hvc(struct kvm_vcpu *vcpu, struct kvm_run *run)
 
 static int handle_smc(struct kvm_vcpu *vcpu, struct kvm_run *run)
 {
-	/*
-	 * "If an SMC instruction executed at Non-secure EL1 is
-	 * trapped to EL2 because HCR_EL2.TSC is 1, the exception is a
-	 * Trap exception, not a Secure Monitor Call exception [...]"
-	 *
-	 * We need to advance the PC after the trap, as it would
-	 * otherwise return to the same address...
-	 */
-	*vcpu_reg(vcpu, 0) = ~0UL;
-	kvm_skip_instr(vcpu, kvm_vcpu_trap_il_is32bit(vcpu));
+	kvm_inject_undefined(vcpu);
 	return 1;
 }
 
@@ -84,9 +75,9 @@ static exit_handle_fn arm_exit_handlers[] = {
 	[ESR_EL2_EC_WFI]	= kvm_handle_wfx,
 	[ESR_EL2_EC_CP15_32]	= kvm_handle_cp15_32,
 	[ESR_EL2_EC_CP15_64]	= kvm_handle_cp15_64,
-	[ESR_EL2_EC_CP14_MR]	= kvm_handle_cp14_access,
+	[ESR_EL2_EC_CP14_MR]	= kvm_handle_cp14_32,
 	[ESR_EL2_EC_CP14_LS]	= kvm_handle_cp14_load_store,
-	[ESR_EL2_EC_CP14_64]	= kvm_handle_cp14_access,
+	[ESR_EL2_EC_CP14_64]	= kvm_handle_cp14_64,
 	[ESR_EL2_EC_HVC32]	= handle_hvc,
 	[ESR_EL2_EC_SMC32]	= handle_smc,
 	[ESR_EL2_EC_HVC64]	= handle_hvc,

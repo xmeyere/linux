@@ -345,7 +345,9 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 	struct atmel_pcm_dma_params *dma_params;
 	int dir, channels, bits;
 	u32 tfmr, rfmr, tcmr, rcmr;
+	int start_event;
 	int ret;
+	int fslen, fslen_ext;
 
 	/*
 	 * Currently, there is only one set of dma params for
@@ -387,18 +389,6 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 	}
 
 	/*
-	 * The SSC only supports up to 16-bit samples in I2S format, due
-	 * to the size of the Frame Mode Register FSLEN field.
-	 */
-	if ((ssc_p->daifmt & SND_SOC_DAIFMT_FORMAT_MASK) == SND_SOC_DAIFMT_I2S
-		&& bits > 16) {
-		printk(KERN_WARNING
-				"atmel_ssc_dai: sample size %d "
-				"is too large for I2S\n", bits);
-		return -EINVAL;
-	}
-
-	/*
 	 * Compute SSC register settings.
 	 */
 	switch (ssc_p->daifmt
@@ -412,6 +402,17 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 		 * from the MCK divider, and the BCLK signal
 		 * is output on the SSC TK line.
 		 */
+
+		if (bits > 16 && !ssc->pdata->has_fslen_ext) {
+			dev_err(dai->dev,
+				"sample size %d is too large for SSC device\n",
+				bits);
+			return -EINVAL;
+		}
+
+		fslen_ext = (bits - 1) / 16;
+		fslen = (bits - 1) % 16;
+
 		rcmr =	  SSC_BF(RCMR_PERIOD, ssc_p->rcmr_period)
 			| SSC_BF(RCMR_STTDLY, START_DELAY)
 			| SSC_BF(RCMR_START, SSC_START_FALLING_RF)
@@ -419,9 +420,10 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 			| SSC_BF(RCMR_CKO, SSC_CKO_NONE)
 			| SSC_BF(RCMR_CKS, SSC_CKS_DIV);
 
-		rfmr =	  SSC_BF(RFMR_FSEDGE, SSC_FSEDGE_POSITIVE)
+		rfmr =    SSC_BF(RFMR_FSLEN_EXT, fslen_ext)
+			| SSC_BF(RFMR_FSEDGE, SSC_FSEDGE_POSITIVE)
 			| SSC_BF(RFMR_FSOS, SSC_FSOS_NEGATIVE)
-			| SSC_BF(RFMR_FSLEN, (bits - 1))
+			| SSC_BF(RFMR_FSLEN, fslen)
 			| SSC_BF(RFMR_DATNB, (channels - 1))
 			| SSC_BIT(RFMR_MSBF)
 			| SSC_BF(RFMR_LOOP, 0)
@@ -434,10 +436,11 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 			| SSC_BF(TCMR_CKO, SSC_CKO_CONTINUOUS)
 			| SSC_BF(TCMR_CKS, SSC_CKS_DIV);
 
-		tfmr =	  SSC_BF(TFMR_FSEDGE, SSC_FSEDGE_POSITIVE)
+		tfmr =    SSC_BF(TFMR_FSLEN_EXT, fslen_ext)
+			| SSC_BF(TFMR_FSEDGE, SSC_FSEDGE_POSITIVE)
 			| SSC_BF(TFMR_FSDEN, 0)
 			| SSC_BF(TFMR_FSOS, SSC_FSOS_NEGATIVE)
-			| SSC_BF(TFMR_FSLEN, (bits - 1))
+			| SSC_BF(TFMR_FSLEN, fslen)
 			| SSC_BF(TFMR_DATNB, (channels - 1))
 			| SSC_BIT(TFMR_MSBF)
 			| SSC_BF(TFMR_DATDEF, 0)
@@ -451,10 +454,19 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 		 * The SSC transmit clock is obtained from the BCLK signal on
 		 * on the TK line, and the SSC receive clock is
 		 * generated from the transmit clock.
+		 *
+		 *  For single channel data, one sample is transferred
+		 * on the falling edge of the LRC clock.
+		 * For two channel data, one sample is
+		 * transferred on both edges of the LRC clock.
 		 */
+		start_event = ((channels == 1)
+				? SSC_START_FALLING_RF
+				: SSC_START_EDGE_RF);
+
 		rcmr =	  SSC_BF(RCMR_PERIOD, 0)
 			| SSC_BF(RCMR_STTDLY, START_DELAY)
-			| SSC_BF(RCMR_START, SSC_START_FALLING_RF)
+			| SSC_BF(RCMR_START, start_event)
 			| SSC_BF(RCMR_CKI, SSC_CKI_RISING)
 			| SSC_BF(RCMR_CKO, SSC_CKO_NONE)
 			| SSC_BF(RCMR_CKS, ssc->clk_from_rk_pin ?
@@ -463,14 +475,14 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 		rfmr =	  SSC_BF(RFMR_FSEDGE, SSC_FSEDGE_POSITIVE)
 			| SSC_BF(RFMR_FSOS, SSC_FSOS_NONE)
 			| SSC_BF(RFMR_FSLEN, 0)
-			| SSC_BF(RFMR_DATNB, (channels - 1))
+			| SSC_BF(RFMR_DATNB, 0)
 			| SSC_BIT(RFMR_MSBF)
 			| SSC_BF(RFMR_LOOP, 0)
 			| SSC_BF(RFMR_DATLEN, (bits - 1));
 
 		tcmr =	  SSC_BF(TCMR_PERIOD, 0)
 			| SSC_BF(TCMR_STTDLY, START_DELAY)
-			| SSC_BF(TCMR_START, SSC_START_FALLING_RF)
+			| SSC_BF(TCMR_START, start_event)
 			| SSC_BF(TCMR_CKI, SSC_CKI_FALLING)
 			| SSC_BF(TCMR_CKO, SSC_CKO_NONE)
 			| SSC_BF(TCMR_CKS, ssc->clk_from_rk_pin ?
@@ -480,7 +492,7 @@ static int atmel_ssc_hw_params(struct snd_pcm_substream *substream,
 			| SSC_BF(TFMR_FSDEN, 0)
 			| SSC_BF(TFMR_FSOS, SSC_FSOS_NONE)
 			| SSC_BF(TFMR_FSLEN, 0)
-			| SSC_BF(TFMR_DATNB, (channels - 1))
+			| SSC_BF(TFMR_DATNB, 0)
 			| SSC_BIT(TFMR_MSBF)
 			| SSC_BF(TFMR_DATDEF, 0)
 			| SSC_BF(TFMR_DATLEN, (bits - 1));

@@ -92,13 +92,6 @@ lowpan_dev_info *lowpan_dev_info(const struct net_device *dev)
 	return netdev_priv(dev);
 }
 
-static inline void lowpan_address_flip(u8 *src, u8 *dest)
-{
-	int i;
-	for (i = 0; i < IEEE802154_ADDR_LEN; i++)
-		(dest)[IEEE802154_ADDR_LEN - i - 1] = (src)[i];
-}
-
 static inline struct
 lowpan_addr_info *lowpan_skb_priv(const struct sk_buff *skb)
 {
@@ -107,10 +100,9 @@ lowpan_addr_info *lowpan_skb_priv(const struct sk_buff *skb)
 			sizeof(struct lowpan_addr_info));
 }
 
-static int lowpan_header_create(struct sk_buff *skb,
-			   struct net_device *dev,
-			   unsigned short type, const void *_daddr,
-			   const void *_saddr, unsigned int len)
+static int lowpan_header_create(struct sk_buff *skb, struct net_device *dev,
+				unsigned short type, const void *_daddr,
+				const void *_saddr, unsigned int len)
 {
 	const u8 *saddr = _saddr;
 	const u8 *daddr = _daddr;
@@ -142,7 +134,7 @@ static int lowpan_header_create(struct sk_buff *skb,
 }
 
 static int lowpan_give_skb_to_devices(struct sk_buff *skb,
-					struct net_device *dev)
+				      struct net_device *dev)
 {
 	struct lowpan_dev_record *entry;
 	struct sk_buff *skb_cp;
@@ -244,7 +236,7 @@ lowpan_alloc_frag(struct sk_buff *skb, int size,
 			return ERR_PTR(-rc);
 		}
 	} else {
-		frag = ERR_PTR(ENOMEM);
+		frag = ERR_PTR(-ENOMEM);
 	}
 
 	return frag;
@@ -388,24 +380,9 @@ static netdev_tx_t lowpan_xmit(struct sk_buff *skb, struct net_device *dev)
 	/* We must take a copy of the skb before we modify/replace the ipv6
 	 * header as the header could be used elsewhere
 	 */
-	if (unlikely(skb_headroom(skb) < dev->needed_headroom ||
-		     skb_tailroom(skb) < dev->needed_tailroom)) {
-		struct sk_buff *nskb;
-
-		nskb = skb_copy_expand(skb, dev->needed_headroom,
-				       dev->needed_tailroom, GFP_ATOMIC);
-		if (likely(nskb)) {
-			consume_skb(skb);
-			skb = nskb;
-		} else {
-			kfree_skb(skb);
-			return NET_XMIT_DROP;
-		}
-	} else {
-		skb = skb_unshare(skb, GFP_ATOMIC);
-		if (!skb)
-			return NET_XMIT_DROP;
-	}
+	skb = skb_unshare(skb, GFP_ATOMIC);
+	if (!skb)
+		return NET_XMIT_DROP;
 
 	ret = lowpan_header(skb, dev);
 	if (ret < 0) {
@@ -436,24 +413,28 @@ static netdev_tx_t lowpan_xmit(struct sk_buff *skb, struct net_device *dev)
 static struct wpan_phy *lowpan_get_phy(const struct net_device *dev)
 {
 	struct net_device *real_dev = lowpan_dev_info(dev)->real_dev;
+
 	return ieee802154_mlme_ops(real_dev)->get_phy(real_dev);
 }
 
 static __le16 lowpan_get_pan_id(const struct net_device *dev)
 {
 	struct net_device *real_dev = lowpan_dev_info(dev)->real_dev;
+
 	return ieee802154_mlme_ops(real_dev)->get_pan_id(real_dev);
 }
 
 static __le16 lowpan_get_short_addr(const struct net_device *dev)
 {
 	struct net_device *real_dev = lowpan_dev_info(dev)->real_dev;
+
 	return ieee802154_mlme_ops(real_dev)->get_short_addr(real_dev);
 }
 
 static u8 lowpan_get_dsn(const struct net_device *dev)
 {
 	struct net_device *real_dev = lowpan_dev_info(dev)->real_dev;
+
 	return ieee802154_mlme_ops(real_dev)->get_dsn(real_dev);
 }
 
@@ -501,7 +482,7 @@ static void lowpan_setup(struct net_device *dev)
 	/* Frame Control + Sequence Number + Address fields + Security Header */
 	dev->hard_header_len	= 2 + 1 + 20 + 14;
 	dev->needed_tailroom	= 2; /* FCS */
-	dev->mtu		= 1281;
+	dev->mtu		= IPV6_MIN_MTU;
 	dev->tx_queue_len	= 0;
 	dev->flags		= IFF_BROADCAST | IFF_MULTICAST;
 	dev->watchdog_timeo	= 0;
@@ -522,7 +503,7 @@ static int lowpan_validate(struct nlattr *tb[], struct nlattr *data[])
 }
 
 static int lowpan_rcv(struct sk_buff *skb, struct net_device *dev,
-	struct packet_type *pt, struct net_device *orig_dev)
+		      struct packet_type *pt, struct net_device *orig_dev)
 {
 	struct ieee802154_hdr hdr;
 	int ret;

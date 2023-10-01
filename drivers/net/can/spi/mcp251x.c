@@ -626,7 +626,7 @@ static int mcp251x_setup(struct net_device *net, struct mcp251x_priv *priv,
 static int mcp251x_hw_reset(struct spi_device *spi)
 {
 	struct mcp251x_priv *priv = spi_get_drvdata(spi);
-	unsigned long timeout;
+	u8 reg;
 	int ret;
 
 	/* Wait for oscillator startup timer after power up */
@@ -640,19 +640,10 @@ static int mcp251x_hw_reset(struct spi_device *spi)
 	/* Wait for oscillator startup timer after reset */
 	mdelay(MCP251X_OST_DELAY_MS);
 	
-	/* Wait for reset to finish */
-	timeout = jiffies + HZ;
-	while ((mcp251x_read_reg(spi, CANSTAT) & CANCTRL_REQOP_MASK) !=
-	       CANCTRL_REQOP_CONF) {
-		usleep_range(MCP251X_OST_DELAY_MS * 1000,
-			     MCP251X_OST_DELAY_MS * 1000 * 2);
+	reg = mcp251x_read_reg(spi, CANSTAT);
+	if ((reg & CANCTRL_REQOP_MASK) != CANCTRL_REQOP_CONF)
+		return -ENODEV;
 
-		if (time_after(jiffies, timeout)) {
-			dev_err(&spi->dev,
-				"MCP251x didn't enter in conf mode after reset\n");
-			return -EBUSY;
-		}
-	}
 	return 0;
 }
 
@@ -1116,10 +1107,10 @@ static int mcp251x_can_probe(struct spi_device *spi)
 		 * Minimum coherent DMA allocation is PAGE_SIZE, so allocate
 		 * that much and share it between Tx and Rx DMA buffers.
 		 */
-		priv->spi_tx_buf = dma_alloc_coherent(&spi->dev,
-						      PAGE_SIZE,
-						      &priv->spi_tx_dma,
-						      GFP_DMA);
+		priv->spi_tx_buf = dmam_alloc_coherent(&spi->dev,
+						       PAGE_SIZE,
+						       &priv->spi_tx_dma,
+						       GFP_DMA);
 
 		if (priv->spi_tx_buf) {
 			priv->spi_rx_buf = (priv->spi_tx_buf + (PAGE_SIZE / 2));
@@ -1165,9 +1156,6 @@ static int mcp251x_can_probe(struct spi_device *spi)
 	return 0;
 
 error_probe:
-	if (mcp251x_enable_dma)
-		dma_free_coherent(&spi->dev, PAGE_SIZE,
-				  priv->spi_tx_buf, priv->spi_tx_dma);
 	mcp251x_power_enable(priv->power, 0);
 
 out_clk:
@@ -1186,11 +1174,6 @@ static int mcp251x_can_remove(struct spi_device *spi)
 	struct net_device *net = priv->net;
 
 	unregister_candev(net);
-
-	if (mcp251x_enable_dma) {
-		dma_free_coherent(&spi->dev, PAGE_SIZE,
-				  priv->spi_tx_buf, priv->spi_tx_dma);
-	}
 
 	mcp251x_power_enable(priv->power, 0);
 
@@ -1237,16 +1220,17 @@ static int __maybe_unused mcp251x_can_resume(struct device *dev)
 	struct spi_device *spi = to_spi_device(dev);
 	struct mcp251x_priv *priv = spi_get_drvdata(spi);
 
-	if (priv->after_suspend & AFTER_SUSPEND_POWER)
+	if (priv->after_suspend & AFTER_SUSPEND_POWER) {
 		mcp251x_power_enable(priv->power, 1);
-
-	if (priv->after_suspend & AFTER_SUSPEND_UP) {
-		mcp251x_power_enable(priv->transceiver, 1);
 		queue_work(priv->wq, &priv->restart_work);
 	} else {
-		priv->after_suspend = 0;
+		if (priv->after_suspend & AFTER_SUSPEND_UP) {
+			mcp251x_power_enable(priv->transceiver, 1);
+			queue_work(priv->wq, &priv->restart_work);
+		} else {
+			priv->after_suspend = 0;
+		}
 	}
-
 	priv->force_quit = 0;
 	enable_irq(spi->irq);
 	return 0;

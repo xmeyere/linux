@@ -201,18 +201,15 @@ static void rt2x00queue_create_tx_descriptor_seq(struct rt2x00_dev *rt2x00dev,
 	if (!test_bit(REQUIRE_SW_SEQNO, &rt2x00dev->cap_flags)) {
 		/*
 		 * rt2800 has a H/W (or F/W) bug, device incorrectly increase
-		 * seqno on retransmitted data (non-QOS) and management frames.
-		 * To workaround the problem let's generate seqno in software.
-		 * Except for beacons which are transmitted periodically by H/W
-		 * hence hardware has to assign seqno for them.
+		 * seqno on retransmited data (non-QOS) frames. To workaround
+		 * the problem let's generate seqno in software if QOS is
+		 * disabled.
 		 */
-	    	if (ieee80211_is_beacon(hdr->frame_control)) {
-			__set_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
+		if (test_bit(CONFIG_QOS_DISABLED, &rt2x00dev->flags))
+			__clear_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
+		else
 			/* H/W will generate sequence number */
 			return;
-		}
-
-		__clear_bit(ENTRY_TXD_GENERATE_SEQ, &txdesc->flags);
 	}
 
 	/*
@@ -731,8 +728,6 @@ int rt2x00queue_clear_beacon(struct rt2x00_dev *rt2x00dev,
 	if (unlikely(!intf->beacon))
 		return -ENOBUFS;
 
-	mutex_lock(&intf->beacon_skb_mutex);
-
 	/*
 	 * Clean up the beacon skb.
 	 */
@@ -745,13 +740,11 @@ int rt2x00queue_clear_beacon(struct rt2x00_dev *rt2x00dev,
 	if (rt2x00dev->ops->lib->clear_beacon)
 		rt2x00dev->ops->lib->clear_beacon(intf->beacon);
 
-	mutex_unlock(&intf->beacon_skb_mutex);
-
 	return 0;
 }
 
-int rt2x00queue_update_beacon_locked(struct rt2x00_dev *rt2x00dev,
-				     struct ieee80211_vif *vif)
+int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
+			      struct ieee80211_vif *vif)
 {
 	struct rt2x00_intf *intf = vif_to_intf(vif);
 	struct skb_frame_desc *skbdesc;
@@ -790,19 +783,6 @@ int rt2x00queue_update_beacon_locked(struct rt2x00_dev *rt2x00dev,
 
 	return 0;
 
-}
-
-int rt2x00queue_update_beacon(struct rt2x00_dev *rt2x00dev,
-			      struct ieee80211_vif *vif)
-{
-	struct rt2x00_intf *intf = vif_to_intf(vif);
-	int ret;
-
-	mutex_lock(&intf->beacon_skb_mutex);
-	ret = rt2x00queue_update_beacon_locked(rt2x00dev, vif);
-	mutex_unlock(&intf->beacon_skb_mutex);
-
-	return ret;
 }
 
 bool rt2x00queue_for_each_entry(struct data_queue *queue,

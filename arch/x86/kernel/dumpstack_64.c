@@ -301,7 +301,7 @@ void show_regs(struct pt_regs *regs)
 
 	sp = regs->sp;
 	show_regs_print_info(KERN_DEFAULT);
-	__show_regs(regs, user_mode(regs) ? SHOW_REGS_USER : SHOW_REGS_ALL);
+	__show_regs(regs, 1);
 
 	/*
 	 * When in-kernel, we also print out the stack and code at the

@@ -39,18 +39,16 @@ struct cache_desc {
 #define MIPS_CACHE_PINDEX	0x00000020	/* Physically indexed cache */
 
 struct cpuinfo_mips {
-	u64			asid_cache;
+	unsigned long		asid_cache;
 
 	/*
 	 * Capability and feature descriptor structure for MIPS CPU
 	 */
-	unsigned long		options;
 	unsigned long		ases;
+	unsigned long long	options;
 	unsigned int		udelay_val;
 	unsigned int		processor_id;
 	unsigned int		fpu_id;
-	unsigned int		fpu_csr31;
-	unsigned int		fpu_msk31;
 	unsigned int		msa_id;
 	unsigned int		cputype;
 	int			isa_level;
@@ -63,6 +61,7 @@ struct cpuinfo_mips {
 	struct cache_desc	scache; /* Secondary cache */
 	struct cache_desc	tcache; /* Tertiary/split secondary cache */
 	int			srsets; /* Shadow register sets */
+	int			package;/* physical package number */
 	int			core;	/* physical core number */
 #ifdef CONFIG_64BIT
 	int			vmbits; /* Virtual memory size in bits */
@@ -80,6 +79,11 @@ struct cpuinfo_mips {
 #define NUM_WATCH_REGS 4
 	u16			watch_reg_masks[NUM_WATCH_REGS];
 	unsigned int		kscratch_mask; /* Usable KScratch mask. */
+	/*
+	 * Cache Coherency attribute for write-combine memory writes.
+	 * (shifted by _CACHE_SHIFT)
+	 */
+	unsigned int		writecombine;
 } __attribute__((aligned(SMP_CACHE_BYTES)));
 
 extern struct cpuinfo_mips cpu_data[];
@@ -117,7 +121,7 @@ struct proc_cpuinfo_notifier_args {
 #ifdef CONFIG_MIPS_MT_SMP
 # define cpu_vpe_id(cpuinfo)	((cpuinfo)->vpe_id)
 #else
-# define cpu_vpe_id(cpuinfo)	0
+# define cpu_vpe_id(cpuinfo)	({ (void)cpuinfo; 0; })
 #endif
 
 #endif /* __ASM_CPU_INFO_H */

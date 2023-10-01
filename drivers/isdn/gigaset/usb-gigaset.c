@@ -135,14 +135,13 @@ struct usb_cardstate {
 	/* Output buffer */
 	unsigned char		*bulk_out_buffer;
 	int			bulk_out_size;
-	__u8			bulk_out_endpointAddr;
+	int			bulk_out_epnum;
 	struct urb		*bulk_out_urb;
 
 	/* Input buffer */
 	unsigned char		*rcvbuf;
 	int			rcvbuf_size;
 	struct urb		*read_urb;
-	__u8			int_in_endpointAddr;
 
 	char			bchars[6];		/* for request 0x19 */
 };
@@ -466,7 +465,7 @@ static int send_cb(struct cardstate *cs, struct cmdbuf_t *cb)
 
 			usb_fill_bulk_urb(ucs->bulk_out_urb, ucs->udev,
 					  usb_sndbulkpipe(ucs->udev,
-							  ucs->bulk_out_endpointAddr & 0x0f),
+							  ucs->bulk_out_epnum),
 					  cb->buf + cb->offset, count,
 					  gigaset_write_bulk_callback, cs);
 
@@ -498,6 +497,7 @@ static int send_cb(struct cardstate *cs, struct cmdbuf_t *cb)
 static int gigaset_write_cmd(struct cardstate *cs, struct cmdbuf_t *cb)
 {
 	unsigned long flags;
+	int len;
 
 	gigaset_dbg_buffer(cs->mstate != MS_LOCKED ?
 			   DEBUG_TRANSCMD : DEBUG_LOCKCMD,
@@ -516,10 +516,11 @@ static int gigaset_write_cmd(struct cardstate *cs, struct cmdbuf_t *cb)
 	spin_unlock_irqrestore(&cs->cmdlock, flags);
 
 	spin_lock_irqsave(&cs->lock, flags);
+	len = cb->len;
 	if (cs->connected)
 		tasklet_schedule(&cs->write_tasklet);
 	spin_unlock_irqrestore(&cs->lock, flags);
-	return cb->len;
+	return len;
 }
 
 static int gigaset_write_room(struct cardstate *cs)
@@ -578,7 +579,8 @@ static int gigaset_initcshw(struct cardstate *cs)
 {
 	struct usb_cardstate *ucs;
 
-	cs->hw.usb = ucs = kzalloc(sizeof(struct usb_cardstate), GFP_KERNEL);
+	cs->hw.usb = ucs =
+		kmalloc(sizeof(struct usb_cardstate), GFP_KERNEL);
 	if (!ucs) {
 		pr_err("out of memory\n");
 		return -ENOMEM;
@@ -590,6 +592,9 @@ static int gigaset_initcshw(struct cardstate *cs)
 	ucs->bchars[3] = 0;
 	ucs->bchars[4] = 0x11;
 	ucs->bchars[5] = 0x13;
+	ucs->bulk_out_buffer = NULL;
+	ucs->bulk_out_urb = NULL;
+	ucs->read_urb = NULL;
 	tasklet_init(&cs->write_tasklet,
 		     gigaset_modem_fill, (unsigned long) cs);
 
@@ -624,8 +629,7 @@ static int write_modem(struct cardstate *cs)
 	if (cs->connected) {
 		usb_fill_bulk_urb(ucs->bulk_out_urb, ucs->udev,
 				  usb_sndbulkpipe(ucs->udev,
-						  ucs->bulk_out_endpointAddr &
-						  0x0f),
+						  ucs->bulk_out_epnum),
 				  ucs->bulk_out_buffer, count,
 				  gigaset_write_bulk_callback, cs);
 		ret = usb_submit_urb(ucs->bulk_out_urb, GFP_ATOMIC);
@@ -689,11 +693,6 @@ static int gigaset_probe(struct usb_interface *interface,
 		return -ENODEV;
 	}
 
-	if (hostif->desc.bNumEndpoints < 2) {
-		dev_err(&interface->dev, "missing endpoints\n");
-		return -ENODEV;
-	}
-
 	dev_info(&udev->dev, "%s: Device matched ... !\n", __func__);
 
 	/* allocate memory for our device state and initialize it */
@@ -713,15 +712,9 @@ static int gigaset_probe(struct usb_interface *interface,
 
 	endpoint = &hostif->endpoint[0].desc;
 
-	if (!usb_endpoint_is_bulk_out(endpoint)) {
-		dev_err(&interface->dev, "missing bulk-out endpoint\n");
-		retval = -ENODEV;
-		goto error;
-	}
-
 	buffer_size = le16_to_cpu(endpoint->wMaxPacketSize);
 	ucs->bulk_out_size = buffer_size;
-	ucs->bulk_out_endpointAddr = endpoint->bEndpointAddress;
+	ucs->bulk_out_epnum = usb_endpoint_num(endpoint);
 	ucs->bulk_out_buffer = kmalloc(buffer_size, GFP_KERNEL);
 	if (!ucs->bulk_out_buffer) {
 		dev_err(cs->dev, "Couldn't allocate bulk_out_buffer\n");
@@ -738,12 +731,6 @@ static int gigaset_probe(struct usb_interface *interface,
 
 	endpoint = &hostif->endpoint[1].desc;
 
-	if (!usb_endpoint_is_int_in(endpoint)) {
-		dev_err(&interface->dev, "missing int-in endpoint\n");
-		retval = -ENODEV;
-		goto error;
-	}
-
 	ucs->busy = 0;
 
 	ucs->read_urb = usb_alloc_urb(0, GFP_KERNEL);
@@ -754,7 +741,6 @@ static int gigaset_probe(struct usb_interface *interface,
 	}
 	buffer_size = le16_to_cpu(endpoint->wMaxPacketSize);
 	ucs->rcvbuf_size = buffer_size;
-	ucs->int_in_endpointAddr = endpoint->bEndpointAddress;
 	ucs->rcvbuf = kmalloc(buffer_size, GFP_KERNEL);
 	if (!ucs->rcvbuf) {
 		dev_err(cs->dev, "Couldn't allocate rcvbuf\n");
@@ -763,8 +749,7 @@ static int gigaset_probe(struct usb_interface *interface,
 	}
 	/* Fill the interrupt urb and send it to the core */
 	usb_fill_int_urb(ucs->read_urb, udev,
-			 usb_rcvintpipe(udev,
-					endpoint->bEndpointAddress & 0x0f),
+			 usb_rcvintpipe(udev, usb_endpoint_num(endpoint)),
 			 ucs->rcvbuf, buffer_size,
 			 gigaset_read_int_callback,
 			 cs, endpoint->bInterval);

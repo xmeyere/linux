@@ -2214,9 +2214,6 @@ static void skd_send_fitmsg(struct skd_device *skdev,
 		 */
 		qcmd |= FIT_QCMD_MSGSIZE_64;
 
-	/* Make sure skd_msg_buf is written before the doorbell is triggered. */
-	smp_wmb();
-
 	SKD_WRITEQ(skdev, qcmd, FIT_Q_COMMAND);
 
 }
@@ -2262,9 +2259,6 @@ static void skd_send_special_fitmsg(struct skd_device *skdev,
 	 */
 	qcmd = skspcl->mb_dma_address;
 	qcmd |= FIT_QCMD_QID_NORMAL + FIT_QCMD_MSGSIZE_128;
-
-	/* Make sure skd_msg_buf is written before the doorbell is triggered. */
-	smp_wmb();
 
 	SKD_WRITEQ(skdev, qcmd, FIT_Q_COMMAND);
 }
@@ -4118,15 +4112,13 @@ static int skd_cons_skcomp(struct skd_device *skdev)
 		 skdev->name, __func__, __LINE__,
 		 nbytes, SKD_N_COMPLETION_ENTRY);
 
-	skcomp = pci_alloc_consistent(skdev->pdev, nbytes,
-				      &skdev->cq_dma_address);
+	skcomp = pci_zalloc_consistent(skdev->pdev, nbytes,
+				       &skdev->cq_dma_address);
 
 	if (skcomp == NULL) {
 		rc = -ENOMEM;
 		goto err_out;
 	}
-
-	memset(skcomp, 0, nbytes);
 
 	skdev->skcomp_table = skcomp;
 	skdev->skerr_table = (struct fit_comp_error_info *)((char *)skcomp +
@@ -4310,14 +4302,13 @@ static int skd_cons_skspcl(struct skd_device *skdev)
 
 		nbytes = SKD_N_SPECIAL_FITMSG_BYTES;
 
-		skspcl->msg_buf = pci_alloc_consistent(skdev->pdev, nbytes,
-						       &skspcl->mb_dma_address);
+		skspcl->msg_buf =
+			pci_zalloc_consistent(skdev->pdev, nbytes,
+					      &skspcl->mb_dma_address);
 		if (skspcl->msg_buf == NULL) {
 			rc = -ENOMEM;
 			goto err_out;
 		}
-
-		memset(skspcl->msg_buf, 0, nbytes);
 
 		skspcl->req.sg = kzalloc(sizeof(struct scatterlist) *
 					 SKD_N_SG_PER_SPECIAL, GFP_KERNEL);
@@ -4359,24 +4350,20 @@ static int skd_cons_sksb(struct skd_device *skdev)
 
 	nbytes = SKD_N_INTERNAL_BYTES;
 
-	skspcl->data_buf = pci_alloc_consistent(skdev->pdev, nbytes,
-						&skspcl->db_dma_address);
+	skspcl->data_buf = pci_zalloc_consistent(skdev->pdev, nbytes,
+						 &skspcl->db_dma_address);
 	if (skspcl->data_buf == NULL) {
 		rc = -ENOMEM;
 		goto err_out;
 	}
 
-	memset(skspcl->data_buf, 0, nbytes);
-
 	nbytes = SKD_N_SPECIAL_FITMSG_BYTES;
-	skspcl->msg_buf = pci_alloc_consistent(skdev->pdev, nbytes,
-					       &skspcl->mb_dma_address);
+	skspcl->msg_buf = pci_zalloc_consistent(skdev->pdev, nbytes,
+						&skspcl->mb_dma_address);
 	if (skspcl->msg_buf == NULL) {
 		rc = -ENOMEM;
 		goto err_out;
 	}
-
-	memset(skspcl->msg_buf, 0, nbytes);
 
 	skspcl->req.sksg_list = skd_cons_sg_list(skdev, 1,
 						 &skspcl->req.sksg_dma_address);
@@ -4439,6 +4426,7 @@ static int skd_cons_disk(struct skd_device *skdev)
 	q->limits.discard_zeroes_data = 1;
 	queue_flag_set_unlocked(QUEUE_FLAG_DISCARD, q);
 	queue_flag_set_unlocked(QUEUE_FLAG_NONROT, q);
+	queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, q);
 
 	spin_lock_irqsave(&skdev->lock, flags);
 	pr_debug("%s:%s:%d stopping %s queue\n",
@@ -4691,16 +4679,15 @@ static void skd_free_disk(struct skd_device *skdev)
 {
 	struct gendisk *disk = skdev->disk;
 
-	if (disk && (disk->flags & GENHD_FL_UP))
-		del_gendisk(disk);
+	if (disk != NULL) {
+		struct request_queue *q = disk->queue;
 
-	if (skdev->queue) {
-		blk_cleanup_queue(skdev->queue);
-		skdev->queue = NULL;
-		disk->queue = NULL;
+		if (disk->flags & GENHD_FL_UP)
+			del_gendisk(disk);
+		if (q)
+			blk_cleanup_queue(q);
+		put_disk(disk);
 	}
-
-	put_disk(disk);
 	skdev->disk = NULL;
 }
 
@@ -4780,7 +4767,7 @@ static const struct block_device_operations skd_blockdev_ops = {
  *****************************************************************************
  */
 
-static DEFINE_PCI_DEVICE_TABLE(skd_pci_tbl) = {
+static const struct pci_device_id skd_pci_tbl[] = {
 	{ PCI_VENDOR_ID_STEC, PCI_DEVICE_ID_S1120,
 	  PCI_ANY_ID, PCI_ANY_ID, 0, 0, },
 	{ 0 }                     /* terminate list */

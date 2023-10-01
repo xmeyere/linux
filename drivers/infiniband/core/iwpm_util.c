@@ -96,7 +96,7 @@ int iwpm_create_mapinfo(struct sockaddr_storage *local_sockaddr,
 			struct sockaddr_storage *mapped_sockaddr,
 			u8 nl_client)
 {
-	struct hlist_head *hash_bucket_head = NULL;
+	struct hlist_head *hash_bucket_head;
 	struct iwpm_mapping_info *map_info;
 	unsigned long flags;
 
@@ -121,9 +121,6 @@ int iwpm_create_mapinfo(struct sockaddr_storage *local_sockaddr,
 		hlist_add_head(&map_info->hlist_node, hash_bucket_head);
 	}
 	spin_unlock_irqrestore(&iwpm_mapinfo_lock, flags);
-
-	if (!hash_bucket_head)
-		kfree(map_info);
 	return 0;
 }
 EXPORT_SYMBOL(iwpm_create_mapinfo);
@@ -487,7 +484,6 @@ static int send_nlmsg_done(struct sk_buff *skb, u8 nl_client, int iwpm_pid)
 	if (!(ibnl_put_msg(skb, &nlh, 0, 0, nl_client,
 			   RDMA_NL_IWPM_MAPINFO, NLM_F_MULTI))) {
 		pr_warn("%s Unable to put NLMSG_DONE\n", __func__);
-		dev_kfree_skb(skb);
 		return -ENOMEM;
 	}
 	nlh->nlmsg_type = NLMSG_DONE;
@@ -516,7 +512,6 @@ int iwpm_send_mapinfo(u8 nl_client, int iwpm_pid)
 	}
 	skb_num++;
 	spin_lock_irqsave(&iwpm_mapinfo_lock, flags);
-	ret = -EINVAL;
 	for (i = 0; i < IWPM_HASH_BUCKET_SIZE; i++) {
 		hlist_for_each_entry(map_info, &iwpm_hash_bucket[i],
 				     hlist_node) {

@@ -133,8 +133,6 @@ struct hv_fc_wwn_packet {
 #define SRB_FLAGS_PORT_DRIVER_RESERVED		0x0F000000
 #define SRB_FLAGS_CLASS_DRIVER_RESERVED		0xF0000000
 
-#define SP_UNTAGGED			((unsigned char) ~0)
-#define SRB_SIMPLE_TAG_REQUEST		0x20
 
 /*
  * Platform neutral description of a scsi request -
@@ -302,15 +300,11 @@ enum storvsc_request_type {
  */
 
 #define SRB_STATUS_AUTOSENSE_VALID	0x80
-#define SRB_STATUS_QUEUE_FROZEN		0x40
 #define SRB_STATUS_INVALID_LUN	0x20
 #define SRB_STATUS_SUCCESS	0x01
 #define SRB_STATUS_ABORTED	0x02
 #define SRB_STATUS_ERROR	0x04
-#define SRB_STATUS_DATA_OVERRUN	0x12
 
-#define SRB_STATUS(status) \
-	(status & ~(SRB_STATUS_AUTOSENSE_VALID | SRB_STATUS_QUEUE_FROZEN))
 /*
  * This is the end of Protocol specific defines.
  */
@@ -332,6 +326,8 @@ MODULE_PARM_DESC(storvsc_ringbuffer_size, "Ring buffer size (bytes)");
  * Timeout in seconds for all devices managed by this driver.
  */
 static int storvsc_timeout = 180;
+
+static int msft_blist_flags = BLIST_TRY_VPD_PAGES;
 
 #define STORVSC_MAX_IO_REQUESTS				200
 
@@ -745,21 +741,20 @@ static unsigned int copy_to_bounce_buffer(struct scatterlist *orig_sgl,
 			if (bounce_sgl[j].length == PAGE_SIZE) {
 				/* full..move to next entry */
 				sg_kunmap_atomic(bounce_addr);
-				bounce_addr = 0;
 				j++;
+
+				/* if we need to use another bounce buffer */
+				if (srclen || i != orig_sgl_count - 1)
+					bounce_addr = sg_kmap_atomic(bounce_sgl,j);
+
+			} else if (srclen == 0 && i == orig_sgl_count - 1) {
+				/* unmap the last bounce that is < PAGE_SIZE */
+				sg_kunmap_atomic(bounce_addr);
 			}
-
-			/* if we need to use another bounce buffer */
-			if (srclen && bounce_addr == 0)
-				bounce_addr = sg_kmap_atomic(bounce_sgl, j);
-
 		}
 
 		sg_kunmap_atomic(src_addr - orig_sgl[i].offset);
 	}
-
-	if (bounce_addr)
-		sg_kunmap_atomic(bounce_addr);
 
 	local_irq_restore(flags);
 
@@ -1012,15 +1007,8 @@ static void storvsc_handle_error(struct vmscsi_request *vm_srb,
 	void (*process_err_fn)(struct work_struct *work);
 	bool do_work = false;
 
-	switch (SRB_STATUS(vm_srb->srb_status)) {
+	switch (vm_srb->srb_status) {
 	case SRB_STATUS_ERROR:
-		/*
-		 * Let upper layer deal with error when
-		 * sense message is present.
-		 */
-
-		if (vm_srb->srb_status & SRB_STATUS_AUTOSENSE_VALID)
-			break;
 		/*
 		 * If there is an error; offline the device since all
 		 * error recovery strategies would have already been
@@ -1085,7 +1073,6 @@ static void storvsc_command_completion(struct storvsc_cmd_request *cmd_request)
 	void (*scsi_done_fn)(struct scsi_cmnd *);
 	struct scsi_sense_hdr sense_hdr;
 	struct vmscsi_request *vm_srb;
-	u32 data_transfer_length;
 	struct stor_mem_pools *memp = scmnd->device->hostdata;
 	struct Scsi_Host *host;
 	struct storvsc_device *stor_dev;
@@ -1095,7 +1082,6 @@ static void storvsc_command_completion(struct storvsc_cmd_request *cmd_request)
 	host = stor_dev->host;
 
 	vm_srb = &cmd_request->vstor_packet.vm_srb;
-	data_transfer_length = vm_srb->data_transfer_length;
 	if (cmd_request->bounce_sgl_count) {
 		if (vm_srb->data_in == READ_TYPE)
 			copy_from_bounce_buffer(scsi_sglist(scmnd),
@@ -1114,20 +1100,13 @@ static void storvsc_command_completion(struct storvsc_cmd_request *cmd_request)
 			scsi_print_sense_hdr("storvsc", &sense_hdr);
 	}
 
-	if (vm_srb->srb_status != SRB_STATUS_SUCCESS) {
+	if (vm_srb->srb_status != SRB_STATUS_SUCCESS)
 		storvsc_handle_error(vm_srb, scmnd, host, sense_hdr.asc,
 					 sense_hdr.ascq);
-		/*
-		 * The Windows driver set data_transfer_length on
-		 * SRB_STATUS_DATA_OVERRUN. On other errors, this value
-		 * is untouched.  In these cases we set it to 0.
-		 */
-		if (vm_srb->srb_status != SRB_STATUS_DATA_OVERRUN)
-			data_transfer_length = 0;
-	}
 
 	scsi_set_resid(scmnd,
-		cmd_request->data_buffer.len - data_transfer_length);
+		cmd_request->data_buffer.len -
+		vm_srb->data_transfer_length);
 
 	scsi_done_fn = scmnd->scsi_done;
 
@@ -1173,24 +1152,12 @@ static void storvsc_on_io_completion(struct hv_device *device,
 	stor_pkt->vm_srb.sense_info_length =
 	vstor_packet->vm_srb.sense_info_length;
 
-	if (vstor_packet->vm_srb.scsi_status != 0 ||
-		vstor_packet->vm_srb.srb_status != SRB_STATUS_SUCCESS){
-		dev_warn(&device->device,
-			 "cmd 0x%x scsi status 0x%x srb status 0x%x\n",
-			 stor_pkt->vm_srb.cdb[0],
-			 vstor_packet->vm_srb.scsi_status,
-			 vstor_packet->vm_srb.srb_status);
-	}
 
 	if ((vstor_packet->vm_srb.scsi_status & 0xFF) == 0x02) {
 		/* CHECK_CONDITION */
 		if (vstor_packet->vm_srb.srb_status &
 			SRB_STATUS_AUTOSENSE_VALID) {
 			/* autosense data available */
-			dev_warn(&device->device,
-				 "stor pkt %p autosense data valid - len %d\n",
-				 request,
-				 vstor_packet->vm_srb.sense_info_length);
 
 			memcpy(request->sense_buffer,
 			       vstor_packet->vm_srb.sense_data,
@@ -1472,6 +1439,14 @@ static int storvsc_device_configure(struct scsi_device *sdevice)
 
 	sdevice->no_write_same = 1;
 
+	/*
+	 * Add blist flags to permit the reading of the VPD pages even when
+	 * the target may claim SPC-2 compliance. MSFT targets currently
+	 * claim SPC-2 compliance while they implement post SPC-2 features.
+	 * With this patch we can correctly handle WRITE_SAME_16 issues.
+	 */
+	sdevice->sdev_bflags |= msft_blist_flags;
+
 	return 0;
 }
 
@@ -1632,14 +1607,8 @@ static int storvsc_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *scmnd)
 	vm_srb->win8_extension.time_out_value = 60;
 
 	vm_srb->win8_extension.srb_flags |=
-		SRB_FLAGS_DISABLE_SYNCH_TRANSFER;
-
-	if (scmnd->device->tagged_supported) {
-		vm_srb->win8_extension.srb_flags |=
-		(SRB_FLAGS_QUEUE_ACTION_ENABLE | SRB_FLAGS_NO_QUEUE_FREEZE);
-		vm_srb->win8_extension.queue_tag = SP_UNTAGGED;
-		vm_srb->win8_extension.queue_action = SRB_SIMPLE_TAG_REQUEST;
-	}
+		(SRB_FLAGS_QUEUE_ACTION_ENABLE |
+		SRB_FLAGS_DISABLE_SYNCH_TRANSFER);
 
 	/* Build the SRB */
 	switch (scmnd->sc_data_direction) {
@@ -1653,7 +1622,8 @@ static int storvsc_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *scmnd)
 		break;
 	default:
 		vm_srb->data_in = UNKNOWN_TYPE;
-		vm_srb->win8_extension.srb_flags |= SRB_FLAGS_NO_DATA_TRANSFER;
+		vm_srb->win8_extension.srb_flags |= (SRB_FLAGS_DATA_IN |
+						     SRB_FLAGS_DATA_OUT);
 		break;
 	}
 
@@ -1718,12 +1688,13 @@ static int storvsc_queuecommand(struct Scsi_Host *host, struct scsi_cmnd *scmnd)
 	if (ret == -EAGAIN) {
 		/* no more space */
 
-		if (cmd_request->bounce_sgl_count)
+		if (cmd_request->bounce_sgl_count) {
 			destroy_bounce_buffer(cmd_request->bounce_sgl,
 					cmd_request->bounce_sgl_count);
 
-		ret = SCSI_MLQUEUE_DEVICE_BUSY;
-		goto queue_error;
+			ret = SCSI_MLQUEUE_DEVICE_BUSY;
+			goto queue_error;
+		}
 	}
 
 	return 0;

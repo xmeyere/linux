@@ -93,9 +93,9 @@ static __always_inline bool __preempt_count_dec_and_test(void)
 /*
  * Returns true when we need to resched and can (barring IRQ state).
  */
-static __always_inline bool should_resched(int preempt_offset)
+static __always_inline bool should_resched(void)
 {
-	return unlikely(raw_cpu_read_4(__preempt_count) == preempt_offset);
+	return unlikely(!raw_cpu_read_4(__preempt_count));
 }
 
 #ifdef CONFIG_PREEMPT
@@ -105,6 +105,7 @@ static __always_inline bool should_resched(int preempt_offset)
 # ifdef CONFIG_CONTEXT_TRACKING
     extern asmlinkage void ___preempt_schedule_context(void);
 #   define __preempt_schedule_context() asm ("call ___preempt_schedule_context")
+    extern asmlinkage void preempt_schedule_context(void);
 # endif
 #endif
 

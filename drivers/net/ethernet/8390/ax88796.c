@@ -786,13 +786,13 @@ static int ax_init_dev(struct net_device *dev)
 
 	ret = ax_mii_init(dev);
 	if (ret)
-		goto err_out;
+		goto out_irq;
 
 	ax_NS8390_init(dev, 0);
 
 	ret = register_netdev(dev);
 	if (ret)
-		goto err_out;
+		goto out_irq;
 
 	netdev_info(dev, "%dbit, irq %d, %lx, MAC: %pM\n",
 		    ei_local->word16 ? 16 : 8, dev->irq, dev->base_addr,
@@ -800,6 +800,9 @@ static int ax_init_dev(struct net_device *dev)
 
 	return 0;
 
+ out_irq:
+	/* cleanup irq */
+	free_irq(dev->irq, dev);
  err_out:
 	return ret;
 }
@@ -812,6 +815,7 @@ static int ax_remove(struct platform_device *pdev)
 	struct resource *mem;
 
 	unregister_netdev(dev);
+	free_irq(dev->irq, dev);
 
 	iounmap(ei_local->mem);
 	mem = platform_get_resource(pdev, IORESOURCE_MEM, 0);

@@ -451,7 +451,7 @@ static int srp_create_target_ib(struct srp_target_port *target)
 	struct ib_qp *qp;
 	struct ib_fmr_pool *fmr_pool = NULL;
 	struct srp_fr_pool *fr_pool = NULL;
-	const int m = dev->use_fast_reg ? 3 : 1;
+	const int m = 1 + dev->use_fast_reg;
 	int ret;
 
 	init_attr = kzalloc(sizeof *init_attr, GFP_KERNEL);
@@ -600,18 +600,11 @@ static void srp_path_rec_completion(int status,
 
 static int srp_lookup_path(struct srp_target_port *target)
 {
-	int ret = -ENODEV;
+	int ret;
 
 	target->path.numb_path = 1;
 
 	init_completion(&target->done);
-
-	/*
-	 * Avoid that the SCSI host can be removed by srp_remove_target()
-	 * before srp_path_rec_completion() is called.
-	 */
-	if (!scsi_host_get(target->scsi_host))
-		goto out;
 
 	target->path_query_id = ib_sa_path_rec_get(&srp_sa_client,
 						   target->srp_host->srp_dev->dev,
@@ -626,24 +619,18 @@ static int srp_lookup_path(struct srp_target_port *target)
 						   GFP_KERNEL,
 						   srp_path_rec_completion,
 						   target, &target->path_query);
-	ret = target->path_query_id;
-	if (ret < 0)
-		goto put;
+	if (target->path_query_id < 0)
+		return target->path_query_id;
 
 	ret = wait_for_completion_interruptible(&target->done);
 	if (ret < 0)
 		return ret;
 
-	ret = target->status;
-	if (ret < 0)
+	if (target->status < 0)
 		shost_printk(KERN_WARNING, target->scsi_host,
 			     PFX "Path record query failed\n");
 
-put:
-	scsi_host_put(target->scsi_host);
-
-out:
-	return ret;
+	return target->status;
 }
 
 static int srp_send_req(struct srp_target_port *target)
@@ -1323,9 +1310,7 @@ static int srp_map_sg_entry(struct srp_map_state *state,
 
 	while (dma_len) {
 		unsigned offset = dma_addr & ~dev->mr_page_mask;
-
-		if (state->npages == dev->max_pages_per_mr ||
-		    (state->npages > 0 && offset != 0)) {
+		if (state->npages == dev->max_pages_per_mr || offset != 0) {
 			ret = srp_finish_mapping(state, target);
 			if (ret)
 				return ret;
@@ -1344,12 +1329,12 @@ static int srp_map_sg_entry(struct srp_map_state *state,
 	}
 
 	/*
-	 * If the end of the MR is not on a page boundary then we need to
+	 * If the last entry of the MR wasn't a full page, then we need to
 	 * close it out and start a new one -- we can only merge at page
 	 * boundries.
 	 */
 	ret = 0;
-	if ((dma_addr & ~dev->mr_page_mask) != 0) {
+	if (len != dev->mr_page_size) {
 		ret = srp_finish_mapping(state, target);
 		if (!ret)
 			srp_map_update_start(state, NULL, 0, 0);
@@ -1659,10 +1644,14 @@ static void srp_process_rsp(struct srp_target_port *target, struct srp_rsp *rsp)
 				     SCSI_SENSE_BUFFERSIZE));
 		}
 
-		if (rsp->flags & (SRP_RSP_FLAG_DOOVER | SRP_RSP_FLAG_DOUNDER))
-			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_out_res_cnt));
-		else if (rsp->flags & (SRP_RSP_FLAG_DIOVER | SRP_RSP_FLAG_DIUNDER))
+		if (unlikely(rsp->flags & SRP_RSP_FLAG_DIUNDER))
 			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_in_res_cnt));
+		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DIOVER))
+			scsi_set_resid(scmnd, -be32_to_cpu(rsp->data_in_res_cnt));
+		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DOUNDER))
+			scsi_set_resid(scmnd, be32_to_cpu(rsp->data_out_res_cnt));
+		else if (unlikely(rsp->flags & SRP_RSP_FLAG_DOOVER))
+			scsi_set_resid(scmnd, -be32_to_cpu(rsp->data_out_res_cnt));
 
 		srp_free_req(target, req, scmnd,
 			     be32_to_cpu(rsp->req_lim_delta));
@@ -2393,11 +2382,9 @@ static int srp_abort(struct scsi_cmnd *scmnd)
 		ret = FAST_IO_FAIL;
 	else
 		ret = FAILED;
-	if (ret == SUCCESS) {
-		srp_free_req(target, req, scmnd, 0);
-		scmnd->result = DID_ABORT << 16;
-		scmnd->scsi_done(scmnd);
-	}
+	srp_free_req(target, req, scmnd, 0);
+	scmnd->result = DID_ABORT << 16;
+	scmnd->scsi_done(scmnd);
 
 	return ret;
 }
@@ -3333,8 +3320,8 @@ static int __init srp_init_module(void)
 	}
 
 	srp_remove_wq = create_workqueue("srp_remove");
-	if (IS_ERR(srp_remove_wq)) {
-		ret = PTR_ERR(srp_remove_wq);
+	if (!srp_remove_wq) {
+		ret = -ENOMEM;
 		goto out;
 	}
 

@@ -60,23 +60,24 @@ static inline void __cpuidle_unset_driver(struct cpuidle_driver *drv)
  * __cpuidle_set_driver - set per CPU driver variables for the given driver.
  * @drv: a valid pointer to a struct cpuidle_driver
  *
- * Returns 0 on success, -EBUSY if any CPU in the cpumask have a driver
- * different from drv already.
+ * For each CPU in the driver's cpumask, unset the registered driver per CPU
+ * to @drv.
+ *
+ * Returns 0 on success, -EBUSY if the CPUs have driver(s) already.
  */
 static inline int __cpuidle_set_driver(struct cpuidle_driver *drv)
 {
 	int cpu;
 
 	for_each_cpu(cpu, drv->cpumask) {
-		struct cpuidle_driver *old_drv;
 
-		old_drv = __cpuidle_get_cpu_driver(cpu);
-		if (old_drv && old_drv != drv)
+		if (__cpuidle_get_cpu_driver(cpu)) {
+			__cpuidle_unset_driver(drv);
 			return -EBUSY;
-	}
+		}
 
-	for_each_cpu(cpu, drv->cpumask)
 		per_cpu(cpuidle_drivers, cpu) = drv;
+	}
 
 	return 0;
 }
@@ -181,23 +182,12 @@ static void __cpuidle_driver_init(struct cpuidle_driver *drv)
 static int poll_idle(struct cpuidle_device *dev,
 		struct cpuidle_driver *drv, int index)
 {
-	ktime_t	t1, t2;
-	s64 diff;
-
-	t1 = ktime_get();
 	local_irq_enable();
 	if (!current_set_polling_and_test()) {
 		while (!need_resched())
 			cpu_relax();
 	}
 	current_clr_polling();
-
-	t2 = ktime_get();
-	diff = ktime_to_us(ktime_sub(t2, t1));
-	if (diff > INT_MAX)
-		diff = INT_MAX;
-
-	dev->last_residency = (int) diff;
 
 	return index;
 }

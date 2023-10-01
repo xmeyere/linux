@@ -102,42 +102,6 @@ void pcibios_free_controller(struct pci_controller *phb)
 }
 
 /*
- * This function is used to call pcibios_free_controller()
- * in a deferred manner: a callback from the PCI subsystem.
- *
- * _*DO NOT*_ call pcibios_free_controller() explicitly if
- * this is used (or it may access an invalid *phb pointer).
- *
- * The callback occurs when all references to the root bus
- * are dropped (e.g., child buses/devices and their users).
- *
- * It's called as .release_fn() of 'struct pci_host_bridge'
- * which is associated with the 'struct pci_controller.bus'
- * (root bus) - it expects .release_data to hold a pointer
- * to 'struct pci_controller'.
- *
- * In order to use it, register .release_fn()/release_data
- * like this:
- *
- * pci_set_host_bridge_release(bridge,
- *                             pcibios_free_controller_deferred
- *                             (void *) phb);
- *
- * e.g. in the pcibios_root_bridge_prepare() callback from
- * pci_create_root_bus().
- */
-void pcibios_free_controller_deferred(struct pci_host_bridge *bridge)
-{
-	struct pci_controller *phb = (struct pci_controller *)
-					 bridge->release_data;
-
-	pr_debug("domain %d, dynamic %d\n", phb->global_number, phb->is_dynamic);
-
-	pcibios_free_controller(phb);
-}
-EXPORT_SYMBOL_GPL(pcibios_free_controller_deferred);
-
-/*
  * The function is used to return the minimal alignment
  * for memory or I/O windows of the associated P2P bridge.
  * By default, 4KiB alignment for I/O windows and 1MiB for
@@ -159,21 +123,12 @@ resource_size_t pcibios_window_alignment(struct pci_bus *bus,
 
 void pcibios_reset_secondary_bus(struct pci_dev *dev)
 {
-	u16 ctrl;
-
 	if (ppc_md.pcibios_reset_secondary_bus) {
 		ppc_md.pcibios_reset_secondary_bus(dev);
 		return;
 	}
 
-	pci_read_config_word(dev, PCI_BRIDGE_CONTROL, &ctrl);
-	ctrl |= PCI_BRIDGE_CTL_BUS_RESET;
-	pci_write_config_word(dev, PCI_BRIDGE_CONTROL, ctrl);
-	msleep(2);
-
-	ctrl &= ~PCI_BRIDGE_CTL_BUS_RESET;
-	pci_write_config_word(dev, PCI_BRIDGE_CONTROL, ctrl);
-	ssleep(1);
+	pci_reset_secondary_bus(dev);
 }
 
 static resource_size_t pcibios_io_size(const struct pci_controller *hose)
@@ -792,7 +747,11 @@ void pci_process_bridge_OF_ranges(struct pci_controller *hose,
 			break;
 		}
 		if (res != NULL) {
-			of_pci_range_to_resource(&range, dev, res);
+			res->name = dev->full_name;
+			res->flags = range.flags;
+			res->start = range.cpu_addr;
+			res->end = range.cpu_addr + range.size - 1;
+			res->parent = res->child = res->sibling = NULL;
 		}
 	}
 }
@@ -1185,7 +1144,7 @@ static int reparent_resources(struct resource *parent,
  *	    as well.
  */
 
-void pcibios_allocate_bus_resources(struct pci_bus *bus)
+static void pcibios_allocate_bus_resources(struct pci_bus *bus)
 {
 	struct pci_bus *b;
 	int i;
@@ -1606,7 +1565,6 @@ EARLY_PCI_OP(write, byte, u8)
 EARLY_PCI_OP(write, word, u16)
 EARLY_PCI_OP(write, dword, u32)
 
-extern int pci_bus_find_capability (struct pci_bus *bus, unsigned int devfn, int cap);
 int early_find_capability(struct pci_controller *hose, int bus, int devfn,
 			  int cap)
 {

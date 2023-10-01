@@ -290,7 +290,6 @@ static int config_reg_write(struct cw1200_common *priv, u32 val)
 	case HIF_8601_SILICON:
 	default:
 		return cw1200_reg_write_32(priv, ST90TDS_CONFIG_REG_ID, val);
-		break;
 	}
 	return 0;
 }
@@ -316,12 +315,12 @@ int cw1200_load_firmware(struct cw1200_common *priv)
 		goto out;
 	}
 
-	ret = cw1200_get_hw_type(val32, &major_revision);
-	if (ret < 0) {
+	priv->hw_type = cw1200_get_hw_type(val32, &major_revision);
+	if (priv->hw_type < 0) {
 		pr_err("Can't deduce hardware type.\n");
+		ret = -ENOTSUPP;
 		goto out;
 	}
-	priv->hw_type = ret;
 
 	/* Set DPLL Reg value, and read back to confirm writes work */
 	ret = cw1200_reg_write_32(priv, ST90TDS_TSET_GEN_R_W_REG_ID,

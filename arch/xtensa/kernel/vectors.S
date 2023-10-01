@@ -454,8 +454,14 @@ _DoubleExceptionVector_WindowOverflow:
 	s32i	a0, a2, PT_DEPC
 
 _DoubleExceptionVector_handle_exception:
+	addi	a0, a0, -EXCCAUSE_UNALIGNED
+	beqz	a0, 2f
 	addx4	a0, a0, a3
-	l32i	a0, a0, EXC_TABLE_FAST_USER
+	l32i	a0, a0, EXC_TABLE_FAST_USER + 4 * EXCCAUSE_UNALIGNED
+	xsr	a3, excsave1
+	jx	a0
+2:
+	movi	a0, user_exception
 	xsr	a3, excsave1
 	jx	a0
 
@@ -472,9 +478,6 @@ _DoubleExceptionVector_handle_exception:
 
 ENDPROC(_DoubleExceptionVector)
 
-	.end literal_prefix
-
-	.text
 /*
  * Fixup handler for TLB miss in double exception handler for window owerflow.
  * We get here with windowbase set to the window that was being spilled and
@@ -584,6 +587,7 @@ ENTRY(window_overflow_restore_a0_fixup)
 
 ENDPROC(window_overflow_restore_a0_fixup)
 
+	.end literal_prefix
 /*
  * Debug interrupt vector
  *

@@ -22,7 +22,6 @@
  *
  */
 
-#include <linux/nospec.h>
 #include <sound/asound.h>
 
 #define snd_kcontrol_chip(kcontrol) ((kcontrol)->private_data)
@@ -32,10 +31,15 @@ typedef int (snd_kcontrol_info_t) (struct snd_kcontrol * kcontrol, struct snd_ct
 typedef int (snd_kcontrol_get_t) (struct snd_kcontrol * kcontrol, struct snd_ctl_elem_value * ucontrol);
 typedef int (snd_kcontrol_put_t) (struct snd_kcontrol * kcontrol, struct snd_ctl_elem_value * ucontrol);
 typedef int (snd_kcontrol_tlv_rw_t)(struct snd_kcontrol *kcontrol,
-				    int op_flag, /* 0=read,1=write,-1=command */
+				    int op_flag, /* SNDRV_CTL_TLV_OP_XXX */
 				    unsigned int size,
 				    unsigned int __user *tlv);
 
+enum {
+	SNDRV_CTL_TLV_OP_READ = 0,
+	SNDRV_CTL_TLV_OP_WRITE = 1,
+	SNDRV_CTL_TLV_OP_CMD = -1,
+};
 
 struct snd_kcontrol_new {
 	snd_ctl_elem_iface_t iface;	/* interface identifier */
@@ -136,14 +140,12 @@ int snd_ctl_unregister_ioctl_compat(snd_kctl_ioctl_func_t fcn);
 
 static inline unsigned int snd_ctl_get_ioffnum(struct snd_kcontrol *kctl, struct snd_ctl_elem_id *id)
 {
-	unsigned int ioff = id->numid - kctl->id.numid;
-	return array_index_nospec(ioff, kctl->count);
+	return id->numid - kctl->id.numid;
 }
 
 static inline unsigned int snd_ctl_get_ioffidx(struct snd_kcontrol *kctl, struct snd_ctl_elem_id *id)
 {
-	unsigned int ioff = id->index - kctl->id.index;
-	return array_index_nospec(ioff, kctl->count);
+	return id->index - kctl->id.index;
 }
 
 static inline unsigned int snd_ctl_get_ioff(struct snd_kcontrol *kctl, struct snd_ctl_elem_id *id)

@@ -32,7 +32,22 @@
 #include <asm/pci-bridge.h>
 #include <asm/ppc-pci.h>
 
+static int eeh_pe_aux_size = 0;
 static LIST_HEAD(eeh_phb_pe);
+
+/**
+ * eeh_set_pe_aux_size - Set PE auxillary data size
+ * @size: PE auxillary data size
+ *
+ * Set PE auxillary data size
+ */
+void eeh_set_pe_aux_size(int size)
+{
+	if (size < 0)
+		return;
+
+	eeh_pe_aux_size = size;
+}
 
 /**
  * eeh_pe_alloc - Allocate PE
@@ -44,9 +59,16 @@ static LIST_HEAD(eeh_phb_pe);
 static struct eeh_pe *eeh_pe_alloc(struct pci_controller *phb, int type)
 {
 	struct eeh_pe *pe;
+	size_t alloc_size;
+
+	alloc_size = sizeof(struct eeh_pe);
+	if (eeh_pe_aux_size) {
+		alloc_size = ALIGN(alloc_size, cache_line_size());
+		alloc_size += eeh_pe_aux_size;
+	}
 
 	/* Allocate PHB PE */
-	pe = kzalloc(sizeof(struct eeh_pe), GFP_KERNEL);
+	pe = kzalloc(alloc_size, GFP_KERNEL);
 	if (!pe) return NULL;
 
 	/* Initialize PHB PE */
@@ -56,6 +78,8 @@ static struct eeh_pe *eeh_pe_alloc(struct pci_controller *phb, int type)
 	INIT_LIST_HEAD(&pe->child);
 	INIT_LIST_HEAD(&pe->edevs);
 
+	pe->data = (void *)pe + ALIGN(sizeof(struct eeh_pe),
+				      cache_line_size());
 	return pe;
 }
 
@@ -179,7 +203,8 @@ void *eeh_pe_dev_traverse(struct eeh_pe *root,
 	void *ret;
 
 	if (!root) {
-		pr_warning("%s: Invalid PE %p\n", __func__, root);
+		pr_warn("%s: Invalid PE %p\n",
+			__func__, root);
 		return NULL;
 	}
 
@@ -351,17 +376,6 @@ int eeh_add_to_parent_pe(struct eeh_dev *edev)
 	pe->config_addr	= edev->config_addr;
 
 	/*
-	 * While doing PE reset, we probably hot-reset the
-	 * upstream bridge. However, the PCI devices including
-	 * the associated EEH devices might be removed when EEH
-	 * core is doing recovery. So that won't safe to retrieve
-	 * the bridge through downstream EEH device. We have to
-	 * trace the parent PCI bus, then the upstream bridge.
-	 */
-	if (eeh_probe_mode_dev())
-		pe->bus = eeh_dev_to_pci_dev(edev)->bus;
-
-	/*
 	 * Put the new EEH PE into hierarchy tree. If the parent
 	 * can't be found, the newly created PE will be attached
 	 * to PHB directly. Otherwise, we have to associate the
@@ -414,7 +428,7 @@ int eeh_rmv_from_parent_pe(struct eeh_dev *edev)
 	}
 
 	/* Remove the EEH device */
-	pe = edev->pe;
+	pe = eeh_dev_to_pe(edev);
 	edev->pe = NULL;
 	list_del(&edev->list);
 
@@ -511,7 +525,7 @@ static void *__eeh_pe_state_mark(void *data, void *flag)
 	pe->state |= state;
 
 	/* Offline PCI devices if applicable */
-	if (state != EEH_PE_ISOLATED)
+	if (!(state & EEH_PE_ISOLATED))
 		return NULL;
 
 	eeh_pe_for_each_dev(pe, edev, tmp) {
@@ -519,6 +533,10 @@ static void *__eeh_pe_state_mark(void *data, void *flag)
 		if (pdev)
 			pdev->error_state = pci_channel_io_frozen;
 	}
+
+	/* Block PCI config access if required */
+	if (pe->state & EEH_PE_CFG_RESTRICTED)
+		pe->state |= EEH_PE_CFG_BLOCKED;
 
 	return NULL;
 }
@@ -596,6 +614,10 @@ static void *__eeh_pe_state_clear(void *data, void *flag)
 
 		pdev->error_state = pci_channel_io_normal;
 	}
+
+	/* Unblock PCI config access if required */
+	if (pe->state & EEH_PE_CFG_RESTRICTED)
+		pe->state &= ~EEH_PE_CFG_BLOCKED;
 
 	return NULL;
 }
@@ -723,8 +745,7 @@ static void eeh_restore_bridge_bars(struct eeh_dev *edev,
 	eeh_ops->write_config(dn, 15*4, 4, edev->config_space[15]);
 
 	/* PCI Command: 0x4 */
-	eeh_ops->write_config(dn, PCI_COMMAND, 4, edev->config_space[1] |
-			      PCI_COMMAND_MEMORY | PCI_COMMAND_MASTER);
+	eeh_ops->write_config(dn, PCI_COMMAND, 4, edev->config_space[1]);
 
 	/* Check the PCIe link is ready */
 	eeh_bridge_check_link(edev, dn);
@@ -819,29 +840,32 @@ void eeh_pe_restore_bars(struct eeh_pe *pe)
 const char *eeh_pe_loc_get(struct eeh_pe *pe)
 {
 	struct pci_bus *bus = eeh_pe_bus_get(pe);
-	struct device_node *dn;
+	struct device_node *dn = pci_bus_to_OF_node(bus);
 	const char *loc = NULL;
 
-	while (bus) {
-		dn = pci_bus_to_OF_node(bus);
-		if (!dn) {
-			bus = bus->parent;
-			continue;
-		}
+	if (!dn)
+		goto out;
 
-		if (pci_is_root_bus(bus))
+	/* PHB PE or root PE ? */
+	if (pci_is_root_bus(bus)) {
+		loc = of_get_property(dn, "ibm,loc-code", NULL);
+		if (!loc)
 			loc = of_get_property(dn, "ibm,io-base-loc-code", NULL);
-		else
-			loc = of_get_property(dn, "ibm,slot-location-code",
-					      NULL);
-
 		if (loc)
-			return loc;
+			goto out;
 
-		bus = bus->parent;
+		/* Check the root port */
+		dn = dn->child;
+		if (!dn)
+			goto out;
 	}
 
-	return "N/A";
+	loc = of_get_property(dn, "ibm,loc-code", NULL);
+	if (!loc)
+		loc = of_get_property(dn, "ibm,slot-location-code", NULL);
+
+out:
+	return loc ? loc : "N/A";
 }
 
 /**

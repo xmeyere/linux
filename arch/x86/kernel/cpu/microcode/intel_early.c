@@ -28,8 +28,8 @@
 #include <asm/tlbflush.h>
 #include <asm/setup.h>
 
-unsigned long mc_saved_in_initrd[MAX_UCODE_COUNT];
-struct mc_saved_data {
+static unsigned long mc_saved_in_initrd[MAX_UCODE_COUNT];
+static struct mc_saved_data {
 	unsigned int mc_saved_count;
 	struct microcode_intel **mc_saved;
 } mc_saved_data;
@@ -321,7 +321,7 @@ get_matching_model_microcode(int cpu, unsigned long start,
 	unsigned int mc_saved_count = mc_saved_data->mc_saved_count;
 	int i;
 
-	while (leftover && mc_saved_count < ARRAY_SIZE(mc_saved_tmp)) {
+	while (leftover) {
 		mc_header = (struct microcode_header_intel *)ucode_ptr;
 
 		mc_size = get_totalsize(mc_header);
@@ -391,8 +391,15 @@ static int collect_cpu_info_early(struct ucode_cpu_info *uci)
 		native_rdmsr(MSR_IA32_PLATFORM_ID, val[0], val[1]);
 		csig.pf = 1 << ((val[1] >> 18) & 7);
 	}
+	native_wrmsr(MSR_IA32_UCODE_REV, 0, 0);
 
-	csig.rev = intel_get_microcode_revision();
+	/* As documented in the SDM: Do a CPUID 1 here */
+	sync_core();
+
+	/* get the current revision from MSR 0x8B */
+	native_rdmsr(MSR_IA32_UCODE_REV, val[0], val[1]);
+
+	csig.rev = val[1];
 
 	uci->cpu_sig = csig;
 	uci->valid = 1;
@@ -408,7 +415,7 @@ static void __ref show_saved_mc(void)
 	struct ucode_cpu_info uci;
 
 	if (mc_saved_data.mc_saved_count == 0) {
-		pr_debug("no micorcode data saved.\n");
+		pr_debug("no microcode data saved.\n");
 		return;
 	}
 	pr_debug("Total microcode saved: %d\n", mc_saved_data.mc_saved_count);
@@ -499,7 +506,7 @@ int save_mc_for_early(u8 *mc)
 
 	if (mc_saved && mc_saved_count)
 		memcpy(mc_saved_tmp, mc_saved,
-		       mc_saved_count * sizeof(struct mirocode_intel *));
+		       mc_saved_count * sizeof(struct microcode_intel *));
 	/*
 	 * Save the microcode patch mc in mc_save_tmp structure if it's a newer
 	 * version.
@@ -519,7 +526,7 @@ int save_mc_for_early(u8 *mc)
 	show_saved_mc();
 
 	/*
-	 * Free old saved microcod data.
+	 * Free old saved microcode data.
 	 */
 	if (mc_saved) {
 		for (i = 0; i < mc_saved_count_init; i++)
@@ -647,37 +654,31 @@ static int apply_microcode_early(struct mc_saved_data *mc_saved_data,
 				 struct ucode_cpu_info *uci)
 {
 	struct microcode_intel *mc_intel;
-	u32 rev;
+	unsigned int val[2];
 
 	mc_intel = uci->mc;
 	if (mc_intel == NULL)
 		return 0;
 
-	/*
-	 * Save us the MSR write below - which is a particular expensive
-	 * operation - when the other hyperthread has updated the microcode
-	 * already.
-	 */
-	rev = intel_get_microcode_revision();
-	if (rev >= mc_intel->hdr.rev) {
-		uci->cpu_sig.rev = rev;
-		return 0;
-	}
-
 	/* write microcode via MSR 0x79 */
 	native_wrmsr(MSR_IA32_UCODE_WRITE,
 	      (unsigned long) mc_intel->bits,
 	      (unsigned long) mc_intel->bits >> 16 >> 16);
+	native_wrmsr(MSR_IA32_UCODE_REV, 0, 0);
 
-	rev = intel_get_microcode_revision();
-	if (rev != mc_intel->hdr.rev)
+	/* As documented in the SDM: Do a CPUID 1 here */
+	sync_core();
+
+	/* get the current revision from MSR 0x8B */
+	native_rdmsr(MSR_IA32_UCODE_REV, val[0], val[1]);
+	if (val[1] != mc_intel->hdr.rev)
 		return -1;
 
 #ifdef CONFIG_X86_64
 	/* Flush global tlb. This is precaution. */
 	flush_tlb_early();
 #endif
-	uci->cpu_sig.rev = rev;
+	uci->cpu_sig.rev = val[1];
 
 	print_ucode(uci);
 

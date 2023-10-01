@@ -174,8 +174,9 @@ static int nfs_map_numeric_to_string(__u32 id, char *buf, size_t buflen)
 
 static struct key_type key_type_id_resolver = {
 	.name		= "id_resolver",
-	.instantiate	= user_instantiate,
-	.match		= user_match,
+	.preparse	= user_preparse,
+	.free_preparse	= user_free_preparse,
+	.instantiate	= generic_key_instantiate,
 	.revoke		= user_revoke,
 	.destroy	= user_destroy,
 	.describe	= user_describe,
@@ -282,6 +283,8 @@ static struct key *nfs_idmap_request_key(const char *name, size_t namelen,
 						desc, "", 0, idmap);
 		mutex_unlock(&idmap->idmap_mutex);
 	}
+	if (!IS_ERR(rkey))
+		set_bit(KEY_FLAG_ROOT_CAN_INVAL, &rkey->flags);
 
 	kfree(desc);
 	return rkey;
@@ -339,7 +342,7 @@ static ssize_t nfs_idmap_lookup_name(__u32 id, const char *type, char *buf,
 	int id_len;
 	ssize_t ret;
 
-	id_len = nfs_map_numeric_to_string(id, id_str, sizeof(id_str));
+	id_len = snprintf(id_str, sizeof(id_str), "%u", id);
 	ret = nfs_idmap_get_key(id_str, id_len, type, buf, buflen, idmap);
 	if (ret < 0)
 		return -EINVAL;
@@ -394,8 +397,9 @@ static const struct rpc_pipe_ops idmap_upcall_ops = {
 
 static struct key_type key_type_id_resolver_legacy = {
 	.name		= "id_legacy",
-	.instantiate	= user_instantiate,
-	.match		= user_match,
+	.preparse	= user_preparse,
+	.free_preparse	= user_free_preparse,
+	.instantiate	= generic_key_instantiate,
 	.revoke		= user_revoke,
 	.destroy	= user_destroy,
 	.describe	= user_describe,
@@ -577,13 +581,9 @@ static int nfs_idmap_legacy_upcall(struct key_construction *cons,
 	struct idmap_msg *im;
 	struct idmap *idmap = (struct idmap *)aux;
 	struct key *key = cons->key;
-	int ret = -ENOKEY;
-
-	if (!aux)
-		goto out1;
+	int ret = -ENOMEM;
 
 	/* msg and im are freed in idmap_pipe_destroy_msg */
-	ret = -ENOMEM;
 	data = kzalloc(sizeof(*data), GFP_KERNEL);
 	if (!data)
 		goto out1;
@@ -636,8 +636,7 @@ static int nfs_idmap_read_and_verify_message(struct idmap_msg *im,
 		if (strcmp(upcall->im_name, im->im_name) != 0)
 			break;
 		/* Note: here we store the NUL terminator too */
-		len = 1 + nfs_map_numeric_to_string(im->im_id, id_str,
-						    sizeof(id_str));
+		len = sprintf(id_str, "%d", im->im_id) + 1;
 		ret = nfs_idmap_instantiate(key, authkey, id_str, len);
 		break;
 	case IDMAP_CONV_IDTONAME:

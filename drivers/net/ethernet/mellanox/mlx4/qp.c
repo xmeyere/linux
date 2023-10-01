@@ -257,9 +257,6 @@ void mlx4_qp_release_range(struct mlx4_dev *dev, int base_qpn, int cnt)
 	u64 in_param = 0;
 	int err;
 
-	if (!cnt)
-		return;
-
 	if (mlx4_is_mfunc(dev)) {
 		set_param_l(&in_param, base_qpn);
 		set_param_h(&in_param, cnt);
@@ -358,19 +355,6 @@ static void mlx4_qp_free_icm(struct mlx4_dev *dev, int qpn)
 		__mlx4_qp_free_icm(dev, qpn);
 }
 
-struct mlx4_qp *mlx4_qp_lookup(struct mlx4_dev *dev, u32 qpn)
-{
-	struct mlx4_qp_table *qp_table = &mlx4_priv(dev)->qp_table;
-	struct mlx4_qp *qp;
-
-	spin_lock_irq(&qp_table->lock);
-
-	qp = __mlx4_qp_lookup(dev, qpn);
-
-	spin_unlock_irq(&qp_table->lock);
-	return qp;
-}
-
 int mlx4_qp_alloc(struct mlx4_dev *dev, int qpn, struct mlx4_qp *qp, gfp_t gfp)
 {
 	struct mlx4_priv *priv = mlx4_priv(dev);
@@ -406,13 +390,14 @@ err_icm:
 EXPORT_SYMBOL_GPL(mlx4_qp_alloc);
 
 #define MLX4_UPDATE_QP_SUPPORTED_ATTRS MLX4_UPDATE_QP_SMAC
-int mlx4_update_qp(struct mlx4_dev *dev, struct mlx4_qp *qp,
+int mlx4_update_qp(struct mlx4_dev *dev, u32 qpn,
 		   enum mlx4_update_qp_attr attr,
 		   struct mlx4_update_qp_params *params)
 {
 	struct mlx4_cmd_mailbox *mailbox;
 	struct mlx4_update_qp_context *cmd;
 	u64 pri_addr_path_mask = 0;
+	u64 qp_mask = 0;
 	int err = 0;
 
 	mailbox = mlx4_alloc_cmd_mailbox(dev);
@@ -429,9 +414,16 @@ int mlx4_update_qp(struct mlx4_dev *dev, struct mlx4_qp *qp,
 		cmd->qp_context.pri_path.grh_mylmc = params->smac_index;
 	}
 
-	cmd->primary_addr_path_mask = cpu_to_be64(pri_addr_path_mask);
+	if (attr & MLX4_UPDATE_QP_VSD) {
+		qp_mask |= 1ULL << MLX4_UPD_QP_MASK_VSD;
+		if (params->flags & MLX4_UPDATE_QP_PARAMS_FLAGS_VSD_ENABLE)
+			cmd->qp_context.param3 |= cpu_to_be32(MLX4_STRIP_VLAN);
+	}
 
-	err = mlx4_cmd(dev, mailbox->dma, qp->qpn & 0xffffff, 0,
+	cmd->primary_addr_path_mask = cpu_to_be64(pri_addr_path_mask);
+	cmd->qp_mask = cpu_to_be64(qp_mask);
+
+	err = mlx4_cmd(dev, mailbox->dma, qpn & 0xffffff, 0,
 		       MLX4_CMD_UPDATE_QP, MLX4_CMD_TIME_CLASS_A,
 		       MLX4_CMD_NATIVE);
 

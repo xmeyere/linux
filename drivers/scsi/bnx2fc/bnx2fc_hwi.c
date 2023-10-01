@@ -1,8 +1,9 @@
-/* bnx2fc_hwi.c: Broadcom NetXtreme II Linux FCoE offload driver.
+/* bnx2fc_hwi.c: QLogic NetXtreme II Linux FCoE offload driver.
  * This file contains the code that low level functions that interact
  * with 57712 FCoE firmware.
  *
  * Copyright (c) 2008 - 2013 Broadcom Corporation
+ * Copyright (c) 2014, QLogic Corporation
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -828,7 +829,7 @@ ret_err_rqe:
 			((u64)err_entry->data.err_warn_bitmap_hi << 32) |
 			(u64)err_entry->data.err_warn_bitmap_lo;
 		for (i = 0; i < BNX2FC_NUM_ERR_BITS; i++) {
-			if (err_warn_bit_map & ((u64)1 << i)) {
+			if (err_warn_bit_map & (u64) (1 << i)) {
 				err_warn = i;
 				break;
 			}

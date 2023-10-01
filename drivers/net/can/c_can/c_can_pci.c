@@ -161,7 +161,6 @@ static int c_can_pci_probe(struct pci_dev *pdev,
 
 	dev->irq = pdev->irq;
 	priv->base = addr;
-	priv->device = &pdev->dev;
 
 	if (!c_can_pci_data->freq) {
 		dev_err(&pdev->dev, "no clock frequency defined\n");
@@ -178,6 +177,7 @@ static int c_can_pci_probe(struct pci_dev *pdev,
 		break;
 	case BOSCH_D_CAN:
 		priv->regs = reg_map_d_can;
+		priv->can.ctrlmode_supported |= CAN_CTRLMODE_3_SAMPLES;
 		break;
 	default:
 		ret = -EINVAL;
@@ -270,7 +270,8 @@ static struct c_can_pci_data c_can_pch = {
 	PCI_DEVICE(_vend, _dev),			\
 	.driver_data = (unsigned long)&_driverdata,	\
 }
-static DEFINE_PCI_DEVICE_TABLE(c_can_pci_tbl) = {
+
+static const struct pci_device_id c_can_pci_tbl[] = {
 	C_CAN_ID(PCI_VENDOR_ID_STMICRO, PCI_DEVICE_ID_STMICRO_CAN,
 		 c_can_sta2x11),
 	C_CAN_ID(PCI_VENDOR_ID_INTEL, PCI_DEVICE_ID_PCH_CAN,

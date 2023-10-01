@@ -61,9 +61,7 @@ int radeon_driver_unload_kms(struct drm_device *dev)
 	if (rdev->rmmio == NULL)
 		goto done_free;
 
-	if (radeon_is_px(dev)) {
-		pm_runtime_get_sync(dev->dev);
-	}
+	pm_runtime_get_sync(dev->dev);
 
 	radeon_acpi_fini(rdev);
 	
@@ -257,10 +255,14 @@ static int radeon_info_ioctl(struct drm_device *dev, void *data, struct drm_file
 		break;
 	case RADEON_INFO_ACCEL_WORKING2:
 		if (rdev->family == CHIP_HAWAII) {
-			if (rdev->accel_working)
-				*value = 2;
-			else
+			if (rdev->accel_working) {
+				if (rdev->new_fw)
+					*value = 3;
+				else
+					*value = 2;
+			} else {
 				*value = 0;
+			}
 		} else {
 			*value = rdev->accel_working;
 		}
@@ -596,14 +598,14 @@ int radeon_driver_open_kms(struct drm_device *dev, struct drm_file *file_priv)
 			return -ENOMEM;
 		}
 
-		if (rdev->accel_working) {
-			vm = &fpriv->vm;
-			r = radeon_vm_init(rdev, vm);
-			if (r) {
-				kfree(fpriv);
-				return r;
-			}
+		vm = &fpriv->vm;
+		r = radeon_vm_init(rdev, vm);
+		if (r) {
+			kfree(fpriv);
+			return r;
+		}
 
+		if (rdev->accel_working) {
 			r = radeon_bo_reserve(rdev->ring_tmp_bo.bo, false);
 			if (r) {
 				radeon_vm_fini(rdev, vm);
@@ -661,9 +663,9 @@ void radeon_driver_postclose_kms(struct drm_device *dev,
 					radeon_vm_bo_rmv(rdev, vm->ib_bo_va);
 				radeon_bo_unreserve(rdev->ring_tmp_bo.bo);
 			}
-			radeon_vm_fini(rdev, vm);
 		}
 
+		radeon_vm_fini(rdev, vm);
 		kfree(fpriv);
 		file_priv->driver_priv = NULL;
 	}
@@ -885,5 +887,6 @@ const struct drm_ioctl_desc radeon_ioctls_kms[] = {
 	DRM_IOCTL_DEF_DRV(RADEON_GEM_BUSY, radeon_gem_busy_ioctl, DRM_AUTH|DRM_UNLOCKED|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(RADEON_GEM_VA, radeon_gem_va_ioctl, DRM_AUTH|DRM_UNLOCKED|DRM_RENDER_ALLOW),
 	DRM_IOCTL_DEF_DRV(RADEON_GEM_OP, radeon_gem_op_ioctl, DRM_AUTH|DRM_UNLOCKED|DRM_RENDER_ALLOW),
+	DRM_IOCTL_DEF_DRV(RADEON_GEM_USERPTR, radeon_gem_userptr_ioctl, DRM_AUTH|DRM_UNLOCKED|DRM_RENDER_ALLOW),
 };
 int radeon_max_kms_ioctl = ARRAY_SIZE(radeon_ioctls_kms);

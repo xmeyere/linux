@@ -22,6 +22,7 @@
 #include <linux/kprobes.h>
 #include <linux/cache.h>
 #include <linux/sort.h>
+#include <linux/ioport.h>
 #include <linux/percpu.h>
 #include <linux/memblock.h>
 #include <linux/mmzone.h>
@@ -1945,6 +1946,52 @@ static unsigned long last_valid_pfn;
 static void sun4u_pgprot_init(void);
 static void sun4v_pgprot_init(void);
 
+static phys_addr_t __init available_memory(void)
+{
+	phys_addr_t available = 0ULL;
+	phys_addr_t pa_start, pa_end;
+	u64 i;
+
+	for_each_free_mem_range(i, NUMA_NO_NODE, &pa_start, &pa_end, NULL)
+		available = available + (pa_end  - pa_start);
+
+	return available;
+}
+
+/* We need to exclude reserved regions. This exclusion will include
+ * vmlinux and initrd. To be more precise the initrd size could be used to
+ * compute a new lower limit because it is freed later during initialization.
+ */
+static void __init reduce_memory(phys_addr_t limit_ram)
+{
+	phys_addr_t avail_ram = available_memory();
+	phys_addr_t pa_start, pa_end;
+	u64 i;
+
+	if (limit_ram >= avail_ram)
+		return;
+
+	for_each_free_mem_range(i, NUMA_NO_NODE, &pa_start, &pa_end, NULL) {
+		phys_addr_t region_size = pa_end - pa_start;
+		phys_addr_t clip_start = pa_start;
+
+		avail_ram = avail_ram - region_size;
+		/* Are we consuming too much? */
+		if (avail_ram < limit_ram) {
+			phys_addr_t give_back = limit_ram - avail_ram;
+
+			region_size = region_size - give_back;
+			clip_start = clip_start + give_back;
+		}
+
+		memblock_remove(clip_start, region_size);
+
+		if (avail_ram <= limit_ram)
+			break;
+		i = 0UL;
+	}
+}
+
 void __init paging_init(void)
 {
 	unsigned long end_pfn, shift, phys_base;
@@ -2024,7 +2071,8 @@ void __init paging_init(void)
 
 	find_ramdisk(phys_base);
 
-	memblock_enforce_memory_limit(cmdline_memory_size);
+	if (cmdline_memory_size)
+		reduce_memory(cmdline_memory_size);
 
 	memblock_allow_resize();
 	memblock_dump_all();
@@ -2682,10 +2730,9 @@ void hugetlb_setup(struct pt_regs *regs)
 	 * the Data-TLB for huge pages.
 	 */
 	if (tlb_type == cheetah_plus) {
-		bool need_context_reload = false;
 		unsigned long ctx;
 
-		spin_lock_irq(&ctx_alloc_lock);
+		spin_lock(&ctx_alloc_lock);
 		ctx = mm->context.sparc64_ctx_val;
 		ctx &= ~CTX_PGSZ_MASK;
 		ctx |= CTX_PGSZ_BASE << CTX_PGSZ0_SHIFT;
@@ -2704,15 +2751,76 @@ void hugetlb_setup(struct pt_regs *regs)
 			 * also executing in this address space.
 			 */
 			mm->context.sparc64_ctx_val = ctx;
-			need_context_reload = true;
-		}
-		spin_unlock_irq(&ctx_alloc_lock);
-
-		if (need_context_reload)
 			on_each_cpu(context_reload, mm, 0);
+		}
+		spin_unlock(&ctx_alloc_lock);
 	}
 }
 #endif
+
+static struct resource code_resource = {
+	.name	= "Kernel code",
+	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+};
+
+static struct resource data_resource = {
+	.name	= "Kernel data",
+	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+};
+
+static struct resource bss_resource = {
+	.name	= "Kernel bss",
+	.flags	= IORESOURCE_BUSY | IORESOURCE_MEM
+};
+
+static inline resource_size_t compute_kern_paddr(void *addr)
+{
+	return (resource_size_t) (addr - KERNBASE + kern_base);
+}
+
+static void __init kernel_lds_init(void)
+{
+	code_resource.start = compute_kern_paddr(_text);
+	code_resource.end   = compute_kern_paddr(_etext - 1);
+	data_resource.start = compute_kern_paddr(_etext);
+	data_resource.end   = compute_kern_paddr(_edata - 1);
+	bss_resource.start  = compute_kern_paddr(__bss_start);
+	bss_resource.end    = compute_kern_paddr(_end - 1);
+}
+
+static int __init report_memory(void)
+{
+	int i;
+	struct resource *res;
+
+	kernel_lds_init();
+
+	for (i = 0; i < pavail_ents; i++) {
+		res = kzalloc(sizeof(struct resource), GFP_KERNEL);
+
+		if (!res) {
+			pr_warn("Failed to allocate source.\n");
+			break;
+		}
+
+		res->name = "System RAM";
+		res->start = pavail[i].phys_addr;
+		res->end = pavail[i].phys_addr + pavail[i].reg_size - 1;
+		res->flags = IORESOURCE_BUSY | IORESOURCE_MEM;
+
+		if (insert_resource(&iomem_resource, res) < 0) {
+			pr_warn("Resource insertion failed.\n");
+			break;
+		}
+
+		insert_resource(res, &code_resource);
+		insert_resource(res, &data_resource);
+		insert_resource(res, &bss_resource);
+	}
+
+	return 0;
+}
+device_initcall(report_memory);
 
 #ifdef CONFIG_SMP
 #define do_flush_tlb_kernel_range	smp_flush_tlb_kernel_range

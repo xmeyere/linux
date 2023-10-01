@@ -425,7 +425,7 @@ static void unreg_event_syscall_enter(struct ftrace_event_file *file,
 		return;
 	mutex_lock(&syscall_trace_lock);
 	tr->sys_refcount_enter--;
-	rcu_assign_pointer(tr->enter_syscall_files[num], NULL);
+	RCU_INIT_POINTER(tr->enter_syscall_files[num], NULL);
 	if (!tr->sys_refcount_enter)
 		unregister_trace_sys_enter(ftrace_syscall_enter, tr);
 	mutex_unlock(&syscall_trace_lock);
@@ -463,7 +463,7 @@ static void unreg_event_syscall_exit(struct ftrace_event_file *file,
 		return;
 	mutex_lock(&syscall_trace_lock);
 	tr->sys_refcount_exit--;
-	rcu_assign_pointer(tr->exit_syscall_files[num], NULL);
+	RCU_INIT_POINTER(tr->exit_syscall_files[num], NULL);
 	if (!tr->sys_refcount_exit)
 		unregister_trace_sys_exit(ftrace_syscall_exit, tr);
 	mutex_unlock(&syscall_trace_lock);
@@ -586,7 +586,7 @@ static void perf_syscall_enter(void *ignore, struct pt_regs *regs, long id)
 	size -= sizeof(u32);
 
 	rec = (struct syscall_trace_enter *)perf_trace_buf_prepare(size,
-				sys_data->enter_event->event.type, NULL, &rctx);
+				sys_data->enter_event->event.type, regs, &rctx);
 	if (!rec)
 		return;
 
@@ -659,7 +659,7 @@ static void perf_syscall_exit(void *ignore, struct pt_regs *regs, long ret)
 	size -= sizeof(u32);
 
 	rec = (struct syscall_trace_exit *)perf_trace_buf_prepare(size,
-				sys_data->exit_event->event.type, NULL, &rctx);
+				sys_data->exit_event->event.type, regs, &rctx);
 	if (!rec)
 		return;
 

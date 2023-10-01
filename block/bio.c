@@ -112,7 +112,8 @@ static struct kmem_cache *bio_find_or_create_slab(unsigned int extra_size)
 	bslab = &bio_slabs[entry];
 
 	snprintf(bslab->name, sizeof(bslab->name), "bio-%d", entry);
-	slab = kmem_cache_create(bslab->name, sz, 0, SLAB_HWCACHE_ALIGN, NULL);
+	slab = kmem_cache_create(bslab->name, sz, ARCH_KMALLOC_MINALIGN,
+				 SLAB_HWCACHE_ALIGN, NULL);
 	if (!slab)
 		goto out_unlock;
 
@@ -427,6 +428,9 @@ struct bio *bio_alloc_bioset(gfp_t gfp_mask, int nr_iovecs, struct bio_set *bs)
 		front_pad = 0;
 		inline_vecs = nr_iovecs;
 	} else {
+		/* should not use nobvec bioset for nr_iovecs > 0 */
+		if (WARN_ON_ONCE(!bs->bvec_pool && nr_iovecs > 0))
+			return NULL;
 		/*
 		 * generic_make_request() converts recursion to iteration; this
 		 * means if we're running beneath it, any bios we allocate and
@@ -1110,12 +1114,9 @@ int bio_uncopy_user(struct bio *bio)
 			ret = __bio_copy_iov(bio, bmd->sgvecs, bmd->nr_sgvecs,
 					     bio_data_dir(bio) == READ,
 					     0, bmd->is_our_pages);
-		else {
-			ret = -EINTR;
-			if (bmd->is_our_pages)
-				bio_for_each_segment_all(bvec, bio, i)
-					__free_page(bvec->bv_page);
-		}
+		else if (bmd->is_our_pages)
+			bio_for_each_segment_all(bvec, bio, i)
+				__free_page(bvec->bv_page);
 	}
 	kfree(bmd);
 	bio_put(bio);
@@ -1216,11 +1217,8 @@ struct bio *bio_copy_user_iov(struct request_queue *q,
 			}
 		}
 
-		if (bio_add_pc_page(q, bio, page, bytes, offset) < bytes) {
-			if (!map_data)
-				__free_page(page);
+		if (bio_add_pc_page(q, bio, page, bytes, offset) < bytes)
 			break;
-		}
 
 		len -= bytes;
 		offset = 0;
@@ -1289,7 +1287,6 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 	struct bio *bio;
 	int cur_page = 0;
 	int ret, offset;
-	struct bio_vec *bvec;
 
 	for (i = 0; i < iov_count; i++) {
 		unsigned long uaddr = (unsigned long)iov[i].iov_base;
@@ -1333,12 +1330,7 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 
 		ret = get_user_pages_fast(uaddr, local_nr_pages,
 				write_to_vm, &pages[cur_page]);
-		if (unlikely(ret < local_nr_pages)) {
-			for (j = cur_page; j < page_limit; j++) {
-				if (!pages[j])
-					break;
-				put_page(pages[j]);
-			}
+		if (ret < local_nr_pages) {
 			ret = -EFAULT;
 			goto out_unmap;
 		}
@@ -1346,7 +1338,6 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 		offset = uaddr & ~PAGE_MASK;
 		for (j = cur_page; j < page_limit; j++) {
 			unsigned int bytes = PAGE_SIZE - offset;
-			unsigned short prev_bi_vcnt = bio->bi_vcnt;
 
 			if (len <= 0)
 				break;
@@ -1360,13 +1351,6 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 			if (bio_add_pc_page(q, bio, pages[j], bytes, offset) <
 					    bytes)
 				break;
-
-			/*
-			 * check if vector was merged with previous
-			 * drop page reference if needed
-			 */
-			if (bio->bi_vcnt == prev_bi_vcnt)
-				put_page(pages[j]);
 
 			len -= bytes;
 			offset = 0;
@@ -1393,8 +1377,10 @@ static struct bio *__bio_map_user_iov(struct request_queue *q,
 	return bio;
 
  out_unmap:
-	bio_for_each_segment_all(bvec, bio, j) {
-		put_page(bvec->bv_page);
+	for (i = 0; i < nr_pages; i++) {
+		if(!pages[i])
+			break;
+		page_cache_release(pages[i]);
 	}
  out:
 	kfree(pages);
@@ -1838,9 +1824,8 @@ EXPORT_SYMBOL(bio_endio_nodec);
  * Allocates and returns a new bio which represents @sectors from the start of
  * @bio, and updates @bio to represent the remaining sectors.
  *
- * Unless this is a discard request the newly allocated bio will point
- * to @bio's bi_io_vec; it is the caller's responsibility to ensure that
- * @bio is not freed before the split.
+ * The newly allocated bio will point to @bio's bi_io_vec; it is the caller's
+ * responsibility to ensure that @bio is not freed before the split.
  */
 struct bio *bio_split(struct bio *bio, int sectors,
 		      gfp_t gfp, struct bio_set *bs)
@@ -1850,15 +1835,7 @@ struct bio *bio_split(struct bio *bio, int sectors,
 	BUG_ON(sectors <= 0);
 	BUG_ON(sectors >= bio_sectors(bio));
 
-	/*
-	 * Discards need a mutable bio_vec to accommodate the payload
-	 * required by the DSM TRIM and UNMAP commands.
-	 */
-	if (bio->bi_rw & REQ_DISCARD)
-		split = bio_clone_bioset(bio, gfp, bs);
-	else
-		split = bio_clone_fast(bio, gfp, bs);
-
+	split = bio_clone_fast(bio, gfp, bs);
 	if (!split)
 		return NULL;
 
@@ -1926,20 +1903,9 @@ void bioset_free(struct bio_set *bs)
 }
 EXPORT_SYMBOL(bioset_free);
 
-/**
- * bioset_create  - Create a bio_set
- * @pool_size:	Number of bio and bio_vecs to cache in the mempool
- * @front_pad:	Number of bytes to allocate in front of the returned bio
- *
- * Description:
- *    Set up a bio_set to be used with @bio_alloc_bioset. Allows the caller
- *    to ask for a number of bytes to be allocated in front of the bio.
- *    Front pad allocation is useful for embedding the bio inside
- *    another structure, to avoid allocating extra data to go with the bio.
- *    Note that the bio must be embedded at the END of that structure always,
- *    or things will break badly.
- */
-struct bio_set *bioset_create(unsigned int pool_size, unsigned int front_pad)
+static struct bio_set *__bioset_create(unsigned int pool_size,
+				       unsigned int front_pad,
+				       bool create_bvec_pool)
 {
 	unsigned int back_pad = BIO_INLINE_VECS * sizeof(struct bio_vec);
 	struct bio_set *bs;
@@ -1964,9 +1930,11 @@ struct bio_set *bioset_create(unsigned int pool_size, unsigned int front_pad)
 	if (!bs->bio_pool)
 		goto bad;
 
-	bs->bvec_pool = biovec_create_pool(pool_size);
-	if (!bs->bvec_pool)
-		goto bad;
+	if (create_bvec_pool) {
+		bs->bvec_pool = biovec_create_pool(pool_size);
+		if (!bs->bvec_pool)
+			goto bad;
+	}
 
 	bs->rescue_workqueue = alloc_workqueue("bioset", WQ_MEM_RECLAIM, 0);
 	if (!bs->rescue_workqueue)
@@ -1977,7 +1945,40 @@ bad:
 	bioset_free(bs);
 	return NULL;
 }
+
+/**
+ * bioset_create  - Create a bio_set
+ * @pool_size:	Number of bio and bio_vecs to cache in the mempool
+ * @front_pad:	Number of bytes to allocate in front of the returned bio
+ *
+ * Description:
+ *    Set up a bio_set to be used with @bio_alloc_bioset. Allows the caller
+ *    to ask for a number of bytes to be allocated in front of the bio.
+ *    Front pad allocation is useful for embedding the bio inside
+ *    another structure, to avoid allocating extra data to go with the bio.
+ *    Note that the bio must be embedded at the END of that structure always,
+ *    or things will break badly.
+ */
+struct bio_set *bioset_create(unsigned int pool_size, unsigned int front_pad)
+{
+	return __bioset_create(pool_size, front_pad, true);
+}
 EXPORT_SYMBOL(bioset_create);
+
+/**
+ * bioset_create_nobvec  - Create a bio_set without bio_vec mempool
+ * @pool_size:	Number of bio to cache in the mempool
+ * @front_pad:	Number of bytes to allocate in front of the returned bio
+ *
+ * Description:
+ *    Same functionality as bioset_create() except that mempool is not
+ *    created for bio_vecs. Saving some memory for bio_clone_fast() users.
+ */
+struct bio_set *bioset_create_nobvec(unsigned int pool_size, unsigned int front_pad)
+{
+	return __bioset_create(pool_size, front_pad, false);
+}
+EXPORT_SYMBOL(bioset_create_nobvec);
 
 #ifdef CONFIG_BLK_CGROUP
 /**

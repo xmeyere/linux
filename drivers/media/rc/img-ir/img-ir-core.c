@@ -3,6 +3,11 @@
  *
  * Copyright 2010-2014 Imagination Technologies Ltd.
  *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
  * This contains core img-ir code for setting up the driver. The two interfaces
  * (raw and hardware decode) are handled separately.
  */
@@ -141,7 +146,7 @@ static int img_ir_remove(struct platform_device *pdev)
 {
 	struct img_ir_priv *priv = platform_get_drvdata(pdev);
 
-	free_irq(priv->irq, priv);
+	free_irq(priv->irq, img_ir_isr);
 	img_ir_remove_hw(priv);
 	img_ir_remove_raw(priv);
 

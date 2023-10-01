@@ -51,7 +51,7 @@ xfs_fs_get_xstate(
 
 	if (!XFS_IS_QUOTA_RUNNING(mp))
 		return -ENOSYS;
-	return -xfs_qm_scall_getqstat(mp, fqs);
+	return xfs_qm_scall_getqstat(mp, fqs);
 }
 
 STATIC int
@@ -63,7 +63,7 @@ xfs_fs_get_xstatev(
 
 	if (!XFS_IS_QUOTA_RUNNING(mp))
 		return -ENOSYS;
-	return -xfs_qm_scall_getqstatv(mp, fqs);
+	return xfs_qm_scall_getqstatv(mp, fqs);
 }
 
 STATIC int
@@ -95,11 +95,11 @@ xfs_fs_set_xstate(
 
 	switch (op) {
 	case Q_XQUOTAON:
-		return -xfs_qm_scall_quotaon(mp, flags);
+		return xfs_qm_scall_quotaon(mp, flags);
 	case Q_XQUOTAOFF:
 		if (!XFS_IS_QUOTA_ON(mp))
 			return -EINVAL;
-		return -xfs_qm_scall_quotaoff(mp, flags);
+		return xfs_qm_scall_quotaoff(mp, flags);
 	}
 
 	return -EINVAL;
@@ -112,31 +112,28 @@ xfs_fs_rm_xquota(
 {
 	struct xfs_mount	*mp = XFS_M(sb);
 	unsigned int		flags = 0;
-	
+
 	if (sb->s_flags & MS_RDONLY)
 		return -EROFS;
 
 	if (XFS_IS_QUOTA_ON(mp))
 		return -EINVAL;
 
-	if (uflags & ~(FS_USER_QUOTA | FS_GROUP_QUOTA | FS_PROJ_QUOTA))
-		return -EINVAL;
-
 	if (uflags & FS_USER_QUOTA)
 		flags |= XFS_DQ_USER;
 	if (uflags & FS_GROUP_QUOTA)
 		flags |= XFS_DQ_GROUP;
-	if (uflags & FS_USER_QUOTA)
+	if (uflags & FS_PROJ_QUOTA)
 		flags |= XFS_DQ_PROJ;
 
-	return -xfs_qm_scall_trunc_qfiles(mp, flags);
-}	
+	return xfs_qm_scall_trunc_qfiles(mp, flags);
+}
 
 STATIC int
 xfs_fs_get_dqblk(
 	struct super_block	*sb,
 	struct kqid		qid,
-	struct qc_dqblk		*qdq)
+	struct fs_disk_quota	*fdq)
 {
 	struct xfs_mount	*mp = XFS_M(sb);
 
@@ -145,15 +142,15 @@ xfs_fs_get_dqblk(
 	if (!XFS_IS_QUOTA_ON(mp))
 		return -ESRCH;
 
-	return -xfs_qm_scall_getquota(mp, from_kqid(&init_user_ns, qid),
-				      xfs_quota_type(qid.type), qdq);
+	return xfs_qm_scall_getquota(mp, from_kqid(&init_user_ns, qid),
+				      xfs_quota_type(qid.type), fdq);
 }
 
 STATIC int
 xfs_fs_set_dqblk(
 	struct super_block	*sb,
 	struct kqid		qid,
-	struct qc_dqblk		*qdq)
+	struct fs_disk_quota	*fdq)
 {
 	struct xfs_mount	*mp = XFS_M(sb);
 
@@ -164,8 +161,8 @@ xfs_fs_set_dqblk(
 	if (!XFS_IS_QUOTA_ON(mp))
 		return -ESRCH;
 
-	return -xfs_qm_scall_setqlim(mp, from_kqid(&init_user_ns, qid),
-				     xfs_quota_type(qid.type), qdq);
+	return xfs_qm_scall_setqlim(mp, from_kqid(&init_user_ns, qid),
+				     xfs_quota_type(qid.type), fdq);
 }
 
 const struct quotactl_ops xfs_quotactl_operations = {
