@@ -201,7 +201,6 @@ out:
 }
 EXPORT_SYMBOL(clk_round_rate);
 
-//offset: 0xc0019508
 void clk_init(struct clk *c)
 {
 	INIT_LIST_HEAD(&xmclocks);
@@ -225,9 +224,6 @@ void clk_init(struct clk *c)
 	list_add(&c->node, &xmclocks);
 	mutex_unlock(&clock_list_lock);
 }
-
-//Something after this function, there exists another one
-
 EXPORT_SYMBOL(clk_init);
 
 

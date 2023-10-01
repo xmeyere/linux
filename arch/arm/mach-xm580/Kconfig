@@ -39,6 +39,12 @@ config XM580_AUDIO
 	help
 	  Includes support for the xm580 Audio device.
 
+config MXC_HANTRO
+	bool "Add support for video encoder"
+	default "y"
+	help
+	  Includes support for the xm580 video encoder device.
+
 endmenu
 
 endif

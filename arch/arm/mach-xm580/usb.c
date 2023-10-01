@@ -4,6 +4,9 @@
 #include <linux/io.h>
 #include <linux/module.h>
 
+// TODO: check if there were any changes to the DWC driver.
+//       also make USB work.
+
 static struct resource xm_usb0_resource[] = {
 	[0] = {
 		.start = 0x50300000,

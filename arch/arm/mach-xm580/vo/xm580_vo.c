@@ -21,12 +21,12 @@ static int __init xmvo_init_module(void)
         return -12;
     }
     //TODO
-   // printk("writing registers\n");
+    //printk("writing registers\n");
     //init VO (ioctl 0x4f00)
-   // writel(1, (void*)(reg_vo_base_va + 0x80020));
-   // writel(4, (void*)(reg_vo_base_va + 0x80038));
-    //writel(4, (void*)(reg_vo_base_va + 0x80044));
-    //  printk("successfully initialized VO device\n");
+    writel(1, (void*)(reg_vo_base_va + 0x80020));
+    writel(4, (void*)(reg_vo_base_va + 0x80038));
+    writel(4, (void*)(reg_vo_base_va + 0x80044));
+    printk("successfully initialized VO device\n");
     return 0;
 }
 

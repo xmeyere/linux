@@ -34,11 +34,13 @@ int wdt_start(void)
     unsigned long flags;
     raw_spin_lock_irqsave(&g_wdt_lock, flags);
 
-    writel(0x1acce551, (void*)0xfe160c00);
-    writel(0, (void*)0xfe160008);
-    writel(0, (void*)0xfe16000c);
-    writel(3, (void*)0xfe160008);
-    writel(0, (void*)0xfe160c00);
+    writel(WATCHDOG_REGISTER_UNLOCK_VALUE, WATCHDOG_REGISTER_UNLOCK);
+
+    writel(WATCHDOG_STATE_OFF, WATCHDOG_REGISTER_STATE);
+    writel(0, WATCHDOG_REGISTER_TIMELEFT);
+    writel(WATCHDOG_STATE_ON, WATCHDOG_REGISTER_STATE);
+
+    writel(0, WATCHDOG_REGISTER_UNLOCK);
 
     raw_spin_unlock_irqrestore(&g_wdt_lock, flags);
 
@@ -50,10 +52,12 @@ int wdt_stop(void)
     unsigned long flags;
     raw_spin_lock_irqsave(&g_wdt_lock, flags);
 
-    writel(0x1acce551, WATCHDOG_LOCK_REGISTER);
-    writel(0, (void*)0xfe160008);
-    writel(0, (void*)0xfe16000c);
-    writel(0, WATCHDOG_LOCK_REGISTER);
+    writel(WATCHDOG_REGISTER_UNLOCK_VALUE, WATCHDOG_REGISTER_UNLOCK);
+
+    writel(WATCHDOG_STATE_OFF, WATCHDOG_REGISTER_STATE);
+    writel(0, WATCHDOG_REGISTER_TIMELEFT);
+
+    writel(0, WATCHDOG_REGISTER_UNLOCK);
 
     raw_spin_unlock_irqrestore(&g_wdt_lock, flags);
 
@@ -65,9 +69,9 @@ int wdt_set_timeout(int seconds)
     unsigned long flags;
     raw_spin_lock_irqsave(&g_wdt_lock, flags);
 
-    writel(0x1acce551, WATCHDOG_LOCK_REGISTER);
-    writel(seconds * 93750 >> 1, (void*)0xfe160000); //TODO: is the size correct?
-    writel(0, WATCHDOG_LOCK_REGISTER);
+    writel(WATCHDOG_REGISTER_UNLOCK_VALUE, WATCHDOG_REGISTER_UNLOCK);
+    writel(seconds * 93750 >> 1, (void*)0xfe160000); //TODO: is the size of the write correct?
+    writel(0, WATCHDOG_REGISTER_UNLOCK);
 
     raw_spin_unlock_irqrestore(&g_wdt_lock, flags);
 
@@ -83,8 +87,8 @@ int __init xm580_init_wdt(void)
     }
     printk("xm_wdt init ok!\n");
     
-    // It's probably better to implement the WDT propery, and figuring out how/when sofia calls WatchdogWrite(), but will this work?
-    //Note: U-Boot enables the watchdog
+    //TODO: It's probably better to implement the WDT propery, and figuring out how/when sofia calls WatchdogWrite(), but will this work?
+    //Note: U-Boot enables the watchdog, so we will disable it here.
     wdt_stop();
     return 0;
 }
@@ -96,9 +100,9 @@ static long wdt_ioctl(struct file *file,uint cmd_in,unsigned long arg)
         unsigned long flags;
         raw_spin_lock_irqsave(&g_wdt_lock, flags);
 
-        writel(0x1acce551, WATCHDOG_LOCK_REGISTER);
-        writel(0, (void*)0xfe16000c);
-        writel(0, WATCHDOG_LOCK_REGISTER);
+        writel(WATCHDOG_REGISTER_UNLOCK_VALUE, WATCHDOG_REGISTER_UNLOCK);
+        writel(0, WATCHDOG_REGISTER_TIMELEFT);
+        writel(0, WATCHDOG_REGISTER_UNLOCK);
 
         raw_spin_unlock_irqrestore(&g_wdt_lock, flags);
         return 0;

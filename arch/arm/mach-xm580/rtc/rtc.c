@@ -29,7 +29,7 @@ static struct miscdevice xm_rtc_dev = {
 };
 
 static struct timer_list g_timer;
-//static u64 last_tick;
+//static u64 last_tick; // TODO rtc_adjust function
 
 static u64 rtc_get(void)
 {
@@ -64,8 +64,7 @@ static void rtc_adjust(unsigned long l)
 
     }
 
-    //TODO
-    //if (last_tick != )
+    // TODO
 
     mutex_unlock(&g_rtc_lock);
 }
@@ -79,7 +78,7 @@ static int __init xmrtc_init_module(void)
         return error;
     }
     timestamp = rtc_get();
-    printk("rtc result: %lld\n", timestamp);
+    //printk("rtc result: %lld\n", timestamp);
 
     if (timestamp > 946684800) //Make sure timestamp is after the year 2000
     {   
@@ -107,7 +106,7 @@ static long rtc_ioctl(struct file *file,uint cmd_in,unsigned long arg)
     struct rtc_time time_struct;
     if (cmd_in == RTC_SET_TIME)
     {
-        printk("RTC_SET_TIME is 0x%X!\n", cmd_in);
+        //printk("RTC_SET_TIME is 0x%X!\n", cmd_in);
         if (copy_from_user(&time_struct, (void __user *)arg, sizeof(time_struct)))
 			return -EFAULT;
         rtc_tm_to_time(&time_struct, &time);
@@ -127,7 +126,7 @@ static long rtc_ioctl(struct file *file,uint cmd_in,unsigned long arg)
     }
     if (cmd_in == RTC_RD_TIME)
     {
-        printk("RTC_RD_TIME is 0x%X!\n", cmd_in);
+        //printk("RTC_RD_TIME is 0x%X!\n", cmd_in);
         rtctime = rtc_get();
         rtc_time_to_tm(rtctime, &time_struct);
         //todo: there is more stuff here
