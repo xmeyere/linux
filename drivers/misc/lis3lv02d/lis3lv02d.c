@@ -23,6 +23,7 @@
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
 #include <linux/kernel.h>
+#include <linux/sched/signal.h>
 #include <linux/dmi.h>
 #include <linux/module.h>
 #include <linux/types.h>
@@ -115,7 +116,7 @@ static int param_set_axis(const char *val, const struct kernel_param *kp)
 	return ret;
 }
 
-static struct kernel_param_ops param_ops_axis = {
+static const struct kernel_param_ops param_ops_axis = {
 	.set = param_set_axis,
 	.get = param_get_int,
 };
@@ -220,7 +221,7 @@ static int lis3_3dc_rates[16] = {0, 1, 10, 25, 50, 100, 200, 400, 1600, 5000};
 static int lis3_3dlh_rates[4] = {50, 100, 400, 1000};
 
 /* ODR is Output Data Rate */
-static int lis3lv02d_get_odr(struct lis3lv02d *lis3)
+static int lis3lv02d_get_odr_index(struct lis3lv02d *lis3)
 {
 	u8 ctrl;
 	int shift;
@@ -228,15 +229,23 @@ static int lis3lv02d_get_odr(struct lis3lv02d *lis3)
 	lis3->read(lis3, CTRL_REG1, &ctrl);
 	ctrl &= lis3->odr_mask;
 	shift = ffs(lis3->odr_mask) - 1;
-	return lis3->odrs[(ctrl >> shift)];
+	return (ctrl >> shift);
 }
 
 static int lis3lv02d_get_pwron_wait(struct lis3lv02d *lis3)
 {
-	int div = lis3lv02d_get_odr(lis3);
+	int odr_idx = lis3lv02d_get_odr_index(lis3);
+	int div = lis3->odrs[odr_idx];
 
-	if (WARN_ONCE(div == 0, "device returned spurious data"))
+	if (div == 0) {
+		if (odr_idx == 0) {
+			/* Power-down mode, not sampling no need to sleep */
+			return 0;
+		}
+
+		dev_err(&lis3->pdev->dev, "Error unknown odrs-index: %d\n", odr_idx);
 		return -ENXIO;
+	}
 
 	/* LIS3 power on delay is quite long */
 	msleep(lis3->pwron_delay / div);
@@ -650,14 +659,14 @@ out:
 	return retval;
 }
 
-static unsigned int lis3lv02d_misc_poll(struct file *file, poll_table *wait)
+static __poll_t lis3lv02d_misc_poll(struct file *file, poll_table *wait)
 {
 	struct lis3lv02d *lis3 = container_of(file->private_data,
 					      struct lis3lv02d, miscdev);
 
 	poll_wait(file, &lis3->misc_wait, wait);
 	if (atomic_read(&lis3->count))
-		return POLLIN | POLLRDNORM;
+		return EPOLLIN | EPOLLRDNORM;
 	return 0;
 }
 
@@ -819,9 +828,12 @@ static ssize_t lis3lv02d_rate_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
 	struct lis3lv02d *lis3 = dev_get_drvdata(dev);
+	int odr_idx;
 
 	lis3lv02d_sysfs_poweron(lis3);
-	return sprintf(buf, "%d\n", lis3lv02d_get_odr(lis3));
+
+	odr_idx = lis3lv02d_get_odr_index(lis3);
+	return sprintf(buf, "%d\n", lis3->odrs[odr_idx]);
 }
 
 static ssize_t lis3lv02d_rate_set(struct device *dev,
@@ -855,7 +867,7 @@ static struct attribute *lis3lv02d_attributes[] = {
 	NULL
 };
 
-static struct attribute_group lis3lv02d_attribute_group = {
+static const struct attribute_group lis3lv02d_attribute_group = {
 	.attrs = lis3lv02d_attributes
 };
 
@@ -950,6 +962,7 @@ int lis3lv02d_init_dt(struct lis3lv02d *lis3)
 	struct lis3lv02d_platform_data *pdata;
 	struct device_node *np = lis3->of_node;
 	u32 val;
+	s32 sval;
 
 	if (!lis3->of_node)
 		return 0;
@@ -1031,6 +1044,23 @@ int lis3lv02d_init_dt(struct lis3lv02d *lis3)
 		pdata->wakeup_flags |= LIS3_WAKEUP_Z_LO;
 	if (of_get_property(np, "st,wakeup-z-hi", NULL))
 		pdata->wakeup_flags |= LIS3_WAKEUP_Z_HI;
+	if (of_get_property(np, "st,wakeup-threshold", &val))
+		pdata->wakeup_thresh = val;
+
+	if (of_get_property(np, "st,wakeup2-x-lo", NULL))
+		pdata->wakeup_flags2 |= LIS3_WAKEUP_X_LO;
+	if (of_get_property(np, "st,wakeup2-x-hi", NULL))
+		pdata->wakeup_flags2 |= LIS3_WAKEUP_X_HI;
+	if (of_get_property(np, "st,wakeup2-y-lo", NULL))
+		pdata->wakeup_flags2 |= LIS3_WAKEUP_Y_LO;
+	if (of_get_property(np, "st,wakeup2-y-hi", NULL))
+		pdata->wakeup_flags2 |= LIS3_WAKEUP_Y_HI;
+	if (of_get_property(np, "st,wakeup2-z-lo", NULL))
+		pdata->wakeup_flags2 |= LIS3_WAKEUP_Z_LO;
+	if (of_get_property(np, "st,wakeup2-z-hi", NULL))
+		pdata->wakeup_flags2 |= LIS3_WAKEUP_Z_HI;
+	if (of_get_property(np, "st,wakeup2-threshold", &val))
+		pdata->wakeup_thresh2 = val;
 
 	if (!of_property_read_u32(np, "st,highpass-cutoff-hz", &val)) {
 		switch (val) {
@@ -1054,29 +1084,29 @@ int lis3lv02d_init_dt(struct lis3lv02d *lis3)
 	if (of_get_property(np, "st,hipass2-disable", NULL))
 		pdata->hipass_ctrl |= LIS3_HIPASS2_DISABLE;
 
-	if (of_get_property(np, "st,axis-x", &val))
-		pdata->axis_x = val;
-	if (of_get_property(np, "st,axis-y", &val))
-		pdata->axis_y = val;
-	if (of_get_property(np, "st,axis-z", &val))
-		pdata->axis_z = val;
+	if (of_property_read_s32(np, "st,axis-x", &sval) == 0)
+		pdata->axis_x = sval;
+	if (of_property_read_s32(np, "st,axis-y", &sval) == 0)
+		pdata->axis_y = sval;
+	if (of_property_read_s32(np, "st,axis-z", &sval) == 0)
+		pdata->axis_z = sval;
 
 	if (of_get_property(np, "st,default-rate", NULL))
 		pdata->default_rate = val;
 
-	if (of_get_property(np, "st,min-limit-x", &val))
-		pdata->st_min_limits[0] = val;
-	if (of_get_property(np, "st,min-limit-y", &val))
-		pdata->st_min_limits[1] = val;
-	if (of_get_property(np, "st,min-limit-z", &val))
-		pdata->st_min_limits[2] = val;
+	if (of_property_read_s32(np, "st,min-limit-x", &sval) == 0)
+		pdata->st_min_limits[0] = sval;
+	if (of_property_read_s32(np, "st,min-limit-y", &sval) == 0)
+		pdata->st_min_limits[1] = sval;
+	if (of_property_read_s32(np, "st,min-limit-z", &sval) == 0)
+		pdata->st_min_limits[2] = sval;
 
-	if (of_get_property(np, "st,max-limit-x", &val))
-		pdata->st_max_limits[0] = val;
-	if (of_get_property(np, "st,max-limit-y", &val))
-		pdata->st_max_limits[1] = val;
-	if (of_get_property(np, "st,max-limit-z", &val))
-		pdata->st_max_limits[2] = val;
+	if (of_property_read_s32(np, "st,max-limit-x", &sval) == 0)
+		pdata->st_max_limits[0] = sval;
+	if (of_property_read_s32(np, "st,max-limit-y", &sval) == 0)
+		pdata->st_max_limits[1] = sval;
+	if (of_property_read_s32(np, "st,max-limit-z", &sval) == 0)
+		pdata->st_max_limits[2] = sval;
 
 
 	lis3->pdata = pdata;

@@ -27,7 +27,7 @@
 #include "as10x_cmd.h"
 #include "as102_fe.h"
 #include "as102_fw.h"
-#include "dvbdev.h"
+#include <media/dvbdev.h>
 
 int dual_tuner;
 module_param_named(dual_tuner, dual_tuner, int, 0644);
@@ -337,6 +337,7 @@ int as102_dvb_register(struct as102_dev_t *as102_dev)
 				       &as102_dev->bus_adap,
 				       as102_dev->elna_cfg);
 	if (!as102_dev->dvb_fe) {
+		ret = -ENODEV;
 		dev_err(dev, "%s: as102_attach() failed: %d",
 		    __func__, ret);
 		goto efereg;

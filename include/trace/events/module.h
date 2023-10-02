@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Because linux/module.h has tracepoints in the header, and ftrace.h
  * used to include this file, define_trace.h includes linux/module.h
@@ -84,7 +85,7 @@ DECLARE_EVENT_CLASS(module_refcnt,
 		__assign_str(name, mod->name);
 	),
 
-	TP_printk("%s call_site=%pf refcnt=%d",
+	TP_printk("%s call_site=%ps refcnt=%d",
 		  __get_str(name), (void *)__entry->ip, __entry->refcnt)
 );
 
@@ -121,7 +122,7 @@ TRACE_EVENT(module_request,
 		__assign_str(name, name);
 	),
 
-	TP_printk("%s wait=%d call_site=%pf",
+	TP_printk("%s wait=%d call_site=%ps",
 		  __get_str(name), (int)__entry->wait, (void *)__entry->ip)
 );
 

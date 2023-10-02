@@ -29,6 +29,7 @@
 #include "prm-regbits-34xx.h"
 #include "cm3xxx.h"
 #include "cm-regbits-34xx.h"
+#include "clock.h"
 
 static void omap3xxx_prm_read_pending_irqs(unsigned long *events);
 static void omap3xxx_prm_ocp_barrier(void);
@@ -96,7 +97,7 @@ static struct omap3_vp omap3_vp[] = {
 
 #define MAX_VP_ID ARRAY_SIZE(omap3_vp);
 
-u32 omap3_prm_vp_check_txdone(u8 vp_id)
+static u32 omap3_prm_vp_check_txdone(u8 vp_id)
 {
 	struct omap3_vp *vp = &omap3_vp[vp_id];
 	u32 irqstatus;
@@ -106,7 +107,7 @@ u32 omap3_prm_vp_check_txdone(u8 vp_id)
 	return irqstatus & vp->tranxdone_status;
 }
 
-void omap3_prm_vp_clear_txdone(u8 vp_id)
+static void omap3_prm_vp_clear_txdone(u8 vp_id)
 {
 	struct omap3_vp *vp = &omap3_vp[vp_id];
 
@@ -217,7 +218,7 @@ static void omap3xxx_prm_restore_irqen(u32 *saved_mask)
  * omap3xxx_prm_clear_mod_irqs - clear wake-up events from PRCM interrupt
  * @module: PRM module to clear wakeups from
  * @regs: register set to clear, 1 or 3
- * @ignore_bits: wakeup status bits to ignore
+ * @wkst_mask: wkst bits to clear
  *
  * The purpose of this function is to clear any wake-up events latched
  * in the PRCM PM_WKST_x registers. It is possible that a wake-up event
@@ -226,7 +227,7 @@ static void omap3xxx_prm_restore_irqen(u32 *saved_mask)
  * that any peripheral wake-up events occurring while attempting to
  * clear the PM_WKST_x are detected and cleared.
  */
-int omap3xxx_prm_clear_mod_irqs(s16 module, u8 regs, u32 ignore_bits)
+static int omap3xxx_prm_clear_mod_irqs(s16 module, u8 regs, u32 wkst_mask)
 {
 	u32 wkst, fclk, iclk, clken;
 	u16 wkst_off = (regs == 3) ? OMAP3430ES2_PM_WKST3 : PM_WKST1;
@@ -238,7 +239,7 @@ int omap3xxx_prm_clear_mod_irqs(s16 module, u8 regs, u32 ignore_bits)
 
 	wkst = omap2_prm_read_mod_reg(module, wkst_off);
 	wkst &= omap2_prm_read_mod_reg(module, grpsel_off);
-	wkst &= ~ignore_bits;
+	wkst &= wkst_mask;
 	if (wkst) {
 		iclk = omap2_cm_read_mod_reg(module, iclk_off);
 		fclk = omap2_cm_read_mod_reg(module, fclk_off);
@@ -254,7 +255,7 @@ int omap3xxx_prm_clear_mod_irqs(s16 module, u8 regs, u32 ignore_bits)
 			omap2_cm_set_mod_reg_bits(clken, module, fclk_off);
 			omap2_prm_write_mod_reg(wkst, module, wkst_off);
 			wkst = omap2_prm_read_mod_reg(module, wkst_off);
-			wkst &= ~ignore_bits;
+			wkst &= wkst_mask;
 			c++;
 		}
 		omap2_cm_write_mod_reg(iclk, module, iclk_off);
@@ -318,6 +319,9 @@ void __init omap3_prm_init_pm(bool has_uart4, bool has_iva)
 	if (has_uart4) {
 		en_uart4_mask = OMAP3630_EN_UART4_MASK;
 		grpsel_uart4_mask = OMAP3630_GRPSEL_UART4_MASK;
+	} else {
+		en_uart4_mask = 0;
+		grpsel_uart4_mask = 0;
 	}
 
 	/* Enable wakeups in PER */
@@ -429,7 +433,7 @@ static void omap3_prm_reconfigure_io_chain(void)
  * registers, and omap3xxx_prm_reconfigure_io_chain() must be called.
  * No return value.
  */
-static void __init omap3xxx_prm_enable_io_wakeup(void)
+static void omap3xxx_prm_enable_io_wakeup(void)
 {
 	if (prm_features & PRM_HAS_IO_WAKEUP)
 		omap2_prm_set_mod_reg_bits(OMAP3430_EN_IO_MASK, WKUP_MOD,
@@ -664,10 +668,15 @@ static struct prm_ll_data omap3xxx_prm_ll_data = {
 	.deassert_hardreset = &omap2_prm_deassert_hardreset,
 	.is_hardreset_asserted = &omap2_prm_is_hardreset_asserted,
 	.reset_system = &omap3xxx_prm_dpll3_reset,
+	.clear_mod_irqs = &omap3xxx_prm_clear_mod_irqs,
+	.vp_check_txdone = &omap3_prm_vp_check_txdone,
+	.vp_clear_txdone = &omap3_prm_vp_clear_txdone,
 };
 
-int __init omap3xxx_prm_init(void)
+int __init omap3xxx_prm_init(const struct omap_prcm_init_data *data)
 {
+	omap2_clk_legacy_provider_init(TI_CLKM_PRM,
+				       prm_base.va + OMAP3430_IVA2_MOD);
 	if (omap3_has_io_wakeup())
 		prm_features |= PRM_HAS_IO_WAKEUP;
 
@@ -681,7 +690,8 @@ static const struct of_device_id omap3_prm_dt_match_table[] = {
 
 static int omap3xxx_prm_late_init(void)
 {
-	int ret;
+	struct device_node *np;
+	int irq_num;
 
 	if (!(prm_features & PRM_HAS_IO_WAKEUP))
 		return 0;
@@ -693,25 +703,23 @@ static int omap3xxx_prm_late_init(void)
 		omap3_prcm_irq_setup.reconfigure_io_chain =
 			omap3430_pre_es3_1_reconfigure_io_chain;
 
-	if (of_have_populated_dt()) {
-		struct device_node *np;
-		int irq_num;
+	np = of_find_matching_node(NULL, omap3_prm_dt_match_table);
+	if (!np) {
+		pr_err("PRM: no device tree node for interrupt?\n");
 
-		np = of_find_matching_node(NULL, omap3_prm_dt_match_table);
-		if (np) {
-			irq_num = of_irq_get(np, 0);
-			if (irq_num >= 0)
-				omap3_prcm_irq_setup.irq = irq_num;
-		}
+		return -ENODEV;
 	}
 
-	omap3xxx_prm_enable_io_wakeup();
-	ret = omap_prcm_register_chain_handler(&omap3_prcm_irq_setup);
-	if (!ret)
-		irq_set_status_flags(omap_prcm_event_to_irq("io"),
-				     IRQ_NOAUTOEN);
+	irq_num = of_irq_get(np, 0);
+	of_node_put(np);
+	if (irq_num == -EPROBE_DEFER)
+		return irq_num;
 
-	return ret;
+	omap3_prcm_irq_setup.irq = irq_num;
+
+	omap3xxx_prm_enable_io_wakeup();
+
+	return omap_prcm_register_chain_handler(&omap3_prcm_irq_setup);
 }
 
 static void __exit omap3xxx_prm_exit(void)

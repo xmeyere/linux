@@ -304,13 +304,13 @@ static int softingcs_probe(struct pcmcia_device *pcmcia)
 	return 0;
 
 platform_failed:
-	kfree(dev);
+	platform_device_put(pdev);
 mem_failed:
 pcmcia_bad:
 pcmcia_failed:
 	pcmcia_disable_device(pcmcia);
 	pcmcia->priv = NULL;
-	return ret ?: -ENODEV;
+	return ret;
 }
 
 static const struct pcmcia_device_id softingcs_ids[] = {

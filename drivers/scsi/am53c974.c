@@ -476,6 +476,8 @@ static int pci_esp_probe_one(struct pci_dev *pdev,
 		goto fail_unmap_regs;
 	}
 
+	pci_set_drvdata(pdev, pep);
+
 	err = request_irq(pdev->irq, scsi_esp_intr, IRQF_SHARED,
 			  DRV_MODULE_NAME, esp);
 	if (err < 0) {
@@ -496,8 +498,6 @@ static int pci_esp_probe_one(struct pci_dev *pdev,
 	/* Assume 40MHz clock */
 	esp->cfreq = 40000000;
 
-	pci_set_drvdata(pdev, pep);
-
 	err = scsi_esp_register(esp, &pdev->dev);
 	if (err)
 		goto fail_free_irq;
@@ -507,6 +507,7 @@ static int pci_esp_probe_one(struct pci_dev *pdev,
 fail_free_irq:
 	free_irq(pdev->irq, esp);
 fail_unmap_command_block:
+	pci_set_drvdata(pdev, NULL);
 	pci_free_consistent(pdev, 16, esp->command_block,
 			    esp->command_block_dma);
 fail_unmap_regs:
@@ -530,6 +531,7 @@ static void pci_esp_remove_one(struct pci_dev *pdev)
 
 	scsi_esp_unregister(esp);
 	free_irq(pdev->irq, esp);
+	pci_set_drvdata(pdev, NULL);
 	pci_free_consistent(pdev, 16, esp->command_block,
 			    esp->command_block_dma);
 	pci_iounmap(pdev, esp->regs);
@@ -554,15 +556,7 @@ static struct pci_driver am53c974_driver = {
 	.remove         = pci_esp_remove_one,
 };
 
-static int __init am53c974_module_init(void)
-{
-	return pci_register_driver(&am53c974_driver);
-}
-
-static void __exit am53c974_module_exit(void)
-{
-	pci_unregister_driver(&am53c974_driver);
-}
+module_pci_driver(am53c974_driver);
 
 MODULE_DESCRIPTION("AM53C974 SCSI driver");
 MODULE_AUTHOR("Hannes Reinecke <hare@suse.de>");
@@ -575,6 +569,3 @@ MODULE_PARM_DESC(am53c974_debug, "Enable debugging");
 
 module_param(am53c974_fenab, bool, 0444);
 MODULE_PARM_DESC(am53c974_fenab, "Enable 24-bit DMA transfer sizes");
-
-module_init(am53c974_module_init);
-module_exit(am53c974_module_exit);

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * COMEDI driver for the watchdog subdevice found on some addi-data boards
  * Copyright (c) 2013 H Hartley Sweeten <hsweeten@visionengravers.com>
@@ -6,16 +7,6 @@
  *
  * COMEDI - Linux Control and Measurement Device Interface
  * Copyright (C) 1998 David A. Schleef <ds@schleef.org>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -54,7 +45,7 @@ static int addi_watchdog_insn_config(struct comedi_device *dev,
 
 		/* Time base is 20ms, let the user know the timeout */
 		dev_info(dev->class_dev, "watchdog enabled, timeout:%dms\n",
-			20 * reload + 20);
+			 20 * reload + 20);
 		break;
 	case INSN_CONFIG_DISARM:
 		spriv->wdog_ctrl = 0;

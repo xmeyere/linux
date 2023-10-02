@@ -19,39 +19,17 @@
 #define __ARM64_KVM_MMIO_H__
 
 #include <linux/kvm_host.h>
-#include <asm/kvm_asm.h>
 #include <asm/kvm_arm.h>
 
-/*
- * This is annoying. The mmio code requires this, even if we don't
- * need any decoding. To be fixed.
- */
 struct kvm_decode {
 	unsigned long rt;
 	bool sign_extend;
+	/* Witdth of the register accessed by the faulting instruction is 64-bits */
+	bool sixty_four;
 };
 
-/*
- * The in-kernel MMIO emulation code wants to use a copy of run->mmio,
- * which is an anonymous type. Use our own type instead.
- */
-struct kvm_exit_mmio {
-	phys_addr_t	phys_addr;
-	u8		data[8];
-	u32		len;
-	bool		is_write;
-	void		*private;
-};
-
-static inline void kvm_prepare_mmio(struct kvm_run *run,
-				    struct kvm_exit_mmio *mmio)
-{
-	run->mmio.phys_addr	= mmio->phys_addr;
-	run->mmio.len		= mmio->len;
-	run->mmio.is_write	= mmio->is_write;
-	memcpy(run->mmio.data, mmio->data, mmio->len);
-	run->exit_reason	= KVM_EXIT_MMIO;
-}
+void kvm_mmio_write_buf(void *buf, unsigned int len, unsigned long data);
+unsigned long kvm_mmio_read_buf(const void *buf, unsigned int len);
 
 int kvm_handle_mmio_return(struct kvm_vcpu *vcpu, struct kvm_run *run);
 int io_mem_abort(struct kvm_vcpu *vcpu, struct kvm_run *run,

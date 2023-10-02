@@ -46,14 +46,14 @@ static inline unsigned get_high_speed_hz(unsigned int usb_rate)
 static void proc_audio_usbbus_read(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
 {
 	struct snd_usb_audio *chip = entry->private_data;
-	if (!chip->shutdown)
+	if (!atomic_read(&chip->shutdown))
 		snd_iprintf(buffer, "%03d/%03d\n", chip->dev->bus->busnum, chip->dev->devnum);
 }
 
 static void proc_audio_usbid_read(struct snd_info_entry *entry, struct snd_info_buffer *buffer)
 {
 	struct snd_usb_audio *chip = entry->private_data;
-	if (!chip->shutdown)
+	if (!atomic_read(&chip->shutdown))
 		snd_iprintf(buffer, "%04x:%04x\n", 
 			    USB_ID_VENDOR(chip->usb_id),
 			    USB_ID_PRODUCT(chip->usb_id));
@@ -74,7 +74,7 @@ void snd_usb_audio_create_proc(struct snd_usb_audio *chip)
 static void proc_dump_substream_formats(struct snd_usb_substream *subs, struct snd_info_buffer *buffer)
 {
 	struct audioformat *fp;
-	static char *sync_types[4] = {
+	static const char * const sync_types[4] = {
 		"NONE", "ASYNC", "ADAPTIVE", "SYNC"
 	};
 

@@ -41,31 +41,31 @@ static int sas_disable_routing(struct domain_device *dev,  u8 *sas_addr);
 
 /* ---------- SMP task management ---------- */
 
-static void smp_task_timedout(unsigned long _task)
+static void smp_task_timedout(struct timer_list *t)
 {
-	struct sas_task *task = (void *) _task;
+	struct sas_task_slow *slow = from_timer(slow, t, timer);
+	struct sas_task *task = slow->task;
 	unsigned long flags;
 
 	spin_lock_irqsave(&task->task_state_lock, flags);
-	if (!(task->task_state_flags & SAS_TASK_STATE_DONE))
+	if (!(task->task_state_flags & SAS_TASK_STATE_DONE)) {
 		task->task_state_flags |= SAS_TASK_STATE_ABORTED;
+		complete(&task->slow_task->completion);
+	}
 	spin_unlock_irqrestore(&task->task_state_lock, flags);
-
-	complete(&task->slow_task->completion);
 }
 
 static void smp_task_done(struct sas_task *task)
 {
-	if (!del_timer(&task->slow_task->timer))
-		return;
+	del_timer(&task->slow_task->timer);
 	complete(&task->slow_task->completion);
 }
 
 /* Give it some long enough timeout. In seconds. */
 #define SMP_TIMEOUT 10
 
-static int smp_execute_task(struct domain_device *dev, void *req, int req_size,
-			    void *resp, int resp_size)
+static int smp_execute_task_sg(struct domain_device *dev,
+		struct scatterlist *req, struct scatterlist *resp)
 {
 	int res, retry;
 	struct sas_task *task = NULL;
@@ -86,12 +86,11 @@ static int smp_execute_task(struct domain_device *dev, void *req, int req_size,
 		}
 		task->dev = dev;
 		task->task_proto = dev->tproto;
-		sg_init_one(&task->smp_task.smp_req, req, req_size);
-		sg_init_one(&task->smp_task.smp_resp, resp, resp_size);
+		task->smp_task.smp_req = *req;
+		task->smp_task.smp_resp = *resp;
 
 		task->task_done = smp_task_done;
 
-		task->slow_task->timer.data = (unsigned long) task;
 		task->slow_task->timer.function = smp_task_timedout;
 		task->slow_task->timer.expires = jiffies + SMP_TIMEOUT*HZ;
 		add_timer(&task->slow_task->timer);
@@ -149,6 +148,17 @@ static int smp_execute_task(struct domain_device *dev, void *req, int req_size,
 	BUG_ON(retry == 3 && task != NULL);
 	sas_free_task(task);
 	return res;
+}
+
+static int smp_execute_task(struct domain_device *dev, void *req, int req_size,
+			    void *resp, int resp_size)
+{
+	struct scatterlist req_sg;
+	struct scatterlist resp_sg;
+
+	sg_init_one(&req_sg, req, req_size);
+	sg_init_one(&resp_sg, resp, resp_size);
+	return smp_execute_task_sg(dev, &req_sg, &resp_sg);
 }
 
 /* ---------- Allocations ---------- */
@@ -282,6 +292,7 @@ static void sas_set_ex_phy(struct domain_device *dev, int phy_id, void *rsp)
 	phy->phy->minimum_linkrate = dr->pmin_linkrate;
 	phy->phy->maximum_linkrate = dr->pmax_linkrate;
 	phy->phy->negotiated_linkrate = phy->linkrate;
+	phy->phy->enabled = (phy->linkrate != SAS_PHY_DISABLED);
 
  skip:
 	if (new_phy)
@@ -431,7 +442,7 @@ static int sas_expander_discover(struct domain_device *dev)
 	struct expander_device *ex = &dev->ex_dev;
 	int res = -ENOMEM;
 
-	ex->ex_phy = kzalloc(sizeof(*ex->ex_phy)*ex->num_phys, GFP_KERNEL);
+	ex->ex_phy = kcalloc(ex->num_phys, sizeof(*ex->ex_phy), GFP_KERNEL);
 	if (!ex->ex_phy)
 		return -ENOMEM;
 
@@ -603,7 +614,14 @@ int sas_smp_phy_control(struct domain_device *dev, int phy_id,
 	}
 
 	res = smp_execute_task(dev, pc_req, PC_REQ_SIZE, pc_resp,PC_RESP_SIZE);
-
+	if (res) {
+		pr_err("ex %016llx phy%02d PHY control failed: %d\n",
+		       SAS_ADDR(dev->sas_addr), phy_id, res);
+	} else if (pc_resp[2] != SMP_RESP_FUNC_ACC) {
+		pr_err("ex %016llx phy%02d PHY control failed: function result 0x%x\n",
+		       SAS_ADDR(dev->sas_addr), phy_id, pc_resp[2]);
+		res = pc_resp[2];
+	}
 	kfree(pc_resp);
 	kfree(pc_req);
 	return res;
@@ -675,7 +693,7 @@ int sas_smp_get_phy_events(struct sas_phy *phy)
 	res = smp_execute_task(dev, req, RPEL_REQ_SIZE,
 			            resp, RPEL_RESP_SIZE);
 
-	if (!res)
+	if (res)
 		goto out;
 
 	phy->invalid_dword_count = scsi_to_u32(&resp[12]);
@@ -684,6 +702,7 @@ int sas_smp_get_phy_events(struct sas_phy *phy)
 	phy->phy_reset_problem_count = scsi_to_u32(&resp[24]);
 
  out:
+	kfree(req);
 	kfree(resp);
 	return res;
 
@@ -805,6 +824,26 @@ static struct domain_device *sas_ex_discover_end_dev(
 
 #ifdef CONFIG_SCSI_SAS_ATA
 	if ((phy->attached_tproto & SAS_PROTOCOL_STP) || phy->attached_sata_dev) {
+		if (child->linkrate > parent->min_linkrate) {
+			struct sas_phy_linkrates rates = {
+				.maximum_linkrate = parent->min_linkrate,
+				.minimum_linkrate = parent->min_linkrate,
+			};
+			int ret;
+
+			pr_notice("ex %016llx phy%02d SATA device linkrate > min pathway connection rate, attempting to lower device linkrate\n",
+				   SAS_ADDR(child->sas_addr), phy_id);
+			ret = sas_smp_phy_control(parent, phy_id,
+						  PHY_FUNC_LINK_RESET, &rates);
+			if (ret) {
+				pr_err("ex %016llx phy%02d SATA device could not set linkrate (%d)\n",
+				       SAS_ADDR(child->sas_addr), phy_id, ret);
+				goto out_free;
+			}
+			pr_notice("ex %016llx phy%02d SATA device set linkrate successfully\n",
+				  SAS_ADDR(child->sas_addr), phy_id);
+			child->linkrate = child->min_linkrate;
+		}
 		res = sas_get_ata_info(child, phy);
 		if (res)
 			goto out_free;
@@ -816,6 +855,7 @@ static struct domain_device *sas_ex_discover_end_dev(
 		rphy = sas_end_device_alloc(phy->port);
 		if (!rphy)
 			goto out_free;
+		rphy->identify.phy_identifier = phy_id;
 
 		child->rphy = rphy;
 		get_device(&rphy->dev);
@@ -843,6 +883,7 @@ static struct domain_device *sas_ex_discover_end_dev(
 
 		child->rphy = rphy;
 		get_device(&rphy->dev);
+		rphy->identify.phy_identifier = phy_id;
 		sas_fill_in_rphy(child, rphy);
 
 		list_add_tail(&child->disco_list_node, &parent->port->disco_list);
@@ -975,6 +1016,8 @@ static struct domain_device *sas_ex_discover_expander(
 		list_del(&child->dev_list_node);
 		spin_unlock_irq(&parent->port->dev_list_lock);
 		sas_put_device(child);
+		sas_port_delete(phy->port);
+		phy->port = NULL;
 		return NULL;
 	}
 	list_add_tail(&child->siblings, &parent->ex_dev.children);
@@ -1157,9 +1200,9 @@ static int sas_check_level_subtractive_boundary(struct domain_device *dev)
 	return 0;
 }
 /**
- * sas_ex_discover_devices -- discover devices attached to this expander
- * dev: pointer to the expander domain device
- * single: if you want to do a single phy, else set to -1;
+ * sas_ex_discover_devices - discover devices attached to this expander
+ * @dev: pointer to the expander domain device
+ * @single: if you want to do a single phy, else set to -1;
  *
  * Configure this expander for use with its devices and register the
  * devices of this expander.
@@ -1515,10 +1558,11 @@ static int sas_configure_phy(struct domain_device *dev, int phy_id,
 }
 
 /**
- * sas_configure_parent -- configure routing table of parent
- * parent: parent expander
- * child: child expander
- * sas_addr: SAS port identifier of device directly attached to child
+ * sas_configure_parent - configure routing table of parent
+ * @parent: parent expander
+ * @child: child expander
+ * @sas_addr: SAS port identifier of device directly attached to child
+ * @include: whether or not to include @child in the expander routing table
  */
 static int sas_configure_parent(struct domain_device *parent,
 				struct domain_device *child,
@@ -1557,9 +1601,9 @@ static int sas_configure_parent(struct domain_device *parent,
 }
 
 /**
- * sas_configure_routing -- configure routing
- * dev: expander device
- * sas_addr: port identifier of device directly attached to the expander device
+ * sas_configure_routing - configure routing
+ * @dev: expander device
+ * @sas_addr: port identifier of device directly attached to the expander device
  */
 static int sas_configure_routing(struct domain_device *dev, u8 *sas_addr)
 {
@@ -1576,8 +1620,8 @@ static int sas_disable_routing(struct domain_device *dev,  u8 *sas_addr)
 }
 
 /**
- * sas_discover_expander -- expander discovery
- * @ex: pointer to expander domain device
+ * sas_discover_expander - expander discovery
+ * @dev: pointer to expander domain device
  *
  * See comment in sas_discover_sata().
  */
@@ -1903,7 +1947,8 @@ static void sas_unregister_devs_sas_addr(struct domain_device *parent,
 		sas_port_delete_phy(phy->port, phy->phy);
 		sas_device_set_phy(found, phy->port);
 		if (phy->port->num_phys == 0)
-			sas_port_delete(phy->port);
+			list_add_tail(&phy->port->del_list,
+				&parent->port->sas_port_del_list);
 		phy->port = NULL;
 	}
 }
@@ -2024,6 +2069,11 @@ static int sas_rediscover_dev(struct domain_device *dev, int phy_id, bool last)
 	if ((SAS_ADDR(sas_addr) == 0) || (res == -ECOMM)) {
 		phy->phy_state = PHY_EMPTY;
 		sas_unregister_devs_sas_addr(dev, phy_id, last);
+		/*
+		 * Even though the PHY is empty, for convenience we discover
+		 * the PHY to update the PHY info, like negotiated linkrate.
+		 */
+		sas_ex_phy_discover(dev, phy_id);
 		return res;
 	} else if (SAS_ADDR(sas_addr) == SAS_ADDR(phy->attached_sas_addr) &&
 		   dev_type_flutter(type, phy->attached_dev_type)) {
@@ -2039,14 +2089,11 @@ static int sas_rediscover_dev(struct domain_device *dev, int phy_id, bool last)
 		return res;
 	}
 
-	/* delete the old link */
-	if (SAS_ADDR(phy->attached_sas_addr) &&
-	    SAS_ADDR(sas_addr) != SAS_ADDR(phy->attached_sas_addr)) {
-		SAS_DPRINTK("ex %016llx phy 0x%x replace %016llx\n",
-			    SAS_ADDR(dev->sas_addr), phy_id,
-			    SAS_ADDR(phy->attached_sas_addr));
-		sas_unregister_devs_sas_addr(dev, phy_id, last);
-	}
+	/* we always have to delete the old device when we went here */
+	SAS_DPRINTK("ex %016llx phy 0x%x replace %016llx\n",
+		    SAS_ADDR(dev->sas_addr), phy_id,
+		    SAS_ADDR(phy->attached_sas_addr));
+	sas_unregister_devs_sas_addr(dev, phy_id, last);
 
 	return sas_discover_new(dev, phy_id);
 }
@@ -2097,8 +2144,8 @@ static int sas_rediscover(struct domain_device *dev, const int phy_id)
 }
 
 /**
- * sas_revalidate_domain -- revalidate the domain
- * @port: port to the domain of interest
+ * sas_ex_revalidate_domain - revalidate the domain
+ * @port_dev: port domain device.
  *
  * NOTE: this process _must_ quit (return) as soon as any connection
  * errors are encountered.  Connection recovery is done elsewhere.
@@ -2111,7 +2158,7 @@ int sas_ex_revalidate_domain(struct domain_device *port_dev)
 	struct domain_device *dev = NULL;
 
 	res = sas_find_bcast_dev(port_dev, &dev);
-	while (res == 0 && dev) {
+	if (res == 0 && dev) {
 		struct expander_device *ex = &dev->ex_dev;
 		int i = 0, phy_id;
 
@@ -2123,64 +2170,54 @@ int sas_ex_revalidate_domain(struct domain_device *port_dev)
 			res = sas_rediscover(dev, phy_id);
 			i = phy_id + 1;
 		} while (i < ex->num_phys);
-
-		dev = NULL;
-		res = sas_find_bcast_dev(port_dev, &dev);
 	}
 	return res;
 }
 
-int sas_smp_handler(struct Scsi_Host *shost, struct sas_rphy *rphy,
-		    struct request *req)
+void sas_smp_handler(struct bsg_job *job, struct Scsi_Host *shost,
+		struct sas_rphy *rphy)
 {
 	struct domain_device *dev;
-	int ret, type;
-	struct request *rsp = req->next_rq;
-
-	if (!rsp) {
-		printk("%s: space for a smp response is missing\n",
-		       __func__);
-		return -EINVAL;
-	}
+	unsigned int rcvlen = 0;
+	int ret = -EINVAL;
 
 	/* no rphy means no smp target support (ie aic94xx host) */
 	if (!rphy)
-		return sas_smp_host_handler(shost, req, rsp);
+		return sas_smp_host_handler(job, shost);
 
-	type = rphy->identify.device_type;
-
-	if (type != SAS_EDGE_EXPANDER_DEVICE &&
-	    type != SAS_FANOUT_EXPANDER_DEVICE) {
+	switch (rphy->identify.device_type) {
+	case SAS_EDGE_EXPANDER_DEVICE:
+	case SAS_FANOUT_EXPANDER_DEVICE:
+		break;
+	default:
 		printk("%s: can we send a smp request to a device?\n",
 		       __func__);
-		return -EINVAL;
+		goto out;
 	}
 
 	dev = sas_find_dev_by_rphy(rphy);
 	if (!dev) {
 		printk("%s: fail to find a domain_device?\n", __func__);
-		return -EINVAL;
+		goto out;
 	}
 
 	/* do we need to support multiple segments? */
-	if (bio_multiple_segments(req->bio) ||
-	    bio_multiple_segments(rsp->bio)) {
+	if (job->request_payload.sg_cnt > 1 ||
+	    job->reply_payload.sg_cnt > 1) {
 		printk("%s: multiple segments req %u, rsp %u\n",
-		       __func__, blk_rq_bytes(req), blk_rq_bytes(rsp));
-		return -EINVAL;
+		       __func__, job->request_payload.payload_len,
+		       job->reply_payload.payload_len);
+		goto out;
 	}
 
-	ret = smp_execute_task(dev, bio_data(req->bio), blk_rq_bytes(req),
-			       bio_data(rsp->bio), blk_rq_bytes(rsp));
-	if (ret > 0) {
-		/* positive number is the untransferred residual */
-		rsp->resid_len = ret;
-		req->resid_len = 0;
+	ret = smp_execute_task_sg(dev, job->request_payload.sg_list,
+			job->reply_payload.sg_list);
+	if (ret >= 0) {
+		/* bsg_job_done() requires the length received  */
+		rcvlen = job->reply_payload.payload_len - ret;
 		ret = 0;
-	} else if (ret == 0) {
-		rsp->resid_len = 0;
-		req->resid_len = 0;
 	}
 
-	return ret;
+out:
+	bsg_job_done(job, ret, rcvlen);
 }

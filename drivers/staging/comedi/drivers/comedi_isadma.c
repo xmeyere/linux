@@ -1,16 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * COMEDI ISA DMA support functions
  * Copyright (c) 2014 H Hartley Sweeten <hsweeten@visionengravers.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
@@ -132,8 +123,7 @@ unsigned int comedi_isadma_poll(struct comedi_isadma *dma)
 		result = result1;
 	if (result >= desc->size || result == 0)
 		return 0;
-	else
-		return desc->size - result;
+	return desc->size - result;
 }
 EXPORT_SYMBOL_GPL(comedi_isadma_poll);
 
@@ -235,7 +225,8 @@ void comedi_isadma_free(struct comedi_isadma *dma)
 			desc = &dma->desc[i];
 			if (desc->virt_addr)
 				dma_free_coherent(NULL, desc->maxsize,
-						desc->virt_addr, desc->hw_addr);
+						  desc->virt_addr,
+						  desc->hw_addr);
 		}
 		kfree(dma->desc);
 	}

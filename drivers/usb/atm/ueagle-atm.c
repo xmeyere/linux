@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: (GPL-2.0+ OR BSD-3-Clause)
 /*-
  * Copyright (c) 2003, 2004
  *	Damien Bergamini <damien.bergamini@free.fr>. All rights reserved.
@@ -173,10 +174,10 @@ struct uea_softc {
 	const struct firmware *dsp_firm;
 	struct urb *urb_int;
 
-	void (*dispatch_cmv) (struct uea_softc *, struct intr_pkt *);
-	void (*schedule_load_page) (struct uea_softc *, struct intr_pkt *);
-	int (*stat) (struct uea_softc *);
-	int (*send_cmvs) (struct uea_softc *);
+	void (*dispatch_cmv)(struct uea_softc *, struct intr_pkt *);
+	void (*schedule_load_page)(struct uea_softc *, struct intr_pkt *);
+	int (*stat)(struct uea_softc *);
+	int (*send_cmvs)(struct uea_softc *);
 
 	/* keep in sync with eaglectl */
 	struct uea_stats {
@@ -952,7 +953,7 @@ static void uea_load_page_e1(struct work_struct *work)
 	int i;
 
 	/* reload firmware when reboot start and it's loaded already */
-	if (ovl == 0 && pageno == 0 && sc->dsp_firm) {
+	if (ovl == 0 && pageno == 0) {
 		release_firmware(sc->dsp_firm);
 		sc->dsp_firm = NULL;
 	}
@@ -1074,7 +1075,7 @@ static void uea_load_page_e4(struct work_struct *work)
 	uea_dbg(INS_TO_USBDEV(sc), "sending DSP page %u\n", pageno);
 
 	/* reload firmware when reboot start and it's loaded already */
-	if (pageno == 0 && sc->dsp_firm) {
+	if (pageno == 0) {
 		release_firmware(sc->dsp_firm);
 		sc->dsp_firm = NULL;
 	}
@@ -1599,7 +1600,7 @@ static void cmvs_file_name(struct uea_softc *sc, char *const cmv_name, int ver)
 	char file_arr[] = "CMVxy.bin";
 	char *file;
 
-	kparam_block_sysfs_write(cmv_file);
+	kernel_param_lock(THIS_MODULE);
 	/* set proper name corresponding modem version and line type */
 	if (cmv_file[sc->modem_index] == NULL) {
 		if (UEA_CHIP_VERSION(sc) == ADI930)
@@ -1618,7 +1619,7 @@ static void cmvs_file_name(struct uea_softc *sc, char *const cmv_name, int ver)
 	strlcat(cmv_name, file, UEA_FW_NAME_MAX);
 	if (ver == 2)
 		strlcat(cmv_name, ".v2", UEA_FW_NAME_MAX);
-	kparam_unblock_sysfs_write(cmv_file);
+	kernel_param_unlock(THIS_MODULE);
 }
 
 static int request_cmvs_old(struct uea_softc *sc,
@@ -2167,10 +2168,11 @@ resubmit:
 /*
  * Start the modem : init the data and start kernel thread
  */
-static int uea_boot(struct uea_softc *sc)
+static int uea_boot(struct uea_softc *sc, struct usb_interface *intf)
 {
-	int ret, size;
 	struct intr_pkt *intr;
+	int ret = -ENOMEM;
+	int size;
 
 	uea_enters(INS_TO_USBDEV(sc));
 
@@ -2195,29 +2197,28 @@ static int uea_boot(struct uea_softc *sc)
 	if (UEA_CHIP_VERSION(sc) == ADI930)
 		load_XILINX_firmware(sc);
 
-	intr = kmalloc(size, GFP_KERNEL);
-	if (!intr) {
-		uea_err(INS_TO_USBDEV(sc),
-		       "cannot allocate interrupt package\n");
+	if (intf->cur_altsetting->desc.bNumEndpoints < 1) {
+		ret = -ENODEV;
 		goto err0;
 	}
 
+	intr = kmalloc(size, GFP_KERNEL);
+	if (!intr)
+		goto err0;
+
 	sc->urb_int = usb_alloc_urb(0, GFP_KERNEL);
-	if (!sc->urb_int) {
-		uea_err(INS_TO_USBDEV(sc), "cannot allocate interrupt URB\n");
+	if (!sc->urb_int)
 		goto err1;
-	}
 
 	usb_fill_int_urb(sc->urb_int, sc->usb_dev,
 			 usb_rcvintpipe(sc->usb_dev, UEA_INTR_PIPE),
 			 intr, size, uea_intr, sc,
-			 sc->usb_dev->actconfig->interface[0]->altsetting[0].
-			 endpoint[0].desc.bInterval);
+			 intf->cur_altsetting->endpoint[0].desc.bInterval);
 
 	ret = usb_submit_urb(sc->urb_int, GFP_KERNEL);
 	if (ret < 0) {
 		uea_err(INS_TO_USBDEV(sc),
-		       "urb submition failed with error %d\n", ret);
+		       "urb submission failed with error %d\n", ret);
 		goto err1;
 	}
 
@@ -2227,6 +2228,7 @@ static int uea_boot(struct uea_softc *sc)
 	sc->kthread = kthread_create(uea_kthread, sc, "ueagle-atm");
 	if (IS_ERR(sc->kthread)) {
 		uea_err(INS_TO_USBDEV(sc), "failed to create thread\n");
+		ret = PTR_ERR(sc->kthread);
 		goto err2;
 	}
 
@@ -2241,7 +2243,7 @@ err1:
 	kfree(intr);
 err0:
 	uea_leaves(INS_TO_USBDEV(sc));
-	return -ENOMEM;
+	return ret;
 }
 
 /*
@@ -2284,7 +2286,7 @@ static struct uea_softc *dev_to_uea(struct device *dev)
 	return usbatm->driver_data;
 }
 
-static ssize_t read_status(struct device *dev, struct device_attribute *attr,
+static ssize_t stat_status_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	int ret = -ENODEV;
@@ -2300,7 +2302,7 @@ out:
 	return ret;
 }
 
-static ssize_t reboot(struct device *dev, struct device_attribute *attr,
+static ssize_t stat_status_store(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count)
 {
 	int ret = -ENODEV;
@@ -2317,9 +2319,9 @@ out:
 	return ret;
 }
 
-static DEVICE_ATTR(stat_status, S_IWUSR | S_IRUGO, read_status, reboot);
+static DEVICE_ATTR_RW(stat_status);
 
-static ssize_t read_human_status(struct device *dev,
+static ssize_t stat_human_status_show(struct device *dev,
 			struct device_attribute *attr, char *buf)
 {
 	int ret = -ENODEV;
@@ -2380,9 +2382,9 @@ out:
 	return ret;
 }
 
-static DEVICE_ATTR(stat_human_status, S_IRUGO, read_human_status, NULL);
+static DEVICE_ATTR_RO(stat_human_status);
 
-static ssize_t read_delin(struct device *dev, struct device_attribute *attr,
+static ssize_t stat_delin_show(struct device *dev, struct device_attribute *attr,
 		char *buf)
 {
 	int ret = -ENODEV;
@@ -2412,11 +2414,11 @@ out:
 	return ret;
 }
 
-static DEVICE_ATTR(stat_delin, S_IRUGO, read_delin, NULL);
+static DEVICE_ATTR_RO(stat_delin);
 
 #define UEA_ATTR(name, reset)					\
 								\
-static ssize_t read_##name(struct device *dev,			\
+static ssize_t stat_##name##_show(struct device *dev,		\
 		struct device_attribute *attr, char *buf)	\
 {								\
 	int ret = -ENODEV;					\
@@ -2434,7 +2436,7 @@ out:								\
 	return ret;						\
 }								\
 								\
-static DEVICE_ATTR(stat_##name, S_IRUGO, read_##name, NULL)
+static DEVICE_ATTR_RO(stat_##name)
 
 UEA_ATTR(mflags, 1);
 UEA_ATTR(vidcpe, 0);
@@ -2454,7 +2456,7 @@ UEA_ATTR(firmid, 0);
 
 /* Retrieve the device End System Identifier (MAC) */
 
-static int uea_getesi(struct uea_softc *sc, u_char * esi)
+static int uea_getesi(struct uea_softc *sc, u_char *esi)
 {
 	unsigned char mac_str[2 * ETH_ALEN + 1];
 	int i;
@@ -2527,7 +2529,7 @@ static struct attribute *attrs[] = {
 	&dev_attr_stat_firmid.attr,
 	NULL,
 };
-static struct attribute_group attr_grp = {
+static const struct attribute_group attr_grp = {
 	.attrs = attrs,
 };
 
@@ -2561,10 +2563,8 @@ static int uea_bind(struct usbatm_data *usbatm, struct usb_interface *intf,
 	}
 
 	sc = kzalloc(sizeof(struct uea_softc), GFP_KERNEL);
-	if (!sc) {
-		uea_err(usb, "uea_init: not enough memory !\n");
+	if (!sc)
 		return -ENOMEM;
-	}
 
 	sc->usb_dev = usb;
 	usbatm->driver_data = sc;
@@ -2604,7 +2604,7 @@ static int uea_bind(struct usbatm_data *usbatm, struct usb_interface *intf,
 	if (ret < 0)
 		goto error;
 
-	ret = uea_boot(sc);
+	ret = uea_boot(sc, intf);
 	if (ret < 0)
 		goto error_rm_grp;
 

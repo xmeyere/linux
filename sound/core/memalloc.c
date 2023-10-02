@@ -54,6 +54,7 @@ void *snd_malloc_pages(size_t size, gfp_t gfp_flags)
 	pg = get_order(size);
 	return (void *) __get_free_pages(gfp_flags, pg);
 }
+EXPORT_SYMBOL(snd_malloc_pages);
 
 /**
  * snd_free_pages - release the pages
@@ -71,6 +72,7 @@ void snd_free_pages(void *ptr, size_t size)
 	pg = get_order(size);
 	free_pages((unsigned long) ptr, pg);
 }
+EXPORT_SYMBOL(snd_free_pages);
 
 /*
  *
@@ -124,7 +126,7 @@ static void snd_malloc_dev_iram(struct snd_dma_buffer *dmab, size_t size)
 	dmab->addr = 0;
 
 	if (dev->of_node)
-		pool = of_get_named_gen_pool(dev->of_node, "iram", 0);
+		pool = of_gen_pool_get(dev->of_node, "iram", 0);
 
 	if (!pool)
 		return;
@@ -177,6 +179,7 @@ int snd_dma_alloc_pages(int type, struct device *device, size_t size,
 	if (WARN_ON(!dmab))
 		return -ENXIO;
 
+	size = PAGE_ALIGN(size);
 	dmab->dev.type = type;
 	dmab->dev.dev = device;
 	dmab->bytes = 0;
@@ -217,6 +220,7 @@ int snd_dma_alloc_pages(int type, struct device *device, size_t size,
 	dmab->bytes = size;
 	return 0;
 }
+EXPORT_SYMBOL(snd_dma_alloc_pages);
 
 /**
  * snd_dma_alloc_pages_fallback - allocate the buffer area according to the given type with fallback
@@ -239,21 +243,18 @@ int snd_dma_alloc_pages_fallback(int type, struct device *device, size_t size,
 	int err;
 
 	while ((err = snd_dma_alloc_pages(type, device, size, dmab)) < 0) {
-		size_t aligned_size;
 		if (err != -ENOMEM)
 			return err;
 		if (size <= PAGE_SIZE)
 			return -ENOMEM;
-		aligned_size = PAGE_SIZE << get_order(size);
-		if (size != aligned_size)
-			size = aligned_size;
-		else
-			size >>= 1;
+		size >>= 1;
+		size = PAGE_SIZE << get_order(size);
 	}
 	if (! dmab->area)
 		return -ENOMEM;
 	return 0;
 }
+EXPORT_SYMBOL(snd_dma_alloc_pages_fallback);
 
 
 /**
@@ -287,13 +288,4 @@ void snd_dma_free_pages(struct snd_dma_buffer *dmab)
 		pr_err("snd-malloc: invalid device type %d\n", dmab->dev.type);
 	}
 }
-
-/*
- * exports
- */
-EXPORT_SYMBOL(snd_dma_alloc_pages);
-EXPORT_SYMBOL(snd_dma_alloc_pages_fallback);
 EXPORT_SYMBOL(snd_dma_free_pages);
-
-EXPORT_SYMBOL(snd_malloc_pages);
-EXPORT_SYMBOL(snd_free_pages);

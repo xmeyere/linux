@@ -1,21 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (c) 1996, 2003 VIA Networking Technologies, Inc.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
  *
  * File: baseband.c
  *
@@ -36,8 +22,10 @@
  * Revision History:
  *      06-10-2003 Bryan YC Fan:  Re-write codes to support VT3253 spec.
  *      08-07-2003 Bryan YC Fan:  Add MAXIM2827/2825 and RFMD2959 support.
- *      08-26-2003 Kyle Hsu    :  Modify BBuGetFrameTime() and BBvCalculateParameter().
- *                                cancel the setting of MAC_REG_SOFTPWRCTL on BBbVT3253Init().
+ *      08-26-2003 Kyle Hsu    :  Modify BBuGetFrameTime() and
+ *				  BBvCalculateParameter().
+ *                                cancel the setting of MAC_REG_SOFTPWRCTL on
+ *				  BBbVT3253Init().
  *                                Add the comments.
  *      09-01-2003 Bryan YC Fan:  RF & BB tables updated.
  *                                Modified BBvLoopbackOn & BBvLoopbackOff().
@@ -66,7 +54,7 @@
 /*---------------------  Static Variables  --------------------------*/
 
 #define CB_VT3253_INIT_FOR_RFMD 446
-static unsigned char byVT3253InitTab_RFMD[CB_VT3253_INIT_FOR_RFMD][2] = {
+static const unsigned char byVT3253InitTab_RFMD[CB_VT3253_INIT_FOR_RFMD][2] = {
 	{0x00, 0x30},
 	{0x01, 0x00},
 	{0x02, 0x00},
@@ -516,7 +504,7 @@ static unsigned char byVT3253InitTab_RFMD[CB_VT3253_INIT_FOR_RFMD][2] = {
 };
 
 #define CB_VT3253B0_INIT_FOR_RFMD 256
-static unsigned char byVT3253B0_RFMD[CB_VT3253B0_INIT_FOR_RFMD][2] = {
+static const unsigned char byVT3253B0_RFMD[CB_VT3253B0_INIT_FOR_RFMD][2] = {
 	{0x00, 0x31},
 	{0x01, 0x00},
 	{0x02, 0x00},
@@ -777,7 +765,8 @@ static unsigned char byVT3253B0_RFMD[CB_VT3253B0_INIT_FOR_RFMD][2] = {
 
 #define CB_VT3253B0_AGC_FOR_RFMD2959 195
 /* For RFMD2959 */
-static unsigned char byVT3253B0_AGC4_RFMD2959[CB_VT3253B0_AGC_FOR_RFMD2959][2] = {
+static
+unsigned char byVT3253B0_AGC4_RFMD2959[CB_VT3253B0_AGC_FOR_RFMD2959][2] = {
 	{0xF0, 0x00},
 	{0xF1, 0x3E},
 	{0xF0, 0x80},
@@ -977,7 +966,8 @@ static unsigned char byVT3253B0_AGC4_RFMD2959[CB_VT3253B0_AGC_FOR_RFMD2959][2] =
 
 #define CB_VT3253B0_INIT_FOR_AIROHA2230 256
 /* For AIROHA */
-static unsigned char byVT3253B0_AIROHA2230[CB_VT3253B0_INIT_FOR_AIROHA2230][2] = {
+static
+unsigned char byVT3253B0_AIROHA2230[CB_VT3253B0_INIT_FOR_AIROHA2230][2] = {
 	{0x00, 0x31},
 	{0x01, 0x00},
 	{0x02, 0x00},
@@ -1725,13 +1715,11 @@ BBuGetFrameTime(
 	unsigned int uFrameTime;
 	unsigned int uPreamble;
 	unsigned int uTmp;
-	unsigned int uRateIdx = (unsigned int) wRate;
+	unsigned int uRateIdx = (unsigned int)wRate;
 	unsigned int uRate = 0;
 
-	if (uRateIdx > RATE_54M) {
-		ASSERT(0);
+	if (uRateIdx > RATE_54M)
 		return 0;
-	}
 
 	uRate = (unsigned int)awcFrameTime[uRateIdx];
 
@@ -1914,7 +1902,7 @@ void vnt_get_phy_field(struct vnt_private *priv, u32 frame_length,
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *      byBBAddr    - address of register in Baseband
  *  Out:
  *      pbyData     - data read
@@ -1925,27 +1913,26 @@ void vnt_get_phy_field(struct vnt_private *priv, u32 frame_length,
 bool BBbReadEmbedded(struct vnt_private *priv,
 		     unsigned char byBBAddr, unsigned char *pbyData)
 {
-	void __iomem *dwIoBase = priv->PortOffset;
+	void __iomem *iobase = priv->PortOffset;
 	unsigned short ww;
 	unsigned char byValue;
 
 	/* BB reg offset */
-	VNSvOutPortB(dwIoBase + MAC_REG_BBREGADR, byBBAddr);
+	VNSvOutPortB(iobase + MAC_REG_BBREGADR, byBBAddr);
 
 	/* turn on REGR */
-	MACvRegBitsOn(dwIoBase, MAC_REG_BBREGCTL, BBREGCTL_REGR);
+	MACvRegBitsOn(iobase, MAC_REG_BBREGCTL, BBREGCTL_REGR);
 	/* W_MAX_TIMEOUT is the timeout period */
 	for (ww = 0; ww < W_MAX_TIMEOUT; ww++) {
-		VNSvInPortB(dwIoBase + MAC_REG_BBREGCTL, &byValue);
+		VNSvInPortB(iobase + MAC_REG_BBREGCTL, &byValue);
 		if (byValue & BBREGCTL_DONE)
 			break;
 	}
 
 	/* get BB data */
-	VNSvInPortB(dwIoBase + MAC_REG_BBREGDATA, pbyData);
+	VNSvInPortB(iobase + MAC_REG_BBREGDATA, pbyData);
 
 	if (ww == W_MAX_TIMEOUT) {
-		DBG_PORT80(0x30);
 		pr_debug(" DBG_PORT80(0x30)\n");
 		return false;
 	}
@@ -1957,7 +1944,7 @@ bool BBbReadEmbedded(struct vnt_private *priv,
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *      byBBAddr    - address of register in Baseband
  *      byData      - data to write
  *  Out:
@@ -1969,26 +1956,25 @@ bool BBbReadEmbedded(struct vnt_private *priv,
 bool BBbWriteEmbedded(struct vnt_private *priv,
 		      unsigned char byBBAddr, unsigned char byData)
 {
-	void __iomem *dwIoBase = priv->PortOffset;
+	void __iomem *iobase = priv->PortOffset;
 	unsigned short ww;
 	unsigned char byValue;
 
 	/* BB reg offset */
-	VNSvOutPortB(dwIoBase + MAC_REG_BBREGADR, byBBAddr);
+	VNSvOutPortB(iobase + MAC_REG_BBREGADR, byBBAddr);
 	/* set BB data */
-	VNSvOutPortB(dwIoBase + MAC_REG_BBREGDATA, byData);
+	VNSvOutPortB(iobase + MAC_REG_BBREGDATA, byData);
 
 	/* turn on BBREGCTL_REGW */
-	MACvRegBitsOn(dwIoBase, MAC_REG_BBREGCTL, BBREGCTL_REGW);
+	MACvRegBitsOn(iobase, MAC_REG_BBREGCTL, BBREGCTL_REGW);
 	/* W_MAX_TIMEOUT is the timeout period */
 	for (ww = 0; ww < W_MAX_TIMEOUT; ww++) {
-		VNSvInPortB(dwIoBase + MAC_REG_BBREGCTL, &byValue);
+		VNSvInPortB(iobase + MAC_REG_BBREGCTL, &byValue);
 		if (byValue & BBREGCTL_DONE)
 			break;
 	}
 
 	if (ww == W_MAX_TIMEOUT) {
-		DBG_PORT80(0x31);
 		pr_debug(" DBG_PORT80(0x31)\n");
 		return false;
 	}
@@ -2000,7 +1986,7 @@ bool BBbWriteEmbedded(struct vnt_private *priv,
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *      byRevId     - Revision ID
  *      byRFType    - RF type
  *  Out:
@@ -2014,24 +2000,30 @@ bool BBbVT3253Init(struct vnt_private *priv)
 {
 	bool bResult = true;
 	int        ii;
-	void __iomem *dwIoBase = priv->PortOffset;
+	void __iomem *iobase = priv->PortOffset;
 	unsigned char byRFType = priv->byRFType;
 	unsigned char byLocalID = priv->byLocalID;
 
 	if (byRFType == RF_RFMD2959) {
 		if (byLocalID <= REV_ID_VT3253_A1) {
 			for (ii = 0; ii < CB_VT3253_INIT_FOR_RFMD; ii++)
-				bResult &= BBbWriteEmbedded(priv, byVT3253InitTab_RFMD[ii][0], byVT3253InitTab_RFMD[ii][1]);
+				bResult &= BBbWriteEmbedded(priv,
+					byVT3253InitTab_RFMD[ii][0],
+					byVT3253InitTab_RFMD[ii][1]);
 
 		} else {
 			for (ii = 0; ii < CB_VT3253B0_INIT_FOR_RFMD; ii++)
-				bResult &= BBbWriteEmbedded(priv, byVT3253B0_RFMD[ii][0], byVT3253B0_RFMD[ii][1]);
+				bResult &= BBbWriteEmbedded(priv,
+					byVT3253B0_RFMD[ii][0],
+					byVT3253B0_RFMD[ii][1]);
 
 			for (ii = 0; ii < CB_VT3253B0_AGC_FOR_RFMD2959; ii++)
-				bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC4_RFMD2959[ii][0], byVT3253B0_AGC4_RFMD2959[ii][1]);
+				bResult &= BBbWriteEmbedded(priv,
+					byVT3253B0_AGC4_RFMD2959[ii][0],
+					byVT3253B0_AGC4_RFMD2959[ii][1]);
 
-			VNSvOutPortD(dwIoBase + MAC_REG_ITRTMSET, 0x23);
-			MACvRegBitsOn(dwIoBase, MAC_REG_PAPEDELAY, BIT(0));
+			VNSvOutPortD(iobase + MAC_REG_ITRTMSET, 0x23);
+			MACvRegBitsOn(iobase, MAC_REG_PAPEDELAY, BIT(0));
 		}
 		priv->abyBBVGA[0] = 0x18;
 		priv->abyBBVGA[1] = 0x0A;
@@ -2043,10 +2035,13 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[3] = 0;
 	} else if ((byRFType == RF_AIROHA) || (byRFType == RF_AL2230S)) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_AIROHA2230; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AIROHA2230[ii][0], byVT3253B0_AIROHA2230[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AIROHA2230[ii][0],
+				byVT3253B0_AIROHA2230[ii][1]);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x1C;
 		priv->abyBBVGA[1] = 0x10;
@@ -2058,13 +2053,17 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[3] = 0;
 	} else if (byRFType == RF_UW2451) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_UW2451; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_UW2451[ii][0], byVT3253B0_UW2451[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_UW2451[ii][0],
+				byVT3253B0_UW2451[ii][1]);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0],
+				byVT3253B0_AGC[ii][1]);
 
-		VNSvOutPortB(dwIoBase + MAC_REG_ITRTMSET, 0x23);
-		MACvRegBitsOn(dwIoBase, MAC_REG_PAPEDELAY, BIT(0));
+		VNSvOutPortB(iobase + MAC_REG_ITRTMSET, 0x23);
+		MACvRegBitsOn(iobase, MAC_REG_PAPEDELAY, BIT(0));
 
 		priv->abyBBVGA[0] = 0x14;
 		priv->abyBBVGA[1] = 0x0A;
@@ -2076,12 +2075,24 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[3] = 0;
 	} else if (byRFType == RF_UW2452) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_UW2451; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_UW2451[ii][0], byVT3253B0_UW2451[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_UW2451[ii][0],
+				byVT3253B0_UW2451[ii][1]);
 
-		/* Init ANT B select,TX Config CR09 = 0x61->0x45, 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x09,0x41);*/
-		/* Init ANT B select,RX Config CR10 = 0x28->0x2A, 0x2A->0x28(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x0a,0x28);*/
+		/* Init ANT B select,
+		 * TX Config CR09 = 0x61->0x45,
+		 * 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted)
+		 */
+
+		/*bResult &= BBbWriteEmbedded(iobase,0x09,0x41);*/
+
+		/* Init ANT B select,
+		 * RX Config CR10 = 0x28->0x2A,
+		 * 0x2A->0x28(VC1/VC2 define,
+		 * make the ANT_A, ANT_B inverted)
+		 */
+
+		/*bResult &= BBbWriteEmbedded(iobase,0x0a,0x28);*/
 		/* Select VC1/VC2, CR215 = 0x02->0x06 */
 		bResult &= BBbWriteEmbedded(priv, 0xd7, 0x06);
 
@@ -2097,7 +2108,8 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		bResult &= BBbWriteEmbedded(priv, 0xb0, 0x58);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x14;
 		priv->abyBBVGA[1] = 0x0A;
@@ -2111,10 +2123,13 @@ bool BBbVT3253Init(struct vnt_private *priv)
 
 	} else if (byRFType == RF_VT3226) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_AIROHA2230; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AIROHA2230[ii][0], byVT3253B0_AIROHA2230[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AIROHA2230[ii][0],
+				byVT3253B0_AIROHA2230[ii][1]);
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x1C;
 		priv->abyBBVGA[1] = 0x10;
@@ -2125,24 +2140,30 @@ bool BBbVT3253Init(struct vnt_private *priv)
 		priv->ldBmThreshold[2] = 0;
 		priv->ldBmThreshold[3] = 0;
 		/* Fix VT3226 DFC system timing issue */
-		MACvSetRFLE_LatchBase(dwIoBase);
+		MACvSetRFLE_LatchBase(iobase);
 		/* {{ RobertYu: 20050104 */
 	} else if (byRFType == RF_AIROHA7230) {
 		for (ii = 0; ii < CB_VT3253B0_INIT_FOR_AIROHA2230; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AIROHA2230[ii][0], byVT3253B0_AIROHA2230[ii][1]);
-
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AIROHA2230[ii][0],
+				byVT3253B0_AIROHA2230[ii][1]);
 
 		/* {{ RobertYu:20050223, request by JerryChung */
-		/* Init ANT B select,TX Config CR09 = 0x61->0x45, 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x09,0x41);*/
-		/* Init ANT B select,RX Config CR10 = 0x28->0x2A, 0x2A->0x28(VC1/VC2 define, make the ANT_A, ANT_B inverted) */
-		/*bResult &= BBbWriteEmbedded(dwIoBase,0x0a,0x28);*/
+		/* Init ANT B select,TX Config CR09 = 0x61->0x45,
+		 * 0x45->0x41(VC1/VC2 define, make the ANT_A, ANT_B inverted)
+		 */
+		/*bResult &= BBbWriteEmbedded(iobase,0x09,0x41);*/
+		/* Init ANT B select,RX Config CR10 = 0x28->0x2A,
+		 * 0x2A->0x28(VC1/VC2 define, make the ANT_A, ANT_B inverted)
+		 */
+		/*bResult &= BBbWriteEmbedded(iobase,0x0a,0x28);*/
 		/* Select VC1/VC2, CR215 = 0x02->0x06 */
 		bResult &= BBbWriteEmbedded(priv, 0xd7, 0x06);
 		/* }} */
 
 		for (ii = 0; ii < CB_VT3253B0_AGC; ii++)
-			bResult &= BBbWriteEmbedded(priv, byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
+			bResult &= BBbWriteEmbedded(priv,
+				byVT3253B0_AGC[ii][0], byVT3253B0_AGC[ii][1]);
 
 		priv->abyBBVGA[0] = 0x1C;
 		priv->abyBBVGA[1] = 0x10;
@@ -2223,7 +2244,7 @@ void BBvSetVGAGainOffset(struct vnt_private *priv, unsigned char byData)
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *  Out:
  *      none
  *
@@ -2244,7 +2265,7 @@ BBvSoftwareReset(struct vnt_private *priv)
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *  Out:
  *      none
  *
@@ -2266,7 +2287,7 @@ BBvPowerSaveModeON(struct vnt_private *priv)
  *
  * Parameters:
  *  In:
- *      dwIoBase    - I/O base address
+ *      iobase      - I/O base address
  *  Out:
  *      none
  *

@@ -31,7 +31,7 @@
 static struct hlist_head	nlm_files[FILE_NRHASH];
 static DEFINE_MUTEX(nlm_file_mutex);
 
-#ifdef NFSD_DEBUG
+#ifdef CONFIG_SUNRPC_DEBUG
 static inline void nlm_debug_print_fh(char *msg, struct nfs_fh *f)
 {
 	u32 *fhp = (u32*)f->data;
@@ -44,7 +44,7 @@ static inline void nlm_debug_print_fh(char *msg, struct nfs_fh *f)
 
 static inline void nlm_debug_print_file(char *msg, struct nlm_file *file)
 {
-	struct inode *inode = file_inode(file->f_file);
+	struct inode *inode = locks_inode(file->f_file);
 
 	dprintk("lockd: %s %s/%ld\n",
 		msg, inode->i_sb->s_id, inode->i_ino);
@@ -370,7 +370,7 @@ nlmsvc_mark_resources(struct net *net)
 {
 	struct nlm_host hint;
 
-	dprintk("lockd: nlmsvc_mark_resources for net %p\n", net);
+	dprintk("lockd: %s for net %x\n", __func__, net ? net->ns.inum : 0);
 	hint.net = net;
 	nlm_traverse_files(&hint, nlmsvc_mark_host, NULL);
 }
@@ -414,7 +414,7 @@ nlmsvc_match_sb(void *datap, struct nlm_file *file)
 {
 	struct super_block *sb = datap;
 
-	return sb == file_inode(file->f_file)->i_sb;
+	return sb == locks_inode(file->f_file)->i_sb;
 }
 
 /**

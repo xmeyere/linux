@@ -37,7 +37,6 @@ static int alloc_clips(struct qxl_device *qdev,
  * the qxl_clip_rects. This is *not* the same as the memory allocated
  * on the device, it is offset to qxl_clip_rects.chunk.data */
 static struct qxl_rect *drawable_set_clipping(struct qxl_device *qdev,
-					      struct qxl_drawable *drawable,
 					      unsigned num_clips,
 					      struct qxl_bo *clips_bo)
 {
@@ -58,11 +57,8 @@ static struct qxl_rect *drawable_set_clipping(struct qxl_device *qdev,
 static int
 alloc_drawable(struct qxl_device *qdev, struct qxl_release **release)
 {
-	int ret;
-	ret = qxl_alloc_release_reserved(qdev, sizeof(struct qxl_drawable),
-					 QXL_RELEASE_DRAWABLE, release,
-					 NULL);
-	return ret;
+	return qxl_alloc_release_reserved(qdev, sizeof(struct qxl_drawable),
+					  QXL_RELEASE_DRAWABLE, release, NULL);
 }
 
 static void
@@ -136,6 +132,8 @@ static int qxl_palette_create_1bit(struct qxl_bo *palette_bo,
 				 * correctly globaly, since that would require
 				 * tracking all of our palettes. */
 	ret = qxl_bo_kmap(palette_bo, (void **)&pal);
+	if (ret)
+		return ret;
 	pal->num_ents = 2;
 	pal->unique = unique++;
 	if (visual == FB_VISUAL_TRUECOLOR || visual == FB_VISUAL_DIRECTCOLOR) {
@@ -243,8 +241,8 @@ void qxl_draw_opaque_fb(const struct qxl_fb_image *qxl_fb_image,
 		qxl_bo_physical_address(qdev, dimage->bo, 0);
 	qxl_release_unmap(qdev, release, &drawable->release_info);
 
-	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 	qxl_release_fence_buffer_objects(release);
+	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 
 out_free_palette:
 	if (palette_bo)
@@ -285,7 +283,7 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 	struct qxl_rect *rects;
 	int stride = qxl_fb->base.pitches[0];
 	/* depth is not actually interesting, we don't mask with it */
-	int depth = qxl_fb->base.bits_per_pixel;
+	int depth = qxl_fb->base.format->cpp[0] * 8;
 	uint8_t *surface_base;
 	struct qxl_release *release;
 	struct qxl_bo *clips_bo;
@@ -349,10 +347,11 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 	if (ret)
 		goto out_release_backoff;
 
-	rects = drawable_set_clipping(qdev, drawable, num_clips, clips_bo);
-	if (!rects)
+	rects = drawable_set_clipping(qdev, num_clips, clips_bo);
+	if (!rects) {
+		ret = -EINVAL;
 		goto out_release_backoff;
-
+	}
 	drawable = (struct qxl_drawable *)qxl_release_map(qdev, release);
 
 	drawable->clip.type = SPICE_CLIP_TYPE_RECTS;
@@ -383,8 +382,8 @@ void qxl_draw_dirty_fb(struct qxl_device *qdev,
 	}
 	qxl_bo_kunmap(clips_bo);
 
-	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 	qxl_release_fence_buffer_objects(release);
+	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 
 out_release_backoff:
 	if (ret)
@@ -434,8 +433,8 @@ void qxl_draw_copyarea(struct qxl_device *qdev,
 	drawable->u.copy_bits.src_pos.y = sy;
 	qxl_release_unmap(qdev, release, &drawable->release_info);
 
-	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 	qxl_release_fence_buffer_objects(release);
+	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 
 out_free_release:
 	if (ret)
@@ -478,8 +477,8 @@ void qxl_draw_fill(struct qxl_draw_fill *qxl_draw_fill_rec)
 
 	qxl_release_unmap(qdev, release, &drawable->release_info);
 
-	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 	qxl_release_fence_buffer_objects(release);
+	qxl_push_command_ring_release(qdev, release, QXL_CMD_DRAW, false);
 
 out_free_release:
 	if (ret)

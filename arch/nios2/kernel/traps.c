@@ -11,6 +11,7 @@
  */
 
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/kernel.h>
 #include <linux/signal.h>
 #include <linux/export.h>
@@ -19,9 +20,14 @@
 
 #include <asm/traps.h>
 #include <asm/sections.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 static DEFINE_SPINLOCK(die_lock);
+
+static void _send_sig(int signo, int code, unsigned long addr)
+{
+	force_sig_fault(signo, code, (void __user *) addr, current);
+}
 
 void die(const char *str, struct pt_regs *regs, long err)
 {
@@ -31,24 +37,18 @@ void die(const char *str, struct pt_regs *regs, long err)
 	show_regs(regs);
 	spin_unlock_irq(&die_lock);
 	/*
-	 * do_exit() should take care of panic'ing from an interrupt
+	 * make_task_dead() should take care of panic'ing from an interrupt
 	 * context so we don't handle it here
 	 */
-	do_exit(err);
+	make_task_dead(err);
 }
 
 void _exception(int signo, struct pt_regs *regs, int code, unsigned long addr)
 {
-	siginfo_t info;
-
 	if (!user_mode(regs))
 		die("Exception in kernel mode", regs, signo);
 
-	info.si_signo = signo;
-	info.si_errno = 0;
-	info.si_code = code;
-	info.si_addr = (void __user *) addr;
-	force_sig_info(signo, &info, current);
+	_send_sig(signo, code, addr);
 }
 
 /*
@@ -182,4 +182,19 @@ asmlinkage void unhandled_exception(struct pt_regs *regs, int cause)
 	show_regs(regs);
 
 	pr_emerg("opcode: 0x%08lx\n", *(unsigned long *)(regs->ea));
+}
+
+asmlinkage void handle_trap_1_c(struct pt_regs *fp)
+{
+	_send_sig(SIGUSR1, 0, fp->ea);
+}
+
+asmlinkage void handle_trap_2_c(struct pt_regs *fp)
+{
+	_send_sig(SIGUSR2, 0, fp->ea);
+}
+
+asmlinkage void handle_trap_3_c(struct pt_regs *fp)
+{
+	_send_sig(SIGILL, ILL_ILLTRP, fp->ea);
 }

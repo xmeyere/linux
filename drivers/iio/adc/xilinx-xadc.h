@@ -60,7 +60,6 @@ struct xadc {
 
 	enum xadc_external_mux_mode external_mux_mode;
 
-	unsigned int zynq_alarm;
 	unsigned int zynq_masked_alarm;
 	unsigned int zynq_intmask;
 	struct delayed_work zynq_unmask_work;
@@ -69,17 +68,17 @@ struct xadc {
 	spinlock_t lock;
 
 	struct completion completion;
+	int irq;
 };
 
 struct xadc_ops {
-	int (*read)(struct xadc *, unsigned int, uint16_t *);
-	int (*write)(struct xadc *, unsigned int, uint16_t);
+	int (*read)(struct xadc *xadc, unsigned int reg, uint16_t *val);
+	int (*write)(struct xadc *xadc, unsigned int reg, uint16_t val);
 	int (*setup)(struct platform_device *pdev, struct iio_dev *indio_dev,
 			int irq);
-	void (*update_alarm)(struct xadc *, unsigned int);
-	unsigned long (*get_dclk_rate)(struct xadc *);
-	irqreturn_t (*interrupt_handler)(int, void *);
-	irqreturn_t (*threaded_interrupt_handler)(int, void *);
+	void (*update_alarm)(struct xadc *xadc, unsigned int alarm);
+	unsigned long (*get_dclk_rate)(struct xadc *xadc);
+	irqreturn_t (*interrupt_handler)(int irq, void *devid);
 
 	unsigned int flags;
 };
@@ -145,9 +144,9 @@ static inline int xadc_write_adc_reg(struct xadc *xadc, unsigned int reg,
 #define XADC_REG_MAX_VCCPINT	0x28
 #define XADC_REG_MAX_VCCPAUX	0x29
 #define XADC_REG_MAX_VCCO_DDR	0x2a
-#define XADC_REG_MIN_VCCPINT	0x2b
-#define XADC_REG_MIN_VCCPAUX	0x2c
-#define XADC_REG_MIN_VCCO_DDR	0x2d
+#define XADC_REG_MIN_VCCPINT	0x2c
+#define XADC_REG_MIN_VCCPAUX	0x2d
+#define XADC_REG_MIN_VCCO_DDR	0x2e
 
 #define XADC_REG_CONF0		0x40
 #define XADC_REG_CONF1		0x41

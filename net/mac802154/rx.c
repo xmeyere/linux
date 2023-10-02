@@ -47,14 +47,12 @@ ieee802154_subif_frame(struct ieee802154_sub_if_data *sdata,
 
 	pr_debug("getting packet via slave interface %s\n", sdata->dev->name);
 
-	spin_lock_bh(&sdata->mib_lock);
-
 	span = wpan_dev->pan_id;
 	sshort = wpan_dev->short_addr;
 
 	switch (mac_cb(skb)->dest.mode) {
 	case IEEE802154_ADDR_NONE:
-		if (mac_cb(skb)->dest.mode != IEEE802154_ADDR_NONE)
+		if (hdr->source.mode != IEEE802154_ADDR_NONE)
 			/* FIXME: check if we are PAN coordinator */
 			skb->pkt_type = PACKET_OTHERHOST;
 		else
@@ -83,15 +81,16 @@ ieee802154_subif_frame(struct ieee802154_sub_if_data *sdata,
 			skb->pkt_type = PACKET_OTHERHOST;
 		break;
 	default:
-		spin_unlock_bh(&sdata->mib_lock);
 		pr_debug("invalid dest mode\n");
 		goto fail;
 	}
 
-	spin_unlock_bh(&sdata->mib_lock);
-
 	skb->dev = sdata->dev;
 
+	/* TODO this should be moved after netif_receive_skb call, otherwise
+	 * wireshark will show a mac header with security fields and the
+	 * payload is already decrypted.
+	 */
 	rc = mac802154_llsec_decrypt(&sdata->sec, skb);
 	if (rc) {
 		pr_debug("decryption failed: %i\n", rc);
@@ -102,11 +101,16 @@ ieee802154_subif_frame(struct ieee802154_sub_if_data *sdata,
 	sdata->dev->stats.rx_bytes += skb->len;
 
 	switch (mac_cb(skb)->type) {
+	case IEEE802154_FC_TYPE_BEACON:
+	case IEEE802154_FC_TYPE_ACK:
+	case IEEE802154_FC_TYPE_MAC_CMD:
+		goto fail;
+
 	case IEEE802154_FC_TYPE_DATA:
 		return ieee802154_deliver_skb(skb);
 	default:
-		pr_warn("ieee802154: bad frame received (type = %d)\n",
-			mac_cb(skb)->type);
+		pr_warn_ratelimited("ieee802154: bad frame received "
+				    "(type = %d)\n", mac_cb(skb)->type);
 		goto fail;
 	}
 
@@ -136,7 +140,7 @@ static int
 ieee802154_parse_frame_start(struct sk_buff *skb, struct ieee802154_hdr *hdr)
 {
 	int hlen;
-	struct ieee802154_mac_cb *cb = mac_cb_init(skb);
+	struct ieee802154_mac_cb *cb = mac_cb(skb);
 
 	skb_reset_mac_header(skb);
 
@@ -207,8 +211,10 @@ __ieee802154_rx_handle_packet(struct ieee802154_local *local,
 	}
 
 	list_for_each_entry_rcu(sdata, &local->interfaces, list) {
-		if (sdata->vif.type != NL802154_IFTYPE_NODE ||
-		    !netif_running(sdata->dev))
+		if (sdata->wpan_dev.iftype != NL802154_IFTYPE_NODE)
+			continue;
+
+		if (!ieee802154_sdata_running(sdata))
 			continue;
 
 		ieee802154_subif_frame(sdata, skb, &hdr);
@@ -216,8 +222,7 @@ __ieee802154_rx_handle_packet(struct ieee802154_local *local,
 		break;
 	}
 
-	if (skb)
-		kfree_skb(skb);
+	kfree_skb(skb);
 }
 
 static void
@@ -232,7 +237,7 @@ ieee802154_monitors_rx(struct ieee802154_local *local, struct sk_buff *skb)
 	skb->protocol = htons(ETH_P_IEEE802154);
 
 	list_for_each_entry_rcu(sdata, &local->interfaces, list) {
-		if (sdata->vif.type != NL802154_IFTYPE_MONITOR)
+		if (sdata->wpan_dev.iftype != NL802154_IFTYPE_MONITOR)
 			continue;
 
 		if (!ieee802154_sdata_running(sdata))
@@ -249,12 +254,14 @@ ieee802154_monitors_rx(struct ieee802154_local *local, struct sk_buff *skb)
 	}
 }
 
-void ieee802154_rx(struct ieee802154_hw *hw, struct sk_buff *skb)
+void ieee802154_rx(struct ieee802154_local *local, struct sk_buff *skb)
 {
-	struct ieee802154_local *local = hw_to_local(hw);
 	u16 crc;
 
 	WARN_ON_ONCE(softirq_count() == 0);
+
+	if (local->suspended)
+		goto drop;
 
 	/* TODO: When a transceiver omits the checksum here, we
 	 * add an own calculated one. This is currently an ugly
@@ -276,8 +283,7 @@ void ieee802154_rx(struct ieee802154_hw *hw, struct sk_buff *skb)
 		crc = crc_ccitt(0, skb->data, skb->len);
 		if (crc) {
 			rcu_read_unlock();
-			kfree_skb(skb);
-			return;
+			goto drop;
 		}
 	}
 	/* remove crc */
@@ -286,15 +292,19 @@ void ieee802154_rx(struct ieee802154_hw *hw, struct sk_buff *skb)
 	__ieee802154_rx_handle_packet(local, skb);
 
 	rcu_read_unlock();
+
+	return;
+drop:
+	kfree_skb(skb);
 }
-EXPORT_SYMBOL(ieee802154_rx);
 
 void
 ieee802154_rx_irqsafe(struct ieee802154_hw *hw, struct sk_buff *skb, u8 lqi)
 {
 	struct ieee802154_local *local = hw_to_local(hw);
+	struct ieee802154_mac_cb *cb = mac_cb_init(skb);
 
-	mac_cb(skb)->lqi = lqi;
+	cb->lqi = lqi;
 	skb->pkt_type = IEEE802154_RX_MSG;
 	skb_queue_tail(&local->skb_queue, skb);
 	tasklet_schedule(&local->tasklet);

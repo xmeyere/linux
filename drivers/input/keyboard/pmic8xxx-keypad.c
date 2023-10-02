@@ -507,6 +507,7 @@ static void pmic8xxx_kp_close(struct input_dev *dev)
  */
 static int pmic8xxx_kp_probe(struct platform_device *pdev)
 {
+	struct device_node *np = pdev->dev.of_node;
 	unsigned int rows, cols;
 	bool repeat;
 	bool wakeup;
@@ -514,7 +515,7 @@ static int pmic8xxx_kp_probe(struct platform_device *pdev)
 	int rc;
 	unsigned int ctrl_val;
 
-	rc = matrix_keypad_parse_of_params(&pdev->dev, &rows, &cols);
+	rc = matrix_keypad_parse_properties(&pdev->dev, &rows, &cols);
 	if (rc)
 		return rc;
 
@@ -524,10 +525,11 @@ static int pmic8xxx_kp_probe(struct platform_device *pdev)
 		return -EINVAL;
 	}
 
-	repeat = !of_property_read_bool(pdev->dev.of_node,
-					"linux,input-no-autorepeat");
-	wakeup = of_property_read_bool(pdev->dev.of_node,
-					"linux,keypad-wakeup");
+	repeat = !of_property_read_bool(np, "linux,input-no-autorepeat");
+
+	wakeup = of_property_read_bool(np, "wakeup-source") ||
+		 /* legacy name */
+		 of_property_read_bool(np, "linux,keypad-wakeup");
 
 	kp = devm_kzalloc(&pdev->dev, sizeof(*kp), GFP_KERNEL);
 	if (!kp)
@@ -695,6 +697,5 @@ module_platform_driver(pmic8xxx_kp_driver);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("PMIC8XXX keypad driver");
-MODULE_VERSION("1.0");
 MODULE_ALIAS("platform:pmic8xxx_keypad");
 MODULE_AUTHOR("Trilok Soni <tsoni@codeaurora.org>");

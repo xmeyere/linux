@@ -1,13 +1,16 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ISCSI_TARGET_CORE_H
 #define ISCSI_TARGET_CORE_H
 
-#include <linux/in.h>
-#include <linux/configfs.h>
-#include <net/sock.h>
-#include <net/tcp.h>
-#include <scsi/scsi_cmnd.h>
-#include <scsi/iscsi_proto.h>
-#include <target/target_core_base.h>
+#include <linux/dma-direction.h>     /* enum dma_data_direction */
+#include <linux/list.h>              /* struct list_head */
+#include <linux/sched.h>
+#include <linux/socket.h>            /* struct sockaddr_storage */
+#include <linux/types.h>             /* u8 */
+#include <scsi/iscsi_proto.h>        /* itt_t */
+#include <target/target_core_base.h> /* struct se_cmd */
+
+struct sock;
 
 #define ISCSIT_VERSION			"v4.1.0"
 #define ISCSI_MAX_DATASN_MISSING_COUNT	16
@@ -20,6 +23,8 @@
 #define ISCSIT_MIN_TAGS			16
 #define ISCSIT_EXTRA_TAGS		8
 #define ISCSIT_TCP_BACKLOG		256
+#define ISCSI_RX_THREAD_NAME		"iscsi_trx"
+#define ISCSI_TX_THREAD_NAME		"iscsi_ttx"
 
 /* struct iscsi_node_attrib sanity values */
 #define NA_DATAOUT_TIMEOUT		3
@@ -60,6 +65,17 @@
 #define TA_CACHE_CORE_NPS		0
 /* T10 protection information disabled by default */
 #define TA_DEFAULT_T10_PI		0
+#define TA_DEFAULT_FABRIC_PROT_TYPE	0
+/* TPG status needs to be enabled to return sendtargets discovery endpoint info */
+#define TA_DEFAULT_TPG_ENABLED_SENDTARGETS 1
+/*
+ * Used to control the sending of keys with optional to respond state bit,
+ * as a workaround for non RFC compliant initiators,that do not propose,
+ * nor respond to specific keys required for login to complete.
+ *
+ * See iscsi_check_proposer_for_optional_reply() for more details.
+ */
+#define TA_DEFAULT_LOGIN_KEYS_WORKAROUND 1
 
 #define ISCSI_IOV_DATA_BUFFER		5
 
@@ -70,6 +86,7 @@ enum iscsit_transport_type {
 	ISCSI_IWARP_TCP				= 3,
 	ISCSI_IWARP_SCTP			= 4,
 	ISCSI_INFINIBAND			= 5,
+	ISCSI_CXGBIT				= 6,
 };
 
 /* RFC-3720 7.1.4  Standard Connection State Diagram for a Target */
@@ -245,10 +262,6 @@ struct iscsi_conn_ops {
 	u8	DataDigest;			/* [0,1] == [None,CRC32C] */
 	u32	MaxRecvDataSegmentLength;	/* [512..2**24-1] */
 	u32	MaxXmitDataSegmentLength;	/* [512..2**24-1] */
-	u8	OFMarker;			/* [0,1] == [No,Yes] */
-	u8	IFMarker;			/* [0,1] == [No,Yes] */
-	u32	OFMarkInt;			/* [1..65535] */
-	u32	IFMarkInt;			/* [1..65535] */
 	/*
 	 * iSER specific connection parameters
 	 */
@@ -519,7 +532,6 @@ struct iscsi_conn {
 	u16			cid;
 	/* Remote TCP Port */
 	u16			login_port;
-	u16			local_port;
 	int			net_size;
 	int			login_family;
 	u32			auth_id;
@@ -529,15 +541,8 @@ struct iscsi_conn {
 	u32			exp_statsn;
 	/* Per connection status sequence number */
 	u32			stat_sn;
-	/* IFMarkInt's Current Value */
-	u32			if_marker;
-	/* OFMarkInt's Current Value */
-	u32			of_marker;
-	/* Used for calculating OFMarker offset to next PDU */
-	u32			of_marker_offset;
-#define IPV6_ADDRESS_SPACE				48
-	unsigned char		login_ip[IPV6_ADDRESS_SPACE];
-	unsigned char		local_ip[IPV6_ADDRESS_SPACE];
+	struct sockaddr_storage login_sockaddr;
+	struct sockaddr_storage local_sockaddr;
 	int			conn_usage_count;
 	int			conn_waiting_on_uc;
 	atomic_t		check_immediate_queue;
@@ -562,9 +567,9 @@ struct iscsi_conn {
 #define LOGIN_FLAGS_READ_ACTIVE		1
 #define LOGIN_FLAGS_CLOSED		2
 #define LOGIN_FLAGS_READY		4
+#define LOGIN_FLAGS_INITIAL_PDU		8
 	unsigned long		login_flags;
 	struct delayed_work	login_work;
-	struct delayed_work	login_cleanup_work;
 	struct iscsi_login	*login;
 	struct timer_list	nopin_timer;
 	struct timer_list	nopin_response_timer;
@@ -578,8 +583,8 @@ struct iscsi_conn {
 	spinlock_t		response_queue_lock;
 	spinlock_t		state_lock;
 	/* libcrypto RX and TX contexts for crc32c */
-	struct hash_desc	conn_rx_hash;
-	struct hash_desc	conn_tx_hash;
+	struct ahash_request	*conn_rx_hash;
+	struct ahash_request	*conn_tx_hash;
 	/* Used for scheduling TX and RX connection kthreads */
 	cpumask_var_t		conn_cpumask;
 	unsigned int		conn_rx_reset_cpumask:1;
@@ -600,8 +605,12 @@ struct iscsi_conn {
 	struct iscsi_tpg_np	*tpg_np;
 	/* Pointer to parent session */
 	struct iscsi_session	*sess;
-	/* Pointer to thread_set in use for this conn's threads */
-	struct iscsi_thread_set	*thread_set;
+	int			bitmap_id;
+	int			rx_thread_active;
+	struct task_struct	*rx_thread;
+	struct completion	rx_login_comp;
+	int			tx_thread_active;
+	struct task_struct	*tx_thread;
 	/* list_head for session connection list */
 	struct list_head	conn_list;
 } ____cacheline_aligned;
@@ -640,7 +649,7 @@ struct iscsi_session {
 	/* session wide counter: expected command sequence number */
 	u32			exp_cmd_sn;
 	/* session wide counter: maximum allowed command sequence number */
-	u32			max_cmd_sn;
+	atomic_t		max_cmd_sn;
 	struct list_head	sess_ooo_cmdsn_list;
 
 	/* LIO specific session ID */
@@ -665,7 +674,7 @@ struct iscsi_session {
 	atomic_t		session_logout;
 	atomic_t		session_reinstatement;
 	atomic_t		session_stop_active;
-	atomic_t		sleep_on_sess_wait_comp;
+	atomic_t		session_close;
 	/* connection list */
 	struct list_head	sess_conn_list;
 	struct list_head	cr_active_list;
@@ -749,10 +758,10 @@ struct iscsi_node_stat_grps {
 };
 
 struct iscsi_node_acl {
+	struct se_node_acl	se_node_acl;
 	struct iscsi_node_attrib node_attrib;
 	struct iscsi_node_auth	node_auth;
 	struct iscsi_node_stat_grps node_stat_grps;
-	struct se_node_acl	se_node_acl;
 };
 
 struct iscsi_tpg_attrib {
@@ -767,6 +776,9 @@ struct iscsi_tpg_attrib {
 	u32			demo_mode_discovery;
 	u32			default_erl;
 	u8			t10_pi;
+	u32			fabric_prot_type;
+	u32			tpg_enabled_sendtargets;
+	u32			login_keys_workaround;
 	struct iscsi_portal_group *tpg;
 };
 
@@ -776,15 +788,14 @@ struct iscsi_np {
 	int			np_sock_type;
 	enum np_thread_state_table np_thread_state;
 	bool                    enabled;
+	atomic_t		np_reset_count;
 	enum iscsi_timer_flags_table np_login_timer_flags;
 	u32			np_exports;
 	enum np_flags_table	np_flags;
-	unsigned char		np_ip[IPV6_ADDRESS_SPACE];
-	u16			np_port;
 	spinlock_t		np_thread_lock;
 	struct completion	np_restart_comp;
 	struct socket		*np_socket;
-	struct __kernel_sockaddr_storage np_sockaddr;
+	struct sockaddr_storage np_sockaddr;
 	struct task_struct	*np_thread;
 	struct timer_list	np_login_timer;
 	void			*np_context;
@@ -871,10 +882,10 @@ struct iscsit_global {
 	/* Unique identifier used for the authentication daemon */
 	u32			auth_id;
 	u32			inactive_ts;
-	/* Thread Set bitmap count */
-	int			ts_bitmap_count;
+#define ISCSIT_BITMAP_BITS	262144
 	/* Thread Set bitmap pointer */
 	unsigned long		*ts_bitmap;
+	spinlock_t		ts_bitmap_lock;
 	/* Used for iSCSI discovery session authentication */
 	struct iscsi_node_acl	discovery_acl;
 	struct iscsi_portal_group	*discovery_tpg;
@@ -894,4 +905,30 @@ static inline u32 session_get_next_ttt(struct iscsi_session *session)
 }
 
 extern struct iscsi_cmd *iscsit_find_cmd_from_itt(struct iscsi_conn *, itt_t);
+
+static inline void iscsit_thread_check_cpumask(
+	struct iscsi_conn *conn,
+	struct task_struct *p,
+	int mode)
+{
+	/*
+	 * mode == 1 signals iscsi_target_tx_thread() usage.
+	 * mode == 0 signals iscsi_target_rx_thread() usage.
+	 */
+	if (mode == 1) {
+		if (!conn->conn_tx_reset_cpumask)
+			return;
+		conn->conn_tx_reset_cpumask = 0;
+	} else {
+		if (!conn->conn_rx_reset_cpumask)
+			return;
+		conn->conn_rx_reset_cpumask = 0;
+	}
+	/*
+	 * Update the CPU mask for this single kthread so that
+	 * both TX and RX kthreads are scheduled to run on the
+	 * same CPU.
+	 */
+	set_cpus_allowed_ptr(p, conn->conn_cpumask);
+}
 #endif /* ISCSI_TARGET_CORE_H */

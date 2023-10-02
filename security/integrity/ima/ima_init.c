@@ -21,18 +21,12 @@
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/err.h>
-#include <crypto/hash_info.h>
+
 #include "ima.h"
 
-#ifdef CONFIG_IMA_X509_PATH
-#define IMA_X509_PATH	CONFIG_IMA_X509_PATH
-#else
-#define IMA_X509_PATH	"/etc/keys/x509_ima.der"
-#endif
-
 /* name for boot aggregate entry */
-static const char *boot_aggregate_name = "boot_aggregate";
-int ima_used_chip;
+const char boot_aggregate_name[] = "boot_aggregate";
+struct tpm_chip *ima_tpm_chip;
 
 /* Add the boot aggregate to the IMA measurement list and extend
  * the PCR register.
@@ -55,6 +49,8 @@ static int __init ima_add_boot_aggregate(void)
 	const char *audit_cause = "ENOMEM";
 	struct ima_template_entry *entry;
 	struct integrity_iint_cache tmp_iint, *iint = &tmp_iint;
+	struct ima_event_data event_data = {iint, NULL, boot_aggregate_name,
+					    NULL, 0, NULL};
 	int result = -ENOMEM;
 	int violation = 0;
 	struct {
@@ -68,7 +64,7 @@ static int __init ima_add_boot_aggregate(void)
 	iint->ima_hash->algo = HASH_ALGO_SHA1;
 	iint->ima_hash->length = SHA1_DIGEST_SIZE;
 
-	if (ima_used_chip) {
+	if (ima_tpm_chip) {
 		result = ima_calc_boot_aggregate(&hash.hdr);
 		if (result < 0) {
 			audit_cause = "hashing_error";
@@ -76,15 +72,15 @@ static int __init ima_add_boot_aggregate(void)
 		}
 	}
 
-	result = ima_alloc_init_template(iint, NULL, boot_aggregate_name,
-					 NULL, 0, &entry);
+	result = ima_alloc_init_template(&event_data, &entry);
 	if (result < 0) {
 		audit_cause = "alloc_entry";
 		goto err_out;
 	}
 
 	result = ima_store_template(entry, violation, NULL,
-				    boot_aggregate_name);
+				    boot_aggregate_name,
+				    CONFIG_IMA_MEASURE_PCR_IDX);
 	if (result < 0) {
 		ima_free_template_entry(entry);
 		audit_cause = "store_entry";
@@ -103,25 +99,20 @@ void __init ima_load_x509(void)
 	int unset_flags = ima_policy_flag & IMA_APPRAISE;
 
 	ima_policy_flag &= ~unset_flags;
-	integrity_load_x509(INTEGRITY_KEYRING_IMA, IMA_X509_PATH);
+	integrity_load_x509(INTEGRITY_KEYRING_IMA, CONFIG_IMA_X509_PATH);
 	ima_policy_flag |= unset_flags;
 }
 #endif
 
 int __init ima_init(void)
 {
-	u8 pcr_i[TPM_DIGEST_SIZE];
 	int rc;
 
-	ima_used_chip = 0;
-	rc = tpm_pcr_read(TPM_ANY_NUM, 0, pcr_i);
-	if (rc == 0)
-		ima_used_chip = 1;
-
-	if (!ima_used_chip)
+	ima_tpm_chip = tpm_default_chip();
+	if (!ima_tpm_chip)
 		pr_info("No TPM chip found, activating TPM-bypass!\n");
 
-	rc = ima_init_keyring(INTEGRITY_KEYRING_IMA);
+	rc = integrity_init_keyring(INTEGRITY_KEYRING_IMA);
 	if (rc)
 		return rc;
 
@@ -131,6 +122,8 @@ int __init ima_init(void)
 	rc = ima_init_template();
 	if (rc != 0)
 		return rc;
+
+	ima_load_kexec_buffer();
 
 	rc = ima_add_boot_aggregate();	/* boot aggregate must be first entry */
 	if (rc != 0)

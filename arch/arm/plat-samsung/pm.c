@@ -1,16 +1,11 @@
-/* linux/arch/arm/plat-s3c/pm.c
- *
- * Copyright 2008 Openmoko, Inc.
- * Copyright 2004-2008 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *	http://armlinux.simtec.co.uk/
- *
- * S3C common power management (suspend to ram) support.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright 2008 Openmoko, Inc.
+// Copyright 2004-2008 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//	http://armlinux.simtec.co.uk/
+//
+// S3C common power management (suspend to ram) support.
 
 #include <linux/init.h>
 #include <linux/suspend.h>
@@ -23,14 +18,10 @@
 #include <asm/cacheflush.h>
 #include <asm/suspend.h>
 
-#ifdef CONFIG_SAMSUNG_ATAGS
 #include <mach/map.h>
-#ifndef CONFIG_ARCH_EXYNOS
 #include <mach/regs-clock.h>
 #include <mach/regs-irq.h>
-#endif
 #include <mach/irqs.h>
-#endif
 
 #include <asm/irq.h>
 
@@ -64,26 +55,6 @@ int s3c_irqext_wake(struct irq_data *data, unsigned int state)
 
 	return 0;
 }
-
-/* s3c2410_pm_show_resume_irqs
- *
- * print any IRQs asserted at resume time (ie, we woke from)
-*/
-static void __maybe_unused s3c_pm_show_resume_irqs(int start,
-						   unsigned long which,
-						   unsigned long mask)
-{
-	int i;
-
-	which &= ~mask;
-
-	for (i = 0; i <= 31; i++) {
-		if (which & (1L<<i)) {
-			S3C_PMDBG("IRQ %d asserted at resume\n", start+i);
-		}
-	}
-}
-
 
 void (*pm_cpu_prep)(void);
 int (*pm_cpu_sleep)(unsigned long);

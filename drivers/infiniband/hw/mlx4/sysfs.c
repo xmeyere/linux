@@ -46,21 +46,17 @@
 static ssize_t show_admin_alias_guid(struct device *dev,
 			      struct device_attribute *attr, char *buf)
 {
-	int record_num;/*0-15*/
-	int guid_index_in_rec; /*0 - 7*/
 	struct mlx4_ib_iov_sysfs_attr *mlx4_ib_iov_dentry =
 		container_of(attr, struct mlx4_ib_iov_sysfs_attr, dentry);
 	struct mlx4_ib_iov_port *port = mlx4_ib_iov_dentry->ctx;
 	struct mlx4_ib_dev *mdev = port->dev;
+	__be64 sysadmin_ag_val;
 
-	record_num = mlx4_ib_iov_dentry->entry_num / 8 ;
-	guid_index_in_rec = mlx4_ib_iov_dentry->entry_num % 8 ;
+	sysadmin_ag_val = mlx4_get_admin_guid(mdev->dev,
+					      mlx4_ib_iov_dentry->entry_num,
+					      port->num);
 
-	return sprintf(buf, "%llx\n",
-		       be64_to_cpu(*(__be64 *)&mdev->sriov.alias_guid.
-				   ports_guid[port->num - 1].
-				   all_rec_per_port[record_num].
-				   all_recs[8 * guid_index_in_rec]));
+	return sprintf(buf, "%llx\n", be64_to_cpu(sysadmin_ag_val));
 }
 
 /* store_admin_alias_guid stores the (new) administratively assigned value of that GUID.
@@ -80,6 +76,7 @@ static ssize_t store_admin_alias_guid(struct device *dev,
 	struct mlx4_ib_iov_port *port = mlx4_ib_iov_dentry->ctx;
 	struct mlx4_ib_dev *mdev = port->dev;
 	u64 sysadmin_ag_val;
+	unsigned long flags;
 
 	record_num = mlx4_ib_iov_dentry->entry_num / 8;
 	guid_index_in_rec = mlx4_ib_iov_dentry->entry_num % 8;
@@ -87,6 +84,7 @@ static ssize_t store_admin_alias_guid(struct device *dev,
 		pr_err("GUID 0 block 0 is RO\n");
 		return count;
 	}
+	spin_lock_irqsave(&mdev->sriov.alias_guid.ag_work_lock, flags);
 	sscanf(buf, "%llx", &sysadmin_ag_val);
 	*(__be64 *)&mdev->sriov.alias_guid.ports_guid[port->num - 1].
 		all_rec_per_port[record_num].
@@ -96,33 +94,15 @@ static ssize_t store_admin_alias_guid(struct device *dev,
 	/* Change the state to be pending for update */
 	mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].status
 		= MLX4_GUID_INFO_STATUS_IDLE ;
-
-	mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].method
-		= MLX4_GUID_INFO_RECORD_SET;
-
-	switch (sysadmin_ag_val) {
-	case MLX4_GUID_FOR_DELETE_VAL:
-		mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].method
-			= MLX4_GUID_INFO_RECORD_DELETE;
-		mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].ownership
-			= MLX4_GUID_SYSADMIN_ASSIGN;
-		break;
-	/* The sysadmin requests the SM to re-assign */
-	case MLX4_NOT_SET_GUID:
-		mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].ownership
-			= MLX4_GUID_DRIVER_ASSIGN;
-		break;
-	/* The sysadmin requests a specific value.*/
-	default:
-		mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].ownership
-			= MLX4_GUID_SYSADMIN_ASSIGN;
-		break;
-	}
+	mlx4_set_admin_guid(mdev->dev, cpu_to_be64(sysadmin_ag_val),
+			    mlx4_ib_iov_dentry->entry_num,
+			    port->num);
 
 	/* set the record index */
 	mdev->sriov.alias_guid.ports_guid[port->num - 1].all_rec_per_port[record_num].guid_indexes
-		= mlx4_ib_get_aguid_comp_mask_from_ix(guid_index_in_rec);
+		|= mlx4_ib_get_aguid_comp_mask_from_ix(guid_index_in_rec);
 
+	spin_unlock_irqrestore(&mdev->sriov.alias_guid.ag_work_lock, flags);
 	mlx4_ib_init_alias_guid_work(mdev, port->num - 1);
 
 	return count;
@@ -241,11 +221,12 @@ void del_sysfs_port_mcg_attr(struct mlx4_ib_dev *device, int port_num,
 static int add_port_entries(struct mlx4_ib_dev *device, int port_num)
 {
 	int i;
-	char buff[10];
+	char buff[11];
 	struct mlx4_ib_iov_port *port = NULL;
 	int ret = 0 ;
 	struct ib_port_attr attr;
 
+	memset(&attr, 0, sizeof(attr));
 	/* get the physical gid and pkey table sizes.*/
 	ret = __mlx4_ib_query_port(&device->ib_dev, port_num, &attr, 1);
 	if (ret)
@@ -372,16 +353,12 @@ err:
 
 static void get_name(struct mlx4_ib_dev *dev, char *name, int i, int max)
 {
-	char base_name[9];
-
-	/* pci_name format is: bus:dev:func -> xxxx:yy:zz.n */
-	strlcpy(name, pci_name(dev->dev->persist->pdev), max);
-	strncpy(base_name, name, 8); /*till xxxx:yy:*/
-	base_name[8] = '\0';
-	/* with no ARI only 3 last bits are used so when the fn is higher than 8
+	/* pci_name format is: bus:dev:func -> xxxx:yy:zz.n
+	 * with no ARI only 3 last bits are used so when the fn is higher than 8
 	 * need to add it to the dev num, so count in the last number will be
 	 * modulo 8 */
-	sprintf(name, "%s%.2d.%d", base_name, (i/8), (i%8));
+	snprintf(name, max, "%.8s%.2d.%d", pci_name(dev->dev->persist->pdev),
+		 i / 8, i % 8);
 }
 
 struct mlx4_port {
@@ -660,6 +637,8 @@ static int add_port(struct mlx4_ib_dev *dev, int port_num, int slave)
 	struct mlx4_port *p;
 	int i;
 	int ret;
+	int is_eth = rdma_port_get_link_layer(&dev->ib_dev, port_num) ==
+			IB_LINK_LAYER_ETHERNET;
 
 	p = kzalloc(sizeof *p, GFP_KERNEL);
 	if (!p)
@@ -677,7 +656,8 @@ static int add_port(struct mlx4_ib_dev *dev, int port_num, int slave)
 
 	p->pkey_group.name  = "pkey_idx";
 	p->pkey_group.attrs =
-		alloc_group_attrs(show_port_pkey, store_port_pkey,
+		alloc_group_attrs(show_port_pkey,
+				  is_eth ? NULL : store_port_pkey,
 				  dev->dev->caps.pkey_table_len[port_num]);
 	if (!p->pkey_group.attrs) {
 		ret = -ENOMEM;

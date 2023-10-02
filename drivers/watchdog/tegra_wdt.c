@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2014, NVIDIA CORPORATION.  All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/kernel.h>
@@ -140,8 +132,10 @@ static int tegra_wdt_set_timeout(struct watchdog_device *wdd,
 {
 	wdd->timeout = timeout;
 
-	if (watchdog_active(wdd))
+	if (watchdog_active(wdd)) {
+		tegra_wdt_stop(wdd);
 		return tegra_wdt_start(wdd);
+	}
 
 	return 0;
 }
@@ -176,7 +170,7 @@ static const struct watchdog_info tegra_wdt_info = {
 	.identity	= "Tegra Watchdog",
 };
 
-static struct watchdog_ops tegra_wdt_ops = {
+static const struct watchdog_ops tegra_wdt_ops = {
 	.owner = THIS_MODULE,
 	.start = tegra_wdt_start,
 	.stop = tegra_wdt_stop,
@@ -218,12 +212,13 @@ static int tegra_wdt_probe(struct platform_device *pdev)
 	wdd->ops = &tegra_wdt_ops;
 	wdd->min_timeout = MIN_WDT_TIMEOUT;
 	wdd->max_timeout = MAX_WDT_TIMEOUT;
+	wdd->parent = &pdev->dev;
 
 	watchdog_set_drvdata(wdd, wdt);
 
 	watchdog_set_nowayout(wdd, nowayout);
 
-	ret = watchdog_register_device(wdd);
+	ret = devm_watchdog_register_device(&pdev->dev, wdd);
 	if (ret) {
 		dev_err(&pdev->dev,
 			"failed to register watchdog device\n");
@@ -244,8 +239,6 @@ static int tegra_wdt_remove(struct platform_device *pdev)
 	struct tegra_wdt *wdt = platform_get_drvdata(pdev);
 
 	tegra_wdt_stop(&wdt->wdd);
-
-	watchdog_unregister_device(&wdt->wdd);
 
 	dev_info(&pdev->dev, "removed wdt\n");
 

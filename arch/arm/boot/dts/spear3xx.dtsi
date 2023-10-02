@@ -1,7 +1,7 @@
 /*
  * DTS file for all SPEAr3xx SoCs
  *
- * Copyright 2012 Viresh Kumar <viresh.linux@gmail.com>
+ * Copyright 2012 Viresh Kumar <vireshk@kernel.org>
  *
  * The code contained herein is licensed under the GNU General Public
  * License. You may obtain a copy of the GNU General Public License
@@ -53,7 +53,7 @@
 		};
 
 		gmac: eth@e0800000 {
-			compatible = "st,spear600-gmac";
+			compatible = "snps,dwmac-3.40a";
 			reg = <0xe0800000 0x8000>;
 			interrupts = <23 22>;
 			interrupt-names = "macirq", "eth_wake_irq";

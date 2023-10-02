@@ -2,7 +2,7 @@
  * LTC2952 (PowerPath) driver
  *
  * Copyright (C) 2014, Xsens Technologies BV <info@xsens.com>
- * Maintainer: René Moll <linux@r-moll.nl>
+ * Maintainer: RenÃ© Moll <linux@r-moll.nl>
  *
  * This program is free software; you can redistribute it and/or
  * modify it under the terms of the GNU General Public License
@@ -62,6 +62,7 @@
 #include <linux/slab.h>
 #include <linux/kmod.h>
 #include <linux/module.h>
+#include <linux/mod_devicetable.h>
 #include <linux/gpio/consumer.h>
 #include <linux/reboot.h>
 
@@ -120,18 +121,7 @@ static enum hrtimer_restart ltc2952_poweroff_timer_wde(struct hrtimer *timer)
 
 static void ltc2952_poweroff_start_wde(struct ltc2952_poweroff *data)
 {
-	if (hrtimer_start(&data->timer_wde, data->wde_interval,
-			  HRTIMER_MODE_REL)) {
-		/*
-		 * The device will not toggle the watchdog reset,
-		 * thus shut down is only safe if the PowerPath controller
-		 * has a long enough time-off before triggering a hardware
-		 * power-off.
-		 *
-		 * Only sending a warning as the system will power-off anyway
-		 */
-		dev_err(data->dev, "unable to start the timer\n");
-	}
+	hrtimer_start(&data->timer_wde, data->wde_interval, HRTIMER_MODE_REL);
 }
 
 static enum hrtimer_restart
@@ -165,12 +155,10 @@ static irqreturn_t ltc2952_poweroff_handler(int irq, void *dev_id)
 	}
 
 	if (gpiod_get_value(data->gpio_trigger)) {
-		if (hrtimer_start(&data->timer_trigger, data->trigger_delay,
-				  HRTIMER_MODE_REL))
-			dev_err(data->dev, "unable to start the wait timer\n");
+		hrtimer_start(&data->timer_trigger, data->trigger_delay,
+			      HRTIMER_MODE_REL);
 	} else {
 		hrtimer_cancel(&data->timer_trigger);
-		/* omitting return value check, timer should have been valid */
 	}
 	return IRQ_HANDLED;
 }
@@ -182,8 +170,8 @@ static void ltc2952_poweroff_kill(void)
 
 static void ltc2952_poweroff_default(struct ltc2952_poweroff *data)
 {
-	data->wde_interval = ktime_set(0, 300L*1E6L);
-	data->trigger_delay = ktime_set(2, 500L*1E6L);
+	data->wde_interval = 300L * NSEC_PER_MSEC;
+	data->trigger_delay = ktime_set(2, 500L * NSEC_PER_MSEC);
 
 	hrtimer_init(&data->timer_trigger, CLOCK_MONOTONIC, HRTIMER_MODE_REL);
 	data->timer_trigger.function = ltc2952_poweroff_timer_trigger;
@@ -214,16 +202,15 @@ static int ltc2952_poweroff_init(struct platform_device *pdev)
 		return ret;
 	}
 
-	data->gpio_trigger = devm_gpiod_get(&pdev->dev, "trigger", GPIOD_IN);
+	data->gpio_trigger = devm_gpiod_get_optional(&pdev->dev, "trigger",
+						     GPIOD_IN);
 	if (IS_ERR(data->gpio_trigger)) {
 		/*
 		 * It's not a problem if the trigger gpio isn't available, but
 		 * it is worth a warning if its use was defined in the device
 		 * tree.
 		 */
-		if (PTR_ERR(data->gpio_trigger) != -ENOENT)
-			dev_err(&pdev->dev,
-				"unable to claim gpio \"trigger\"\n");
+		dev_err(&pdev->dev, "unable to claim gpio \"trigger\"\n");
 		data->gpio_trigger = NULL;
 	}
 
@@ -332,6 +319,6 @@ static struct platform_driver ltc2952_poweroff_driver = {
 
 module_platform_driver(ltc2952_poweroff_driver);
 
-MODULE_AUTHOR("René Moll <rene.moll@xsens.com>");
+MODULE_AUTHOR("RenÃ© Moll <rene.moll@xsens.com>");
 MODULE_DESCRIPTION("LTC PowerPath power-off driver");
 MODULE_LICENSE("GPL v2");

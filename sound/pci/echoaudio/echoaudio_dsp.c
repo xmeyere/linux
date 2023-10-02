@@ -103,8 +103,8 @@ static int write_dsp(struct echoaudio *chip, u32 data)
 		cond_resched();
 	}
 
-	chip->bad_board = TRUE;		/* Set TRUE until DSP re-loaded */
-	dev_dbg(chip->card->dev, "write_dsp: Set bad_board to TRUE\n");
+	chip->bad_board = true;		/* Set true until DSP re-loaded */
+	dev_dbg(chip->card->dev, "write_dsp: Set bad_board to true\n");
 	return -EIO;
 }
 
@@ -126,8 +126,8 @@ static int read_dsp(struct echoaudio *chip, u32 *data)
 		cond_resched();
 	}
 
-	chip->bad_board = TRUE;		/* Set TRUE until DSP re-loaded */
-	dev_err(chip->card->dev, "read_dsp: Set bad_board to TRUE\n");
+	chip->bad_board = true;		/* Set true until DSP re-loaded */
+	dev_err(chip->card->dev, "read_dsp: Set bad_board to true\n");
 	return -EIO;
 }
 
@@ -166,7 +166,7 @@ static int read_sn(struct echoaudio *chip)
 /* This card has no ASIC, just return ok */
 static inline int check_asic_status(struct echoaudio *chip)
 {
-	chip->asic_loaded = TRUE;
+	chip->asic_loaded = true;
 	return 0;
 }
 
@@ -341,11 +341,11 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 		dev_warn(chip->card->dev, "DSP is already loaded!\n");
 		return 0;
 	}
-	chip->bad_board = TRUE;		/* Set TRUE until DSP loaded */
+	chip->bad_board = true;		/* Set true until DSP loaded */
 	chip->dsp_code = NULL;		/* Current DSP code not loaded */
-	chip->asic_loaded = FALSE;	/* Loading the DSP code will reset the ASIC */
+	chip->asic_loaded = false;	/* Loading the DSP code will reset the ASIC */
 
-	dev_dbg(chip->card->dev, "load_dsp: Set bad_board to TRUE\n");
+	dev_dbg(chip->card->dev, "load_dsp: Set bad_board to true\n");
 
 	/* If this board requires a resident loader, install it. */
 #ifdef DSP_56361
@@ -471,7 +471,7 @@ static int load_dsp(struct echoaudio *chip, u16 *code)
 			}
 
 			chip->dsp_code = code;		/* Show which DSP code loaded */
-			chip->bad_board = FALSE;	/* DSP OK */
+			chip->bad_board = false;	/* DSP OK */
 			return 0;
 		}
 		udelay(100);
@@ -679,7 +679,7 @@ static int restore_dsp_rettings(struct echoaudio *chip)
 	/* Gina20/Darla20 only. Should be harmless for other cards. */
 	chip->comm_page->gd_clock_state = GD_CLOCK_UNDEF;
 	chip->comm_page->gd_spdif_status = GD_SPDIF_STATUS_UNDEF;
-	chip->comm_page->handshake = 0xffffffff;
+	chip->comm_page->handshake = cpu_to_le32(0xffffffff);
 
 	/* Restore output busses */
 	for (i = 0; i < num_busses_out(chip); i++) {
@@ -951,10 +951,10 @@ static int rest_in_peace(struct echoaudio *chip)
 	/* Stops all active pipes (just to be sure) */
 	stop_transport(chip, chip->active_mask);
 
-	set_meters_on(chip, FALSE);
+	set_meters_on(chip, false);
 
 #ifdef ECHOCARD_HAS_MIDI
-	enable_midi_input(chip, FALSE);
+	enable_midi_input(chip, false);
 #endif
 
 	/* Go to sleep */
@@ -981,15 +981,15 @@ static int init_dsp_comm_page(struct echoaudio *chip)
 
 	/* Init all the basic stuff */
 	chip->card_name = ECHOCARD_NAME;
-	chip->bad_board = TRUE;	/* Set TRUE until DSP loaded */
+	chip->bad_board = true;	/* Set true until DSP loaded */
 	chip->dsp_code = NULL;	/* Current DSP code not loaded */
-	chip->asic_loaded = FALSE;
+	chip->asic_loaded = false;
 	memset(chip->comm_page, 0, sizeof(struct comm_page));
 
 	/* Init the comm page */
 	chip->comm_page->comm_size =
 		cpu_to_le32(sizeof(struct comm_page));
-	chip->comm_page->handshake = 0xffffffff;
+	chip->comm_page->handshake = cpu_to_le32(0xffffffff);
 	chip->comm_page->midi_out_free_count =
 		cpu_to_le32(DSP_MIDI_OUT_FIFO_SIZE);
 	chip->comm_page->sample_rate = cpu_to_le32(44100);
@@ -1087,7 +1087,7 @@ static int allocate_pipes(struct echoaudio *chip, struct audiopipe *pipe,
 	/* The counter register is where the DSP writes the 32 bit DMA
 	position for a pipe.  The DSP is constantly updating this value as
 	it moves data. The DMA counter is in units of bytes, not samples. */
-	pipe->dma_counter = &chip->comm_page->position[pipe_index];
+	pipe->dma_counter = (__le32 *)&chip->comm_page->position[pipe_index];
 	*pipe->dma_counter = 0;
 	return pipe_index;
 }

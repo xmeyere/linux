@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_M68K_THREAD_INFO_H
 #define _ASM_M68K_THREAD_INFO_H
 
@@ -26,7 +27,6 @@
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
 	unsigned long		flags;
-	struct exec_domain	*exec_domain;	/* execution domain */
 	mm_segment_t		addr_limit;	/* thread address space */
 	int			preempt_count;	/* 0 => preemptable, <0 => BUG */
 	__u32			cpu;		/* should always be 0 on m68k */
@@ -37,12 +37,9 @@ struct thread_info {
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task		= &tsk,			\
-	.exec_domain	= &default_exec_domain,	\
 	.addr_limit	= KERNEL_DS,		\
 	.preempt_count	= INIT_PREEMPT_COUNT,	\
 }
-
-#define init_stack		(init_thread_union.stack)
 
 #ifndef __ASSEMBLY__
 /* how to get the thread information struct from C */
@@ -58,8 +55,6 @@ static inline struct thread_info *current_thread_info(void)
 	return ti;
 }
 #endif
-
-#define init_thread_info	(init_thread_union.thread_info)
 
 /* entry.S relies on these definitions!
  * bits 0-7 are tested at every exception exit

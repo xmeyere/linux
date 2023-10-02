@@ -9,7 +9,7 @@
 #include <linux/fs.h>
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/sched.h>
+#include <linux/sched/signal.h>
 #include <linux/spinlock.h>
 #include <linux/mutex.h>
 #include <linux/list.h>
@@ -121,12 +121,13 @@ static void caif_flow_ctrl(struct sock *sk, int mode)
  * Copied from sock.c:sock_queue_rcv_skb(), but changed so packets are
  * not dropped, but CAIF is sending flow off instead.
  */
-static int caif_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
+static void caif_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 {
 	int err;
 	unsigned long flags;
 	struct sk_buff_head *list = &sk->sk_receive_queue;
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
+	bool queued = false;
 
 	if (atomic_read(&sk->sk_rmem_alloc) + skb->truesize >=
 		(unsigned int)sk->sk_rcvbuf && rx_flow_is_on(cf_sk)) {
@@ -139,7 +140,8 @@ static int caif_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 
 	err = sk_filter(sk, skb);
 	if (err)
-		return err;
+		goto out;
+
 	if (!sk_rmem_schedule(sk, skb, skb->truesize) && rx_flow_is_on(cf_sk)) {
 		set_rx_flow_off(cf_sk);
 		net_dbg_ratelimited("sending flow OFF due to rmem_schedule\n");
@@ -147,21 +149,16 @@ static int caif_queue_rcv_skb(struct sock *sk, struct sk_buff *skb)
 	}
 	skb->dev = NULL;
 	skb_set_owner_r(skb, sk);
-	/* Cache the SKB length before we tack it onto the receive
-	 * queue. Once it is added it no longer belongs to us and
-	 * may be freed by other threads of control pulling packets
-	 * from the queue.
-	 */
 	spin_lock_irqsave(&list->lock, flags);
-	if (!sock_flag(sk, SOCK_DEAD))
+	queued = !sock_flag(sk, SOCK_DEAD);
+	if (queued)
 		__skb_queue_tail(list, skb);
 	spin_unlock_irqrestore(&list->lock, flags);
-
-	if (!sock_flag(sk, SOCK_DEAD))
+out:
+	if (queued)
 		sk->sk_data_ready(sk);
 	else
 		kfree_skb(skb);
-	return 0;
 }
 
 /* Packet Receive Callback function called from CAIF Stack */
@@ -271,8 +268,8 @@ static void caif_check_flow_release(struct sock *sk)
  * Copied from unix_dgram_recvmsg, but removed credit checks,
  * changed locking, address handling and added MSG_TRUNC.
  */
-static int caif_seqpkt_recvmsg(struct kiocb *iocb, struct socket *sock,
-			       struct msghdr *m, size_t len, int flags)
+static int caif_seqpkt_recvmsg(struct socket *sock, struct msghdr *m,
+			       size_t len, int flags)
 
 {
 	struct sock *sk = sock->sk;
@@ -326,11 +323,15 @@ static long caif_stream_data_wait(struct sock *sk, long timeo)
 			!timeo)
 			break;
 
-		set_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
+		sk_set_bit(SOCKWQ_ASYNC_WAITDATA, sk);
 		release_sock(sk);
 		timeo = schedule_timeout(timeo);
 		lock_sock(sk);
-		clear_bit(SOCK_ASYNC_WAITDATA, &sk->sk_socket->flags);
+
+		if (sock_flag(sk, SOCK_DEAD))
+			break;
+
+		sk_clear_bit(SOCKWQ_ASYNC_WAITDATA, sk);
 	}
 
 	finish_wait(sk_sleep(sk), &wait);
@@ -343,9 +344,8 @@ static long caif_stream_data_wait(struct sock *sk, long timeo)
  * Copied from unix_stream_recvmsg, but removed credit checks,
  * changed locking calls, changed address handling.
  */
-static int caif_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
-			       struct msghdr *msg, size_t size,
-			       int flags)
+static int caif_stream_recvmsg(struct socket *sock, struct msghdr *msg,
+			       size_t size, int flags)
 {
 	struct sock *sk = sock->sk;
 	int copied = 0;
@@ -374,6 +374,10 @@ static int caif_stream_recvmsg(struct kiocb *iocb, struct socket *sock,
 		struct sk_buff *skb;
 
 		lock_sock(sk);
+		if (sock_flag(sk, SOCK_DEAD)) {
+			err = -ECONNRESET;
+			goto unlock;
+		}
 		skb = skb_dequeue(&sk->sk_receive_queue);
 		caif_check_flow_release(sk);
 
@@ -511,8 +515,8 @@ static int transmit_skb(struct sk_buff *skb, struct caifsock *cf_sk,
 }
 
 /* Copied from af_unix:unix_dgram_sendmsg, and adapted to CAIF */
-static int caif_seqpkt_sendmsg(struct kiocb *kiocb, struct socket *sock,
-			       struct msghdr *msg, size_t len)
+static int caif_seqpkt_sendmsg(struct socket *sock, struct msghdr *msg,
+			       size_t len)
 {
 	struct sock *sk = sock->sk;
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
@@ -535,7 +539,8 @@ static int caif_seqpkt_sendmsg(struct kiocb *kiocb, struct socket *sock,
 		goto err;
 
 	ret = -EINVAL;
-	if (unlikely(msg->msg_iter.iov->iov_base == NULL))
+	if (unlikely(msg->msg_iter.nr_segs == 0) ||
+	    unlikely(msg->msg_iter.iov->iov_base == NULL))
 		goto err;
 	noblock = msg->msg_flags & MSG_DONTWAIT;
 
@@ -586,8 +591,8 @@ err:
  * Changed removed permission handling and added waiting for flow on
  * and other minor adaptations.
  */
-static int caif_stream_sendmsg(struct kiocb *kiocb, struct socket *sock,
-			       struct msghdr *msg, size_t len)
+static int caif_stream_sendmsg(struct socket *sock, struct msghdr *msg,
+			       size_t len)
 {
 	struct sock *sk = sock->sk;
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
@@ -749,6 +754,10 @@ static int caif_connect(struct socket *sock, struct sockaddr *uaddr,
 	struct net_device *dev;
 
 	lock_sock(sk);
+
+	err = -EINVAL;
+	if (addr_len < offsetofend(struct sockaddr, sa_family))
+		goto out;
 
 	err = -EAFNOSUPPORT;
 	if (uaddr->sa_family != AF_CAIF)
@@ -916,7 +925,7 @@ static int caif_release(struct socket *sock)
 
 	caif_disconnect_client(sock_net(sk), &cf_sk->layer);
 	cf_sk->sk.sk_socket->state = SS_DISCONNECTING;
-	wake_up_interruptible_poll(sk_sleep(sk), POLLERR|POLLHUP);
+	wake_up_interruptible_poll(sk_sleep(sk), EPOLLERR|EPOLLHUP);
 
 	sock_orphan(sk);
 	sk_stream_kill_queues(&cf_sk->sk);
@@ -926,35 +935,35 @@ static int caif_release(struct socket *sock)
 }
 
 /* Copied from af_unix.c:unix_poll(), added CAIF tx_flow handling */
-static unsigned int caif_poll(struct file *file,
+static __poll_t caif_poll(struct file *file,
 			      struct socket *sock, poll_table *wait)
 {
 	struct sock *sk = sock->sk;
-	unsigned int mask;
+	__poll_t mask;
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
 
-	sock_poll_wait(file, sk_sleep(sk), wait);
+	sock_poll_wait(file, sock, wait);
 	mask = 0;
 
 	/* exceptional events? */
 	if (sk->sk_err)
-		mask |= POLLERR;
+		mask |= EPOLLERR;
 	if (sk->sk_shutdown == SHUTDOWN_MASK)
-		mask |= POLLHUP;
+		mask |= EPOLLHUP;
 	if (sk->sk_shutdown & RCV_SHUTDOWN)
-		mask |= POLLRDHUP;
+		mask |= EPOLLRDHUP;
 
 	/* readable? */
-	if (!skb_queue_empty(&sk->sk_receive_queue) ||
+	if (!skb_queue_empty_lockless(&sk->sk_receive_queue) ||
 		(sk->sk_shutdown & RCV_SHUTDOWN))
-		mask |= POLLIN | POLLRDNORM;
+		mask |= EPOLLIN | EPOLLRDNORM;
 
 	/*
 	 * we set writable also when the other side has shut down the
 	 * connection. This prevents stuck sockets.
 	 */
 	if (sock_writeable(sk) && tx_flow_is_on(cf_sk))
-		mask |= POLLOUT | POLLWRNORM | POLLWRBAND;
+		mask |= EPOLLOUT | EPOLLWRNORM | EPOLLWRBAND;
 
 	return mask;
 }
@@ -1005,7 +1014,7 @@ static const struct proto_ops caif_stream_ops = {
 static void caif_sock_destructor(struct sock *sk)
 {
 	struct caifsock *cf_sk = container_of(sk, struct caifsock, sk);
-	caif_assert(!atomic_read(&sk->sk_wmem_alloc));
+	caif_assert(!refcount_read(&sk->sk_wmem_alloc));
 	caif_assert(sk_unhashed(sk));
 	caif_assert(!sk->sk_socket);
 	if (!sock_flag(sk, SOCK_DEAD)) {
@@ -1013,6 +1022,7 @@ static void caif_sock_destructor(struct sock *sk)
 		return;
 	}
 	sk_stream_kill_queues(&cf_sk->sk);
+	WARN_ON(sk->sk_forward_alloc);
 	caif_free_client(&cf_sk->layer);
 }
 
@@ -1024,6 +1034,8 @@ static int caif_create(struct net *net, struct socket *sock, int protocol,
 	static struct proto prot = {.name = "PF_CAIF",
 		.owner = THIS_MODULE,
 		.obj_size = sizeof(struct caifsock),
+		.useroffset = offsetof(struct caifsock, conn_req.param),
+		.usersize = sizeof_field(struct caifsock, conn_req.param)
 	};
 
 	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_NET_ADMIN))
@@ -1048,7 +1060,7 @@ static int caif_create(struct net *net, struct socket *sock, int protocol,
 	 * is really not used at all in the net/core or socket.c but the
 	 * initialization makes sure that sock->state is not uninitialized.
 	 */
-	sk = sk_alloc(net, PF_CAIF, GFP_KERNEL, &prot);
+	sk = sk_alloc(net, PF_CAIF, GFP_KERNEL, &prot, kern);
 	if (!sk)
 		return -ENOMEM;
 
@@ -1095,7 +1107,7 @@ static int caif_create(struct net *net, struct socket *sock, int protocol,
 }
 
 
-static struct net_proto_family caif_family_ops = {
+static const struct net_proto_family caif_family_ops = {
 	.family = PF_CAIF,
 	.create = caif_create,
 	.owner = THIS_MODULE,
@@ -1103,10 +1115,7 @@ static struct net_proto_family caif_family_ops = {
 
 static int __init caif_sktinit_module(void)
 {
-	int err = sock_register(&caif_family_ops);
-	if (!err)
-		return err;
-	return 0;
+	return sock_register(&caif_family_ops);
 }
 
 static void __exit caif_sktexit_module(void)

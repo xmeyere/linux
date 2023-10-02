@@ -61,8 +61,6 @@ static int cycles_child(void)
 	ebb_global_disable();
 	ebb_freeze_pmcs();
 
-	count_pmc(1, sample_period);
-
 	dump_summary_ebb_state();
 
 	event_close(&event);
@@ -78,6 +76,8 @@ int multi_ebb_procs(void)
 {
 	pid_t pids[NR_CHILDREN];
 	int cpu, rc, i;
+
+	SKIP_IF(!ebb_is_supported());
 
 	cpu = pick_online_cpu();
 	FAIL_IF(cpu < 0);

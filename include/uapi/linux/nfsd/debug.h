@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * linux/include/linux/nfsd/debug.h
  *
@@ -10,14 +11,6 @@
 #define _UAPILINUX_NFSD_DEBUG_H
 
 #include <linux/sunrpc/debug.h>
-
-/*
- * Enable debugging for nfsd.
- * Requires RPC_DEBUG.
- */
-#if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
-# define NFSD_DEBUG		1
-#endif
 
 /*
  * knfsd debug flags

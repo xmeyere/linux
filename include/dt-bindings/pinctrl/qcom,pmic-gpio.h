@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * This header provides constants for the Qualcomm PMIC GPIO binding.
  */
@@ -48,6 +49,14 @@
 #define PM8058_GPIO_L5			6
 #define PM8058_GPIO_L2			7
 
+/*
+ * Note: PM8916 GPIO1 and GPIO2 are supporting
+ * only L2(1.15V) and L5(1.8V) options
+ */
+#define PM8916_GPIO_VPH			0
+#define PM8916_GPIO_L2			2
+#define PM8916_GPIO_L5			3
+
 #define PM8917_GPIO_VPH			0
 #define PM8917_GPIO_S4			2
 #define PM8917_GPIO_L15			3
@@ -81,11 +90,17 @@
 #define PMA8084_GPIO_S4			2
 #define PMA8084_GPIO_L6			3
 
+#define PM8994_GPIO_VPH			0
+#define PM8994_GPIO_S4			2
+#define PM8994_GPIO_L12			3
+
 /* To be used with "function" */
 #define PMIC_GPIO_FUNC_NORMAL		"normal"
 #define PMIC_GPIO_FUNC_PAIRED		"paired"
 #define PMIC_GPIO_FUNC_FUNC1		"func1"
 #define PMIC_GPIO_FUNC_FUNC2		"func2"
+#define PMIC_GPIO_FUNC_FUNC3		"func3"
+#define PMIC_GPIO_FUNC_FUNC4		"func4"
 #define PMIC_GPIO_FUNC_DTEST1		"dtest1"
 #define PMIC_GPIO_FUNC_DTEST2		"dtest2"
 #define PMIC_GPIO_FUNC_DTEST3		"dtest3"
@@ -114,6 +129,13 @@
 #define PM8058_GPIO38_39_CLK_32KHZ	PMIC_GPIO_FUNC_FUNC2
 #define PM8058_GPIO39_MP3_CLK		PMIC_GPIO_FUNC_FUNC1
 #define PM8058_GPIO40_EXT_BB_EN		PMIC_GPIO_FUNC_FUNC1
+
+#define PM8916_GPIO1_BAT_ALRM_OUT	PMIC_GPIO_FUNC_FUNC1
+#define PM8916_GPIO1_KEYP_DRV		PMIC_GPIO_FUNC_FUNC2
+#define PM8916_GPIO2_DIV_CLK		PMIC_GPIO_FUNC_FUNC1
+#define PM8916_GPIO2_SLEEP_CLK		PMIC_GPIO_FUNC_FUNC2
+#define PM8916_GPIO3_KEYP_DRV		PMIC_GPIO_FUNC_FUNC1
+#define PM8916_GPIO4_KEYP_DRV		PMIC_GPIO_FUNC_FUNC2
 
 #define PM8917_GPIO9_18_KEYP_DRV	PMIC_GPIO_FUNC_FUNC1
 #define PM8917_GPIO20_BAT_ALRM_OUT	PMIC_GPIO_FUNC_FUNC1

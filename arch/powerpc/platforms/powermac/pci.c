@@ -27,6 +27,8 @@
 #include <asm/grackle.h>
 #include <asm/ppc-pci.h>
 
+#include "pmac.h"
+
 #undef DEBUG
 
 #ifdef DEBUG
@@ -60,7 +62,7 @@ struct device_node *k2_skiplist[2];
 
 static int __init fixup_one_level_bus_range(struct device_node *node, int higher)
 {
-	for (; node != 0;node = node->sibling) {
+	for (; node; node = node->sibling) {
 		const int * bus_range;
 		const unsigned int *class_code;
 		int len;
@@ -779,18 +781,18 @@ static int __init pmac_add_bridge(struct device_node *dev)
 	struct resource rsrc;
 	char *disp_name;
 	const int *bus_range;
-	int primary = 1, has_address = 0;
+	int primary = 1;
 
-	DBG("Adding PCI host bridge %s\n", dev->full_name);
+	DBG("Adding PCI host bridge %pOF\n", dev);
 
 	/* Fetch host bridge registers address */
-	has_address = (of_address_to_resource(dev, 0, &rsrc) == 0);
+	of_address_to_resource(dev, 0, &rsrc);
 
 	/* Get bus range if any */
 	bus_range = of_get_property(dev, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int)) {
-		printk(KERN_WARNING "Can't get bus-range for %s, assume"
-		       " bus 0\n", dev->full_name);
+		printk(KERN_WARNING "Can't get bus-range for %pOF, assume"
+		       " bus 0\n", dev);
 	}
 
 	hose = pcibios_alloc_controller(dev);
@@ -798,6 +800,7 @@ static int __init pmac_add_bridge(struct device_node *dev)
 		return -ENOMEM;
 	hose->first_busno = bus_range ? bus_range[0] : 0;
 	hose->last_busno = bus_range ? bus_range[1] : 0xff;
+	hose->controller_ops = pmac_pci_controller_ops;
 
 	disp_name = NULL;
 
@@ -875,10 +878,33 @@ void pmac_pci_irq_fixup(struct pci_dev *dev)
 #endif /* CONFIG_PPC32 */
 }
 
+#ifdef CONFIG_PPC64
+static int pmac_pci_root_bridge_prepare(struct pci_host_bridge *bridge)
+{
+	struct pci_controller *hose = pci_bus_to_host(bridge->bus);
+	struct device_node *np, *child;
+
+	if (hose != u3_agp)
+		return 0;
+
+	/* Fixup the PCI<->OF mapping for U3 AGP due to bus renumbering. We
+	 * assume there is no P2P bridge on the AGP bus, which should be a
+	 * safe assumptions for now. We should do something better in the
+	 * future though
+	 */
+	np = hose->dn;
+	PCI_DN(np)->busno = 0xf0;
+	for_each_child_of_node(np, child)
+		PCI_DN(child)->busno = 0xf0;
+
+	return 0;
+}
+#endif /* CONFIG_PPC64 */
+
 void __init pmac_pci_init(void)
 {
 	struct device_node *np, *root;
-	struct device_node *ht = NULL;
+	struct device_node *ht __maybe_unused = NULL;
 
 	pci_set_flags(PCI_CAN_SKIP_ISA_ALIGN);
 
@@ -911,20 +937,7 @@ void __init pmac_pci_init(void)
 	if (ht && pmac_add_bridge(ht) != 0)
 		of_node_put(ht);
 
-	/* Setup the linkage between OF nodes and PHBs */
-	pci_devs_phb_init();
-
-	/* Fixup the PCI<->OF mapping for U3 AGP due to bus renumbering. We
-	 * assume there is no P2P bridge on the AGP bus, which should be a
-	 * safe assumptions for now. We should do something better in the
-	 * future though
-	 */
-	if (u3_agp) {
-		struct device_node *np = u3_agp->dn;
-		PCI_DN(np)->busno = 0xf0;
-		for (np = np->child; np; np = np->sibling)
-			PCI_DN(np)->busno = 0xf0;
-	}
+	ppc_md.pcibios_root_bridge_prepare = pmac_pci_root_bridge_prepare;
 	/* pmac_check_ht_link(); */
 
 #else /* CONFIG_PPC64 */
@@ -942,7 +955,7 @@ void __init pmac_pci_init(void)
 }
 
 #ifdef CONFIG_PPC32
-int pmac_pci_enable_device_hook(struct pci_dev *dev)
+static bool pmac_pci_enable_device_hook(struct pci_dev *dev)
 {
 	struct device_node* node;
 	int updatecfg = 0;
@@ -958,11 +971,11 @@ int pmac_pci_enable_device_hook(struct pci_dev *dev)
 	    && !node) {
 		printk(KERN_INFO "Apple USB OHCI %s disabled by firmware\n",
 		       pci_name(dev));
-		return -EINVAL;
+		return false;
 	}
 
 	if (!node)
-		return 0;
+		return true;
 
 	uninorth_child = node->parent &&
 		of_device_is_compatible(node->parent, "uni-north");
@@ -1003,10 +1016,10 @@ int pmac_pci_enable_device_hook(struct pci_dev *dev)
 				      L1_CACHE_BYTES >> 2);
 	}
 
-	return 0;
+	return true;
 }
 
-void pmac_pci_fixup_ohci(struct pci_dev *dev)
+static void pmac_pci_fixup_ohci(struct pci_dev *dev)
 {
 	struct device_node *node = pci_device_to_OF_node(dev);
 
@@ -1041,7 +1054,7 @@ void __init pmac_pcibios_after_init(void)
 	}
 }
 
-void pmac_pci_fixup_cardbus(struct pci_dev* dev)
+static void pmac_pci_fixup_cardbus(struct pci_dev *dev)
 {
 	if (!machine_is(powermac))
 		return;
@@ -1078,7 +1091,7 @@ void pmac_pci_fixup_cardbus(struct pci_dev* dev)
 
 DECLARE_PCI_FIXUP_FINAL(PCI_VENDOR_ID_TI, PCI_ANY_ID, pmac_pci_fixup_cardbus);
 
-void pmac_pci_fixup_pciata(struct pci_dev* dev)
+static void pmac_pci_fixup_pciata(struct pci_dev *dev)
 {
        u8 progif = 0;
 
@@ -1206,7 +1219,7 @@ static void fixup_u4_pcie(struct pci_dev* dev)
 			region = r;
 	}
 	/* Nothing found, bail */
-	if (region == 0)
+	if (!region)
 		return;
 
 	/* Print things out */
@@ -1223,3 +1236,30 @@ static void fixup_u4_pcie(struct pci_dev* dev)
 	pci_write_config_dword(dev, PCI_PREF_MEMORY_BASE, 0);
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_APPLE, PCI_DEVICE_ID_APPLE_U4_PCIE, fixup_u4_pcie);
+
+#ifdef CONFIG_PPC64
+static int pmac_pci_probe_mode(struct pci_bus *bus)
+{
+	struct device_node *node = pci_bus_to_OF_node(bus);
+
+	/* We need to use normal PCI probing for the AGP bus,
+	 * since the device for the AGP bridge isn't in the tree.
+	 * Same for the PCIe host on U4 and the HT host bridge.
+	 */
+	if (bus->self == NULL && (of_device_is_compatible(node, "u3-agp") ||
+				  of_device_is_compatible(node, "u4-pcie") ||
+				  of_device_is_compatible(node, "u3-ht")))
+		return PCI_PROBE_NORMAL;
+	return PCI_PROBE_DEVTREE;
+}
+#endif /* CONFIG_PPC64 */
+
+struct pci_controller_ops pmac_pci_controller_ops = {
+#ifdef CONFIG_PPC64
+	.probe_mode		= pmac_pci_probe_mode,
+#endif
+#ifdef CONFIG_PPC32
+	.enable_device_hook	= pmac_pci_enable_device_hook,
+#endif
+};
+

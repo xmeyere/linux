@@ -19,6 +19,8 @@ static int no_handler_test(void)
 	u64 val;
 	int i;
 
+	SKIP_IF(!ebb_is_supported());
+
 	event_init_named(&event, 0x1001e, "cycles");
 	event_leader_ebb_init(&event);
 
@@ -47,8 +49,6 @@ static int no_handler_test(void)
 	FAIL_IF(val != 0x0000000080000080);
 
 	event_close(&event);
-
-	dump_ebb_state();
 
 	/* The real test is that we never took an EBB at 0x0 */
 

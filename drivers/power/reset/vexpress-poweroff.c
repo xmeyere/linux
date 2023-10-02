@@ -35,6 +35,7 @@ static void vexpress_reset_do(struct device *dev, const char *what)
 }
 
 static struct device *vexpress_power_off_device;
+static atomic_t vexpress_restart_nb_refcnt = ATOMIC_INIT(0);
 
 static void vexpress_power_off(void)
 {
@@ -74,13 +75,13 @@ static ssize_t vexpress_reset_active_store(struct device *dev,
 	return err ? err : count;
 }
 
-DEVICE_ATTR(active, S_IRUGO | S_IWUSR, vexpress_reset_active_show,
-		vexpress_reset_active_store);
+static DEVICE_ATTR(active, S_IRUGO | S_IWUSR, vexpress_reset_active_show,
+		   vexpress_reset_active_store);
 
 
 enum vexpress_reset_func { FUNC_RESET, FUNC_SHUTDOWN, FUNC_REBOOT };
 
-static struct of_device_id vexpress_reset_of_match[] = {
+static const struct of_device_id vexpress_reset_of_match[] = {
 	{
 		.compatible = "arm,vexpress-reset",
 		.data = (void *)FUNC_RESET,
@@ -99,10 +100,13 @@ static int _vexpress_register_restart_handler(struct device *dev)
 	int err;
 
 	vexpress_restart_device = dev;
-	err = register_restart_handler(&vexpress_restart_nb);
-	if (err) {
-		dev_err(dev, "cannot register restart handler (err=%d)\n", err);
-		return err;
+	if (atomic_inc_return(&vexpress_restart_nb_refcnt) == 1) {
+		err = register_restart_handler(&vexpress_restart_nb);
+		if (err) {
+			dev_err(dev, "cannot register restart handler (err=%d)\n", err);
+			atomic_dec(&vexpress_restart_nb_refcnt);
+			return err;
+		}
 	}
 	device_create_file(dev, &dev_attr_active);
 
@@ -146,6 +150,7 @@ static struct platform_driver vexpress_reset_driver = {
 	.driver = {
 		.name = "vexpress-reset",
 		.of_match_table = vexpress_reset_of_match,
+		.suppress_bind_attrs = true,
 	},
 };
 

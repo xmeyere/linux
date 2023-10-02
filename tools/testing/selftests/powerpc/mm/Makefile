@@ -1,21 +1,19 @@
+# SPDX-License-Identifier: GPL-2.0
 noarg:
 	$(MAKE) -C ../
 
-PROGS := hugetlb_vs_thp_test subpage_prot
+TEST_GEN_PROGS := hugetlb_vs_thp_test subpage_prot prot_sao segv_errors
+TEST_GEN_PROGS_EXTENDED := tlbie_test
+TEST_GEN_FILES := tempfile
 
-all: $(PROGS) tempfile
+top_srcdir = ../../../../..
+include ../../lib.mk
 
-$(PROGS): ../harness.c
+$(TEST_GEN_PROGS): ../harness.c
 
-run_tests: all
-	@-for PROG in $(PROGS); do \
-		./$$PROG; \
-	done;
+$(OUTPUT)/prot_sao: ../utils.c
 
-tempfile:
-	dd if=/dev/zero of=tempfile bs=64k count=1
+$(OUTPUT)/tempfile:
+	dd if=/dev/zero of=$@ bs=64k count=1
 
-clean:
-	rm -f $(PROGS) tempfile
-
-.PHONY: all run_tests clean
+$(OUTPUT)/tlbie_test: LDLIBS += -lpthread

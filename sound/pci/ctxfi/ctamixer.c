@@ -27,16 +27,15 @@
 
 #define BLANK_SLOT		4094
 
-static int amixer_master(struct rsc *rsc)
+static void amixer_master(struct rsc *rsc)
 {
 	rsc->conj = 0;
-	return rsc->idx = container_of(rsc, struct amixer, rsc)->idx[0];
+	rsc->idx = container_of(rsc, struct amixer, rsc)->idx[0];
 }
 
-static int amixer_next_conj(struct rsc *rsc)
+static void amixer_next_conj(struct rsc *rsc)
 {
 	rsc->conj++;
-	return container_of(rsc, struct amixer, rsc)->idx[rsc->conj];
 }
 
 static int amixer_index(const struct rsc *rsc)
@@ -49,7 +48,7 @@ static int amixer_output_slot(const struct rsc *rsc)
 	return (amixer_index(rsc) << 4) + 0x4;
 }
 
-static struct rsc_ops amixer_basic_rsc_ops = {
+static const struct rsc_ops amixer_basic_rsc_ops = {
 	.master		= amixer_master,
 	.next_conj	= amixer_next_conj,
 	.index		= amixer_index,
@@ -186,7 +185,7 @@ static int amixer_setup(struct amixer *amixer, struct rsc *input,
 	return 0;
 }
 
-static struct amixer_rsc_ops amixer_ops = {
+static const struct amixer_rsc_ops amixer_ops = {
 	.set_input		= amixer_set_input,
 	.set_invalid_squash	= amixer_set_invalid_squash,
 	.set_scale		= amixer_set_y,
@@ -335,16 +334,15 @@ int amixer_mgr_destroy(struct amixer_mgr *amixer_mgr)
 
 /* SUM resource management */
 
-static int sum_master(struct rsc *rsc)
+static void sum_master(struct rsc *rsc)
 {
 	rsc->conj = 0;
-	return rsc->idx = container_of(rsc, struct sum, rsc)->idx[0];
+	rsc->idx = container_of(rsc, struct sum, rsc)->idx[0];
 }
 
-static int sum_next_conj(struct rsc *rsc)
+static void sum_next_conj(struct rsc *rsc)
 {
 	rsc->conj++;
-	return container_of(rsc, struct sum, rsc)->idx[rsc->conj];
 }
 
 static int sum_index(const struct rsc *rsc)
@@ -357,7 +355,7 @@ static int sum_output_slot(const struct rsc *rsc)
 	return (sum_index(rsc) << 4) + 0xc;
 }
 
-static struct rsc_ops sum_basic_rsc_ops = {
+static const struct rsc_ops sum_basic_rsc_ops = {
 	.master		= sum_master,
 	.next_conj	= sum_next_conj,
 	.index		= sum_index,

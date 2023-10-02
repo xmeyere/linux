@@ -25,12 +25,12 @@
 
 #include <linux/kernel.h>
 #include <linux/via-core.h>
-#include <asm/olpc.h>
+
 #include "via_clock.h"
 #include "global.h"
 #include "debug.h"
 
-const char *via_slap = "Please slap VIA Technologies to motivate them "
+static const char *via_slap = "Please slap VIA Technologies to motivate them "
 	"releasing full documentation for your platform!\n";
 
 static inline u32 cle266_encode_pll(struct via_pll_config pll)

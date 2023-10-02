@@ -295,7 +295,7 @@ dsp_cmx_del_conf_member(struct dsp *dsp)
 		}
 	}
 	printk(KERN_WARNING
-	       "%s: dsp is not present in its own conf_meber list.\n",
+	       "%s: dsp is not present in its own conf_member list.\n",
 	       __func__);
 
 	return -EINVAL;
@@ -506,7 +506,7 @@ dsp_cmx_hardware(struct dsp_conf *conf, struct dsp *dsp)
 		       __func__, conf->id);
 
 	if (list_empty(&conf->mlist)) {
-		printk(KERN_ERR "%s: conference whithout members\n",
+		printk(KERN_ERR "%s: conference without members\n",
 		       __func__);
 		return;
 	}
@@ -1595,8 +1595,7 @@ send_packet:
 				thh = mISDN_HEAD_P(txskb);
 				thh->prim = DL_DATA_REQ;
 				thh->id = 0;
-				memcpy(skb_put(txskb, len), nskb->data + preload,
-				       len);
+				skb_put_data(txskb, nskb->data + preload, len);
 				/* queue (trigger later) */
 				skb_queue_tail(&dsp->sendq, txskb);
 			}
@@ -1626,7 +1625,7 @@ static u16	dsp_count; /* last sample count */
 static int	dsp_count_valid; /* if we have last sample count */
 
 void
-dsp_cmx_send(void *arg)
+dsp_cmx_send(struct timer_list *arg)
 {
 	struct dsp_conf *conf;
 	struct dsp_conf_member *member;

@@ -461,13 +461,12 @@ static int m88rs6000t_sleep(struct dvb_frontend *fe)
 	dev_dbg(&dev->client->dev, "%s:\n", __func__);
 
 	ret = regmap_write(dev->regmap, 0x07, 0x6d);
-	if (ret)
-		goto err;
-	usleep_range(5000, 10000);
-err:
-	if (ret)
+	if (ret) {
 		dev_dbg(&dev->client->dev, "failed=%d\n", ret);
-	return ret;
+		return ret;
+	}
+	usleep_range(5000, 10000);
+	return 0;
 }
 
 static int m88rs6000t_get_frequency(struct dvb_frontend *fe, u32 *frequency)
@@ -535,7 +534,7 @@ static int m88rs6000t_get_rf_strength(struct dvb_frontend *fe, u16 *strength)
 	PGA2_cri = PGA2_GC >> 2;
 	PGA2_crf = PGA2_GC & 0x03;
 
-	for (i = 0; i <= RF_GC; i++)
+	for (i = 0; i <= RF_GC && i < ARRAY_SIZE(RFGS); i++)
 		RFG += RFGS[i];
 
 	if (RF_GC == 0)
@@ -547,12 +546,12 @@ static int m88rs6000t_get_rf_strength(struct dvb_frontend *fe, u16 *strength)
 	if (RF_GC == 3)
 		RFG += 100;
 
-	for (i = 0; i <= IF_GC; i++)
+	for (i = 0; i <= IF_GC && i < ARRAY_SIZE(IFGS); i++)
 		IFG += IFGS[i];
 
 	TIAG = TIA_GC * TIA_GS;
 
-	for (i = 0; i <= BB_GC; i++)
+	for (i = 0; i <= BB_GC && i < ARRAY_SIZE(BBGS); i++)
 		BBG += BBGS[i];
 
 	PGA2G = PGA2_cri * PGA2_cri_GS + PGA2_crf * PGA2_crf_GS;
@@ -570,9 +569,9 @@ err:
 
 static const struct dvb_tuner_ops m88rs6000t_tuner_ops = {
 	.info = {
-		.name          = "Montage M88RS6000 Internal Tuner",
-		.frequency_min = 950000,
-		.frequency_max = 2150000,
+		.name             = "Montage M88RS6000 Internal Tuner",
+		.frequency_min_hz =  950 * MHz,
+		.frequency_max_hz = 2150 * MHz,
 	},
 
 	.init = m88rs6000t_init,
@@ -729,7 +728,6 @@ MODULE_DEVICE_TABLE(i2c, m88rs6000t_id);
 
 static struct i2c_driver m88rs6000t_driver = {
 	.driver = {
-		.owner	= THIS_MODULE,
 		.name	= "m88rs6000t",
 	},
 	.probe		= m88rs6000t_probe,

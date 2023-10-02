@@ -285,7 +285,12 @@
  */
 #define DEFAULT_SSP_REG_IMSC  0x0UL
 #define DISABLE_ALL_INTERRUPTS DEFAULT_SSP_REG_IMSC
-#define ENABLE_ALL_INTERRUPTS (~DEFAULT_SSP_REG_IMSC)
+#define ENABLE_ALL_INTERRUPTS ( \
+	SSP_IMSC_MASK_RORIM | \
+	SSP_IMSC_MASK_RTIM | \
+	SSP_IMSC_MASK_RXIM | \
+	SSP_IMSC_MASK_TXIM \
+)
 
 #define CLEAR_ALL_INTERRUPTS  0x3
 
@@ -341,13 +346,6 @@ struct vendor_data {
  * @clk: outgoing clock "SPICLK" for the SPI bus
  * @master: SPI framework hookup
  * @master_info: controller-specific data from machine setup
- * @kworker: thread struct for message pump
- * @kworker_task: pointer to task for message pump kworker thread
- * @pump_messages: work struct for scheduling work to the message pump
- * @queue_lock: spinlock to syncronise access to message queue
- * @queue: message queue
- * @busy: message pump is busy
- * @running: message pump is running
  * @pump_transfers: Tasklet used in Interrupt Transfer mode
  * @cur_msg: Pointer to current spi_message being processed
  * @cur_transfer: Pointer to current spi_transfer
@@ -1166,19 +1164,31 @@ err_no_rxchan:
 static int pl022_dma_autoprobe(struct pl022 *pl022)
 {
 	struct device *dev = &pl022->adev->dev;
+	struct dma_chan *chan;
+	int err;
 
 	/* automatically configure DMA channels from platform, normally using DT */
-	pl022->dma_rx_channel = dma_request_slave_channel(dev, "rx");
-	if (!pl022->dma_rx_channel)
+	chan = dma_request_slave_channel_reason(dev, "rx");
+	if (IS_ERR(chan)) {
+		err = PTR_ERR(chan);
 		goto err_no_rxchan;
+	}
 
-	pl022->dma_tx_channel = dma_request_slave_channel(dev, "tx");
-	if (!pl022->dma_tx_channel)
+	pl022->dma_rx_channel = chan;
+
+	chan = dma_request_slave_channel_reason(dev, "tx");
+	if (IS_ERR(chan)) {
+		err = PTR_ERR(chan);
 		goto err_no_txchan;
+	}
+
+	pl022->dma_tx_channel = chan;
 
 	pl022->dummypage = kmalloc(PAGE_SIZE, GFP_KERNEL);
-	if (!pl022->dummypage)
+	if (!pl022->dummypage) {
+		err = -ENOMEM;
 		goto err_no_dummypage;
+	}
 
 	return 0;
 
@@ -1189,7 +1199,7 @@ err_no_txchan:
 	dma_release_channel(pl022->dma_rx_channel);
 	pl022->dma_rx_channel = NULL;
 err_no_rxchan:
-	return -ENODEV;
+	return err;
 }
 		
 static void terminate_dma(struct pl022 *pl022)
@@ -1251,7 +1261,6 @@ static irqreturn_t pl022_interrupt_handler(int irq, void *dev_id)
 	struct pl022 *pl022 = dev_id;
 	struct spi_message *msg = pl022->cur_msg;
 	u16 irq_status = 0;
-	u16 flag = 0;
 
 	if (unlikely(!msg)) {
 		dev_err(&pl022->adev->dev,
@@ -1280,9 +1289,6 @@ static irqreturn_t pl022_interrupt_handler(int irq, void *dev_id)
 		if (readw(SSP_SR(pl022->virtbase)) & SSP_SR_MASK_RFF)
 			dev_err(&pl022->adev->dev,
 				"RXFIFO is full\n");
-		if (readw(SSP_SR(pl022->virtbase)) & SSP_SR_MASK_TNF)
-			dev_err(&pl022->adev->dev,
-				"TXFIFO is full\n");
 
 		/*
 		 * Disable and clear interrupts, disable SSP,
@@ -1303,8 +1309,7 @@ static irqreturn_t pl022_interrupt_handler(int irq, void *dev_id)
 
 	readwriter(pl022);
 
-	if ((pl022->tx == pl022->tx_end) && (flag == 0)) {
-		flag = 1;
+	if (pl022->tx == pl022->tx_end) {
 		/* Disable Transmit interrupt, enable receive interrupt */
 		writew((readw(SSP_IMSC(pl022->virtbase)) &
 		       ~SSP_IMSC_MASK_TXIM) | SSP_IMSC_MASK_RXIM,
@@ -1698,12 +1703,13 @@ static int verify_controller_parameters(struct pl022 *pl022,
 				return -EINVAL;
 			}
 		} else {
-			if (chip_info->duplex != SSP_MICROWIRE_CHANNEL_FULL_DUPLEX)
+			if (chip_info->duplex != SSP_MICROWIRE_CHANNEL_FULL_DUPLEX) {
 				dev_err(&pl022->adev->dev,
 					"Microwire half duplex mode requested,"
 					" but this is only available in the"
 					" ST version of PL022\n");
-			return -EINVAL;
+				return -EINVAL;
+			}
 		}
 	}
 	return 0;
@@ -2069,7 +2075,7 @@ pl022_platform_data_dt_get(struct device *dev)
 {
 	struct device_node *np = dev->of_node;
 	struct pl022_ssp_controller *pd;
-	u32 tmp;
+	u32 tmp = 0;
 
 	if (!np) {
 		dev_err(dev, "no dt node defined\n");
@@ -2130,7 +2136,7 @@ static int pl022_probe(struct amba_device *adev, const struct amba_id *id)
 	pl022->master_info = platform_info;
 	pl022->adev = adev;
 	pl022->vendor = id->data;
-	pl022->chipselects = devm_kzalloc(dev, num_cs * sizeof(int),
+	pl022->chipselects = devm_kcalloc(dev, num_cs, sizeof(int),
 					  GFP_KERNEL);
 	if (!pl022->chipselects) {
 		status = -ENOMEM;
@@ -2236,6 +2242,10 @@ static int pl022_probe(struct amba_device *adev, const struct amba_id *id)
 
 	/* Get DMA channels, try autoconfiguration first */
 	status = pl022_dma_autoprobe(pl022);
+	if (status == -EPROBE_DEFER) {
+		dev_dbg(dev, "deferring probe to get DMA channel\n");
+		goto err_no_irq;
+	}
 
 	/* If that failed, use channels from platform_info */
 	if (status == 0)
@@ -2420,7 +2430,7 @@ static struct vendor_data vendor_lsi = {
 	.internal_cs_ctrl = true,
 };
 
-static struct amba_id pl022_ids[] = {
+static const struct amba_id pl022_ids[] = {
 	{
 		/*
 		 * ARM PL022 variant, this has a 16bit wide

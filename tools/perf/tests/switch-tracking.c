@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <sys/time.h>
 #include <sys/prctl.h>
+#include <errno.h>
 #include <time.h>
 #include <stdlib.h>
 
@@ -256,16 +258,22 @@ static int process_events(struct perf_evlist *evlist,
 	unsigned pos, cnt = 0;
 	LIST_HEAD(events);
 	struct event_node *events_array, *node;
+	struct perf_mmap *md;
 	int i, ret;
 
 	for (i = 0; i < evlist->nr_mmaps; i++) {
-		while ((event = perf_evlist__mmap_read(evlist, i)) != NULL) {
+		md = &evlist->mmap[i];
+		if (perf_mmap__read_init(md) < 0)
+			continue;
+
+		while ((event = perf_mmap__read_event(md)) != NULL) {
 			cnt += 1;
 			ret = add_event(evlist, &events, event);
-			perf_evlist__mmap_consume(evlist, i);
+			 perf_mmap__consume(md);
 			if (ret < 0)
 				goto out_free_nodes;
 		}
+		perf_mmap__read_done(md);
 	}
 
 	events_array = calloc(cnt, sizeof(struct event_node));
@@ -305,7 +313,7 @@ out_free_nodes:
  * evsel->system_wide and evsel->tracking flags (respectively) with other events
  * sometimes enabled or disabled.
  */
-int test__switch_tracking(void)
+int test__switch_tracking(struct test *test __maybe_unused, int subtest __maybe_unused)
 {
 	const char *sched_switch = "sched:sched_switch";
 	struct switch_tracking switch_tracking = { .tids = NULL, };
@@ -347,7 +355,7 @@ int test__switch_tracking(void)
 	perf_evlist__set_maps(evlist, cpus, threads);
 
 	/* First event */
-	err = parse_events(evlist, "cpu-clock:u");
+	err = parse_events(evlist, "cpu-clock:u", NULL);
 	if (err) {
 		pr_debug("Failed to parse event dummy:u\n");
 		goto out_err;
@@ -356,7 +364,7 @@ int test__switch_tracking(void)
 	cpu_clocks_evsel = perf_evlist__last(evlist);
 
 	/* Second event */
-	err = parse_events(evlist, "cycles:u");
+	err = parse_events(evlist, "cycles:u", NULL);
 	if (err) {
 		pr_debug("Failed to parse event cycles:u\n");
 		goto out_err;
@@ -366,12 +374,12 @@ int test__switch_tracking(void)
 
 	/* Third event */
 	if (!perf_evlist__can_select_event(evlist, sched_switch)) {
-		fprintf(stderr, " (no sched_switch)");
+		pr_debug("No sched_switch\n");
 		err = 0;
 		goto out;
 	}
 
-	err = parse_events(evlist, sched_switch);
+	err = parse_events(evlist, sched_switch, NULL);
 	if (err) {
 		pr_debug("Failed to parse event %s\n", sched_switch);
 		goto out_err;
@@ -401,7 +409,7 @@ int test__switch_tracking(void)
 	perf_evsel__set_sample_bit(cycles_evsel, TIME);
 
 	/* Fourth event */
-	err = parse_events(evlist, "dummy:u");
+	err = parse_events(evlist, "dummy:u", NULL);
 	if (err) {
 		pr_debug("Failed to parse event dummy:u\n");
 		goto out_err;
@@ -417,7 +425,7 @@ int test__switch_tracking(void)
 	perf_evsel__set_sample_bit(tracking_evsel, TIME);
 
 	/* Config events */
-	perf_evlist__config(evlist, &opts);
+	perf_evlist__config(evlist, &opts, NULL);
 
 	/* Check moved event is still at the front */
 	if (cycles_evsel != perf_evlist__first(evlist)) {
@@ -432,7 +440,7 @@ int test__switch_tracking(void)
 	}
 
 	/* Check non-tracking events are not tracking */
-	evlist__for_each(evlist, evsel) {
+	evlist__for_each_entry(evlist, evsel) {
 		if (evsel != tracking_evsel) {
 			if (evsel->attr.mmap || evsel->attr.comm) {
 				pr_debug("Non-tracking event is tracking\n");
@@ -442,12 +450,12 @@ int test__switch_tracking(void)
 	}
 
 	if (perf_evlist__open(evlist) < 0) {
-		fprintf(stderr, " (not supported)");
+		pr_debug("Not supported\n");
 		err = 0;
 		goto out;
 	}
 
-	err = perf_evlist__mmap(evlist, UINT_MAX, false);
+	err = perf_evlist__mmap(evlist, UINT_MAX);
 	if (err) {
 		pr_debug("perf_evlist__mmap failed!\n");
 		goto out_err;
@@ -455,7 +463,7 @@ int test__switch_tracking(void)
 
 	perf_evlist__enable(evlist);
 
-	err = perf_evlist__disable_event(evlist, cpu_clocks_evsel);
+	err = perf_evsel__disable(cpu_clocks_evsel);
 	if (err) {
 		pr_debug("perf_evlist__disable_event failed!\n");
 		goto out_err;
@@ -474,7 +482,7 @@ int test__switch_tracking(void)
 		goto out_err;
 	}
 
-	err = perf_evlist__disable_event(evlist, cycles_evsel);
+	err = perf_evsel__disable(cycles_evsel);
 	if (err) {
 		pr_debug("perf_evlist__disable_event failed!\n");
 		goto out_err;
@@ -500,7 +508,7 @@ int test__switch_tracking(void)
 		goto out_err;
 	}
 
-	err = perf_evlist__enable_event(evlist, cycles_evsel);
+	err = perf_evsel__enable(cycles_evsel);
 	if (err) {
 		pr_debug("perf_evlist__disable_event failed!\n");
 		goto out_err;
@@ -560,8 +568,8 @@ out:
 		perf_evlist__disable(evlist);
 		perf_evlist__delete(evlist);
 	} else {
-		cpu_map__delete(cpus);
-		thread_map__delete(threads);
+		cpu_map__put(cpus);
+		thread_map__put(threads);
 	}
 
 	return err;

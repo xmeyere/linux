@@ -1,21 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Driver for SMSC USB3503 USB 2.0 hub controller driver
  *
  * Copyright (c) 2012-2013 Dongjin Kim (tobetter@gmail.com)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include <linux/clk.h>
@@ -186,7 +173,30 @@ static int usb3503_probe(struct usb3503 *hub)
 		hub->mode		= pdata->initial_mode;
 	} else if (np) {
 		struct clk *clk;
+		u32 rate = 0;
 		hub->port_off_mask = 0;
+
+		if (!of_property_read_u32(np, "refclk-frequency", &rate)) {
+			switch (rate) {
+			case 38400000:
+			case 26000000:
+			case 19200000:
+			case 12000000:
+				hub->secondary_ref_clk = 0;
+				break;
+			case 24000000:
+			case 27000000:
+			case 25000000:
+			case 50000000:
+				hub->secondary_ref_clk = 1;
+				break;
+			default:
+				dev_err(dev,
+					"unsupported reference clock rate (%d)\n",
+					(int) rate);
+				return -EINVAL;
+			}
+		}
 
 		clk = devm_clk_get(dev, "refclk");
 		if (IS_ERR(clk) && PTR_ERR(clk) != -ENOENT) {
@@ -196,31 +206,9 @@ static int usb3503_probe(struct usb3503 *hub)
 		}
 
 		if (!IS_ERR(clk)) {
-			u32 rate = 0;
 			hub->clk = clk;
 
-			if (!of_property_read_u32(np, "refclk-frequency",
-						 &rate)) {
-
-				switch (rate) {
-				case 38400000:
-				case 26000000:
-				case 19200000:
-				case 12000000:
-					hub->secondary_ref_clk = 0;
-					break;
-				case 24000000:
-				case 27000000:
-				case 25000000:
-				case 50000000:
-					hub->secondary_ref_clk = 1;
-					break;
-				default:
-					dev_err(dev,
-						"unsupported reference clock rate (%d)\n",
-						(int) rate);
-					return -EINVAL;
-				}
+			if (rate != 0) {
 				err = clk_set_rate(hub->clk, rate);
 				if (err) {
 					dev_err(dev,
@@ -291,6 +279,8 @@ static int usb3503_probe(struct usb3503 *hub)
 	if (gpio_is_valid(hub->gpio_reset)) {
 		err = devm_gpio_request_one(dev, hub->gpio_reset,
 				GPIOF_OUT_INIT_LOW, "usb3503 reset");
+		/* Datasheet defines a hardware reset to be at least 100us */
+		usleep_range(100, 10000);
 		if (err) {
 			dev_err(dev,
 				"unable to request GPIO %d as reset pin (%d)\n",
@@ -329,6 +319,17 @@ static int usb3503_i2c_probe(struct i2c_client *i2c,
 	return usb3503_probe(hub);
 }
 
+static int usb3503_i2c_remove(struct i2c_client *i2c)
+{
+	struct usb3503 *hub;
+
+	hub = i2c_get_clientdata(i2c);
+	if (hub->clk)
+		clk_disable_unprepare(hub->clk);
+
+	return 0;
+}
+
 static int usb3503_platform_probe(struct platform_device *pdev)
 {
 	struct usb3503 *hub;
@@ -337,8 +338,20 @@ static int usb3503_platform_probe(struct platform_device *pdev)
 	if (!hub)
 		return -ENOMEM;
 	hub->dev = &pdev->dev;
+	platform_set_drvdata(pdev, hub);
 
 	return usb3503_probe(hub);
+}
+
+static int usb3503_platform_remove(struct platform_device *pdev)
+{
+	struct usb3503 *hub;
+
+	hub = platform_get_drvdata(pdev);
+	if (hub->clk)
+		clk_disable_unprepare(hub->clk);
+
+	return 0;
 }
 
 #ifdef CONFIG_PM_SLEEP
@@ -394,6 +407,7 @@ static struct i2c_driver usb3503_i2c_driver = {
 		.of_match_table = of_match_ptr(usb3503_of_match),
 	},
 	.probe		= usb3503_i2c_probe,
+	.remove		= usb3503_i2c_remove,
 	.id_table	= usb3503_id,
 };
 
@@ -403,13 +417,14 @@ static struct platform_driver usb3503_platform_driver = {
 		.of_match_table = of_match_ptr(usb3503_of_match),
 	},
 	.probe		= usb3503_platform_probe,
+	.remove		= usb3503_platform_remove,
 };
 
 static int __init usb3503_init(void)
 {
 	int err;
 
-	err = i2c_register_driver(THIS_MODULE, &usb3503_i2c_driver);
+	err = i2c_add_driver(&usb3503_i2c_driver);
 	if (err != 0)
 		pr_err("usb3503: Failed to register I2C driver: %d\n", err);
 

@@ -1,5 +1,5 @@
 /*
- * Hardware monitoring driver for LM25056 / LM25063 / LM25066 / LM5064 / LM5066
+ * Hardware monitoring driver for LM25056 / LM25066 / LM5064 / LM5066
  *
  * Copyright (c) 2011 Ericsson AB.
  * Copyright (c) 2013 Guenter Roeck
@@ -19,6 +19,7 @@
  * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
+#include <linux/bitops.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/init.h>
@@ -27,7 +28,7 @@
 #include <linux/i2c.h>
 #include "pmbus.h"
 
-enum chips { lm25056, lm25063, lm25066, lm5064, lm5066 };
+enum chips { lm25056, lm25066, lm5064, lm5066, lm5066i };
 
 #define LM25066_READ_VAUX		0xd0
 #define LM25066_MFR_READ_IIN		0xd1
@@ -42,20 +43,15 @@ enum chips { lm25056, lm25063, lm25066, lm5064, lm5066 };
 #define LM25066_READ_AVG_IIN		0xde
 #define LM25066_READ_AVG_PIN		0xdf
 
-#define LM25066_DEV_SETUP_CL		(1 << 4)	/* Current limit */
+#define LM25066_DEV_SETUP_CL		BIT(4)	/* Current limit */
 
 /* LM25056 only */
 
 #define LM25056_VAUX_OV_WARN_LIMIT	0xe3
 #define LM25056_VAUX_UV_WARN_LIMIT	0xe4
 
-#define LM25056_MFR_STS_VAUX_OV_WARN	(1 << 1)
-#define LM25056_MFR_STS_VAUX_UV_WARN	(1 << 0)
-
-/* LM25063 only */
-
-#define LM25063_READ_VOUT_MAX		0xe5
-#define LM25063_READ_VOUT_MIN		0xe6
+#define LM25056_MFR_STS_VAUX_OV_WARN	BIT(1)
+#define LM25056_MFR_STS_VAUX_UV_WARN	BIT(0)
 
 struct __coeff {
 	short m, b, R;
@@ -64,26 +60,31 @@ struct __coeff {
 #define PSC_CURRENT_IN_L	(PSC_NUM_CLASSES)
 #define PSC_POWER_L		(PSC_NUM_CLASSES + 1)
 
-static struct __coeff lm25066_coeff[5][PSC_NUM_CLASSES + 2] = {
+static struct __coeff lm25066_coeff[][PSC_NUM_CLASSES + 2] = {
 	[lm25056] = {
 		[PSC_VOLTAGE_IN] = {
 			.m = 16296,
+			.b = 1343,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN] = {
 			.m = 13797,
+			.b = -1833,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN_L] = {
 			.m = 6726,
+			.b = -537,
 			.R = -2,
 		},
 		[PSC_POWER] = {
 			.m = 5501,
+			.b = -2908,
 			.R = -3,
 		},
 		[PSC_POWER_L] = {
 			.m = 26882,
+			.b = -5646,
 			.R = -4,
 		},
 		[PSC_TEMPERATURE] = {
@@ -95,85 +96,67 @@ static struct __coeff lm25066_coeff[5][PSC_NUM_CLASSES + 2] = {
 	[lm25066] = {
 		[PSC_VOLTAGE_IN] = {
 			.m = 22070,
+			.b = -1800,
 			.R = -2,
 		},
 		[PSC_VOLTAGE_OUT] = {
 			.m = 22070,
+			.b = -1800,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN] = {
 			.m = 13661,
+			.b = -5200,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN_L] = {
 			.m = 6852,
+			.b = -3100,
 			.R = -2,
 		},
 		[PSC_POWER] = {
 			.m = 736,
+			.b = -3300,
 			.R = -2,
 		},
 		[PSC_POWER_L] = {
 			.m = 369,
+			.b = -1900,
 			.R = -2,
 		},
 		[PSC_TEMPERATURE] = {
 			.m = 16,
 		},
 	},
-	[lm25063] = {
-		[PSC_VOLTAGE_IN] = {
-			.m = 16000,
-			.R = -2,
-		},
-		[PSC_VOLTAGE_OUT] = {
-			.m = 16000,
-			.R = -2,
-		},
-		[PSC_CURRENT_IN] = {
-			.m = 10000,
-			.R = -2,
-		},
-		[PSC_CURRENT_IN_L] = {
-			.m = 10000,
-			.R = -2,
-		},
-		[PSC_POWER] = {
-			.m = 5000,
-			.R = -3,
-		},
-		[PSC_POWER_L] = {
-			.m = 5000,
-			.R = -3,
-		},
-		[PSC_TEMPERATURE] = {
-			.m = 15596,
-			.R = -3,
-		},
-	},
 	[lm5064] = {
 		[PSC_VOLTAGE_IN] = {
 			.m = 4611,
+			.b = -642,
 			.R = -2,
 		},
 		[PSC_VOLTAGE_OUT] = {
 			.m = 4621,
+			.b = 423,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN] = {
 			.m = 10742,
+			.b = 1552,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN_L] = {
 			.m = 5456,
+			.b = 2118,
 			.R = -2,
 		},
 		[PSC_POWER] = {
 			.m = 1204,
+			.b = 8524,
 			.R = -3,
 		},
 		[PSC_POWER_L] = {
 			.m = 612,
+			.b = 11202,
 			.R = -3,
 		},
 		[PSC_TEMPERATURE] = {
@@ -183,26 +166,67 @@ static struct __coeff lm25066_coeff[5][PSC_NUM_CLASSES + 2] = {
 	[lm5066] = {
 		[PSC_VOLTAGE_IN] = {
 			.m = 4587,
+			.b = -1200,
 			.R = -2,
 		},
 		[PSC_VOLTAGE_OUT] = {
 			.m = 4587,
+			.b = -2400,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN] = {
 			.m = 10753,
+			.b = -1200,
 			.R = -2,
 		},
 		[PSC_CURRENT_IN_L] = {
 			.m = 5405,
+			.b = -600,
 			.R = -2,
 		},
 		[PSC_POWER] = {
 			.m = 1204,
+			.b = -6000,
 			.R = -3,
 		},
 		[PSC_POWER_L] = {
 			.m = 605,
+			.b = -8000,
+			.R = -3,
+		},
+		[PSC_TEMPERATURE] = {
+			.m = 16,
+		},
+	},
+	[lm5066i] = {
+		[PSC_VOLTAGE_IN] = {
+			.m = 4617,
+			.b = -140,
+			.R = -2,
+		},
+		[PSC_VOLTAGE_OUT] = {
+			.m = 4602,
+			.b = 500,
+			.R = -2,
+		},
+		[PSC_CURRENT_IN] = {
+			.m = 15076,
+			.b = -504,
+			.R = -2,
+		},
+		[PSC_CURRENT_IN_L] = {
+			.m = 7645,
+			.b = 100,
+			.R = -2,
+		},
+		[PSC_POWER] = {
+			.m = 1701,
+			.b = -4000,
+			.R = -3,
+		},
+		[PSC_POWER_L] = {
+			.m = 861,
+			.b = -965,
 			.R = -3,
 		},
 		[PSC_TEMPERATURE] = {
@@ -236,10 +260,6 @@ static int lm25066_read_word_data(struct i2c_client *client, int page, int reg)
 			/* VIN: 6.14 mV VAUX: 293 uV LSB */
 			ret = DIV_ROUND_CLOSEST(ret * 293, 6140);
 			break;
-		case lm25063:
-			/* VIN: 6.25 mV VAUX: 200.0 uV LSB */
-			ret = DIV_ROUND_CLOSEST(ret * 20, 625);
-			break;
 		case lm25066:
 			/* VIN: 4.54 mV VAUX: 283.2 uV LSB */
 			ret = DIV_ROUND_CLOSEST(ret * 2832, 45400);
@@ -249,6 +269,7 @@ static int lm25066_read_word_data(struct i2c_client *client, int page, int reg)
 			ret = DIV_ROUND_CLOSEST(ret * 70, 453);
 			break;
 		case lm5066:
+		case lm5066i:
 			/* VIN: 2.18 mV VAUX: 725 uV LSB */
 			ret = DIV_ROUND_CLOSEST(ret * 725, 2180);
 			break;
@@ -288,24 +309,6 @@ static int lm25066_read_word_data(struct i2c_client *client, int page, int reg)
 		break;
 	default:
 		ret = -ENODATA;
-		break;
-	}
-	return ret;
-}
-
-static int lm25063_read_word_data(struct i2c_client *client, int page, int reg)
-{
-	int ret;
-
-	switch (reg) {
-	case PMBUS_VIRT_READ_VOUT_MAX:
-		ret = pmbus_read_word_data(client, 0, LM25063_READ_VOUT_MAX);
-		break;
-	case PMBUS_VIRT_READ_VOUT_MIN:
-		ret = pmbus_read_word_data(client, 0, LM25063_READ_VOUT_MIN);
-		break;
-	default:
-		ret = lm25066_read_word_data(client, page, reg);
 		break;
 	}
 	return ret;
@@ -465,11 +468,6 @@ static int lm25066_probe(struct i2c_client *client,
 		info->read_word_data = lm25056_read_word_data;
 		info->read_byte_data = lm25056_read_byte_data;
 		data->rlimit = 0x0fff;
-	} else if (data->id == lm25063) {
-		info->func[0] |= PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT
-		  | PMBUS_HAVE_POUT;
-		info->read_word_data = lm25063_read_word_data;
-		data->rlimit = 0xffff;
 	} else {
 		info->func[0] |= PMBUS_HAVE_VOUT | PMBUS_HAVE_STATUS_VOUT;
 		info->read_word_data = lm25066_read_word_data;
@@ -487,16 +485,18 @@ static int lm25066_probe(struct i2c_client *client,
 	info->m[PSC_VOLTAGE_OUT] = coeff[PSC_VOLTAGE_OUT].m;
 	info->b[PSC_VOLTAGE_OUT] = coeff[PSC_VOLTAGE_OUT].b;
 	info->R[PSC_VOLTAGE_OUT] = coeff[PSC_VOLTAGE_OUT].R;
-	info->b[PSC_CURRENT_IN] = coeff[PSC_CURRENT_IN].b;
 	info->R[PSC_CURRENT_IN] = coeff[PSC_CURRENT_IN].R;
-	info->b[PSC_POWER] = coeff[PSC_POWER].b;
 	info->R[PSC_POWER] = coeff[PSC_POWER].R;
 	if (config & LM25066_DEV_SETUP_CL) {
 		info->m[PSC_CURRENT_IN] = coeff[PSC_CURRENT_IN_L].m;
+		info->b[PSC_CURRENT_IN] = coeff[PSC_CURRENT_IN_L].b;
 		info->m[PSC_POWER] = coeff[PSC_POWER_L].m;
+		info->b[PSC_POWER] = coeff[PSC_POWER_L].b;
 	} else {
 		info->m[PSC_CURRENT_IN] = coeff[PSC_CURRENT_IN].m;
+		info->b[PSC_CURRENT_IN] = coeff[PSC_CURRENT_IN].b;
 		info->m[PSC_POWER] = coeff[PSC_POWER].m;
+		info->b[PSC_POWER] = coeff[PSC_POWER].b;
 	}
 
 	return pmbus_do_probe(client, id, info);
@@ -504,10 +504,10 @@ static int lm25066_probe(struct i2c_client *client,
 
 static const struct i2c_device_id lm25066_id[] = {
 	{"lm25056", lm25056},
-	{"lm25063", lm25063},
 	{"lm25066", lm25066},
 	{"lm5064", lm5064},
 	{"lm5066", lm5066},
+	{"lm5066i", lm5066i},
 	{ }
 };
 

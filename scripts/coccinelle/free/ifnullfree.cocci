@@ -16,19 +16,23 @@ virtual context
 @r2 depends on patch@
 expression E;
 @@
-- if (E)
+- if (E != NULL)
 (
--	kfree(E);
-+ kfree(E);
+  kfree(E);
 |
--	debugfs_remove(E);
-+ debugfs_remove(E);
+  kzfree(E);
 |
--	debugfs_remove_recursive(E);
-+ debugfs_remove_recursive(E);
+  debugfs_remove(E);
 |
--	usb_free_urb(E);
-+ usb_free_urb(E);
+  debugfs_remove_recursive(E);
+|
+  usb_free_urb(E);
+|
+  kmem_cache_destroy(E);
+|
+  mempool_destroy(E);
+|
+  dma_pool_destroy(E);
 )
 
 @r depends on context || report || org @
@@ -36,8 +40,10 @@ expression E;
 position p;
 @@
 
-* if (E)
-*	\(kfree@p\|debugfs_remove@p\|debugfs_remove_recursive@p\|usb_free_urb\)(E);
+* if (E != NULL)
+*	\(kfree@p\|kzfree@p\|debugfs_remove@p\|debugfs_remove_recursive@p\|
+*         usb_free_urb@p\|kmem_cache_destroy@p\|mempool_destroy@p\|
+*         dma_pool_destroy@p\)(E);
 
 @script:python depends on org@
 p << r.p;
@@ -49,5 +55,5 @@ cocci.print_main("NULL check before that freeing function is not needed", p)
 p << r.p;
 @@
 
-msg = "WARNING: NULL check before freeing functions like kfree, debugfs_remove, debugfs_remove_recursive or usb_free_urb is not needed. Maybe consider reorganizing relevant code to avoid passing NULL values."
+msg = "WARNING: NULL check before some freeing functions is not needed."
 coccilib.report.print_report(p[0], msg)

@@ -112,8 +112,7 @@ enum frame_flags {
 struct frame {
 	struct list_head head;
 	u32 tag;
-	struct timeval sent;	/* high-res time packet was sent */
-	u32 sent_jiffs;		/* low-res jiffies-based sent time */
+	ktime_t sent;			/* high-res time packet was sent */
 	ulong waited;
 	ulong waited_total;
 	struct aoetgt *t;		/* parent target I belong to */
@@ -202,7 +201,6 @@ int aoeblk_init(void);
 void aoeblk_exit(void);
 void aoeblk_gdalloc(void *);
 void aoedisk_rm_debugfs(struct aoedev *d);
-void aoedisk_rm_sysfs(struct aoedev *d);
 
 int aoechr_init(void);
 void aoechr_exit(void);

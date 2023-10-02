@@ -789,11 +789,12 @@ static int build_adc_controls(struct snd_akm4xxx *ak)
 				return err;
 
 			memset(&knew, 0, sizeof(knew));
-			knew.name = ak->adc_info[mixer_ch].selector_name;
-			if (!knew.name) {
+			if (!ak->adc_info ||
+				!ak->adc_info[mixer_ch].selector_name) {
 				knew.name = "Capture Channel";
 				knew.index = mixer_ch + ak->idx_offset * 2;
-			}
+			} else
+				knew.name = ak->adc_info[mixer_ch].selector_name;
 
 			knew.iface = SNDRV_CTL_ELEM_IFACE_MIXER;
 			knew.info = ak4xxx_capture_source_info;
@@ -859,7 +860,6 @@ static int build_deemphasis(struct snd_akm4xxx *ak, int num_emphs)
 	return 0;
 }
 
-#ifdef CONFIG_PROC_FS
 static void proc_regs_read(struct snd_info_entry *entry,
 		struct snd_info_buffer *buffer)
 {
@@ -884,9 +884,6 @@ static int proc_init(struct snd_akm4xxx *ak)
 	snd_info_set_text_ops(entry, ak, proc_regs_read);
 	return 0;
 }
-#else /* !CONFIG_PROC_FS */
-static int proc_init(struct snd_akm4xxx *ak) { return 0; }
-#endif
 
 int snd_akm4xxx_build_controls(struct snd_akm4xxx *ak)
 {
@@ -915,15 +912,3 @@ int snd_akm4xxx_build_controls(struct snd_akm4xxx *ak)
 	return 0;
 }
 EXPORT_SYMBOL(snd_akm4xxx_build_controls);
-
-static int __init alsa_akm4xxx_module_init(void)
-{
-	return 0;
-}
-        
-static void __exit alsa_akm4xxx_module_exit(void)
-{
-}
-        
-module_init(alsa_akm4xxx_module_init)
-module_exit(alsa_akm4xxx_module_exit)

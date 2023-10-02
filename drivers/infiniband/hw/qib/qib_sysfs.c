@@ -247,7 +247,7 @@ static struct kobj_type qib_port_cc_ktype = {
 	.release = qib_port_release,
 };
 
-static struct bin_attribute cc_table_bin_attr = {
+static const struct bin_attribute cc_table_bin_attr = {
 	.attr = {.name = "cc_table_bin", .mode = 0444},
 	.read = read_cc_table_bin,
 	.size = PAGE_SIZE,
@@ -286,7 +286,7 @@ static ssize_t read_cc_setting_bin(struct file *filp, struct kobject *kobj,
 	return count;
 }
 
-static struct bin_attribute cc_setting_bin_attr = {
+static const struct bin_attribute cc_setting_bin_attr = {
 	.attr = {.name = "cc_settings_bin", .mode = 0444},
 	.read = read_cc_setting_bin,
 	.size = PAGE_SIZE,
@@ -301,6 +301,9 @@ static ssize_t qib_portattr_show(struct kobject *kobj,
 	struct qib_pportdata *ppd =
 		container_of(kobj, struct qib_pportdata, pport_kobj);
 
+	if (!pattr->show)
+		return -EIO;
+
 	return pattr->show(ppd, buf);
 }
 
@@ -311,6 +314,9 @@ static ssize_t qib_portattr_store(struct kobject *kobj,
 		container_of(attr, struct qib_port_attr, attr);
 	struct qib_pportdata *ppd =
 		container_of(kobj, struct qib_pportdata, pport_kobj);
+
+	if (!pattr->store)
+		return -EIO;
 
 	return pattr->store(ppd, buf, len);
 }
@@ -406,7 +412,13 @@ static struct kobj_type qib_sl2vl_ktype = {
 #define QIB_DIAGC_ATTR(N) \
 	static struct qib_diagc_attr qib_diagc_attr_##N = { \
 		.attr = { .name = __stringify(N), .mode = 0664 }, \
-		.counter = offsetof(struct qib_ibport, n_##N) \
+		.counter = offsetof(struct qib_ibport, rvp.n_##N) \
+	}
+
+#define QIB_DIAGC_ATTR_PER_CPU(N) \
+	static struct qib_diagc_attr qib_diagc_attr_##N = { \
+		.attr = { .name = __stringify(N), .mode = 0664 }, \
+		.counter = offsetof(struct qib_ibport, rvp.z_##N) \
 	}
 
 struct qib_diagc_attr {
@@ -414,10 +426,11 @@ struct qib_diagc_attr {
 	size_t counter;
 };
 
+QIB_DIAGC_ATTR_PER_CPU(rc_acks);
+QIB_DIAGC_ATTR_PER_CPU(rc_qacks);
+QIB_DIAGC_ATTR_PER_CPU(rc_delayed_comp);
+
 QIB_DIAGC_ATTR(rc_resends);
-QIB_DIAGC_ATTR(rc_acks);
-QIB_DIAGC_ATTR(rc_qacks);
-QIB_DIAGC_ATTR(rc_delayed_comp);
 QIB_DIAGC_ATTR(seq_naks);
 QIB_DIAGC_ATTR(rdma_seq);
 QIB_DIAGC_ATTR(rnr_naks);
@@ -449,6 +462,35 @@ static struct attribute *diagc_default_attributes[] = {
 	NULL
 };
 
+static u64 get_all_cpu_total(u64 __percpu *cntr)
+{
+	int cpu;
+	u64 counter = 0;
+
+	for_each_possible_cpu(cpu)
+		counter += *per_cpu_ptr(cntr, cpu);
+	return counter;
+}
+
+#define def_write_per_cpu(cntr) \
+static void write_per_cpu_##cntr(struct qib_pportdata *ppd, u32 data)	\
+{									\
+	struct qib_devdata *dd = ppd->dd;				\
+	struct qib_ibport *qibp = &ppd->ibport_data;			\
+	/*  A write can only zero the counter */			\
+	if (data == 0)							\
+		qibp->rvp.z_##cntr = get_all_cpu_total(qibp->rvp.cntr); \
+	else								\
+		qib_dev_err(dd, "Per CPU cntrs can only be zeroed");	\
+}
+
+def_write_per_cpu(rc_acks)
+def_write_per_cpu(rc_qacks)
+def_write_per_cpu(rc_delayed_comp)
+
+#define READ_PER_CPU_CNTR(cntr) (get_all_cpu_total(qibp->rvp.cntr) - \
+							qibp->rvp.z_##cntr)
+
 static ssize_t diagc_attr_show(struct kobject *kobj, struct attribute *attr,
 			       char *buf)
 {
@@ -458,7 +500,16 @@ static ssize_t diagc_attr_show(struct kobject *kobj, struct attribute *attr,
 		container_of(kobj, struct qib_pportdata, diagc_kobj);
 	struct qib_ibport *qibp = &ppd->ibport_data;
 
-	return sprintf(buf, "%u\n", *(u32 *)((char *)qibp + dattr->counter));
+	if (!strncmp(dattr->attr.name, "rc_acks", 7))
+		return sprintf(buf, "%llu\n", READ_PER_CPU_CNTR(rc_acks));
+	else if (!strncmp(dattr->attr.name, "rc_qacks", 8))
+		return sprintf(buf, "%llu\n", READ_PER_CPU_CNTR(rc_qacks));
+	else if (!strncmp(dattr->attr.name, "rc_delayed_comp", 15))
+		return sprintf(buf, "%llu\n",
+					READ_PER_CPU_CNTR(rc_delayed_comp));
+	else
+		return sprintf(buf, "%u\n",
+				*(u32 *)((char *)qibp + dattr->counter));
 }
 
 static ssize_t diagc_attr_store(struct kobject *kobj, struct attribute *attr,
@@ -475,7 +526,15 @@ static ssize_t diagc_attr_store(struct kobject *kobj, struct attribute *attr,
 	ret = kstrtou32(buf, 0, &val);
 	if (ret)
 		return ret;
-	*(u32 *)((char *) qibp + dattr->counter) = val;
+
+	if (!strncmp(dattr->attr.name, "rc_acks", 7))
+		write_per_cpu_rc_acks(ppd, val);
+	else if (!strncmp(dattr->attr.name, "rc_qacks", 8))
+		write_per_cpu_rc_qacks(ppd, val);
+	else if (!strncmp(dattr->attr.name, "rc_delayed_comp", 15))
+		write_per_cpu_rc_delayed_comp(ppd, val);
+	else
+		*(u32 *)((char *)qibp + dattr->counter) = val;
 	return size;
 }
 
@@ -502,7 +561,7 @@ static ssize_t show_rev(struct device *device, struct device_attribute *attr,
 			char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 
 	return sprintf(buf, "%x\n", dd_from_dev(dev)->minrev);
 }
@@ -511,7 +570,7 @@ static ssize_t show_hca(struct device *device, struct device_attribute *attr,
 			char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 	int ret;
 
@@ -533,7 +592,7 @@ static ssize_t show_boardversion(struct device *device,
 				 struct device_attribute *attr, char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 
 	/* The string printed here is already newline-terminated. */
@@ -545,7 +604,7 @@ static ssize_t show_localbus_info(struct device *device,
 				  struct device_attribute *attr, char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 
 	/* The string printed here is already newline-terminated. */
@@ -557,7 +616,7 @@ static ssize_t show_nctxts(struct device *device,
 			   struct device_attribute *attr, char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 
 	/* Return the number of user ports (contexts) available. */
@@ -572,7 +631,7 @@ static ssize_t show_nfreectxts(struct device *device,
 			   struct device_attribute *attr, char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 
 	/* Return the number of free user ports (contexts) available. */
@@ -583,7 +642,7 @@ static ssize_t show_serial(struct device *device,
 			   struct device_attribute *attr, char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 
 	buf[sizeof(dd->serial)] = '\0';
@@ -597,7 +656,7 @@ static ssize_t store_chip_reset(struct device *device,
 				size_t count)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 	int ret;
 
@@ -618,7 +677,7 @@ static ssize_t show_tempsense(struct device *device,
 			      struct device_attribute *attr, char *buf)
 {
 	struct qib_ibdev *dev =
-		container_of(device, struct qib_ibdev, ibdev.dev);
+		container_of(device, struct qib_ibdev, rdi.ibdev.dev);
 	struct qib_devdata *dd = dd_from_dev(dev);
 	int ret;
 	int idx;
@@ -697,7 +756,7 @@ int qib_create_port_files(struct ib_device *ibdev, u8 port_num,
 		qib_dev_err(dd,
 			"Skipping linkcontrol sysfs info, (err %d) port %u\n",
 			ret, port_num);
-		goto bail;
+		goto bail_link;
 	}
 	kobject_uevent(&ppd->pport_kobj, KOBJ_ADD);
 
@@ -707,7 +766,7 @@ int qib_create_port_files(struct ib_device *ibdev, u8 port_num,
 		qib_dev_err(dd,
 			"Skipping sl2vl sysfs info, (err %d) port %u\n",
 			ret, port_num);
-		goto bail_link;
+		goto bail_sl;
 	}
 	kobject_uevent(&ppd->sl2vl_kobj, KOBJ_ADD);
 
@@ -717,7 +776,7 @@ int qib_create_port_files(struct ib_device *ibdev, u8 port_num,
 		qib_dev_err(dd,
 			"Skipping diag_counters sysfs info, (err %d) port %u\n",
 			ret, port_num);
-		goto bail_sl;
+		goto bail_diagc;
 	}
 	kobject_uevent(&ppd->diagc_kobj, KOBJ_ADD);
 
@@ -730,7 +789,7 @@ int qib_create_port_files(struct ib_device *ibdev, u8 port_num,
 		qib_dev_err(dd,
 		 "Skipping Congestion Control sysfs info, (err %d) port %u\n",
 		 ret, port_num);
-		goto bail_diagc;
+		goto bail_cc;
 	}
 
 	kobject_uevent(&ppd->pport_cc_kobj, KOBJ_ADD);
@@ -778,7 +837,7 @@ bail:
  */
 int qib_verbs_register_sysfs(struct qib_devdata *dd)
 {
-	struct ib_device *dev = &dd->verbs_dev.ibdev;
+	struct ib_device *dev = &dd->verbs_dev.rdi.ibdev;
 	int i, ret;
 
 	for (i = 0; i < ARRAY_SIZE(qib_attributes); ++i) {
@@ -812,6 +871,7 @@ void qib_verbs_unregister_sysfs(struct qib_devdata *dd)
 				&cc_table_bin_attr);
 			kobject_put(&ppd->pport_cc_kobj);
 		}
+		kobject_put(&ppd->diagc_kobj);
 		kobject_put(&ppd->sl2vl_kobj);
 		kobject_put(&ppd->pport_kobj);
 	}

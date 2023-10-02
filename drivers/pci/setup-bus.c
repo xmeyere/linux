@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- *	drivers/pci/setup-bus.c
+ * Support routines for initializing a PCI subsystem
  *
  * Extruded from code written by
  *      Dave Rusling (david.rusling@reo.mts.dec.com)
  *      David Mosberger (davidm@cs.arizona.edu)
  *	David Miller (davem@redhat.com)
  *
- * Support routines for initializing a PCI subsystem.
- */
-
-/*
  * Nov 2000, Ivan Kokshaysky <ink@jurassic.park.msu.ru>
  *	     PCI-PCI bridges cleanup, sorted resource allocation.
  * Feb 2002, Ivan Kokshaysky <ink@jurassic.park.msu.ru>
@@ -25,7 +22,7 @@
 #include <linux/ioport.h>
 #include <linux/cache.h>
 #include <linux/slab.h>
-#include <asm-generic/pci-bridge.h>
+#include <linux/acpi.h>
 #include "pci.h"
 
 unsigned int pci_flags;
@@ -67,10 +64,8 @@ static int add_to_list(struct list_head *head,
 	struct pci_dev_resource *tmp;
 
 	tmp = kzalloc(sizeof(*tmp), GFP_KERNEL);
-	if (!tmp) {
-		pr_warn("add_to_list: kmalloc() failed!\n");
+	if (!tmp)
 		return -ENOMEM;
-	}
 
 	tmp->res = res;
 	tmp->dev = dev;
@@ -99,26 +94,37 @@ static void remove_from_list(struct list_head *head,
 	}
 }
 
+static struct pci_dev_resource *res_to_dev_res(struct list_head *head,
+					       struct resource *res)
+{
+	struct pci_dev_resource *dev_res;
+
+	list_for_each_entry(dev_res, head, list) {
+		if (dev_res->res == res)
+			return dev_res;
+	}
+
+	return NULL;
+}
+
 static resource_size_t get_res_add_size(struct list_head *head,
 					struct resource *res)
 {
 	struct pci_dev_resource *dev_res;
 
-	list_for_each_entry(dev_res, head, list) {
-		if (dev_res->res == res) {
-			int idx = res - &dev_res->dev->resource[0];
-
-			dev_printk(KERN_DEBUG, &dev_res->dev->dev,
-				 "res[%d]=%pR get_res_add_size add_size %llx\n",
-				 idx, dev_res->res,
-				 (unsigned long long)dev_res->add_size);
-
-			return dev_res->add_size;
-		}
-	}
-
-	return 0;
+	dev_res = res_to_dev_res(head, res);
+	return dev_res ? dev_res->add_size : 0;
 }
+
+static resource_size_t get_res_add_align(struct list_head *head,
+					 struct resource *res)
+{
+	struct pci_dev_resource *dev_res;
+
+	dev_res = res_to_dev_res(head, res);
+	return dev_res ? dev_res->min_align : 0;
+}
+
 
 /* Sort resources by alignment */
 static void pdev_sort_resources(struct pci_dev *dev, struct list_head *head)
@@ -141,7 +147,7 @@ static void pdev_sort_resources(struct pci_dev *dev, struct list_head *head)
 
 		r_align = pci_resource_alignment(dev, r);
 		if (!r_align) {
-			dev_warn(&dev->dev, "BAR %d: %pR has bogus alignment\n",
+			pci_warn(dev, "BAR %d: %pR has bogus alignment\n",
 				 i, r);
 			continue;
 		}
@@ -215,7 +221,7 @@ static void reassign_resources_sorted(struct list_head *realloc_head,
 	struct resource *res;
 	struct pci_dev_resource *add_res, *tmp;
 	struct pci_dev_resource *dev_res;
-	resource_size_t add_size;
+	resource_size_t add_size, align;
 	int idx;
 
 	list_for_each_entry_safe(add_res, tmp, realloc_head, list) {
@@ -238,18 +244,18 @@ static void reassign_resources_sorted(struct list_head *realloc_head,
 
 		idx = res - &add_res->dev->resource[0];
 		add_size = add_res->add_size;
+		align = add_res->min_align;
 		if (!resource_size(res)) {
-			res->start = add_res->start;
+			res->start = align;
 			res->end = res->start + add_size - 1;
 			if (pci_assign_resource(add_res->dev, idx))
 				reset_resource(res);
 		} else {
-			resource_size_t align = add_res->min_align;
 			res->flags |= add_res->flags &
 				 (IORESOURCE_STARTALIGN|IORESOURCE_SIZEALIGN);
 			if (pci_reassign_resource(add_res->dev, idx,
 						  add_size, align))
-				dev_printk(KERN_DEBUG, &add_res->dev->dev,
+				pci_printk(KERN_DEBUG, add_res->dev,
 					   "failed to add %llx res[%d]=%pR\n",
 					   (unsigned long long)add_size,
 					   idx, res);
@@ -368,8 +374,9 @@ static void __assign_resources_sorted(struct list_head *head,
 	LIST_HEAD(save_head);
 	LIST_HEAD(local_fail_head);
 	struct pci_dev_resource *save_res;
-	struct pci_dev_resource *dev_res, *tmp_res;
+	struct pci_dev_resource *dev_res, *tmp_res, *dev_res2;
 	unsigned long fail_type;
+	resource_size_t add_align, align;
 
 	/* Check if optional add_size is there */
 	if (!realloc_head || list_empty(realloc_head))
@@ -384,9 +391,46 @@ static void __assign_resources_sorted(struct list_head *head,
 	}
 
 	/* Update res in head list with add_size in realloc_head list */
-	list_for_each_entry(dev_res, head, list)
+	list_for_each_entry_safe(dev_res, tmp_res, head, list) {
 		dev_res->res->end += get_res_add_size(realloc_head,
 							dev_res->res);
+
+		/*
+		 * There are two kinds of additional resources in the list:
+		 * 1. bridge resource  -- IORESOURCE_STARTALIGN
+		 * 2. SR-IOV resource   -- IORESOURCE_SIZEALIGN
+		 * Here just fix the additional alignment for bridge
+		 */
+		if (!(dev_res->res->flags & IORESOURCE_STARTALIGN))
+			continue;
+
+		add_align = get_res_add_align(realloc_head, dev_res->res);
+
+		/*
+		 * The "head" list is sorted by the alignment to make sure
+		 * resources with bigger alignment will be assigned first.
+		 * After we change the alignment of a dev_res in "head" list,
+		 * we need to reorder the list by alignment to make it
+		 * consistent.
+		 */
+		if (add_align > dev_res->res->start) {
+			resource_size_t r_size = resource_size(dev_res->res);
+
+			dev_res->res->start = add_align;
+			dev_res->res->end = add_align + r_size - 1;
+
+			list_for_each_entry(dev_res2, head, list) {
+				align = pci_resource_alignment(dev_res2->dev,
+							       dev_res2->res);
+				if (add_align > align) {
+					list_move_tail(&dev_res->list,
+						       &dev_res2->list);
+					break;
+				}
+			}
+		}
+
+	}
 
 	/* Try updated head list with add_size added */
 	assign_requested_resources_sorted(head, &local_fail_head);
@@ -470,7 +514,7 @@ void pci_setup_cardbus(struct pci_bus *bus)
 	struct resource *res;
 	struct pci_bus_region region;
 
-	dev_info(&bridge->dev, "CardBus bridge to %pR\n",
+	pci_info(bridge, "CardBus bridge to %pR\n",
 		 &bus->busn_res);
 
 	res = bus->resource[0];
@@ -480,7 +524,7 @@ void pci_setup_cardbus(struct pci_bus *bus)
 		 * The IO resource is allocated a range twice as large as it
 		 * would normally need.  This allows us to set both IO regs.
 		 */
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 		pci_write_config_dword(bridge, PCI_CB_IO_BASE_0,
 					region.start);
 		pci_write_config_dword(bridge, PCI_CB_IO_LIMIT_0,
@@ -490,7 +534,7 @@ void pci_setup_cardbus(struct pci_bus *bus)
 	res = bus->resource[1];
 	pcibios_resource_to_bus(bridge->bus, &region, res);
 	if (res->flags & IORESOURCE_IO) {
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 		pci_write_config_dword(bridge, PCI_CB_IO_BASE_1,
 					region.start);
 		pci_write_config_dword(bridge, PCI_CB_IO_LIMIT_1,
@@ -500,7 +544,7 @@ void pci_setup_cardbus(struct pci_bus *bus)
 	res = bus->resource[2];
 	pcibios_resource_to_bus(bridge->bus, &region, res);
 	if (res->flags & IORESOURCE_MEM) {
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 		pci_write_config_dword(bridge, PCI_CB_MEMORY_BASE_0,
 					region.start);
 		pci_write_config_dword(bridge, PCI_CB_MEMORY_LIMIT_0,
@@ -510,7 +554,7 @@ void pci_setup_cardbus(struct pci_bus *bus)
 	res = bus->resource[3];
 	pcibios_resource_to_bus(bridge->bus, &region, res);
 	if (res->flags & IORESOURCE_MEM) {
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 		pci_write_config_dword(bridge, PCI_CB_MEMORY_BASE_1,
 					region.start);
 		pci_write_config_dword(bridge, PCI_CB_MEMORY_LIMIT_1,
@@ -553,7 +597,7 @@ static void pci_setup_bridge_io(struct pci_dev *bridge)
 		l = ((u16) io_limit_lo << 8) | io_base_lo;
 		/* Set up upper 16 bits of I/O base/limit. */
 		io_upper16 = (region.end & 0xffff0000) | (region.start >> 16);
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 	} else {
 		/* Clear upper 16 bits of I/O base/limit. */
 		io_upper16 = 0;
@@ -579,7 +623,7 @@ static void pci_setup_bridge_mmio(struct pci_dev *bridge)
 	if (res->flags & IORESOURCE_MEM) {
 		l = (region.start >> 16) & 0xfff0;
 		l |= region.end & 0xfff00000;
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 	} else {
 		l = 0x0000fff0;
 	}
@@ -608,7 +652,7 @@ static void pci_setup_bridge_mmio_pref(struct pci_dev *bridge)
 			bu = upper_32_bits(region.start);
 			lu = upper_32_bits(region.end);
 		}
-		dev_info(&bridge->dev, "  bridge window %pR\n", res);
+		pci_info(bridge, "  bridge window %pR\n", res);
 	} else {
 		l = 0x0000fff0;
 	}
@@ -623,7 +667,7 @@ static void __pci_setup_bridge(struct pci_bus *bus, unsigned long type)
 {
 	struct pci_dev *bridge = bus->self;
 
-	dev_info(&bridge->dev, "PCI bridge to %pR\n",
+	pci_info(bridge, "PCI bridge to %pR\n",
 		 &bus->busn_res);
 
 	if (type & IORESOURCE_IO)
@@ -638,11 +682,16 @@ static void __pci_setup_bridge(struct pci_bus *bus, unsigned long type)
 	pci_write_config_word(bridge, PCI_BRIDGE_CONTROL, bus->bridge_ctl);
 }
 
+void __weak pcibios_setup_bridge(struct pci_bus *bus, unsigned long type)
+{
+}
+
 void pci_setup_bridge(struct pci_bus *bus)
 {
 	unsigned long type = IORESOURCE_IO | IORESOURCE_MEM |
 				  IORESOURCE_PREFETCH;
 
+	pcibios_setup_bridge(bus, type);
 	__pci_setup_bridge(bus, type);
 }
 
@@ -686,57 +735,20 @@ int pci_claim_bridge_resource(struct pci_dev *bridge, int i)
    base/limit registers must be read-only and read as 0. */
 static void pci_bridge_check_ranges(struct pci_bus *bus)
 {
-	u16 io;
-	u32 pmem;
 	struct pci_dev *bridge = bus->self;
-	struct resource *b_res;
+	struct resource *b_res = &bridge->resource[PCI_BRIDGE_RESOURCES];
 
-	b_res = &bridge->resource[PCI_BRIDGE_RESOURCES];
 	b_res[1].flags |= IORESOURCE_MEM;
 
-	pci_read_config_word(bridge, PCI_IO_BASE, &io);
-	if (!io) {
-		pci_write_config_word(bridge, PCI_IO_BASE, 0xe0f0);
-		pci_read_config_word(bridge, PCI_IO_BASE, &io);
-		pci_write_config_word(bridge, PCI_IO_BASE, 0x0);
-	}
-	if (io)
+	if (bridge->io_window)
 		b_res[0].flags |= IORESOURCE_IO;
 
-	/*  DECchip 21050 pass 2 errata: the bridge may miss an address
-	    disconnect boundary by one PCI data phase.
-	    Workaround: do not use prefetching on this device. */
-	if (bridge->vendor == PCI_VENDOR_ID_DEC && bridge->device == 0x0001)
-		return;
-
-	pci_read_config_dword(bridge, PCI_PREF_MEMORY_BASE, &pmem);
-	if (!pmem) {
-		pci_write_config_dword(bridge, PCI_PREF_MEMORY_BASE,
-					       0xffe0fff0);
-		pci_read_config_dword(bridge, PCI_PREF_MEMORY_BASE, &pmem);
-		pci_write_config_dword(bridge, PCI_PREF_MEMORY_BASE, 0x0);
-	}
-	if (pmem) {
+	if (bridge->pref_window) {
 		b_res[2].flags |= IORESOURCE_MEM | IORESOURCE_PREFETCH;
-		if ((pmem & PCI_PREF_RANGE_TYPE_MASK) ==
-		    PCI_PREF_RANGE_TYPE_64) {
+		if (bridge->pref_64_window) {
 			b_res[2].flags |= IORESOURCE_MEM_64;
 			b_res[2].flags |= PCI_PREF_RANGE_TYPE_64;
 		}
-	}
-
-	/* double check if bridge does support 64 bit pref */
-	if (b_res[2].flags & IORESOURCE_MEM_64) {
-		u32 mem_base_hi, tmp;
-		pci_read_config_dword(bridge, PCI_PREF_BASE_UPPER32,
-					 &mem_base_hi);
-		pci_write_config_dword(bridge, PCI_PREF_BASE_UPPER32,
-					       0xffffffff);
-		pci_read_config_dword(bridge, PCI_PREF_BASE_UPPER32, &tmp);
-		if (!tmp)
-			b_res[2].flags &= ~IORESOURCE_MEM_64;
-		pci_write_config_dword(bridge, PCI_PREF_BASE_UPPER32,
-				       mem_base_hi);
 	}
 }
 
@@ -890,7 +902,7 @@ static void pbus_size_io(struct pci_bus *bus, resource_size_t min_size,
 			resource_size(b_res), min_align);
 	if (!size0 && !size1) {
 		if (b_res->start || b_res->end)
-			dev_info(&bus->self->dev, "disabling bridge window %pR to %pR (unused)\n",
+			pci_info(bus->self, "disabling bridge window %pR to %pR (unused)\n",
 				 b_res, &bus->busn_res);
 		b_res->flags = 0;
 		return;
@@ -902,7 +914,7 @@ static void pbus_size_io(struct pci_bus *bus, resource_size_t min_size,
 	if (size1 > size0 && realloc_head) {
 		add_to_list(realloc_head, bus->self, b_res, size1-size0,
 			    min_align);
-		dev_printk(KERN_DEBUG, &bus->self->dev, "bridge window %pR to %pR add_size %llx\n",
+		pci_printk(KERN_DEBUG, bus->self, "bridge window %pR to %pR add_size %llx\n",
 			   b_res, &bus->busn_res,
 			   (unsigned long long)size1-size0);
 	}
@@ -962,6 +974,8 @@ static int pbus_size_mem(struct pci_bus *bus, unsigned long mask,
 	struct resource *b_res = find_free_bus_resource(bus,
 					mask | IORESOURCE_PREFETCH, type);
 	resource_size_t children_add_size = 0;
+	resource_size_t children_add_align = 0;
+	resource_size_t add_align = 0;
 
 	if (!b_res)
 		return -ENOSPC;
@@ -977,15 +991,17 @@ static int pbus_size_mem(struct pci_bus *bus, unsigned long mask,
 			struct resource *r = &dev->resource[i];
 			resource_size_t r_size;
 
-			if (r->parent || ((r->flags & mask) != type &&
-					  (r->flags & mask) != type2 &&
-					  (r->flags & mask) != type3))
+			if (r->parent || (r->flags & IORESOURCE_PCI_FIXED) ||
+			    ((r->flags & mask) != type &&
+			     (r->flags & mask) != type2 &&
+			     (r->flags & mask) != type3))
 				continue;
 			r_size = resource_size(r);
 #ifdef CONFIG_PCI_IOV
 			/* put SRIOV requested res to the optional list */
 			if (realloc_head && i >= PCI_IOV_RESOURCES &&
 					i <= PCI_IOV_RESOURCE_END) {
+				add_align = max(pci_resource_alignment(dev, r), add_align);
 				r->end = r->start - 1;
 				add_to_list(realloc_head, dev, r, r_size, 0/* don't care */);
 				children_add_size += r_size;
@@ -1003,35 +1019,39 @@ static int pbus_size_mem(struct pci_bus *bus, unsigned long mask,
 			if (order < 0)
 				order = 0;
 			if (order >= ARRAY_SIZE(aligns)) {
-				dev_warn(&dev->dev, "disabling BAR %d: %pR (bad alignment %#llx)\n",
+				pci_warn(dev, "disabling BAR %d: %pR (bad alignment %#llx)\n",
 					 i, r, (unsigned long long) align);
 				r->flags = 0;
 				continue;
 			}
-			size += r_size;
+			size += max(r_size, align);
 			/* Exclude ranges with size > align from
 			   calculation of the alignment. */
-			if (r_size == align)
+			if (r_size <= align)
 				aligns[order] += align;
 			if (order > max_order)
 				max_order = order;
 
-			if (realloc_head)
+			if (realloc_head) {
 				children_add_size += get_res_add_size(realloc_head, r);
+				children_add_align = get_res_add_align(realloc_head, r);
+				add_align = max(add_align, children_add_align);
+			}
 		}
 	}
 
 	min_align = calculate_mem_align(aligns, max_order);
 	min_align = max(min_align, window_alignment(bus, b_res->flags));
 	size0 = calculate_memsize(size, min_size, 0, resource_size(b_res), min_align);
+	add_align = max(min_align, add_align);
 	if (children_add_size > add_size)
 		add_size = children_add_size;
 	size1 = (!realloc_head || (realloc_head && !add_size)) ? size0 :
 		calculate_memsize(size, min_size, add_size,
-				resource_size(b_res), min_align);
+				resource_size(b_res), add_align);
 	if (!size0 && !size1) {
 		if (b_res->start || b_res->end)
-			dev_info(&bus->self->dev, "disabling bridge window %pR to %pR (unused)\n",
+			pci_info(bus->self, "disabling bridge window %pR to %pR (unused)\n",
 				 b_res, &bus->busn_res);
 		b_res->flags = 0;
 		return 0;
@@ -1040,10 +1060,11 @@ static int pbus_size_mem(struct pci_bus *bus, unsigned long mask,
 	b_res->end = size0 + min_align - 1;
 	b_res->flags |= IORESOURCE_STARTALIGN;
 	if (size1 > size0 && realloc_head) {
-		add_to_list(realloc_head, bus->self, b_res, size1-size0, min_align);
-		dev_printk(KERN_DEBUG, &bus->self->dev, "bridge window %pR to %pR add_size %llx\n",
+		add_to_list(realloc_head, bus->self, b_res, size1-size0, add_align);
+		pci_printk(KERN_DEBUG, bus->self, "bridge window %pR to %pR add_size %llx add_align %llx\n",
 			   b_res, &bus->busn_res,
-			   (unsigned long long)size1-size0);
+			   (unsigned long long) (size1 - size0),
+			   (unsigned long long) add_align);
 	}
 	return 0;
 }
@@ -1274,6 +1295,47 @@ void pci_bus_size_bridges(struct pci_bus *bus)
 }
 EXPORT_SYMBOL(pci_bus_size_bridges);
 
+static void assign_fixed_resource_on_bus(struct pci_bus *b, struct resource *r)
+{
+	int i;
+	struct resource *parent_r;
+	unsigned long mask = IORESOURCE_IO | IORESOURCE_MEM |
+			     IORESOURCE_PREFETCH;
+
+	pci_bus_for_each_resource(b, parent_r, i) {
+		if (!parent_r)
+			continue;
+
+		if ((r->flags & mask) == (parent_r->flags & mask) &&
+		    resource_contains(parent_r, r))
+			request_resource(parent_r, r);
+	}
+}
+
+/*
+ * Try to assign any resources marked as IORESOURCE_PCI_FIXED, as they
+ * are skipped by pbus_assign_resources_sorted().
+ */
+static void pdev_assign_fixed_resources(struct pci_dev *dev)
+{
+	int i;
+
+	for (i = 0; i <  PCI_NUM_RESOURCES; i++) {
+		struct pci_bus *b;
+		struct resource *r = &dev->resource[i];
+
+		if (r->parent || !(r->flags & IORESOURCE_PCI_FIXED) ||
+		    !(r->flags & (IORESOURCE_IO | IORESOURCE_MEM)))
+			continue;
+
+		b = dev->bus;
+		while (b && !r->parent) {
+			assign_fixed_resource_on_bus(b, r);
+			b = b->parent;
+		}
+	}
+}
+
 void __pci_bus_assign_resources(const struct pci_bus *bus,
 				struct list_head *realloc_head,
 				struct list_head *fail_head)
@@ -1284,6 +1346,8 @@ void __pci_bus_assign_resources(const struct pci_bus *bus,
 	pbus_assign_resources_sorted(bus, realloc_head, fail_head);
 
 	list_for_each_entry(dev, &bus->devices, bus_list) {
+		pdev_assign_fixed_resources(dev);
+
 		b = dev->subordinate;
 		if (!b)
 			continue;
@@ -1301,7 +1365,7 @@ void __pci_bus_assign_resources(const struct pci_bus *bus,
 			break;
 
 		default:
-			dev_info(&dev->dev, "not setting up bridge for bus %04x:%02x\n",
+			pci_info(dev, "not setting up bridge for bus %04x:%02x\n",
 				 pci_domain_nr(b), b->number);
 			break;
 		}
@@ -1313,6 +1377,74 @@ void pci_bus_assign_resources(const struct pci_bus *bus)
 	__pci_bus_assign_resources(bus, NULL, NULL);
 }
 EXPORT_SYMBOL(pci_bus_assign_resources);
+
+static void pci_claim_device_resources(struct pci_dev *dev)
+{
+	int i;
+
+	for (i = 0; i < PCI_BRIDGE_RESOURCES; i++) {
+		struct resource *r = &dev->resource[i];
+
+		if (!r->flags || r->parent)
+			continue;
+
+		pci_claim_resource(dev, i);
+	}
+}
+
+static void pci_claim_bridge_resources(struct pci_dev *dev)
+{
+	int i;
+
+	for (i = PCI_BRIDGE_RESOURCES; i < PCI_NUM_RESOURCES; i++) {
+		struct resource *r = &dev->resource[i];
+
+		if (!r->flags || r->parent)
+			continue;
+
+		pci_claim_bridge_resource(dev, i);
+	}
+}
+
+static void pci_bus_allocate_dev_resources(struct pci_bus *b)
+{
+	struct pci_dev *dev;
+	struct pci_bus *child;
+
+	list_for_each_entry(dev, &b->devices, bus_list) {
+		pci_claim_device_resources(dev);
+
+		child = dev->subordinate;
+		if (child)
+			pci_bus_allocate_dev_resources(child);
+	}
+}
+
+static void pci_bus_allocate_resources(struct pci_bus *b)
+{
+	struct pci_bus *child;
+
+	/*
+	 * Carry out a depth-first search on the PCI bus
+	 * tree to allocate bridge apertures. Read the
+	 * programmed bridge bases and recursively claim
+	 * the respective bridge resources.
+	 */
+	if (b->self) {
+		pci_read_bridge_bases(b);
+		pci_claim_bridge_resources(b->self);
+	}
+
+	list_for_each_entry(child, &b->children, node)
+		pci_bus_allocate_resources(child);
+}
+
+void pci_bus_claim_resources(struct pci_bus *b)
+{
+	pci_bus_allocate_resources(b);
+	pci_bus_allocate_dev_resources(b);
+}
+EXPORT_SYMBOL(pci_bus_claim_resources);
 
 static void __pci_bridge_assign_resources(const struct pci_dev *bridge,
 					  struct list_head *add_head,
@@ -1339,18 +1471,21 @@ static void __pci_bridge_assign_resources(const struct pci_dev *bridge,
 		break;
 
 	default:
-		dev_info(&bridge->dev, "not setting up bridge for bus %04x:%02x\n",
+		pci_info(bridge, "not setting up bridge for bus %04x:%02x\n",
 			 pci_domain_nr(b), b->number);
 		break;
 	}
 }
+
+#define PCI_RES_TYPE_MASK \
+	(IORESOURCE_IO | IORESOURCE_MEM | IORESOURCE_PREFETCH |\
+	 IORESOURCE_MEM_64)
+
 static void pci_bridge_release_resources(struct pci_bus *bus,
 					  unsigned long type)
 {
 	struct pci_dev *dev = bus->self;
 	struct resource *r;
-	unsigned long type_mask = IORESOURCE_IO | IORESOURCE_MEM |
-				  IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
 	unsigned old_flags = 0;
 	struct resource *b_res;
 	int idx = 1;
@@ -1393,8 +1528,8 @@ static void pci_bridge_release_resources(struct pci_bus *bus,
 	 */
 	release_child_resources(r);
 	if (!release_resource(r)) {
-		type = old_flags = r->flags & type_mask;
-		dev_printk(KERN_DEBUG, &dev->dev, "resource %d %pR released\n",
+		type = old_flags = r->flags & PCI_RES_TYPE_MASK;
+		pci_printk(KERN_DEBUG, dev, "resource %d %pR released\n",
 					PCI_BRIDGE_RESOURCES + idx, r);
 		/* keep the old size */
 		r->end = resource_size(r) - 1;
@@ -1584,8 +1719,6 @@ void pci_assign_unassigned_root_bus_resources(struct pci_bus *bus)
 	enum release_type rel_type = leaf_only;
 	LIST_HEAD(fail_head);
 	struct pci_dev_resource *fail_res;
-	unsigned long type_mask = IORESOURCE_IO | IORESOURCE_MEM |
-				  IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
 	int pci_try_num = 1;
 	enum enable_type enable_local;
 
@@ -1644,18 +1777,24 @@ again:
 	 */
 	list_for_each_entry(fail_res, &fail_head, list)
 		pci_bus_release_bridge_resources(fail_res->dev->bus,
-						 fail_res->flags & type_mask,
+						 fail_res->flags & PCI_RES_TYPE_MASK,
 						 rel_type);
 
 	/* restore size and flags */
 	list_for_each_entry(fail_res, &fail_head, list) {
 		struct resource *res = fail_res->res;
+		int idx;
 
 		res->start = fail_res->start;
 		res->end = fail_res->end;
 		res->flags = fail_res->flags;
-		if (fail_res->dev->subordinate)
-			res->flags = 0;
+
+		if (pci_is_bridge(fail_res->dev)) {
+			idx = res - &fail_res->dev->resource[0];
+			if (idx >= PCI_BRIDGE_RESOURCES &&
+			    idx <= PCI_BRIDGE_RESOURCE_END)
+				res->flags = 0;
+		}
 	}
 	free_list(&fail_head);
 
@@ -1670,8 +1809,182 @@ void __init pci_assign_unassigned_resources(void)
 {
 	struct pci_bus *root_bus;
 
-	list_for_each_entry(root_bus, &pci_root_buses, node)
+	list_for_each_entry(root_bus, &pci_root_buses, node) {
 		pci_assign_unassigned_root_bus_resources(root_bus);
+
+		/* Make sure the root bridge has a companion ACPI device: */
+		if (ACPI_HANDLE(root_bus->bridge))
+			acpi_ioapic_add(ACPI_HANDLE(root_bus->bridge));
+	}
+}
+
+static void extend_bridge_window(struct pci_dev *bridge, struct resource *res,
+			struct list_head *add_list, resource_size_t available)
+{
+	struct pci_dev_resource *dev_res;
+
+	if (res->parent)
+		return;
+
+	if (resource_size(res) >= available)
+		return;
+
+	dev_res = res_to_dev_res(add_list, res);
+	if (!dev_res)
+		return;
+
+	/* Is there room to extend the window? */
+	if (available - resource_size(res) <= dev_res->add_size)
+		return;
+
+	dev_res->add_size = available - resource_size(res);
+	pci_dbg(bridge, "bridge window %pR extended by %pa\n", res,
+		&dev_res->add_size);
+}
+
+static void pci_bus_distribute_available_resources(struct pci_bus *bus,
+	struct list_head *add_list, resource_size_t available_io,
+	resource_size_t available_mmio, resource_size_t available_mmio_pref)
+{
+	resource_size_t remaining_io, remaining_mmio, remaining_mmio_pref;
+	unsigned int normal_bridges = 0, hotplug_bridges = 0;
+	struct resource *io_res, *mmio_res, *mmio_pref_res;
+	struct pci_dev *dev, *bridge = bus->self;
+
+	io_res = &bridge->resource[PCI_BRIDGE_RESOURCES + 0];
+	mmio_res = &bridge->resource[PCI_BRIDGE_RESOURCES + 1];
+	mmio_pref_res = &bridge->resource[PCI_BRIDGE_RESOURCES + 2];
+
+	/*
+	 * Update additional resource list (add_list) to fill all the
+	 * extra resource space available for this port except the space
+	 * calculated in __pci_bus_size_bridges() which covers all the
+	 * devices currently connected to the port and below.
+	 */
+	extend_bridge_window(bridge, io_res, add_list, available_io);
+	extend_bridge_window(bridge, mmio_res, add_list, available_mmio);
+	extend_bridge_window(bridge, mmio_pref_res, add_list,
+			     available_mmio_pref);
+
+	/*
+	 * Calculate the total amount of extra resource space we can
+	 * pass to bridges below this one. This is basically the
+	 * extra space reduced by the minimal required space for the
+	 * non-hotplug bridges.
+	 */
+	remaining_io = available_io;
+	remaining_mmio = available_mmio;
+	remaining_mmio_pref = available_mmio_pref;
+
+	/*
+	 * Calculate how many hotplug bridges and normal bridges there
+	 * are on this bus. We will distribute the additional available
+	 * resources between hotplug bridges.
+	 */
+	for_each_pci_bridge(dev, bus) {
+		if (dev->is_hotplug_bridge)
+			hotplug_bridges++;
+		else
+			normal_bridges++;
+	}
+
+	for_each_pci_bridge(dev, bus) {
+		const struct resource *res;
+
+		if (dev->is_hotplug_bridge)
+			continue;
+
+		/*
+		 * Reduce the available resource space by what the
+		 * bridge and devices below it occupy.
+		 */
+		res = &dev->resource[PCI_BRIDGE_RESOURCES + 0];
+		if (!res->parent && available_io > resource_size(res))
+			remaining_io -= resource_size(res);
+
+		res = &dev->resource[PCI_BRIDGE_RESOURCES + 1];
+		if (!res->parent && available_mmio > resource_size(res))
+			remaining_mmio -= resource_size(res);
+
+		res = &dev->resource[PCI_BRIDGE_RESOURCES + 2];
+		if (!res->parent && available_mmio_pref > resource_size(res))
+			remaining_mmio_pref -= resource_size(res);
+	}
+
+	/*
+	 * There is only one bridge on the bus so it gets all available
+	 * resources which it can then distribute to the possible
+	 * hotplug bridges below.
+	 */
+	if (hotplug_bridges + normal_bridges == 1) {
+		dev = list_first_entry(&bus->devices, struct pci_dev, bus_list);
+		if (dev->subordinate) {
+			pci_bus_distribute_available_resources(dev->subordinate,
+				add_list, available_io, available_mmio,
+				available_mmio_pref);
+		}
+		return;
+	}
+
+	/*
+	 * Go over devices on this bus and distribute the remaining
+	 * resource space between hotplug bridges.
+	 */
+	for_each_pci_bridge(dev, bus) {
+		resource_size_t align, io, mmio, mmio_pref;
+		struct pci_bus *b;
+
+		b = dev->subordinate;
+		if (!b || !dev->is_hotplug_bridge)
+			continue;
+
+		/*
+		 * Distribute available extra resources equally between
+		 * hotplug-capable downstream ports taking alignment into
+		 * account.
+		 *
+		 * Here hotplug_bridges is always != 0.
+		 */
+		align = pci_resource_alignment(bridge, io_res);
+		io = div64_ul(available_io, hotplug_bridges);
+		io = min(ALIGN(io, align), remaining_io);
+		remaining_io -= io;
+
+		align = pci_resource_alignment(bridge, mmio_res);
+		mmio = div64_ul(available_mmio, hotplug_bridges);
+		mmio = min(ALIGN(mmio, align), remaining_mmio);
+		remaining_mmio -= mmio;
+
+		align = pci_resource_alignment(bridge, mmio_pref_res);
+		mmio_pref = div64_ul(available_mmio_pref, hotplug_bridges);
+		mmio_pref = min(ALIGN(mmio_pref, align), remaining_mmio_pref);
+		remaining_mmio_pref -= mmio_pref;
+
+		pci_bus_distribute_available_resources(b, add_list, io, mmio,
+						       mmio_pref);
+	}
+}
+
+static void
+pci_bridge_distribute_available_resources(struct pci_dev *bridge,
+					  struct list_head *add_list)
+{
+	resource_size_t available_io, available_mmio, available_mmio_pref;
+	const struct resource *res;
+
+	if (!bridge->is_hotplug_bridge)
+		return;
+
+	/* Take the initial extra resources from the hotplug port */
+	res = &bridge->resource[PCI_BRIDGE_RESOURCES + 0];
+	available_io = resource_size(res);
+	res = &bridge->resource[PCI_BRIDGE_RESOURCES + 1];
+	available_mmio = resource_size(res);
+	res = &bridge->resource[PCI_BRIDGE_RESOURCES + 2];
+	available_mmio_pref = resource_size(res);
+
+	pci_bus_distribute_available_resources(bridge->subordinate,
+		add_list, available_io, available_mmio, available_mmio_pref);
 }
 
 void pci_assign_unassigned_bridge_resources(struct pci_dev *bridge)
@@ -1683,11 +1996,17 @@ void pci_assign_unassigned_bridge_resources(struct pci_dev *bridge)
 	LIST_HEAD(fail_head);
 	struct pci_dev_resource *fail_res;
 	int retval;
-	unsigned long type_mask = IORESOURCE_IO | IORESOURCE_MEM |
-				  IORESOURCE_PREFETCH | IORESOURCE_MEM_64;
 
 again:
 	__pci_bus_size_bridges(parent, &add_list);
+
+	/*
+	 * Distribute remaining resources (if any) equally between
+	 * hotplug bridges below. This makes it possible to extend the
+	 * hierarchy later without running out of resources.
+	 */
+	pci_bridge_distribute_available_resources(bridge, &add_list);
+
 	__pci_bridge_assign_resources(bridge, &add_list, &fail_head);
 	BUG_ON(!list_empty(&add_list));
 	tried_times++;
@@ -1710,18 +2029,24 @@ again:
 	 */
 	list_for_each_entry(fail_res, &fail_head, list)
 		pci_bus_release_bridge_resources(fail_res->dev->bus,
-						 fail_res->flags & type_mask,
+						 fail_res->flags & PCI_RES_TYPE_MASK,
 						 whole_subtree);
 
 	/* restore size and flags */
 	list_for_each_entry(fail_res, &fail_head, list) {
 		struct resource *res = fail_res->res;
+		int idx;
 
 		res->start = fail_res->start;
 		res->end = fail_res->end;
 		res->flags = fail_res->flags;
-		if (fail_res->dev->subordinate)
-			res->flags = 0;
+
+		if (pci_is_bridge(fail_res->dev)) {
+			idx = res - &fail_res->dev->resource[0];
+			if (idx >= PCI_BRIDGE_RESOURCES &&
+			    idx <= PCI_BRIDGE_RESOURCE_END)
+				res->flags = 0;
+		}
 	}
 	free_list(&fail_head);
 
@@ -1730,10 +2055,108 @@ again:
 enable_all:
 	retval = pci_reenable_device(bridge);
 	if (retval)
-		dev_err(&bridge->dev, "Error reenabling bridge (%d)\n", retval);
+		pci_err(bridge, "Error reenabling bridge (%d)\n", retval);
 	pci_set_master(bridge);
 }
 EXPORT_SYMBOL_GPL(pci_assign_unassigned_bridge_resources);
+
+int pci_reassign_bridge_resources(struct pci_dev *bridge, unsigned long type)
+{
+	struct pci_dev_resource *dev_res;
+	struct pci_dev *next;
+	LIST_HEAD(saved);
+	LIST_HEAD(added);
+	LIST_HEAD(failed);
+	unsigned int i;
+	int ret;
+
+	/* Walk to the root hub, releasing bridge BARs when possible */
+	next = bridge;
+	do {
+		bridge = next;
+		for (i = PCI_BRIDGE_RESOURCES; i < PCI_BRIDGE_RESOURCE_END;
+		     i++) {
+			struct resource *res = &bridge->resource[i];
+
+			if ((res->flags ^ type) & PCI_RES_TYPE_MASK)
+				continue;
+
+			/* Ignore BARs which are still in use */
+			if (res->child)
+				continue;
+
+			ret = add_to_list(&saved, bridge, res, 0, 0);
+			if (ret)
+				goto cleanup;
+
+			pci_info(bridge, "BAR %d: releasing %pR\n",
+				 i, res);
+
+			if (res->parent)
+				release_resource(res);
+			res->start = 0;
+			res->end = 0;
+			break;
+		}
+		if (i == PCI_BRIDGE_RESOURCE_END)
+			break;
+
+		next = bridge->bus ? bridge->bus->self : NULL;
+	} while (next);
+
+	if (list_empty(&saved))
+		return -ENOENT;
+
+	__pci_bus_size_bridges(bridge->subordinate, &added);
+	__pci_bridge_assign_resources(bridge, &added, &failed);
+	BUG_ON(!list_empty(&added));
+
+	if (!list_empty(&failed)) {
+		ret = -ENOSPC;
+		goto cleanup;
+	}
+
+	list_for_each_entry(dev_res, &saved, list) {
+		/* Skip the bridge we just assigned resources for. */
+		if (bridge == dev_res->dev)
+			continue;
+
+		bridge = dev_res->dev;
+		pci_setup_bridge(bridge->subordinate);
+	}
+
+	free_list(&saved);
+	return 0;
+
+cleanup:
+	/* restore size and flags */
+	list_for_each_entry(dev_res, &failed, list) {
+		struct resource *res = dev_res->res;
+
+		res->start = dev_res->start;
+		res->end = dev_res->end;
+		res->flags = dev_res->flags;
+	}
+	free_list(&failed);
+
+	/* Revert to the old configuration */
+	list_for_each_entry(dev_res, &saved, list) {
+		struct resource *res = dev_res->res;
+
+		bridge = dev_res->dev;
+		i = res - bridge->resource;
+
+		res->start = dev_res->start;
+		res->end = dev_res->end;
+		res->flags = dev_res->flags;
+
+		pci_claim_resource(bridge, i);
+		pci_setup_bridge(bridge->subordinate);
+	}
+	free_list(&saved);
+
+	return ret;
+}
 
 void pci_assign_unassigned_bus_resources(struct pci_bus *bus)
 {
@@ -1742,11 +2165,11 @@ void pci_assign_unassigned_bus_resources(struct pci_bus *bus)
 					want additional resources */
 
 	down_read(&pci_bus_sem);
-	list_for_each_entry(dev, &bus->devices, bus_list)
-		if (pci_is_bridge(dev) && pci_has_subordinate(dev))
-				__pci_bus_size_bridges(dev->subordinate,
-							 &add_list);
+	for_each_pci_bridge(dev, bus)
+		if (pci_has_subordinate(dev))
+			__pci_bus_size_bridges(dev->subordinate, &add_list);
 	up_read(&pci_bus_sem);
 	__pci_bus_assign_resources(bus, &add_list, NULL);
 	BUG_ON(!list_empty(&add_list));
 }
+EXPORT_SYMBOL_GPL(pci_assign_unassigned_bus_resources);

@@ -117,7 +117,6 @@ static const struct snd_soc_dapm_route audio_map[] = {
 static int evm_aic3x_init(struct snd_soc_pcm_runtime *rtd)
 {
 	struct snd_soc_card *card = rtd->card;
-	struct snd_soc_codec *codec = rtd->codec;
 	struct device_node *np = card->dev->of_node;
 	int ret;
 
@@ -136,9 +135,9 @@ static int evm_aic3x_init(struct snd_soc_pcm_runtime *rtd)
 	}
 
 	/* not connected */
-	snd_soc_dapm_nc_pin(&codec->dapm, "MONO_LOUT");
-	snd_soc_dapm_nc_pin(&codec->dapm, "HPLCOM");
-	snd_soc_dapm_nc_pin(&codec->dapm, "HPRCOM");
+	snd_soc_dapm_nc_pin(&card->dapm, "MONO_LOUT");
+	snd_soc_dapm_nc_pin(&card->dapm, "HPLCOM");
+	snd_soc_dapm_nc_pin(&card->dapm, "HPRCOM");
 
 	return 0;
 }
@@ -359,12 +358,19 @@ static struct snd_soc_card evm_soc_card = {
 static int davinci_evm_probe(struct platform_device *pdev)
 {
 	struct device_node *np = pdev->dev.of_node;
-	const struct of_device_id *match =
-		of_match_device(of_match_ptr(davinci_evm_dt_ids), &pdev->dev);
-	struct snd_soc_dai_link *dai = (struct snd_soc_dai_link *) match->data;
+	const struct of_device_id *match;
+	struct snd_soc_dai_link *dai;
 	struct snd_soc_card_drvdata_davinci *drvdata = NULL;
 	struct clk *mclk;
 	int ret = 0;
+
+	match = of_match_device(of_match_ptr(davinci_evm_dt_ids), &pdev->dev);
+	if (!match) {
+		dev_err(&pdev->dev, "Error: No device match found\n");
+		return -ENODEV;
+	}
+
+	dai = (struct snd_soc_dai_link *) match->data;
 
 	evm_soc_card.dai_link = dai;
 
@@ -425,18 +431,8 @@ static int davinci_evm_probe(struct platform_device *pdev)
 	return ret;
 }
 
-static int davinci_evm_remove(struct platform_device *pdev)
-{
-	struct snd_soc_card *card = platform_get_drvdata(pdev);
-
-	snd_soc_unregister_card(card);
-
-	return 0;
-}
-
 static struct platform_driver davinci_evm_driver = {
 	.probe		= davinci_evm_probe,
-	.remove		= davinci_evm_remove,
 	.driver		= {
 		.name	= "davinci_evm",
 		.pm	= &snd_soc_pm_ops,

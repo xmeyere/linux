@@ -96,9 +96,8 @@ static int rbtx4939_flash_probe(struct platform_device *dev)
 		err = -ENXIO;
 		goto err_out;
 	}
-	info->mtd->owner = THIS_MODULE;
-	err = mtd_device_parse_register(info->mtd, NULL, NULL, pdata->parts,
-					pdata->nr_parts);
+	info->mtd->dev.parent = &dev->dev;
+	err = mtd_device_register(info->mtd, pdata->parts, pdata->nr_parts);
 
 	if (err)
 		goto err_out;

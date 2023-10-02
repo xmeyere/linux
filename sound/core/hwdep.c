@@ -25,6 +25,7 @@
 #include <linux/time.h>
 #include <linux/mutex.h>
 #include <linux/module.h>
+#include <linux/sched/signal.h>
 #include <sound/core.h>
 #include <sound/control.h>
 #include <sound/minors.h>
@@ -84,7 +85,7 @@ static int snd_hwdep_open(struct inode *inode, struct file * file)
 	int major = imajor(inode);
 	struct snd_hwdep *hw;
 	int err;
-	wait_queue_t wait;
+	wait_queue_entry_t wait;
 
 	if (major == snd_major) {
 		hw = snd_lookup_minor_data(iminor(inode),
@@ -176,7 +177,7 @@ static int snd_hwdep_release(struct inode *inode, struct file * file)
 	return err;
 }
 
-static unsigned int snd_hwdep_poll(struct file * file, poll_table * wait)
+static __poll_t snd_hwdep_poll(struct file * file, poll_table * wait)
 {
 	struct snd_hwdep *hw = file->private_data;
 	if (hw->ops.poll)
@@ -227,15 +228,15 @@ static int snd_hwdep_dsp_load(struct snd_hwdep *hw,
 	memset(&info, 0, sizeof(info));
 	if (copy_from_user(&info, _info, sizeof(info)))
 		return -EFAULT;
+	if (info.index >= 32)
+		return -EINVAL;
 	/* check whether the dsp was already loaded */
-	if (hw->dsp_loaded & (1 << info.index))
+	if (hw->dsp_loaded & (1u << info.index))
 		return -EBUSY;
-	if (!access_ok(VERIFY_READ, info.image, info.length))
-		return -EFAULT;
 	err = hw->ops.dsp_load(hw, &info);
 	if (err < 0)
 		return err;
-	hw->dsp_loaded |= (1 << info.index);
+	hw->dsp_loaded |= (1u << info.index);
 	return 0;
 }
 
@@ -378,10 +379,8 @@ int snd_hwdep_new(struct snd_card *card, char *id, int device,
 	if (rhwdep)
 		*rhwdep = NULL;
 	hwdep = kzalloc(sizeof(*hwdep), GFP_KERNEL);
-	if (hwdep == NULL) {
-		dev_err(card->dev, "hwdep: cannot allocate\n");
+	if (!hwdep)
 		return -ENOMEM;
-	}
 
 	init_waitqueue_head(&hwdep->open_wait);
 	mutex_init(&hwdep->open_mutex);
@@ -486,7 +485,7 @@ static int snd_hwdep_dev_disconnect(struct snd_device *device)
 	return 0;
 }
 
-#ifdef CONFIG_PROC_FS
+#ifdef CONFIG_SND_PROC_FS
 /*
  *  Info interface
  */
@@ -523,10 +522,10 @@ static void __exit snd_hwdep_proc_done(void)
 {
 	snd_info_free_entry(snd_hwdep_proc_entry);
 }
-#else /* !CONFIG_PROC_FS */
+#else /* !CONFIG_SND_PROC_FS */
 #define snd_hwdep_proc_init()
 #define snd_hwdep_proc_done()
-#endif /* CONFIG_PROC_FS */
+#endif /* CONFIG_SND_PROC_FS */
 
 
 /*

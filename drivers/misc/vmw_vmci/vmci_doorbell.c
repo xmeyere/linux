@@ -318,7 +318,8 @@ int vmci_dbell_host_context_notify(u32 src_cid, struct vmci_handle handle)
 
 	entry = container_of(resource, struct dbell_entry, resource);
 	if (entry->run_delayed) {
-		schedule_work(&entry->work);
+		if (!schedule_work(&entry->work))
+			vmci_resource_put(resource);
 	} else {
 		entry->notify_cb(entry->client_data);
 		vmci_resource_put(resource);
@@ -333,7 +334,7 @@ int vmci_dbell_host_context_notify(u32 src_cid, struct vmci_handle handle)
 bool vmci_dbell_register_notification_bitmap(u32 bitmap_ppn)
 {
 	int result;
-	struct vmci_notify_bm_set_msg bitmap_set_msg;
+	struct vmci_notify_bm_set_msg bitmap_set_msg = { };
 
 	bitmap_set_msg.hdr.dst = vmci_make_handle(VMCI_HYPERVISOR_CONTEXT_ID,
 						  VMCI_SET_NOTIFY_BITMAP);
@@ -366,7 +367,8 @@ static void dbell_fire_entries(u32 notify_idx)
 		    atomic_read(&dbell->active) == 1) {
 			if (dbell->run_delayed) {
 				vmci_resource_get(&dbell->resource);
-				schedule_work(&dbell->work);
+				if (!schedule_work(&dbell->work))
+					vmci_resource_put(&dbell->resource);
 			} else {
 				dbell->notify_cb(dbell->client_data);
 			}
@@ -430,6 +432,12 @@ int vmci_doorbell_create(struct vmci_handle *handle,
 
 	if (vmci_handle_is_invalid(*handle)) {
 		u32 context_id = vmci_get_context_id();
+
+		if (context_id == VMCI_INVALID_ID) {
+			pr_warn("Failed to get context ID\n");
+			result = VMCI_ERROR_NO_RESOURCES;
+			goto free_mem;
+		}
 
 		/* Let resource code allocate a free ID for us */
 		new_handle = vmci_make_handle(context_id, VMCI_INVALID_ID);
@@ -525,7 +533,7 @@ int vmci_doorbell_destroy(struct vmci_handle handle)
 
 	entry = container_of(resource, struct dbell_entry, resource);
 
-	if (vmci_guest_code_active()) {
+	if (!hlist_unhashed(&entry->node)) {
 		int result;
 
 		dbell_index_table_remove(entry);

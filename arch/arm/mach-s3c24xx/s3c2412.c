@@ -1,13 +1,9 @@
-/*
- * Copyright (c) 2006 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *
- * http://armlinux.simtec.co.uk/.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+//
+// Copyright (c) 2006 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//
+// http://armlinux.simtec.co.uk/.
 
 #include <linux/kernel.h>
 #include <linux/types.h>
@@ -40,11 +36,11 @@
 #include <plat/cpu.h>
 #include <plat/cpu-freq.h>
 #include <plat/devs.h>
-#include <plat/nand-core.h>
 #include <plat/pm.h>
 #include <plat/regs-spi.h>
 
 #include "common.h"
+#include "nand-core.h"
 #include "regs-dsc.h"
 #include "s3c2412-power.h"
 
@@ -172,7 +168,7 @@ int __init s3c2412_init(void)
 {
 	printk("S3C2412: Initialising architecture\n");
 
-#ifdef CONFIG_PM
+#ifdef CONFIG_PM_SLEEP
 	register_syscore_ops(&s3c2412_pm_syscore_ops);
 	register_syscore_ops(&s3c24xx_irq_syscore_ops);
 #endif

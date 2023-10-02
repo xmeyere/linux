@@ -31,7 +31,8 @@
 #define REG_FAULT	0x0B
 #define REG_PWM_OUTLOW	0x12
 #define REG_PWM_OUTHIGH	0x13
-#define REG_MAX		0x1F
+#define REG_FILTER_STRENGTH	0x50
+#define REG_MAX		0x50
 
 #define INT_DEBOUNCE_MSEC	10
 struct lm3630a_chip {
@@ -80,7 +81,7 @@ static int lm3630a_chip_init(struct lm3630a_chip *pchip)
 
 	usleep_range(1000, 2000);
 	/* set Filter Strength Register */
-	rval = lm3630a_write(pchip, 0x50, 0x03);
+	rval = lm3630a_write(pchip, REG_FILTER_STRENGTH, 0x03);
 	/* set Cofig. register */
 	rval |= lm3630a_update(pchip, REG_CONFIG, 0x07, pdata->pwm_ctrl);
 	/* set boost control */
@@ -162,7 +163,7 @@ static int lm3630a_intr_config(struct lm3630a_chip *pchip)
 
 static void lm3630a_pwm_ctrl(struct lm3630a_chip *pchip, int br, int br_max)
 {
-	unsigned int period = pwm_get_period(pchip->pwmd);
+	unsigned int period = pchip->pdata->pwm_period;
 	unsigned int duty = br * period / br_max;
 
 	pwm_config(pchip->pwmd, duty, period);
@@ -183,7 +184,7 @@ static int lm3630a_bank_a_update_status(struct backlight_device *bl)
 	if ((pwm_ctrl & LM3630A_PWM_BANK_A) != 0) {
 		lm3630a_pwm_ctrl(pchip, bl->props.brightness,
 				 bl->props.max_brightness);
-		return bl->props.brightness;
+		return 0;
 	}
 
 	/* disable sleep */
@@ -200,11 +201,11 @@ static int lm3630a_bank_a_update_status(struct backlight_device *bl)
 				      LM3630A_LEDA_ENABLE, LM3630A_LEDA_ENABLE);
 	if (ret < 0)
 		goto out_i2c_err;
-	return bl->props.brightness;
+	return 0;
 
 out_i2c_err:
-	dev_err(pchip->dev, "i2c failed to access\n");
-	return bl->props.brightness;
+	dev_err(pchip->dev, "i2c failed to access (%pe)\n", ERR_PTR(ret));
+	return ret;
 }
 
 static int lm3630a_bank_a_get_brightness(struct backlight_device *bl)
@@ -260,7 +261,7 @@ static int lm3630a_bank_b_update_status(struct backlight_device *bl)
 	if ((pwm_ctrl & LM3630A_PWM_BANK_B) != 0) {
 		lm3630a_pwm_ctrl(pchip, bl->props.brightness,
 				 bl->props.max_brightness);
-		return bl->props.brightness;
+		return 0;
 	}
 
 	/* disable sleep */
@@ -277,11 +278,11 @@ static int lm3630a_bank_b_update_status(struct backlight_device *bl)
 				      LM3630A_LEDB_ENABLE, LM3630A_LEDB_ENABLE);
 	if (ret < 0)
 		goto out_i2c_err;
-	return bl->props.brightness;
+	return 0;
 
 out_i2c_err:
-	dev_err(pchip->dev, "i2c failed to access REG_CTRL\n");
-	return bl->props.brightness;
+	dev_err(pchip->dev, "i2c failed to access (%pe)\n", ERR_PTR(ret));
+	return ret;
 }
 
 static int lm3630a_bank_b_get_brightness(struct backlight_device *bl)
@@ -424,8 +425,13 @@ static int lm3630a_probe(struct i2c_client *client,
 			dev_err(&client->dev, "fail : get pwm device\n");
 			return PTR_ERR(pchip->pwmd);
 		}
+
+		/*
+		 * FIXME: pwm_apply_args() should be removed when switching to
+		 * the atomic PWM API.
+		 */
+		pwm_apply_args(pchip->pwmd);
 	}
-	pchip->pwmd->period = pdata->pwm_period;
 
 	/* interrupt enable  : irq 0 is not allowed */
 	pchip->irq = client->irq;

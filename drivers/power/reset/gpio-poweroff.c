@@ -19,11 +19,13 @@
 #include <linux/of_platform.h>
 #include <linux/module.h>
 
+#define DEFAULT_TIMEOUT_MS 3000
 /*
  * Hold configuration here, cannot be more than one instance of the driver
  * since pm_power_off itself is global.
  */
 static struct gpio_desc *reset_gpio;
+static u32 timeout = DEFAULT_TIMEOUT_MS;
 
 static void gpio_poweroff_do_poweroff(void)
 {
@@ -33,14 +35,14 @@ static void gpio_poweroff_do_poweroff(void)
 	gpiod_direction_output(reset_gpio, 1);
 	mdelay(100);
 	/* drive inactive, also active->inactive edge */
-	gpiod_set_value(reset_gpio, 0);
+	gpiod_set_value_cansleep(reset_gpio, 0);
 	mdelay(100);
 
 	/* drive it active, also inactive->active edge */
-	gpiod_set_value(reset_gpio, 1);
+	gpiod_set_value_cansleep(reset_gpio, 1);
 
 	/* give it some time */
-	mdelay(3000);
+	mdelay(timeout);
 
 	WARN_ON(1);
 }
@@ -48,6 +50,7 @@ static void gpio_poweroff_do_poweroff(void)
 static int gpio_poweroff_probe(struct platform_device *pdev)
 {
 	bool input = false;
+	enum gpiod_flags flags;
 
 	/* If a pm_power_off function has already been added, leave it alone */
 	if (pm_power_off != NULL) {
@@ -57,25 +60,17 @@ static int gpio_poweroff_probe(struct platform_device *pdev)
 		return -EBUSY;
 	}
 
-	reset_gpio = devm_gpiod_get(&pdev->dev, NULL);
+	input = device_property_read_bool(&pdev->dev, "input");
+	if (input)
+		flags = GPIOD_IN;
+	else
+		flags = GPIOD_OUT_LOW;
+
+	device_property_read_u32(&pdev->dev, "timeout-ms", &timeout);
+
+	reset_gpio = devm_gpiod_get(&pdev->dev, NULL, flags);
 	if (IS_ERR(reset_gpio))
 		return PTR_ERR(reset_gpio);
-
-	input = of_property_read_bool(pdev->dev.of_node, "input");
-
-	if (input) {
-		if (gpiod_direction_input(reset_gpio)) {
-			dev_err(&pdev->dev,
-				"Could not set direction of reset GPIO to input\n");
-			return -ENODEV;
-		}
-	} else {
-		if (gpiod_direction_output(reset_gpio, 0)) {
-			dev_err(&pdev->dev,
-				"Could not set direction of reset GPIO\n");
-			return -ENODEV;
-		}
-	}
 
 	pm_power_off = &gpio_poweroff_do_poweroff;
 	return 0;
@@ -93,6 +88,7 @@ static const struct of_device_id of_gpio_poweroff_match[] = {
 	{ .compatible = "gpio-poweroff", },
 	{},
 };
+MODULE_DEVICE_TABLE(of, of_gpio_poweroff_match);
 
 static struct platform_driver gpio_poweroff_driver = {
 	.probe = gpio_poweroff_probe,

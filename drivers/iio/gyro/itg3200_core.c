@@ -223,6 +223,10 @@ static int itg3200_initial_setup(struct iio_dev *indio_dev)
 	int ret;
 	u8 val;
 
+	ret = itg3200_reset(indio_dev);
+	if (ret)
+		goto err_ret;
+
 	ret = itg3200_read_reg_8(indio_dev, ITG3200_REG_ADDRESS, &val);
 	if (ret)
 		goto err_ret;
@@ -232,10 +236,6 @@ static int itg3200_initial_setup(struct iio_dev *indio_dev)
 		ret = -ENXIO;
 		goto err_ret;
 	}
-
-	ret = itg3200_reset(indio_dev);
-	if (ret)
-		goto err_ret;
 
 	ret = itg3200_enable_full_scale(indio_dev);
 err_ret:
@@ -278,7 +278,6 @@ static const struct iio_chan_spec itg3200_channels[] = {
 static const struct iio_info itg3200_info = {
 	.read_raw = &itg3200_read_raw,
 	.write_raw = &itg3200_write_raw,
-	.driver_module = THIS_MODULE,
 };
 
 static const unsigned long itg3200_available_scan_masks[] = { 0xffffffff, 0x0 };
@@ -351,16 +350,43 @@ static int itg3200_remove(struct i2c_client *client)
 	return 0;
 }
 
+static int __maybe_unused itg3200_suspend(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+	struct itg3200 *st = iio_priv(indio_dev);
+
+	dev_dbg(&st->i2c->dev, "suspend device");
+
+	return itg3200_write_reg_8(indio_dev, ITG3200_REG_POWER_MANAGEMENT,
+				   ITG3200_SLEEP);
+}
+
+static int __maybe_unused itg3200_resume(struct device *dev)
+{
+	struct iio_dev *indio_dev = dev_get_drvdata(dev);
+
+	return itg3200_initial_setup(indio_dev);
+}
+
+static SIMPLE_DEV_PM_OPS(itg3200_pm_ops, itg3200_suspend, itg3200_resume);
+
 static const struct i2c_device_id itg3200_id[] = {
 	{ "itg3200", 0 },
 	{ }
 };
 MODULE_DEVICE_TABLE(i2c, itg3200_id);
 
+static const struct of_device_id itg3200_of_match[] = {
+	{ .compatible = "invensense,itg3200" },
+	{ }
+};
+MODULE_DEVICE_TABLE(of, itg3200_of_match);
+
 static struct i2c_driver itg3200_driver = {
 	.driver = {
-		.owner  = THIS_MODULE,
 		.name	= "itg3200",
+		.of_match_table = itg3200_of_match,
+		.pm	= &itg3200_pm_ops,
 	},
 	.id_table	= itg3200_id,
 	.probe		= itg3200_probe,

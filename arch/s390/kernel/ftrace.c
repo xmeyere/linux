@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Dynamic function tracer architecture backend.
  *
@@ -17,6 +18,7 @@
 #include <trace/syscall.h>
 #include <asm/asm-offsets.h>
 #include <asm/cacheflush.h>
+#include <asm/set_memory.h>
 #include "entry.h"
 
 /*
@@ -55,11 +57,12 @@
  * >	brasl	%r0,ftrace_caller	# offset 0
  */
 
+void *ftrace_func __read_mostly = ftrace_stub;
 unsigned long ftrace_plt;
 
 static inline void ftrace_generate_orig_insn(struct ftrace_insn *insn)
 {
-#ifdef CC_USING_HOTPATCH
+#if defined(CC_USING_HOTPATCH) || defined(CC_USING_NOP_MCOUNT)
 	/* brcl 0,0 */
 	insn->opc = 0xc004;
 	insn->disp = 0;
@@ -130,8 +133,7 @@ int ftrace_make_nop(struct module *mod, struct dyn_ftrace *rec,
 	/* Verify that the to be replaced code matches what we expect. */
 	if (memcmp(&orig, &old, sizeof(old)))
 		return -EINVAL;
-	if (probe_kernel_write((void *) rec->ip, &new, sizeof(new)))
-		return -EPERM;
+	s390_kernel_write((void *) rec->ip, &new, sizeof(new));
 	return 0;
 }
 
@@ -159,13 +161,13 @@ int ftrace_make_call(struct dyn_ftrace *rec, unsigned long addr)
 	/* Verify that the to be replaced code matches what we expect. */
 	if (memcmp(&orig, &old, sizeof(old)))
 		return -EINVAL;
-	if (probe_kernel_write((void *) rec->ip, &new, sizeof(new)))
-		return -EPERM;
+	s390_kernel_write((void *) rec->ip, &new, sizeof(new));
 	return 0;
 }
 
 int ftrace_update_ftrace_func(ftrace_func_t func)
 {
+	ftrace_func = func;
 	return 0;
 }
 
@@ -173,6 +175,8 @@ int __init ftrace_dyn_arch_init(void)
 {
 	return 0;
 }
+
+#ifdef CONFIG_MODULES
 
 static int __init ftrace_plt_init(void)
 {
@@ -192,6 +196,8 @@ static int __init ftrace_plt_init(void)
 }
 device_initcall(ftrace_plt_init);
 
+#endif /* CONFIG_MODULES */
+
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
 /*
  * Hook the return address and push it in the stack of return addresses
@@ -199,21 +205,13 @@ device_initcall(ftrace_plt_init);
  */
 unsigned long prepare_ftrace_return(unsigned long parent, unsigned long ip)
 {
-	struct ftrace_graph_ent trace;
-
 	if (unlikely(ftrace_graph_is_dead()))
 		goto out;
 	if (unlikely(atomic_read(&current->tracing_graph_pause)))
 		goto out;
-	ip = (ip & PSW_ADDR_INSN) - MCOUNT_INSN_SIZE;
-	trace.func = ip;
-	trace.depth = current->curr_ret_stack + 1;
-	/* Only trace if the calling function expects to. */
-	if (!ftrace_graph_entry(&trace))
-		goto out;
-	if (ftrace_push_return_trace(parent, ip, &trace.depth, 0) == -EBUSY)
-		goto out;
-	parent = (unsigned long) return_to_handler;
+	ip -= MCOUNT_INSN_SIZE;
+	if (!function_graph_enter(parent, ip, 0, NULL))
+		parent = (unsigned long) return_to_handler;
 out:
 	return parent;
 }
@@ -231,14 +229,16 @@ int ftrace_enable_ftrace_graph_caller(void)
 {
 	u8 op = 0x04; /* set mask field to zero */
 
-	return probe_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	s390_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	return 0;
 }
 
 int ftrace_disable_ftrace_graph_caller(void)
 {
 	u8 op = 0xf4; /* set mask field to all ones */
 
-	return probe_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	s390_kernel_write(__va(ftrace_graph_caller)+1, &op, sizeof(op));
+	return 0;
 }
 
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */

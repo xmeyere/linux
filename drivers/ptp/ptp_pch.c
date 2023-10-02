@@ -449,10 +449,9 @@ static int ptp_pch_adjtime(struct ptp_clock_info *ptp, s64 delta)
 	return 0;
 }
 
-static int ptp_pch_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
+static int ptp_pch_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
 {
 	u64 ns;
-	u32 remainder;
 	unsigned long flags;
 	struct pch_dev *pch_dev = container_of(ptp, struct pch_dev, caps);
 	struct pch_ts_regs __iomem *regs = pch_dev->regs;
@@ -461,21 +460,19 @@ static int ptp_pch_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
 	ns = pch_systime_read(regs);
 	spin_unlock_irqrestore(&pch_dev->register_lock, flags);
 
-	ts->tv_sec = div_u64_rem(ns, 1000000000, &remainder);
-	ts->tv_nsec = remainder;
+	*ts = ns_to_timespec64(ns);
 	return 0;
 }
 
 static int ptp_pch_settime(struct ptp_clock_info *ptp,
-			   const struct timespec *ts)
+			   const struct timespec64 *ts)
 {
 	u64 ns;
 	unsigned long flags;
 	struct pch_dev *pch_dev = container_of(ptp, struct pch_dev, caps);
 	struct pch_ts_regs __iomem *regs = pch_dev->regs;
 
-	ns = ts->tv_sec * 1000000000ULL;
-	ns += ts->tv_nsec;
+	ns = timespec64_to_ns(ts);
 
 	spin_lock_irqsave(&pch_dev->register_lock, flags);
 	pch_systime_write(regs, ns);
@@ -509,7 +506,7 @@ static int ptp_pch_enable(struct ptp_clock_info *ptp,
 	return -EOPNOTSUPP;
 }
 
-static struct ptp_clock_info ptp_pch_caps = {
+static const struct ptp_clock_info ptp_pch_caps = {
 	.owner		= THIS_MODULE,
 	.name		= "PCH timer",
 	.max_adj	= 50000000,
@@ -518,8 +515,8 @@ static struct ptp_clock_info ptp_pch_caps = {
 	.pps		= 0,
 	.adjfreq	= ptp_pch_adjfreq,
 	.adjtime	= ptp_pch_adjtime,
-	.gettime	= ptp_pch_gettime,
-	.settime	= ptp_pch_settime,
+	.gettime64	= ptp_pch_gettime,
+	.settime64	= ptp_pch_settime,
 	.enable		= ptp_pch_enable,
 };
 
@@ -698,6 +695,7 @@ static const struct pci_device_id pch_ieee1588_pcidev_id[] = {
 	 },
 	{0}
 };
+MODULE_DEVICE_TABLE(pci, pch_ieee1588_pcidev_id);
 
 static struct pci_driver pch_driver = {
 	.name = KBUILD_MODNAME,

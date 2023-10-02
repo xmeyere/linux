@@ -25,7 +25,7 @@
 #include <linux/module.h>
 #include <linux/string.h>
 #include <linux/slab.h>
-#include "dvb_frontend.h"
+#include <media/dvb_frontend.h>
 #include "cx22700.h"
 
 
@@ -191,9 +191,10 @@ static int cx22700_set_tps(struct cx22700_state *state,
 static int cx22700_get_tps(struct cx22700_state *state,
 			   struct dtv_frontend_properties *p)
 {
-	static const fe_modulation_t qam_tab [3] = { QPSK, QAM_16, QAM_64 };
-	static const fe_code_rate_t fec_tab [5] = { FEC_1_2, FEC_2_3, FEC_3_4,
-						    FEC_5_6, FEC_7_8 };
+	static const enum fe_modulation qam_tab[3] = { QPSK, QAM_16, QAM_64 };
+	static const enum fe_code_rate fec_tab[5] = {
+		FEC_1_2, FEC_2_3, FEC_3_4, FEC_5_6, FEC_7_8
+	};
 	u8 val;
 
 	dprintk ("%s\n", __func__);
@@ -253,7 +254,7 @@ static int cx22700_init (struct dvb_frontend* fe)
 	return 0;
 }
 
-static int cx22700_read_status(struct dvb_frontend* fe, fe_status_t* status)
+static int cx22700_read_status(struct dvb_frontend *fe, enum fe_status *status)
 {
 	struct cx22700_state* state = fe->demodulator_priv;
 
@@ -344,9 +345,9 @@ static int cx22700_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int cx22700_get_frontend(struct dvb_frontend *fe)
+static int cx22700_get_frontend(struct dvb_frontend *fe,
+				struct dtv_frontend_properties *c)
 {
-	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct cx22700_state* state = fe->demodulator_priv;
 	u8 reg09 = cx22700_readreg (state, 0x09);
 
@@ -379,7 +380,7 @@ static void cx22700_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static struct dvb_frontend_ops cx22700_ops;
+static const struct dvb_frontend_ops cx22700_ops;
 
 struct dvb_frontend* cx22700_attach(const struct cx22700_config* config,
 				    struct i2c_adapter* i2c)
@@ -407,13 +408,13 @@ error:
 	return NULL;
 }
 
-static struct dvb_frontend_ops cx22700_ops = {
+static const struct dvb_frontend_ops cx22700_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		.name			= "Conexant CX22700 DVB-T",
-		.frequency_min		= 470000000,
-		.frequency_max		= 860000000,
-		.frequency_stepsize	= 166667,
+		.frequency_min_hz	= 470 * MHz,
+		.frequency_max_hz	= 860 * MHz,
+		.frequency_stepsize_hz	= 166667,
 		.caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 		      FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |
 		      FE_CAN_QPSK | FE_CAN_QAM_16 | FE_CAN_QAM_64 |
@@ -443,4 +444,4 @@ MODULE_DESCRIPTION("Conexant CX22700 DVB-T Demodulator driver");
 MODULE_AUTHOR("Holger Waechtler");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL(cx22700_attach);
+EXPORT_SYMBOL_GPL(cx22700_attach);

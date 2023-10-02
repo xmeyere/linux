@@ -1,5 +1,5 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
- * drivers/pci/slot.c
  * Copyright (C) 2006 Matthew Wilcox <matthew@wil.cx>
  * Copyright (C) 2006-2009 Hewlett-Packard Development Company, L.P.
  *	Alex Chiang <achiang@hp.com>
@@ -74,6 +74,8 @@ static const char *pci_bus_speed_strings[] = {
 	"2.5 GT/s PCIe",	/* 0x14 */
 	"5.0 GT/s PCIe",	/* 0x15 */
 	"8.0 GT/s PCIe",	/* 0x16 */
+	"16.0 GT/s PCIe",	/* 0x17 */
+	"32.0 GT/s PCIe",	/* 0x18 */
 };
 
 static ssize_t bus_speed_read(enum pci_bus_speed speed, char *buf)
@@ -106,9 +108,11 @@ static void pci_slot_release(struct kobject *kobj)
 	dev_dbg(&slot->bus->dev, "dev %02x, released physical slot %s\n",
 		slot->number, pci_slot_name(slot));
 
+	down_read(&pci_bus_sem);
 	list_for_each_entry(dev, &slot->bus->devices, bus_list)
 		if (PCI_SLOT(dev->devfn) == slot->number)
 			dev->slot = NULL;
+	up_read(&pci_bus_sem);
 
 	list_del(&slot->list);
 
@@ -191,12 +195,22 @@ static int rename_slot(struct pci_slot *slot, const char *name)
 	return result;
 }
 
+void pci_dev_assign_slot(struct pci_dev *dev)
+{
+	struct pci_slot *slot;
+
+	mutex_lock(&pci_slot_mutex);
+	list_for_each_entry(slot, &dev->bus->slots, list)
+		if (PCI_SLOT(dev->devfn) == slot->number)
+			dev->slot = slot;
+	mutex_unlock(&pci_slot_mutex);
+}
+
 static struct pci_slot *get_slot(struct pci_bus *parent, int slot_nr)
 {
 	struct pci_slot *slot;
-	/*
-	 * We already hold pci_bus_sem so don't worry
-	 */
+
+	/* We already hold pci_slot_mutex */
 	list_for_each_entry(slot, &parent->slots, list)
 		if (slot->number == slot_nr) {
 			kobject_get(&slot->kobj);
@@ -253,7 +267,7 @@ struct pci_slot *pci_create_slot(struct pci_bus *parent, int slot_nr,
 	int err = 0;
 	char *slot_name = NULL;
 
-	down_write(&pci_bus_sem);
+	mutex_lock(&pci_slot_mutex);
 
 	if (slot_nr == -1)
 		goto placeholder;
@@ -290,30 +304,34 @@ placeholder:
 	slot_name = make_slot_name(name);
 	if (!slot_name) {
 		err = -ENOMEM;
+		kfree(slot);
 		goto err;
 	}
-
-	err = kobject_init_and_add(&slot->kobj, &pci_slot_ktype, NULL,
-				   "%s", slot_name);
-	if (err)
-		goto err;
 
 	INIT_LIST_HEAD(&slot->list);
 	list_add(&slot->list, &parent->slots);
 
+	err = kobject_init_and_add(&slot->kobj, &pci_slot_ktype, NULL,
+				   "%s", slot_name);
+	if (err) {
+		kobject_put(&slot->kobj);
+		goto err;
+	}
+
+	down_read(&pci_bus_sem);
 	list_for_each_entry(dev, &parent->devices, bus_list)
 		if (PCI_SLOT(dev->devfn) == slot_nr)
 			dev->slot = slot;
+	up_read(&pci_bus_sem);
 
 	dev_dbg(&parent->dev, "dev %02x, created physical slot %s\n",
 		slot_nr, pci_slot_name(slot));
 
 out:
 	kfree(slot_name);
-	up_write(&pci_bus_sem);
+	mutex_unlock(&pci_slot_mutex);
 	return slot;
 err:
-	kfree(slot);
 	slot = ERR_PTR(err);
 	goto out;
 }
@@ -330,11 +348,11 @@ EXPORT_SYMBOL_GPL(pci_create_slot);
 void pci_destroy_slot(struct pci_slot *slot)
 {
 	dev_dbg(&slot->bus->dev, "dev %02x, dec refcount to %d\n",
-		slot->number, atomic_read(&slot->kobj.kref.refcount) - 1);
+		slot->number, kref_read(&slot->kobj.kref) - 1);
 
-	down_write(&pci_bus_sem);
+	mutex_lock(&pci_slot_mutex);
 	kobject_put(&slot->kobj);
-	up_write(&pci_bus_sem);
+	mutex_unlock(&pci_slot_mutex);
 }
 EXPORT_SYMBOL_GPL(pci_destroy_slot);
 

@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  *	Copyright (C) 2013 Daniel Tang <tangrs@tangrs.id.au>
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2, as
- * published by the Free Software Foundation.
- *
  * Based off drivers/usb/chipidea/ci_hdrc_msm.c
- *
  */
 
 #include <linux/module.h>
@@ -18,7 +14,7 @@
 
 static struct ci_hdrc_platform_data ci_hdrc_zevio_platdata = {
 	.name			= "ci_hdrc_zevio",
-	.flags			= CI_HDRC_REGS_SHARED,
+	.flags			= CI_HDRC_REGS_SHARED | CI_HDRC_FORCE_FULLSPEED,
 	.capoffset		= DEF_CAPOFFSET,
 };
 

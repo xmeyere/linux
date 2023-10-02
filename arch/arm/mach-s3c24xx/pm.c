@@ -1,30 +1,15 @@
-/* linux/arch/arm/plat-s3c24xx/pm.c
- *
- * Copyright (c) 2004-2006 Simtec Electronics
- *	Ben Dooks <ben@simtec.co.uk>
- *
- * S3C24XX Power Manager (Suspend-To-RAM) support
- *
- * See Documentation/arm/Samsung-S3C24XX/Suspend.txt for more information
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
- *
- * Parts based on arch/arm/mach-pxa/pm.c
- *
- * Thanks to Dimitry Andric for debugging
-*/
+// SPDX-License-Identifier: GPL-2.0+
+//
+// Copyright (c) 2004-2006 Simtec Electronics
+//	Ben Dooks <ben@simtec.co.uk>
+//
+// S3C24XX Power Manager (Suspend-To-RAM) support
+//
+// See Documentation/arm/Samsung-S3C24XX/Suspend.txt for more information
+//
+// Parts based on arch/arm/mach-pxa/pm.c
+//
+// Thanks to Dimitry Andric for debugging
 
 #include <linux/init.h>
 #include <linux/suspend.h>
@@ -50,6 +35,7 @@
 
 #define PFX "s3c24xx-pm: "
 
+#ifdef CONFIG_PM_SLEEP
 static struct sleep_save core_save[] = {
 	/* we restore the timings here, with the proviso that the board
 	 * brings the system up in an slower, or equal frequency setting
@@ -67,6 +53,7 @@ static struct sleep_save core_save[] = {
 	SAVE_ITEM(S3C2410_BANKCON4),
 	SAVE_ITEM(S3C2410_BANKCON5),
 };
+#endif
 
 /* s3c_pm_check_resume_pin
  *
@@ -121,7 +108,7 @@ void s3c_pm_configure_extint(void)
 	}
 }
 
-
+#ifdef CONFIG_PM_SLEEP
 void s3c_pm_restore_core(void)
 {
 	s3c_pm_do_restore_core(core_save, ARRAY_SIZE(core_save));
@@ -131,4 +118,4 @@ void s3c_pm_save_core(void)
 {
 	s3c_pm_do_save(core_save, ARRAY_SIZE(core_save));
 }
-
+#endif

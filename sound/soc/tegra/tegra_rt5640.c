@@ -1,5 +1,5 @@
 /*
-* tegra_rt5640.c - Tegra machine ASoC driver for boards using WM8903 codec.
+* tegra_rt5640.c - Tegra machine ASoC driver for boards using RT5640 codec.
  *
  * Copyright (c) 2013, NVIDIA CORPORATION.  All rights reserved.
  *
@@ -76,7 +76,7 @@ static int tegra_rt5640_asoc_hw_params(struct snd_pcm_substream *substream,
 	return 0;
 }
 
-static struct snd_soc_ops tegra_rt5640_ops = {
+static const struct snd_soc_ops tegra_rt5640_ops = {
 	.hw_params = tegra_rt5640_asoc_hw_params,
 };
 
@@ -108,15 +108,11 @@ static const struct snd_kcontrol_new tegra_rt5640_controls[] = {
 
 static int tegra_rt5640_asoc_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_dai *codec_dai = rtd->codec_dai;
-	struct snd_soc_codec *codec = codec_dai->codec;
 	struct tegra_rt5640 *machine = snd_soc_card_get_drvdata(rtd->card);
 
-	snd_soc_jack_new(codec, "Headphones", SND_JACK_HEADPHONE,
-			 &tegra_rt5640_hp_jack);
-	snd_soc_jack_add_pins(&tegra_rt5640_hp_jack,
-			ARRAY_SIZE(tegra_rt5640_hp_jack_pins),
-			tegra_rt5640_hp_jack_pins);
+	snd_soc_card_jack_new(rtd->card, "Headphones", SND_JACK_HEADPHONE,
+			      &tegra_rt5640_hp_jack, tegra_rt5640_hp_jack_pins,
+			      ARRAY_SIZE(tegra_rt5640_hp_jack_pins));
 
 	if (gpio_is_valid(machine->gpio_hp_det)) {
 		tegra_rt5640_hp_jack_gpio.gpio = machine->gpio_hp_det;
@@ -125,18 +121,6 @@ static int tegra_rt5640_asoc_init(struct snd_soc_pcm_runtime *rtd)
 		snd_soc_jack_add_gpios(&tegra_rt5640_hp_jack,
 						1,
 						&tegra_rt5640_hp_jack_gpio);
-	}
-
-	return 0;
-}
-
-static int tegra_rt5640_card_remove(struct snd_soc_card *card)
-{
-	struct tegra_rt5640 *machine = snd_soc_card_get_drvdata(card);
-
-	if (gpio_is_valid(machine->gpio_hp_det)) {
-		snd_soc_jack_free_gpios(&tegra_rt5640_hp_jack, 1,
-					&tegra_rt5640_hp_jack_gpio);
 	}
 
 	return 0;
@@ -154,8 +138,8 @@ static struct snd_soc_dai_link tegra_rt5640_dai = {
 
 static struct snd_soc_card snd_soc_tegra_rt5640 = {
 	.name = "tegra-rt5640",
+	.driver_name = "tegra",
 	.owner = THIS_MODULE,
-	.remove = tegra_rt5640_card_remove,
 	.dai_link = &tegra_rt5640_dai,
 	.num_links = 1,
 	.controls = tegra_rt5640_controls,
@@ -174,13 +158,10 @@ static int tegra_rt5640_probe(struct platform_device *pdev)
 
 	machine = devm_kzalloc(&pdev->dev,
 			sizeof(struct tegra_rt5640), GFP_KERNEL);
-	if (!machine) {
-		dev_err(&pdev->dev, "Can't allocate tegra_rt5640\n");
+	if (!machine)
 		return -ENOMEM;
-	}
 
 	card->dev = &pdev->dev;
-	platform_set_drvdata(pdev, card);
 	snd_soc_card_set_drvdata(card, machine);
 
 	machine->gpio_hp_det = of_get_named_gpio_flags(

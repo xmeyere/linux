@@ -30,7 +30,7 @@
 #include <asm/processor.h>
 #include <asm/syscall.h>
 #include <asm/ucontext.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 #define DEBUG_SIG 0
 
@@ -192,8 +192,6 @@ static int setup_rt_frame(struct ksignal *ksig, sigset_t *set,
 
 	if (err)
 		return -EFAULT;
-
-	/* TODO what is the current->exec_domain stuff and invmap ? */
 
 	/* Set up registers for signal handler */
 	regs->pc = (unsigned long)ksig->ka.sa.sa_handler; /* what we enter NOW */

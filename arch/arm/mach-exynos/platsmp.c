@@ -1,25 +1,20 @@
- /*
- * Copyright (c) 2010-2011 Samsung Electronics Co., Ltd.
- *		http://www.samsung.com
- *
- * Cloned from linux/arch/arm/mach-vexpress/platsmp.c
- *
- *  Copyright (C) 2002 ARM Ltd.
- *  All Rights Reserved
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
-*/
+// SPDX-License-Identifier: GPL-2.0
+// Copyright (c) 2010-2011 Samsung Electronics Co., Ltd.
+//		http://www.samsung.com
+//
+// Cloned from linux/arch/arm/mach-vexpress/platsmp.c
+//
+//  Copyright (C) 2002 ARM Ltd.
+//  All Rights Reserved
 
 #include <linux/init.h>
 #include <linux/errno.h>
 #include <linux/delay.h>
-#include <linux/device.h>
 #include <linux/jiffies.h>
 #include <linux/smp.h>
 #include <linux/io.h>
 #include <linux/of_address.h>
+#include <linux/soc/samsung/exynos-regs-pmu.h>
 
 #include <asm/cacheflush.h>
 #include <asm/cp15.h>
@@ -30,33 +25,8 @@
 #include <mach/map.h>
 
 #include "common.h"
-#include "regs-pmu.h"
 
 extern void exynos4_secondary_startup(void);
-
-/*
- * Set or clear the USE_DELAYED_RESET_ASSERTION option, set on Exynos4 SoCs
- * during hot-(un)plugging CPUx.
- *
- * The feature can be cleared safely during first boot of secondary CPU.
- *
- * Exynos4 SoCs require setting USE_DELAYED_RESET_ASSERTION during powering
- * down a CPU so the CPU idle clock down feature could properly detect global
- * idle state when CPUx is off.
- */
-static void exynos_set_delayed_reset_assertion(u32 core_id, bool enable)
-{
-	if (soc_is_exynos4()) {
-		unsigned int tmp;
-
-		tmp = pmu_raw_readl(EXYNOS_ARM_CORE_OPTION(core_id));
-		if (enable)
-			tmp |= S5P_USE_DELAYED_RESET_ASSERTION;
-		else
-			tmp &= ~(S5P_USE_DELAYED_RESET_ASSERTION);
-		pmu_raw_writel(tmp, EXYNOS_ARM_CORE_OPTION(core_id));
-	}
-}
 
 #ifdef CONFIG_HOTPLUG_CPU
 static inline void cpu_leave_lowpower(u32 core_id)
@@ -73,8 +43,6 @@ static inline void cpu_leave_lowpower(u32 core_id)
 	  : "=&r" (v)
 	  : "Ir" (CR_C), "Ir" (0x40)
 	  : "cc");
-
-	 exynos_set_delayed_reset_assertion(core_id, false);
 }
 
 static inline void platform_do_lowpower(unsigned int cpu, int *spurious)
@@ -86,14 +54,6 @@ static inline void platform_do_lowpower(unsigned int cpu, int *spurious)
 
 		/* Turn the CPU off on next WFI instruction. */
 		exynos_cpu_power_down(core_id);
-
-		/*
-		 * Exynos4 SoCs require setting
-		 * USE_DELAYED_RESET_ASSERTION so the CPU idle
-		 * clock down feature could properly detect
-		 * global idle state when CPUx is off.
-		 */
-		exynos_set_delayed_reset_assertion(core_id, true);
 
 		wfi();
 
@@ -126,6 +86,8 @@ static inline void platform_do_lowpower(unsigned int cpu, int *spurious)
  */
 void exynos_cpu_power_down(int cpu)
 {
+	u32 core_conf;
+
 	if (cpu == 0 && (soc_is_exynos5420() || soc_is_exynos5800())) {
 		/*
 		 * Bypass power down for CPU0 during suspend. Check for
@@ -137,7 +99,10 @@ void exynos_cpu_power_down(int cpu)
 		if (!(val & S5P_CORE_LOCAL_PWR_EN))
 			return;
 	}
-	pmu_raw_writel(0, EXYNOS_ARM_CORE_CONFIGURATION(cpu));
+
+	core_conf = pmu_raw_readl(EXYNOS_ARM_CORE_CONFIGURATION(cpu));
+	core_conf &= ~S5P_CORE_LOCAL_PWR_EN;
+	pmu_raw_writel(core_conf, EXYNOS_ARM_CORE_CONFIGURATION(cpu));
 }
 
 /**
@@ -148,7 +113,12 @@ void exynos_cpu_power_down(int cpu)
  */
 void exynos_cpu_power_up(int cpu)
 {
-	pmu_raw_writel(S5P_CORE_LOCAL_PWR_EN,
+	u32 core_conf = S5P_CORE_LOCAL_PWR_EN;
+
+	if (soc_is_exynos3250())
+		core_conf |= S5P_CORE_AUTOWAKEUP_EN;
+
+	pmu_raw_writel(core_conf,
 			EXYNOS_ARM_CORE_CONFIGURATION(cpu));
 }
 
@@ -193,7 +163,27 @@ int exynos_cluster_power_state(int cluster)
 		S5P_CORE_LOCAL_PWR_EN);
 }
 
-void __iomem *cpu_boot_reg_base(void)
+/**
+ * exynos_scu_enable : enables SCU for Cortex-A9 based system
+ */
+void exynos_scu_enable(void)
+{
+	struct device_node *np;
+	static void __iomem *scu_base;
+
+	if (!scu_base) {
+		np = of_find_compatible_node(NULL, NULL, "arm,cortex-a9-scu");
+		if (np) {
+			scu_base = of_iomap(np, 0);
+			of_node_put(np);
+		} else {
+			scu_base = ioremap(scu_a9_get_base(), SZ_4K);
+		}
+	}
+	scu_enable(scu_base);
+}
+
+static void __iomem *cpu_boot_reg_base(void)
 {
 	if (soc_is_exynos4210() && samsung_rev() == EXYNOS4210_REV_1_1)
 		return pmu_base_addr + S5P_INFORM5;
@@ -206,7 +196,7 @@ static inline void __iomem *cpu_boot_reg(int cpu)
 
 	boot_reg = cpu_boot_reg_base();
 	if (!boot_reg)
-		return ERR_PTR(-ENODEV);
+		return IOMEM_ERR_PTR(-ENODEV);
 	if (soc_is_exynos4412())
 		boot_reg += 4*cpu;
 	else if (soc_is_exynos5420() || soc_is_exynos5800())
@@ -219,18 +209,21 @@ static inline void __iomem *cpu_boot_reg(int cpu)
  *
  * Currently this is needed only when booting secondary CPU on Exynos3250.
  */
-static void exynos_core_restart(u32 core_id)
+void exynos_core_restart(u32 core_id)
 {
 	u32 val;
 
 	if (!of_machine_is_compatible("samsung,exynos3250"))
 		return;
 
+	while (!pmu_raw_readl(S5P_PMU_SPARE2))
+		udelay(10);
+	udelay(10);
+
 	val = pmu_raw_readl(EXYNOS_ARM_CORE_STATUS(core_id));
 	val |= S5P_CORE_WAKEUP_FROM_LOCAL_CFG;
 	pmu_raw_writel(val, EXYNOS_ARM_CORE_STATUS(core_id));
 
-	pr_info("CPU%u: Software reset\n", core_id);
 	pmu_raw_writel(EXYNOS_CORE_PO_RESET(core_id), EXYNOS_SWRESET);
 }
 
@@ -244,11 +237,6 @@ static void write_pen_release(int val)
 	pen_release = val;
 	smp_wmb();
 	sync_cache_w(&pen_release);
-}
-
-static void __iomem *scu_base_addr(void)
-{
-	return (void __iomem *)(S5P_VA_SCU);
 }
 
 static DEFINE_SPINLOCK(boot_lock);
@@ -266,6 +254,56 @@ static void exynos_secondary_init(unsigned int cpu)
 	 */
 	spin_lock(&boot_lock);
 	spin_unlock(&boot_lock);
+}
+
+int exynos_set_boot_addr(u32 core_id, unsigned long boot_addr)
+{
+	int ret;
+
+	/*
+	 * Try to set boot address using firmware first
+	 * and fall back to boot register if it fails.
+	 */
+	ret = call_firmware_op(set_cpu_boot_addr, core_id, boot_addr);
+	if (ret && ret != -ENOSYS)
+		goto fail;
+	if (ret == -ENOSYS) {
+		void __iomem *boot_reg = cpu_boot_reg(core_id);
+
+		if (IS_ERR(boot_reg)) {
+			ret = PTR_ERR(boot_reg);
+			goto fail;
+		}
+		writel_relaxed(boot_addr, boot_reg);
+		ret = 0;
+	}
+fail:
+	return ret;
+}
+
+int exynos_get_boot_addr(u32 core_id, unsigned long *boot_addr)
+{
+	int ret;
+
+	/*
+	 * Try to get boot address using firmware first
+	 * and fall back to boot register if it fails.
+	 */
+	ret = call_firmware_op(get_cpu_boot_addr, core_id, boot_addr);
+	if (ret && ret != -ENOSYS)
+		goto fail;
+	if (ret == -ENOSYS) {
+		void __iomem *boot_reg = cpu_boot_reg(core_id);
+
+		if (IS_ERR(boot_reg)) {
+			ret = PTR_ERR(boot_reg);
+			goto fail;
+		}
+		*boot_addr = readl_relaxed(boot_reg);
+		ret = 0;
+	}
+fail:
+	return ret;
 }
 
 static int exynos_boot_secondary(unsigned int cpu, struct task_struct *idle)
@@ -325,28 +363,18 @@ static int exynos_boot_secondary(unsigned int cpu, struct task_struct *idle)
 
 		smp_rmb();
 
-		boot_addr = virt_to_phys(exynos4_secondary_startup);
+		boot_addr = __pa_symbol(exynos4_secondary_startup);
 
-		/*
-		 * Try to set boot address using firmware first
-		 * and fall back to boot register if it fails.
-		 */
-		ret = call_firmware_op(set_cpu_boot_addr, core_id, boot_addr);
-		if (ret && ret != -ENOSYS)
+		ret = exynos_set_boot_addr(core_id, boot_addr);
+		if (ret)
 			goto fail;
-		if (ret == -ENOSYS) {
-			void __iomem *boot_reg = cpu_boot_reg(core_id);
-
-			if (IS_ERR(boot_reg)) {
-				ret = PTR_ERR(boot_reg);
-				goto fail;
-			}
-			__raw_writel(boot_addr, boot_reg);
-		}
 
 		call_firmware_op(cpu_boot, core_id);
 
-		arch_send_wakeup_ipi_mask(cpumask_of(cpu));
+		if (soc_is_exynos3250())
+			dsb_sev();
+		else
+			arch_send_wakeup_ipi_mask(cpumask_of(cpu));
 
 		if (pen_release == -1)
 			break;
@@ -354,8 +382,8 @@ static int exynos_boot_secondary(unsigned int cpu, struct task_struct *idle)
 		udelay(10);
 	}
 
-	/* No harm if this is called during first boot of secondary CPU */
-	exynos_set_delayed_reset_assertion(core_id, false);
+	if (pen_release != -1)
+		ret = -ETIMEDOUT;
 
 	/*
 	 * now the secondary core is starting up let it run its
@@ -367,44 +395,16 @@ fail:
 	return pen_release != -1 ? ret : 0;
 }
 
-/*
- * Initialise the CPU possible map early - this describes the CPUs
- * which may be present or become present in the system.
- */
-
-static void __init exynos_smp_init_cpus(void)
-{
-	void __iomem *scu_base = scu_base_addr();
-	unsigned int i, ncores;
-
-	if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9)
-		ncores = scu_base ? scu_get_core_count(scu_base) : 1;
-	else
-		/*
-		 * CPU Nodes are passed thru DT and set_cpu_possible
-		 * is set by "arm_dt_init_cpu_maps".
-		 */
-		return;
-
-	/* sanity check */
-	if (ncores > nr_cpu_ids) {
-		pr_warn("SMP: %u cores greater than maximum (%u), clipping\n",
-			ncores, nr_cpu_ids);
-		ncores = nr_cpu_ids;
-	}
-
-	for (i = 0; i < ncores; i++)
-		set_cpu_possible(i, true);
-}
-
 static void __init exynos_smp_prepare_cpus(unsigned int max_cpus)
 {
 	int i;
 
 	exynos_sysram_init();
 
+	exynos_set_delayed_reset_assertion(true);
+
 	if (read_cpuid_part() == ARM_CPU_PART_CORTEX_A9)
-		scu_enable(scu_base_addr());
+		exynos_scu_enable();
 
 	/*
 	 * Write the address of secondary startup into the
@@ -423,18 +423,11 @@ static void __init exynos_smp_prepare_cpus(unsigned int max_cpus)
 
 		mpidr = cpu_logical_map(i);
 		core_id = MPIDR_AFFINITY_LEVEL(mpidr, 0);
-		boot_addr = virt_to_phys(exynos4_secondary_startup);
+		boot_addr = __pa_symbol(exynos4_secondary_startup);
 
-		ret = call_firmware_op(set_cpu_boot_addr, core_id, boot_addr);
-		if (ret && ret != -ENOSYS)
+		ret = exynos_set_boot_addr(core_id, boot_addr);
+		if (ret)
 			break;
-		if (ret == -ENOSYS) {
-			void __iomem *boot_reg = cpu_boot_reg(core_id);
-
-			if (IS_ERR(boot_reg))
-				break;
-			__raw_writel(boot_addr, boot_reg);
-		}
 	}
 }
 
@@ -465,8 +458,7 @@ static void exynos_cpu_die(unsigned int cpu)
 }
 #endif /* CONFIG_HOTPLUG_CPU */
 
-struct smp_operations exynos_smp_ops __initdata = {
-	.smp_init_cpus		= exynos_smp_init_cpus,
+const struct smp_operations exynos_smp_ops __initconst = {
 	.smp_prepare_cpus	= exynos_smp_prepare_cpus,
 	.smp_secondary_init	= exynos_secondary_init,
 	.smp_boot_secondary	= exynos_boot_secondary,

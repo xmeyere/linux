@@ -75,8 +75,6 @@
 #include "ca0106.h"
 
 
-#ifdef CONFIG_PROC_FS
-
 struct snd_ca0106_category_str {
 	int val;
 	const char *name;
@@ -433,7 +431,7 @@ int snd_ca0106_proc_init(struct snd_ca0106 *emu)
 	if(! snd_card_proc_new(emu->card, "ca0106_reg32", &entry)) {
 		snd_info_set_text_ops(entry, emu, snd_ca0106_proc_reg_read32);
 		entry->c.text.write = snd_ca0106_proc_reg_write32;
-		entry->mode |= S_IWUSR;
+		entry->mode |= 0200;
 	}
 	if(! snd_card_proc_new(emu->card, "ca0106_reg16", &entry))
 		snd_info_set_text_ops(entry, emu, snd_ca0106_proc_reg_read16);
@@ -442,16 +440,14 @@ int snd_ca0106_proc_init(struct snd_ca0106 *emu)
 	if(! snd_card_proc_new(emu->card, "ca0106_regs1", &entry)) {
 		snd_info_set_text_ops(entry, emu, snd_ca0106_proc_reg_read1);
 		entry->c.text.write = snd_ca0106_proc_reg_write;
-		entry->mode |= S_IWUSR;
+		entry->mode |= 0200;
 	}
 	if(! snd_card_proc_new(emu->card, "ca0106_i2c", &entry)) {
 		entry->c.text.write = snd_ca0106_proc_i2c_write;
 		entry->private_data = emu;
-		entry->mode |= S_IWUSR;
+		entry->mode |= 0200;
 	}
 	if(! snd_card_proc_new(emu->card, "ca0106_regs2", &entry)) 
 		snd_info_set_text_ops(entry, emu, snd_ca0106_proc_reg_read2);
 	return 0;
 }
-
-#endif /* CONFIG_PROC_FS */

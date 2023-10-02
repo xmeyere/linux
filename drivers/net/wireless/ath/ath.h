@@ -33,8 +33,6 @@
  */
 #define	ATH_KEYMAX	        128     /* max key cache size we handle */
 
-static const u8 ath_bcast_mac[ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
-
 struct ath_ani {
 	bool caldone;
 	unsigned int longcal_timer;
@@ -131,6 +129,9 @@ struct ath_ops {
 	void (*enable_write_buffer)(void *);
 	void (*write_flush) (void *);
 	u32 (*rmw)(void *, u32 reg_offset, u32 set, u32 clr);
+	void (*enable_rmw_buffer)(void *);
+	void (*rmw_flush) (void *);
+
 };
 
 struct ath_common;
@@ -182,7 +183,7 @@ struct ath_common {
 	bool bt_ant_diversity;
 
 	int last_rssi;
-	struct ieee80211_supported_band sbands[IEEE80211_NUM_BANDS];
+	struct ieee80211_supported_band sbands[NUM_NL80211_BANDS];
 };
 
 static inline const struct ath_ps_ops *ath_ps_ops(struct ath_common *common)
@@ -196,12 +197,13 @@ struct sk_buff *ath_rxbuf_alloc(struct ath_common *common,
 bool ath_is_mybeacon(struct ath_common *common, struct ieee80211_hdr *hdr);
 
 void ath_hw_setbssidmask(struct ath_common *common);
-void ath_key_delete(struct ath_common *common, struct ieee80211_key_conf *key);
+void ath_key_delete(struct ath_common *common, u8 hw_key_idx);
 int ath_key_config(struct ath_common *common,
 			  struct ieee80211_vif *vif,
 			  struct ieee80211_sta *sta,
 			  struct ieee80211_key_conf *key);
 bool ath_hw_keyreset(struct ath_common *common, u16 entry);
+bool ath_hw_keysetmac(struct ath_common *common, u16 entry, const u8 *mac);
 void ath_hw_cycle_counters_update(struct ath_common *common);
 int32_t ath_hw_get_listen_time(struct ath_common *common);
 
@@ -248,6 +250,7 @@ void ath_printk(const char *level, const struct ath_common *common,
  * @ATH_DBG_DFS: radar datection
  * @ATH_DBG_WOW: Wake on Wireless
  * @ATH_DBG_DYNACK: dynack handling
+ * @ATH_DBG_SPECTRAL_SCAN: FFT spectral scan
  * @ATH_DBG_ANY: enable all debugging
  *
  * The debug level is used to control the amount and type of debugging output
@@ -277,6 +280,7 @@ enum ATH_DEBUG {
 	ATH_DBG_WOW		= 0x00020000,
 	ATH_DBG_CHAN_CTX	= 0x00040000,
 	ATH_DBG_DYNACK		= 0x00080000,
+	ATH_DBG_SPECTRAL_SCAN	= 0x00100000,
 	ATH_DBG_ANY		= 0xffffffff
 };
 
@@ -321,5 +325,11 @@ static inline const char *ath_opmode_to_string(enum nl80211_iftype opmode)
 	return "UNKNOWN";
 }
 #endif
+
+extern const char *ath_bus_type_strings[];
+static inline const char *ath_bus_type_to_string(enum ath_bus_type bustype)
+{
+	return ath_bus_type_strings[bustype];
+}
 
 #endif /* ATH_H */

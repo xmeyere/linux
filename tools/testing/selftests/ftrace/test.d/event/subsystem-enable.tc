@@ -1,5 +1,7 @@
 #!/bin/sh
+# SPDX-License-Identifier: GPL-2.0
 # description: event tracing - enable/disable with subsystem level files
+# flags: instance
 
 do_reset() {
     echo > set_event
@@ -9,7 +11,11 @@ do_reset() {
 fail() { #msg
     do_reset
     echo $1
-    exit -1
+    exit_fail
+}
+
+yield() {
+    ping localhost -c 1 || sleep .001 || usleep 1 || sleep 1
 }
 
 if [ ! -f set_event -o ! -d events/sched ]; then
@@ -21,7 +27,8 @@ reset_tracer
 do_reset
 
 echo 'sched:*' > set_event
-usleep 1
+
+yield
 
 count=`cat trace | grep -v ^# | awk '{ print $5 }' | sort -u | wc -l`
 if [ $count -lt 3 ]; then
@@ -31,7 +38,8 @@ fi
 do_reset
 
 echo 1 > events/sched/enable
-usleep 1
+
+yield
 
 count=`cat trace | grep -v ^# | awk '{ print $5 }' | sort -u | wc -l`
 if [ $count -lt 3 ]; then
@@ -41,7 +49,8 @@ fi
 do_reset
 
 echo 0 > events/sched/enable
-usleep 1
+
+yield
 
 count=`cat trace | grep -v ^# | awk '{ print $5 }' | sort -u | wc -l`
 if [ $count -ne 0 ]; then

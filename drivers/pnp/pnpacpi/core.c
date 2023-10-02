@@ -149,8 +149,8 @@ static int pnpacpi_suspend(struct pnp_dev *dev, pm_message_t state)
 	}
 
 	if (device_can_wakeup(&dev->dev)) {
-		error = acpi_pm_device_sleep_wake(&dev->dev,
-				device_may_wakeup(&dev->dev));
+		error = acpi_pm_set_device_wakeup(&dev->dev,
+					      device_may_wakeup(&dev->dev));
 		if (error)
 			return error;
 	}
@@ -185,7 +185,7 @@ static int pnpacpi_resume(struct pnp_dev *dev)
 	}
 
 	if (device_may_wakeup(&dev->dev))
-		acpi_pm_device_sleep_wake(&dev->dev, false);
+		acpi_pm_set_device_wakeup(&dev->dev, false);
 
 	if (acpi_device_power_manageable(acpi_dev))
 		error = acpi_device_set_power(acpi_dev, ACPI_STATE_D0);
@@ -207,7 +207,7 @@ struct pnp_protocol pnpacpi_protocol = {
 };
 EXPORT_SYMBOL(pnpacpi_protocol);
 
-static char *__init pnpacpi_get_id(struct acpi_device *device)
+static const char *__init pnpacpi_get_id(struct acpi_device *device)
 {
 	struct acpi_hardware_id *id;
 
@@ -222,7 +222,7 @@ static char *__init pnpacpi_get_id(struct acpi_device *device)
 static int __init pnpacpi_add_device(struct acpi_device *device)
 {
 	struct pnp_dev *dev;
-	char *pnpid;
+	const char *pnpid;
 	struct acpi_hardware_id *id;
 	int error;
 
@@ -248,6 +248,7 @@ static int __init pnpacpi_add_device(struct acpi_device *device)
 	if (!dev)
 		return -ENOMEM;
 
+	ACPI_COMPANION_SET(&dev->dev, device);
 	dev->data = device;
 	/* .enabled means the device can decode the resources */
 	dev->active = device->status.enabled;
@@ -290,11 +291,9 @@ static int __init pnpacpi_add_device(struct acpi_device *device)
 		return error;
 	}
 
-	error = acpi_bind_one(&dev->dev, device);
-
 	num++;
 
-	return error;
+	return 0;
 }
 
 static acpi_status __init pnpacpi_add_device_handler(acpi_handle handle,

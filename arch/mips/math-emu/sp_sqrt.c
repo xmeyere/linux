@@ -35,13 +35,12 @@ union ieee754sp ieee754sp_sqrt(union ieee754sp x)
 
 	/* x == INF or NAN? */
 	switch (xc) {
-	case IEEE754_CLASS_QNAN:
-		/* sqrt(Nan) = Nan */
+	case IEEE754_CLASS_SNAN:
 		return ieee754sp_nanxcpt(x);
 
-	case IEEE754_CLASS_SNAN:
-		ieee754_setcx(IEEE754_INVALID_OPERATION);
-		return ieee754sp_nanxcpt(ieee754sp_indef());
+	case IEEE754_CLASS_QNAN:
+		/* sqrt(Nan) = Nan */
+		return x;
 
 	case IEEE754_CLASS_ZERO:
 		/* sqrt(0) = 0 */
@@ -51,7 +50,7 @@ union ieee754sp ieee754sp_sqrt(union ieee754sp x)
 		if (xs) {
 			/* sqrt(-Inf) = Nan */
 			ieee754_setcx(IEEE754_INVALID_OPERATION);
-			return ieee754sp_nanxcpt(ieee754sp_indef());
+			return ieee754sp_indef();
 		}
 		/* sqrt(+Inf) = Inf */
 		return x;
@@ -61,7 +60,7 @@ union ieee754sp ieee754sp_sqrt(union ieee754sp x)
 		if (xs) {
 			/* sqrt(-x) = Nan */
 			ieee754_setcx(IEEE754_INVALID_OPERATION);
-			return ieee754sp_nanxcpt(ieee754sp_indef());
+			return ieee754sp_indef();
 		}
 		break;
 	}
@@ -83,7 +82,8 @@ union ieee754sp ieee754sp_sqrt(union ieee754sp x)
 
 	/* generate sqrt(x) bit by bit */
 	ix += ix;
-	q = s = 0;		/* q = sqrt(x) */
+	s = 0;
+	q = 0;			/* q = sqrt(x) */
 	r = 0x01000000;		/* r = moving bit from right to left */
 
 	while (r != 0) {

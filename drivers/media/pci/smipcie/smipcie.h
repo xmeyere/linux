@@ -29,12 +29,12 @@
 #include <linux/slab.h>
 #include <media/rc-core.h>
 
-#include "demux.h"
-#include "dmxdev.h"
-#include "dvb_demux.h"
-#include "dvb_frontend.h"
-#include "dvb_net.h"
-#include "dvbdev.h"
+#include <media/demux.h>
+#include <media/dmxdev.h>
+#include <media/dvb_demux.h>
+#include <media/dvb_frontend.h>
+#include <media/dvb_net.h>
+#include <media/dvbdev.h>
 
 /* -------- Register Base -------- */
 #define    MSI_CONTROL_REG_BASE                 0x0800
@@ -216,6 +216,7 @@ struct smi_cfg_info {
 #define SMI_DVBSKY_S950         1
 #define SMI_DVBSKY_T9580        2
 #define SMI_DVBSKY_T982         3
+#define SMI_TECHNOTREND_S2_4200 4
 	int type;
 	char *name;
 #define SMI_TS_NULL             0
@@ -232,6 +233,18 @@ struct smi_cfg_info {
 #define DVBSKY_FE_SIT2          3
 	int fe_0;
 	int fe_1;
+	char *rc_map;
+};
+
+struct smi_rc {
+	struct smi_dev *dev;
+	struct rc_dev *rc_dev;
+	char input_phys[64];
+	char device_name[64];
+	struct work_struct work;
+	u8 irData[256];
+
+	int users;
 };
 
 struct smi_port {
@@ -284,6 +297,9 @@ struct smi_dev {
 	/* i2c */
 	struct i2c_adapter i2c_bus[2];
 	struct i2c_algo_bit_data i2c_bit[2];
+
+	/* ir */
+	struct smi_rc ir;
 };
 
 #define smi_read(reg)             readl(dev->lmmio + ((reg)>>2))
@@ -295,5 +311,10 @@ struct smi_dev {
 
 #define smi_set(reg, bit)          smi_andor((reg), (bit), (bit))
 #define smi_clear(reg, bit)        smi_andor((reg), (bit), 0)
+
+int smi_ir_irq(struct smi_rc *ir, u32 int_status);
+void smi_ir_start(struct smi_rc *ir);
+void smi_ir_exit(struct smi_dev *dev);
+int smi_ir_init(struct smi_dev *dev);
 
 #endif /* #ifndef _SMI_PCIE_H_ */

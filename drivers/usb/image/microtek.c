@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Driver for Microtek Scanmaker X6 USB scanner, and possibly others.
  *
  * (C) Copyright 2000 John Fremlin <vii@penguinpowered.com>
@@ -137,10 +138,6 @@
 
 #include "microtek.h"
 
-/*
- * Version Information
- */
-#define DRIVER_VERSION "v0.4.3"
 #define DRIVER_AUTHOR "John Fremlin <vii@penguinpowered.com>, Oliver Neukum <Oliver.Neukum@lrz.uni-muenchen.de>"
 #define DRIVER_DESC "Microtek Scanmaker X6 USB scanner driver"
 
@@ -635,7 +632,6 @@ static struct scsi_host_template mts_scsi_host_template = {
 	.sg_tablesize =		SG_ALL,
 	.can_queue =		1,
 	.this_id =		-1,
-	.cmd_per_lun =		1,
 	.use_clustering =	1,
 	.emulated =		1,
 	.slave_alloc =		mts_slave_alloc,
@@ -725,6 +721,10 @@ static int mts_usb_probe(struct usb_interface *intf,
 
 	}
 
+	if (ep_in_current != &ep_in_set[2]) {
+		MTS_WARNING("couldn't find two input bulk endpoints. Bailing out.\n");
+		return -ENODEV;
+	}
 
 	if ( ep_out == -1 ) {
 		MTS_WARNING( "couldn't find an output bulk endpoint. Bailing out.\n" );

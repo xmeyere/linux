@@ -27,6 +27,9 @@
  */
 #include <drm/drmP.h>
 #include <drm/radeon_drm.h>
+#ifdef CONFIG_X86
+#include <asm/set_memory.h>
+#endif
 #include "radeon.h"
 
 /*
@@ -260,8 +263,10 @@ void radeon_gart_unbind(struct radeon_device *rdev, unsigned offset,
 			}
 		}
 	}
-	mb();
-	radeon_gart_tlb_flush(rdev);
+	if (rdev->gart.ptr) {
+		mb();
+		radeon_gart_tlb_flush(rdev);
+	}
 }
 
 /**
@@ -306,8 +311,10 @@ int radeon_gart_bind(struct radeon_device *rdev, unsigned offset,
 			page_base += RADEON_GPU_PAGE_SIZE;
 		}
 	}
-	mb();
-	radeon_gart_tlb_flush(rdev);
+	if (rdev->gart.ptr) {
+		mb();
+		radeon_gart_tlb_flush(rdev);
+	}
 	return 0;
 }
 
@@ -340,13 +347,14 @@ int radeon_gart_init(struct radeon_device *rdev)
 	DRM_INFO("GART: num cpu pages %u, num gpu pages %u\n",
 		 rdev->gart.num_cpu_pages, rdev->gart.num_gpu_pages);
 	/* Allocate pages table */
-	rdev->gart.pages = vzalloc(sizeof(void *) * rdev->gart.num_cpu_pages);
+	rdev->gart.pages = vzalloc(array_size(sizeof(void *),
+				   rdev->gart.num_cpu_pages));
 	if (rdev->gart.pages == NULL) {
 		radeon_gart_fini(rdev);
 		return -ENOMEM;
 	}
-	rdev->gart.pages_entry = vmalloc(sizeof(uint64_t) *
-					 rdev->gart.num_gpu_pages);
+	rdev->gart.pages_entry = vmalloc(array_size(sizeof(uint64_t),
+						    rdev->gart.num_gpu_pages));
 	if (rdev->gart.pages_entry == NULL) {
 		radeon_gart_fini(rdev);
 		return -ENOMEM;

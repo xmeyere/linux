@@ -20,14 +20,13 @@
 #include <linux/ptrace.h>
 #include <linux/personality.h>
 #include <linux/tracehook.h>
+#include <linux/sched/task_stack.h>
 
 #include <asm/ucontext.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 #include <asm/cacheflush.h>
 #include <asm/coprocessor.h>
 #include <asm/unistd.h>
-
-#define DEBUG_SIG  0
 
 extern struct task_struct *coproc_owners[];
 
@@ -90,14 +89,14 @@ flush_window_regs_user(struct pt_regs *regs)
 			inc = 1;
 
 		} else if (m & 4) {		/* call8 */
-			if (copy_to_user((void*)(sp - 32),
-					   &regs->areg[(base + 1) * 4], 16))
+			if (copy_to_user(&SPILL_SLOT_CALL8(sp, 4),
+					 &regs->areg[(base + 1) * 4], 16))
 				goto errout;
 			inc = 2;
 
 		} else if (m & 8) {	/* call12 */
-			if (copy_to_user((void*)(sp - 48),
-					   &regs->areg[(base + 1) * 4], 32))
+			if (copy_to_user(&SPILL_SLOT_CALL12(sp, 4),
+					 &regs->areg[(base + 1) * 4], 32))
 				goto errout;
 			inc = 3;
 		}
@@ -105,7 +104,7 @@ flush_window_regs_user(struct pt_regs *regs)
 		/* Save current frame a0..a3 under next SP */
 
 		sp = regs->areg[((base + inc) * 4 + 1) % XCHAL_NUM_AREGS];
-		if (copy_to_user((void*)(sp - 16), &regs->areg[base * 4], 16))
+		if (copy_to_user(&SPILL_SLOT(sp, 0), &regs->areg[base * 4], 16))
 			goto errout;
 
 		/* Get current stack pointer for next loop iteration. */
@@ -336,7 +335,6 @@ static int setup_frame(struct ksignal *ksig, sigset_t *set,
 {
 	struct rt_sigframe *frame;
 	int err = 0, sig = ksig->sig;
-	int signal;
 	unsigned long sp, ra, tp;
 
 	sp = regs->areg[1];
@@ -353,12 +351,6 @@ static int setup_frame(struct ksignal *ksig, sigset_t *set,
 	if (!access_ok(VERIFY_WRITE, frame, sizeof(*frame))) {
 		return -EFAULT;
 	}
-
-	signal = current_thread_info()->exec_domain
-		&& current_thread_info()->exec_domain->signal_invmap
-		&& sig < 32
-		? current_thread_info()->exec_domain->signal_invmap[sig]
-		: sig;
 
 	if (ksig->ka.sa.sa_flags & SA_SIGINFO) {
 		err |= copy_siginfo_to_user(&frame->info, &ksig->info);
@@ -400,20 +392,13 @@ static int setup_frame(struct ksignal *ksig, sigset_t *set,
 	 * Note: PS.CALLINC is set to one by start_thread
 	 */
 	regs->areg[4] = (((unsigned long) ra) & 0x3fffffff) | 0x40000000;
-	regs->areg[6] = (unsigned long) signal;
+	regs->areg[6] = (unsigned long) sig;
 	regs->areg[7] = (unsigned long) &frame->info;
 	regs->areg[8] = (unsigned long) &frame->uc;
 	regs->threadptr = tp;
 
-	/* Set access mode to USER_DS.  Nomenclature is outdated, but
-	 * functionality is used in uaccess.h
-	 */
-	set_fs(USER_DS);
-
-#if DEBUG_SIG
-	printk("SIG rt deliver (%s:%d): signal=%d sp=%p pc=%08x\n",
-		current->comm, current->pid, signal, frame, regs->pc);
-#endif
+	pr_debug("SIG rt deliver (%s:%d): signal=%d sp=%p pc=%08lx\n",
+		 current->comm, current->pid, sig, frame, regs->pc);
 
 	return 0;
 }
@@ -470,7 +455,7 @@ static void do_signal(struct pt_regs *regs)
 		/* Set up the stack frame */
 		ret = setup_frame(&ksig, sigmask_to_save(), regs);
 		signal_setup_done(ret, &ksig, 0);
-		if (current->ptrace & PT_SINGLESTEP)
+		if (test_thread_flag(TIF_SINGLESTEP))
 			task_pt_regs(current)->icountlevel = 1;
 
 		return;
@@ -496,7 +481,7 @@ static void do_signal(struct pt_regs *regs)
 	/* If there's no signal to deliver, we just restore the saved mask.  */
 	restore_saved_sigmask();
 
-	if (current->ptrace & PT_SINGLESTEP)
+	if (test_thread_flag(TIF_SINGLESTEP))
 		task_pt_regs(current)->icountlevel = 1;
 	return;
 }

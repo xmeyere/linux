@@ -1,8 +1,8 @@
 /*
  * i2c-ocores.c: I2C bus driver for OpenCores I2C controller
- * (http://www.opencores.org/projects.cgi/web/i2c/overview).
+ * (https://opencores.org/project/i2c/overview)
  *
- * Peter Korsgaard <jacmet@sunsite.dk>
+ * Peter Korsgaard <peter@korsgaard.com>
  *
  * Support for the GRLIB port of the controller by
  * Andreas Larsson <andreas@gaisler.com>
@@ -21,7 +21,7 @@
 #include <linux/i2c.h>
 #include <linux/interrupt.h>
 #include <linux/wait.h>
-#include <linux/i2c-ocores.h>
+#include <linux/platform_data/i2c-ocores.h>
 #include <linux/slab.h>
 #include <linux/io.h>
 #include <linux/log2.h>
@@ -92,6 +92,16 @@ static void oc_setreg_32(struct ocores_i2c *i2c, int reg, u8 value)
 	iowrite32(value, i2c->base + (reg << i2c->reg_shift));
 }
 
+static void oc_setreg_16be(struct ocores_i2c *i2c, int reg, u8 value)
+{
+	iowrite16be(value, i2c->base + (reg << i2c->reg_shift));
+}
+
+static void oc_setreg_32be(struct ocores_i2c *i2c, int reg, u8 value)
+{
+	iowrite32be(value, i2c->base + (reg << i2c->reg_shift));
+}
+
 static inline u8 oc_getreg_8(struct ocores_i2c *i2c, int reg)
 {
 	return ioread8(i2c->base + (reg << i2c->reg_shift));
@@ -105,6 +115,16 @@ static inline u8 oc_getreg_16(struct ocores_i2c *i2c, int reg)
 static inline u8 oc_getreg_32(struct ocores_i2c *i2c, int reg)
 {
 	return ioread32(i2c->base + (reg << i2c->reg_shift));
+}
+
+static inline u8 oc_getreg_16be(struct ocores_i2c *i2c, int reg)
+{
+	return ioread16be(i2c->base + (reg << i2c->reg_shift));
+}
+
+static inline u8 oc_getreg_32be(struct ocores_i2c *i2c, int reg)
+{
+	return ioread32be(i2c->base + (reg << i2c->reg_shift));
 }
 
 static inline void oc_setreg(struct ocores_i2c *i2c, int reg, u8 value)
@@ -158,10 +178,7 @@ static void ocores_process(struct ocores_i2c *i2c)
 		if (i2c->nmsgs) {	/* end? */
 			/* send start? */
 			if (!(msg->flags & I2C_M_NOSTART)) {
-				u8 addr = (msg->addr << 1);
-
-				if (msg->flags & I2C_M_RD)
-					addr |= 1;
+				u8 addr = i2c_8bit_addr_from_msg(msg);
 
 				i2c->state = STATE_START;
 
@@ -205,10 +222,7 @@ static int ocores_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs, int num)
 	i2c->nmsgs = num;
 	i2c->state = STATE_START;
 
-	oc_setreg(i2c, OCI2C_DATA,
-			(i2c->msg->addr << 1) |
-			((i2c->msg->flags & I2C_M_RD) ? 1:0));
-
+	oc_setreg(i2c, OCI2C_DATA, i2c_8bit_addr_from_msg(i2c->msg));
 	oc_setreg(i2c, OCI2C_CMD, OCI2C_CMD_START);
 
 	if (wait_event_timeout(i2c->wait, (i2c->state == STATE_ERROR) ||
@@ -259,7 +273,7 @@ static const struct i2c_algorithm ocores_algorithm = {
 	.functionality = ocores_func,
 };
 
-static struct i2c_adapter ocores_adapter = {
+static const struct i2c_adapter ocores_adapter = {
 	.owner = THIS_MODULE,
 	.name = "i2c-ocores",
 	.class = I2C_CLASS_DEPRECATED,
@@ -362,6 +376,7 @@ static int ocores_i2c_of_probe(struct platform_device *pdev,
 			if (!clock_frequency_present) {
 				dev_err(&pdev->dev,
 					"Missing required parameter 'opencores,ip-clock-frequency'\n");
+				clk_disable_unprepare(i2c->clk);
 				return -ENODEV;
 			}
 			i2c->ip_clock_khz = clock_frequency / 1000;
@@ -428,6 +443,9 @@ static int ocores_i2c_probe(struct platform_device *pdev)
 		i2c->reg_io_width = 1; /* Set to default value */
 
 	if (!i2c->setreg || !i2c->getreg) {
+		bool be = pdata ? pdata->big_endian :
+			of_device_is_big_endian(pdev->dev.of_node);
+
 		switch (i2c->reg_io_width) {
 		case 1:
 			i2c->setreg = oc_setreg_8;
@@ -435,32 +453,33 @@ static int ocores_i2c_probe(struct platform_device *pdev)
 			break;
 
 		case 2:
-			i2c->setreg = oc_setreg_16;
-			i2c->getreg = oc_getreg_16;
+			i2c->setreg = be ? oc_setreg_16be : oc_setreg_16;
+			i2c->getreg = be ? oc_getreg_16be : oc_getreg_16;
 			break;
 
 		case 4:
-			i2c->setreg = oc_setreg_32;
-			i2c->getreg = oc_getreg_32;
+			i2c->setreg = be ? oc_setreg_32be : oc_setreg_32;
+			i2c->getreg = be ? oc_getreg_32be : oc_getreg_32;
 			break;
 
 		default:
 			dev_err(&pdev->dev, "Unsupported I/O width (%d)\n",
 				i2c->reg_io_width);
-			return -EINVAL;
+			ret = -EINVAL;
+			goto err_clk;
 		}
 	}
 
 	ret = ocores_init(&pdev->dev, i2c);
 	if (ret)
-		return ret;
+		goto err_clk;
 
 	init_waitqueue_head(&i2c->wait);
 	ret = devm_request_irq(&pdev->dev, irq, ocores_isr, 0,
 			       pdev->name, i2c);
 	if (ret) {
 		dev_err(&pdev->dev, "Cannot claim IRQ\n");
-		return ret;
+		goto err_clk;
 	}
 
 	/* hook up driver to tree */
@@ -472,10 +491,8 @@ static int ocores_i2c_probe(struct platform_device *pdev)
 
 	/* add i2c adapter to i2c tree */
 	ret = i2c_add_adapter(&i2c->adap);
-	if (ret) {
-		dev_err(&pdev->dev, "Failed to add adapter\n");
-		return ret;
-	}
+	if (ret)
+		goto err_clk;
 
 	/* add in known devices to the bus */
 	if (pdata) {
@@ -484,6 +501,10 @@ static int ocores_i2c_probe(struct platform_device *pdev)
 	}
 
 	return 0;
+
+err_clk:
+	clk_disable_unprepare(i2c->clk);
+	return ret;
 }
 
 static int ocores_i2c_remove(struct platform_device *pdev)
@@ -555,7 +576,7 @@ static struct platform_driver ocores_i2c_driver = {
 
 module_platform_driver(ocores_i2c_driver);
 
-MODULE_AUTHOR("Peter Korsgaard <jacmet@sunsite.dk>");
+MODULE_AUTHOR("Peter Korsgaard <peter@korsgaard.com>");
 MODULE_DESCRIPTION("OpenCores I2C bus driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:ocores-i2c");

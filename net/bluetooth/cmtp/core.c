@@ -75,10 +75,11 @@ static void __cmtp_unlink_session(struct cmtp_session *session)
 
 static void __cmtp_copy_session(struct cmtp_session *session, struct cmtp_conninfo *ci)
 {
+	u32 valid_flags = BIT(CMTP_LOOPBACK);
 	memset(ci, 0, sizeof(*ci));
 	bacpy(&ci->bdaddr, &session->bdaddr);
 
-	ci->flags = session->flags;
+	ci->flags = session->flags & valid_flags;
 	ci->state = session->state;
 
 	ci->num = session->num;
@@ -121,7 +122,7 @@ static inline void cmtp_add_msgpart(struct cmtp_session *session, int id, const 
 	if (skb && (skb->len > 0))
 		skb_copy_from_linear_data(skb, skb_put(nskb, skb->len), skb->len);
 
-	memcpy(skb_put(nskb, count), buf, count);
+	skb_put_data(nskb, buf, count);
 
 	session->reassembly[id] = nskb;
 
@@ -177,8 +178,7 @@ static inline int cmtp_recv_frame(struct cmtp_session *session, struct sk_buff *
 			cmtp_add_msgpart(session, id, skb->data + hdrlen, len);
 			break;
 		default:
-			if (session->reassembly[id] != NULL)
-				kfree_skb(session->reassembly[id]);
+			kfree_skb(session->reassembly[id]);
 			session->reassembly[id] = NULL;
 			break;
 		}
@@ -280,16 +280,16 @@ static int cmtp_session(void *arg)
 	struct cmtp_session *session = arg;
 	struct sock *sk = session->sock->sk;
 	struct sk_buff *skb;
-	wait_queue_t wait;
+	DEFINE_WAIT_FUNC(wait, woken_wake_function);
 
 	BT_DBG("session %p", session);
 
 	set_user_nice(current, -15);
 
-	init_waitqueue_entry(&wait, current);
 	add_wait_queue(sk_sleep(sk), &wait);
 	while (1) {
-		set_current_state(TASK_INTERRUPTIBLE);
+		/* Ensure session->terminate is updated */
+		smp_mb__before_atomic();
 
 		if (atomic_read(&session->terminate))
 			break;
@@ -306,14 +306,13 @@ static int cmtp_session(void *arg)
 
 		cmtp_process_transmit(session);
 
-		schedule();
+		wait_woken(&wait, TASK_INTERRUPTIBLE, MAX_SCHEDULE_TIMEOUT);
 	}
-	__set_current_state(TASK_RUNNING);
 	remove_wait_queue(sk_sleep(sk), &wait);
 
 	down_write(&cmtp_session_sem);
 
-	if (!(session->flags & (1 << CMTP_LOOPBACK)))
+	if (!(session->flags & BIT(CMTP_LOOPBACK)))
 		cmtp_detach_device(session);
 
 	fput(session->sock->file);
@@ -329,6 +328,7 @@ static int cmtp_session(void *arg)
 
 int cmtp_add_connection(struct cmtp_connadd_req *req, struct socket *sock)
 {
+	u32 valid_flags = BIT(CMTP_LOOPBACK);
 	struct cmtp_session *session, *s;
 	int i, err;
 
@@ -336,6 +336,9 @@ int cmtp_add_connection(struct cmtp_connadd_req *req, struct socket *sock)
 
 	if (!l2cap_is_socket(sock))
 		return -EBADFD;
+
+	if (req->flags & ~valid_flags)
+		return -EINVAL;
 
 	session = kzalloc(sizeof(struct cmtp_session), GFP_KERNEL);
 	if (!session)
@@ -385,11 +388,16 @@ int cmtp_add_connection(struct cmtp_connadd_req *req, struct socket *sock)
 		goto unlink;
 	}
 
-	if (!(session->flags & (1 << CMTP_LOOPBACK))) {
+	if (!(session->flags & BIT(CMTP_LOOPBACK))) {
 		err = cmtp_attach_device(session);
 		if (err < 0) {
+			/* Caller will call fput in case of failure, and so
+			 * will cmtp_session kthread.
+			 */
+			get_file(session->sock->file);
+
 			atomic_inc(&session->terminate);
-			wake_up_process(session->task);
+			wake_up_interruptible(sk_sleep(session->sock->sk));
 			up_write(&cmtp_session_sem);
 			return err;
 		}
@@ -409,10 +417,14 @@ failed:
 
 int cmtp_del_connection(struct cmtp_conndel_req *req)
 {
+	u32 valid_flags = 0;
 	struct cmtp_session *session;
 	int err = 0;
 
 	BT_DBG("");
+
+	if (req->flags & ~valid_flags)
+		return -EINVAL;
 
 	down_read(&cmtp_session_sem);
 
@@ -423,7 +435,11 @@ int cmtp_del_connection(struct cmtp_conndel_req *req)
 
 		/* Stop session thread */
 		atomic_inc(&session->terminate);
-		wake_up_process(session->task);
+
+		/* Ensure session->terminate is updated */
+		smp_mb__after_atomic();
+
+		wake_up_interruptible(sk_sleep(session->sock->sk));
 	} else
 		err = -ENOENT;
 
@@ -483,9 +499,7 @@ static int __init cmtp_init(void)
 {
 	BT_INFO("CMTP (CAPI Emulation) ver %s", VERSION);
 
-	cmtp_init_sockets();
-
-	return 0;
+	return cmtp_init_sockets();
 }
 
 static void __exit cmtp_exit(void)
