@@ -51,7 +51,7 @@ static u64 rtc_get(void)
     return finalResult >> 15;
 }
 
-static void rtc_adjust(unsigned long l)
+static void rtc_adjust(struct timer_list* list)
 {
     g_timer.expires = jiffies + 60000;
     g_timer.function = rtc_adjust;
@@ -93,7 +93,7 @@ static int __init xmrtc_init_module(void)
     //g_timer.function = rtc_adjust;
     //g_timer.expires = jiffies + 60000;
     //g_timer.data = 0;
-    //add_timer(&g_timer);
+    add_timer(&g_timer);
     printk("xm_rtc init is ok!\n");
     return 0;
 }
