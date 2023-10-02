@@ -11,6 +11,11 @@
 #include <symbol/kallsyms.h>
 #include "debug.h"
 
+#ifndef EM_AARCH64
+#define EM_AARCH64	183  /* ARM 64 bit */
+#endif
+
+
 #ifdef HAVE_CPLUS_DEMANGLE_SUPPORT
 extern char *cplus_demangle(const char *, int);
 
@@ -68,10 +73,6 @@ static inline uint8_t elf_sym__type(const GElf_Sym *sym)
 {
 	return GELF_ST_TYPE(sym->st_info);
 }
-
-#ifndef STT_GNU_IFUNC
-#define STT_GNU_IFUNC 10
-#endif
 
 static inline int elf_sym__is_function(const GElf_Sym *sym)
 {
@@ -578,13 +579,16 @@ static int decompress_kmodule(struct dso *dso, const char *name,
 	const char *ext = strrchr(name, '.');
 	char tmpbuf[] = "/tmp/perf-kmod-XXXXXX";
 
-	if ((type != DSO_BINARY_TYPE__SYSTEM_PATH_KMODULE_COMP &&
-	     type != DSO_BINARY_TYPE__GUEST_KMODULE_COMP) ||
-	    type != dso->symtab_type)
+	if (type != DSO_BINARY_TYPE__SYSTEM_PATH_KMODULE_COMP &&
+	    type != DSO_BINARY_TYPE__GUEST_KMODULE_COMP &&
+	    type != DSO_BINARY_TYPE__BUILD_ID_CACHE)
 		return -1;
 
-	if (!ext || !is_supported_compression(ext + 1))
-		return -1;
+	if (!ext || !is_supported_compression(ext + 1)) {
+		ext = strrchr(dso->name, '.');
+		if (!ext || !is_supported_compression(ext + 1))
+			return -1;
+	}
 
 	fd = mkstemp(tmpbuf);
 	if (fd < 0)

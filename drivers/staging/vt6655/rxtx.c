@@ -205,7 +205,7 @@ s_uGetRTSCTSRsvTime(
 	unsigned short wCurrentRate
 )
 {
-	unsigned int uRrvTime  , uRTSTime, uCTSTime, uAckTime, uDataTime;
+	unsigned int uRrvTime, uRTSTime, uCTSTime, uAckTime, uDataTime;
 
 	uRrvTime = uRTSTime = uCTSTime = uAckTime = uDataTime = 0;
 
@@ -1207,7 +1207,6 @@ s_cbFillTxBufHead(struct vnt_private *pDevice, unsigned char byPktType,
 	ptdCurr->pTDInfo->dwReqCount = cbReqCount;
 	ptdCurr->pTDInfo->dwHeaderLength = cbHeaderLength;
 	ptdCurr->pTDInfo->skb_dma = ptdCurr->pTDInfo->buf_dma;
-	ptdCurr->buff_addr = cpu_to_le32(ptdCurr->pTDInfo->skb_dma);
 
 	return cbHeaderLength;
 }
@@ -1309,18 +1308,10 @@ int vnt_generate_fifo_header(struct vnt_private *priv, u32 dma_idx,
 			    priv->hw->conf.chandef.chan->hw_value);
 	}
 
-	if (current_rate > RATE_11M) {
-		if (info->band == IEEE80211_BAND_5GHZ) {
-			pkt_type = PK_TYPE_11A;
-		} else {
-			if (tx_rate->flags & IEEE80211_TX_RC_USE_CTS_PROTECT)
-				pkt_type = PK_TYPE_11GB;
-			else
-				pkt_type = PK_TYPE_11GA;
-		}
-	} else {
+	if (current_rate > RATE_11M)
+		pkt_type = (u8)priv->byPacketType;
+	else
 		pkt_type = PK_TYPE_11B;
-	}
 
 	/*Set fifo controls */
 	if (pkt_type == PK_TYPE_11A)

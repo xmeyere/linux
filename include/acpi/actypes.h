@@ -5,7 +5,7 @@
  *****************************************************************************/
 
 /*
- * Copyright (C) 2000 - 2014, Intel Corp.
+ * Copyright (C) 2000 - 2015, Intel Corp.
  * All rights reserved.
  *
  * Redistribution and use in source and binary forms, with or without
@@ -199,28 +199,8 @@ typedef int s32;
 typedef s32 acpi_native_int;
 
 typedef u32 acpi_size;
-
-#ifdef ACPI_32BIT_PHYSICAL_ADDRESS
-
-/*
- * OSPMs can define this to shrink the size of the structures for 32-bit
- * none PAE environment. ASL compiler may always define this to generate
- * 32-bit OSPM compliant tables.
- */
 typedef u32 acpi_io_address;
 typedef u32 acpi_physical_address;
-
-#else				/* ACPI_32BIT_PHYSICAL_ADDRESS */
-
-/*
- * It is reported that, after some calculations, the physical addresses can
- * wrap over the 32-bit boundary on 32-bit PAE environment.
- * https://bugzilla.kernel.org/show_bug.cgi?id=87971
- */
-typedef u64 acpi_io_address;
-typedef u64 acpi_physical_address;
-
-#endif				/* ACPI_32BIT_PHYSICAL_ADDRESS */
 
 #define ACPI_MAX_PTR                    ACPI_UINT32_MAX
 #define ACPI_SIZE_MAX                   ACPI_UINT32_MAX
@@ -764,7 +744,7 @@ typedef u32 acpi_event_status;
 /*
  * GPE info flags - Per GPE
  * +-------+-+-+---+
- * |  7:4  |3|2|1:0|
+ * |  7:5  |4|3|2:0|
  * +-------+-+-+---+
  *     |    | |  |
  *     |    | |  +-- Type of dispatch:to method, handler, notify, or none
@@ -776,13 +756,15 @@ typedef u32 acpi_event_status;
 #define ACPI_GPE_DISPATCH_METHOD        (u8) 0x01
 #define ACPI_GPE_DISPATCH_HANDLER       (u8) 0x02
 #define ACPI_GPE_DISPATCH_NOTIFY        (u8) 0x03
-#define ACPI_GPE_DISPATCH_MASK          (u8) 0x03
+#define ACPI_GPE_DISPATCH_RAW_HANDLER   (u8) 0x04
+#define ACPI_GPE_DISPATCH_MASK          (u8) 0x07
+#define ACPI_GPE_DISPATCH_TYPE(flags)   ((u8) ((flags) & ACPI_GPE_DISPATCH_MASK))
 
-#define ACPI_GPE_LEVEL_TRIGGERED        (u8) 0x04
+#define ACPI_GPE_LEVEL_TRIGGERED        (u8) 0x08
 #define ACPI_GPE_EDGE_TRIGGERED         (u8) 0x00
-#define ACPI_GPE_XRUPT_TYPE_MASK        (u8) 0x04
+#define ACPI_GPE_XRUPT_TYPE_MASK        (u8) 0x08
 
-#define ACPI_GPE_CAN_WAKE               (u8) 0x08
+#define ACPI_GPE_CAN_WAKE               (u8) 0x10
 
 /*
  * Flags for GPE and Lock interfaces

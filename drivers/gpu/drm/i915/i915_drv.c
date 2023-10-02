@@ -845,6 +845,8 @@ int i915_reset(struct drm_device *dev)
 		return ret;
 	}
 
+	intel_overlay_reset(dev_priv);
+
 	/* Ok, now get things going again... */
 
 	/*
@@ -1040,7 +1042,7 @@ static void vlv_save_gunit_s0ix_state(struct drm_i915_private *dev_priv)
 		s->lra_limits[i] = I915_READ(GEN7_LRA_LIMITS_BASE + i * 4);
 
 	s->media_max_req_count	= I915_READ(GEN7_MEDIA_MAX_REQ_COUNT);
-	s->gfx_max_req_count	= I915_READ(GEN7_GFX_MAX_REQ_COUNT);
+	s->gfx_max_req_count	= I915_READ(GEN7_MEDIA_MAX_REQ_COUNT);
 
 	s->render_hwsp		= I915_READ(RENDER_HWS_PGA_GEN7);
 	s->ecochk		= I915_READ(GAM_ECOCHK);
@@ -1122,7 +1124,7 @@ static void vlv_restore_gunit_s0ix_state(struct drm_i915_private *dev_priv)
 		I915_WRITE(GEN7_LRA_LIMITS_BASE + i * 4, s->lra_limits[i]);
 
 	I915_WRITE(GEN7_MEDIA_MAX_REQ_COUNT, s->media_max_req_count);
-	I915_WRITE(GEN7_GFX_MAX_REQ_COUNT, s->gfx_max_req_count);
+	I915_WRITE(GEN7_MEDIA_MAX_REQ_COUNT, s->gfx_max_req_count);
 
 	I915_WRITE(RENDER_HWS_PGA_GEN7,	s->render_hwsp);
 	I915_WRITE(GAM_ECOCHK,		s->ecochk);
@@ -1300,7 +1302,9 @@ static int vlv_suspend_complete(struct drm_i915_private *dev_priv)
 	err = vlv_allow_gt_wake(dev_priv, false);
 	if (err)
 		goto err2;
-	vlv_save_gunit_s0ix_state(dev_priv);
+
+	if (!IS_CHERRYVIEW(dev_priv->dev))
+		vlv_save_gunit_s0ix_state(dev_priv);
 
 	err = vlv_force_gfx_clock(dev_priv, false);
 	if (err)
@@ -1331,7 +1335,8 @@ static int vlv_resume_prepare(struct drm_i915_private *dev_priv,
 	 */
 	ret = vlv_force_gfx_clock(dev_priv, true);
 
-	vlv_restore_gunit_s0ix_state(dev_priv);
+	if (!IS_CHERRYVIEW(dev_priv->dev))
+		vlv_restore_gunit_s0ix_state(dev_priv);
 
 	err = vlv_allow_gt_wake(dev_priv, true);
 	if (!ret)
@@ -1363,8 +1368,6 @@ static int intel_runtime_suspend(struct device *device)
 
 	if (WARN_ON_ONCE(!HAS_RUNTIME_PM(dev)))
 		return -ENODEV;
-
-	assert_force_wake_inactive(dev_priv);
 
 	DRM_DEBUG_KMS("Suspending device\n");
 
@@ -1403,7 +1406,8 @@ static int intel_runtime_suspend(struct device *device)
 		return ret;
 	}
 
-	del_timer_sync(&dev_priv->gpu_error.hangcheck_timer);
+	cancel_delayed_work_sync(&dev_priv->gpu_error.hangcheck_work);
+	intel_uncore_forcewake_reset(dev, false);
 	dev_priv->pm.suspended = true;
 
 	/*
@@ -1430,6 +1434,8 @@ static int intel_runtime_suspend(struct device *device)
 		 */
 		intel_opregion_notify_adapter(dev, PCI_D3hot);
 	}
+
+	assert_forcewakes_inactive(dev_priv);
 
 	DRM_DEBUG_KMS("Device suspended\n");
 	return 0;
@@ -1640,6 +1646,14 @@ static int __init i915_init(void)
 		return 0;
 #endif
 	}
+
+	/*
+	 * FIXME: Note that we're lying to the DRM core here so that we can get access
+	 * to the atomic ioctl and the atomic properties.  Only plane operations on
+	 * a single CRTC will actually work.
+	 */
+	if (i915.nuclear_pageflip)
+		driver.driver_features |= DRIVER_ATOMIC;
 
 	return drm_pci_init(&driver, &i915_pci_driver);
 }

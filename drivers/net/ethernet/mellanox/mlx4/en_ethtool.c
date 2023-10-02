@@ -92,7 +92,7 @@ mlx4_en_get_drvinfo(struct net_device *dev, struct ethtool_drvinfo *drvinfo)
 		(u16) (mdev->dev->caps.fw_ver >> 32),
 		(u16) ((mdev->dev->caps.fw_ver >> 16) & 0xffff),
 		(u16) (mdev->dev->caps.fw_ver & 0xffff));
-	strlcpy(drvinfo->bus_info, pci_name(mdev->dev->pdev),
+	strlcpy(drvinfo->bus_info, pci_name(mdev->dev->persist->pdev),
 		sizeof(drvinfo->bus_info));
 	drvinfo->n_stats = 0;
 	drvinfo->regdump_len = 0;
@@ -770,21 +770,19 @@ static int mlx4_en_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 		return 0;
 	}
 
-	proto_admin = cpu_to_be32(ptys_adv);
-	if (speed >= 0 && speed != priv->port_state.link_speed)
-		/* If speed was set then speed decides :-) */
-		proto_admin = speed_set_ptys_admin(priv, speed,
-						   ptys_reg.eth_proto_cap);
+	proto_admin = cmd->autoneg == AUTONEG_ENABLE ?
+		cpu_to_be32(ptys_adv) :
+		speed_set_ptys_admin(priv, speed,
+				     ptys_reg.eth_proto_cap);
 
 	proto_admin &= ptys_reg.eth_proto_cap;
-
-	if (proto_admin == ptys_reg.eth_proto_admin)
-		return 0; /* Nothing to change */
-
 	if (!proto_admin) {
 		en_warn(priv, "Not supported link mode(s) requested, check supported link modes.\n");
 		return -EINVAL; /* nothing to change due to bad input */
 	}
+
+	if (proto_admin == ptys_reg.eth_proto_admin)
+		return 0; /* Nothing to change */
 
 	en_dbg(DRV, priv, "mlx4_ACCESS_PTYS_REG SET: ptys_reg.eth_proto_admin = 0x%x\n",
 	       be32_to_cpu(proto_admin));
@@ -798,9 +796,9 @@ static int mlx4_en_set_settings(struct net_device *dev, struct ethtool_cmd *cmd)
 		return ret;
 	}
 
-	en_warn(priv, "Port link mode changed, restarting port...\n");
 	mutex_lock(&priv->mdev->state_lock);
 	if (priv->port_up) {
+		en_warn(priv, "Port link mode changed, restarting port...\n");
 		mlx4_en_stop_port(dev, 1);
 		if (mlx4_en_start_port(dev))
 			en_err(priv, "Failed restarting port %d\n", priv->port);
@@ -983,21 +981,20 @@ static int mlx4_en_check_rxfh_func(struct net_device *dev, u8 hfunc)
 	struct mlx4_en_priv *priv = netdev_priv(dev);
 
 	/* check if requested function is supported by the device */
-	if (hfunc == ETH_RSS_HASH_TOP) {
-		if (!(priv->mdev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_RSS_TOP))
-			return -EINVAL;
-		if (!(dev->features & NETIF_F_RXHASH))
-			en_warn(priv, "Toeplitz hash function should be used in conjunction with RX hashing for optimal performance\n");
-		return 0;
-	} else if (hfunc == ETH_RSS_HASH_XOR) {
-		if (!(priv->mdev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_RSS_XOR))
-			return -EINVAL;
-		if (dev->features & NETIF_F_RXHASH)
-			en_warn(priv, "Enabling both XOR Hash function and RX Hashing can limit RPS functionality\n");
-		return 0;
-	}
+	if ((hfunc == ETH_RSS_HASH_TOP &&
+	     !(priv->mdev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_RSS_TOP)) ||
+	    (hfunc == ETH_RSS_HASH_XOR &&
+	     !(priv->mdev->dev->caps.flags2 & MLX4_DEV_CAP_FLAG2_RSS_XOR)))
+		return -EINVAL;
 
-	return -EINVAL;
+	priv->rss_hash_fn = hfunc;
+	if (hfunc == ETH_RSS_HASH_TOP && !(dev->features & NETIF_F_RXHASH))
+		en_warn(priv,
+			"Toeplitz hash function should be used in conjunction with RX hashing for optimal performance\n");
+	if (hfunc == ETH_RSS_HASH_XOR && (dev->features & NETIF_F_RXHASH))
+		en_warn(priv,
+			"Enabling both XOR Hash function and RX Hashing can limit RPS functionality\n");
+	return 0;
 }
 
 static int mlx4_en_get_rxfh(struct net_device *dev, u32 *ring_index, u8 *key,
@@ -1071,8 +1068,6 @@ static int mlx4_en_set_rxfh(struct net_device *dev, const u32 *ring_index,
 		priv->prof->rss_rings = rss_rings;
 	if (key)
 		memcpy(priv->rss_key, key, MLX4_EN_RSS_KEY_SIZE);
-	if (hfunc !=  ETH_RSS_HASH_NO_CHANGE)
-		priv->rss_hash_fn = hfunc;
 
 	if (port_up) {
 		err = mlx4_en_start_port(dev);

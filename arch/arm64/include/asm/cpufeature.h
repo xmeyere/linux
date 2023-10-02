@@ -23,9 +23,8 @@
 
 #define ARM64_WORKAROUND_CLEAN_CACHE		0
 #define ARM64_WORKAROUND_DEVICE_LOAD_ACQUIRE	1
-#define ARM64_WORKAROUND_845719			2
 
-#define ARM64_NCAPS				3
+#define ARM64_NCAPS				2
 
 #ifndef __ASSEMBLY__
 
@@ -53,6 +52,8 @@ static inline void cpus_set_cap(unsigned int num)
 }
 
 void check_local_cpu_errata(void);
+bool cpu_supports_mixed_endian_el0(void);
+bool system_supports_mixed_endian_el0(void);
 
 #endif /* __ASSEMBLY__ */
 

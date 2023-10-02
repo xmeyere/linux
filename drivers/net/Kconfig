@@ -157,7 +157,7 @@ config IPVLAN
       making it transparent to the connected L2 switch.
 
       Ipvlan devices can be added using the "ip" command from the
-      iproute2 package starting with the iproute2-X.Y.ZZ release:
+      iproute2 package starting with the iproute2-3.19 release:
 
       "ip link add link <main-dev> [ NAME ] type ipvlan"
 
@@ -197,6 +197,7 @@ config NETCONSOLE_DYNAMIC
 
 config NETPOLL
 	def_bool NETCONSOLE
+	select SRCU
 
 config NET_POLL_CONTROLLER
 	def_bool NETPOLL
@@ -379,26 +380,5 @@ config VMXNET3
 	  module will be called vmxnet3.
 
 source "drivers/net/hyperv/Kconfig"
-
-menuconfig NETDEV_1000
-	bool "Ethernet (1000 Mbit)"
-	depends on !UML
-	default y
-	---help---
-	  Ethernet (also called IEEE 802.3 or ISO 8802-2) is the most common
-	  type of Local Area Network (LAN) in universities and companies.
-
-	  Say Y here to get to see options for Gigabit Ethernet drivers.
-	  This option alone does not add any kernel code.
-	  Note that drivers supporting both 100 and 1000 MBit may be listed
-	  under "Ethernet (10 or 100MBit)" instead.
-
-	  If you say N, all options in this submenu will be skipped and disabled.
-
-if NETDEV_1000
-
-	source "drivers/net/xmmac/Kconfig"
-
-endif
 
 endif # NETDEVICES

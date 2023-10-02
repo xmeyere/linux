@@ -22,7 +22,6 @@
 #include <asm/suspend.h>
 #include <asm/memory.h>
 #include <asm/sections.h>
-#include "reboot.h"
 
 int pfn_is_nosave(unsigned long pfn)
 {
@@ -62,7 +61,7 @@ static int notrace arch_save_image(unsigned long unused)
 
 	ret = swsusp_save();
 	if (ret == 0)
-		_soft_restart(virt_to_phys(cpu_resume), false);
+		soft_restart(virt_to_phys(cpu_resume));
 	return ret;
 }
 
@@ -87,7 +86,7 @@ static void notrace arch_restore_image(void *unused)
 	for (pbe = restore_pblist; pbe; pbe = pbe->next)
 		copy_page(pbe->orig_address, pbe->address);
 
-	_soft_restart(virt_to_phys(cpu_resume), false);
+	soft_restart(virt_to_phys(cpu_resume));
 }
 
 static u64 resume_stack[PAGE_SIZE/2/sizeof(u64)] __nosavedata;

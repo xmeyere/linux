@@ -99,7 +99,6 @@
 #include <linux/platform_device.h>
 #include <linux/io.h>
 #include <linux/dma-mapping.h>
-#include <linux/usb.h>
 
 #include "musb_core.h"
 
@@ -563,11 +562,12 @@ static irqreturn_t musb_stage0_irq(struct musb *musb, u8 int_usb,
 						(USB_PORT_STAT_C_SUSPEND << 16)
 						| MUSB_PORT_STAT_RESUME;
 				musb->rh_timer = jiffies
-					+ msecs_to_jiffies(USB_RESUME_TIMEOUT);
+						 + msecs_to_jiffies(20);
 				musb->need_finish_resume = 1;
 
 				musb->xceiv->otg->state = OTG_STATE_A_HOST;
 				musb->is_active = 1;
+				musb_host_resume_root_hub(musb);
 				break;
 			case OTG_STATE_B_WAIT_ACON:
 				musb->xceiv->otg->state = OTG_STATE_B_PERIPHERAL;
@@ -1597,30 +1597,16 @@ irqreturn_t musb_interrupt(struct musb *musb)
 		is_host_active(musb) ? "host" : "peripheral",
 		musb->int_usb, musb->int_tx, musb->int_rx);
 
-	/**
-	 * According to Mentor Graphics' documentation, flowchart on page 98,
-	 * IRQ should be handled as follows:
-	 *
-	 * . Resume IRQ
-	 * . Session Request IRQ
-	 * . VBUS Error IRQ
-	 * . Suspend IRQ
-	 * . Connect IRQ
-	 * . Disconnect IRQ
-	 * . Reset/Babble IRQ
-	 * . SOF IRQ (we're not using this one)
-	 * . Endpoint 0 IRQ
-	 * . TX Endpoints
-	 * . RX Endpoints
-	 *
-	 * We will be following that flowchart in order to avoid any problems
-	 * that might arise with internal Finite State Machine.
+	/* the core can interrupt us for multiple reasons; docs have
+	 * a generic interrupt flowchart to follow
 	 */
-
 	if (musb->int_usb)
 		retval |= musb_stage0_irq(musb, musb->int_usb,
 				devctl);
 
+	/* "stage 1" is handling endpoint irqs */
+
+	/* handle endpoint 0 first */
 	if (musb->int_tx & 1) {
 		if (is_host_active(musb))
 			retval |= musb_h_ep0_irq(musb);
@@ -1628,24 +1614,13 @@ irqreturn_t musb_interrupt(struct musb *musb)
 			retval |= musb_g_ep0_irq(musb);
 	}
 
-	reg = musb->int_tx >> 1;
-	ep_num = 1;
-	while (reg) {
-		if (reg & 1) {
-			retval = IRQ_HANDLED;
-			if (is_host_active(musb))
-				musb_host_tx(musb, ep_num);
-			else
-				musb_g_tx(musb, ep_num);
-		}
-		reg >>= 1;
-		ep_num++;
-	}
-
+	/* RX on endpoints 1-15 */
 	reg = musb->int_rx >> 1;
 	ep_num = 1;
 	while (reg) {
 		if (reg & 1) {
+			/* musb_ep_select(musb->mregs, ep_num); */
+			/* REVISIT just retval = ep->rx_irq(...) */
 			retval = IRQ_HANDLED;
 			if (is_host_active(musb))
 				musb_host_rx(musb, ep_num);
@@ -1653,6 +1628,23 @@ irqreturn_t musb_interrupt(struct musb *musb)
 				musb_g_rx(musb, ep_num);
 		}
 
+		reg >>= 1;
+		ep_num++;
+	}
+
+	/* TX on endpoints 1-15 */
+	reg = musb->int_tx >> 1;
+	ep_num = 1;
+	while (reg) {
+		if (reg & 1) {
+			/* musb_ep_select(musb->mregs, ep_num); */
+			/* REVISIT just retval |= ep->tx_irq(...) */
+			retval = IRQ_HANDLED;
+			if (is_host_active(musb))
+				musb_host_tx(musb, ep_num);
+			else
+				musb_g_tx(musb, ep_num);
+		}
 		reg >>= 1;
 		ep_num++;
 	}
@@ -1977,10 +1969,6 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 		goto fail0;
 	}
 
-	pm_runtime_use_autosuspend(musb->controller);
-	pm_runtime_set_autosuspend_delay(musb->controller, 200);
-	pm_runtime_enable(musb->controller);
-
 	spin_lock_init(&musb->lock);
 	musb->board_set_power = plat->set_power;
 	musb->min_power = plat->min_power;
@@ -1998,6 +1986,12 @@ musb_init_controller(struct device *dev, int nIrq, void __iomem *ctrl)
 	musb_writew = musb_default_writew;
 	musb_readl = musb_default_readl;
 	musb_writel = musb_default_writel;
+
+	/* We need musb_read/write functions initialized for PM */
+	pm_runtime_use_autosuspend(musb->controller);
+	pm_runtime_set_autosuspend_delay(musb->controller, 200);
+	pm_runtime_irq_safe(musb->controller);
+	pm_runtime_enable(musb->controller);
 
 	/* The musb_platform_init() call:
 	 *   - adjusts musb->mregs
@@ -2469,7 +2463,7 @@ static int musb_resume(struct device *dev)
 	if (musb->need_finish_resume) {
 		musb->need_finish_resume = 0;
 		schedule_delayed_work(&musb->finish_resume_work,
-				      msecs_to_jiffies(USB_RESUME_TIMEOUT));
+				      msecs_to_jiffies(20));
 	}
 
 	/*
@@ -2508,6 +2502,12 @@ static int musb_runtime_resume(struct device *dev)
 	if (!first)
 		musb_restore_context(musb);
 	first = 0;
+
+	if (musb->need_finish_resume) {
+		musb->need_finish_resume = 0;
+		schedule_delayed_work(&musb->finish_resume_work,
+				msecs_to_jiffies(20));
+	}
 
 	return 0;
 }

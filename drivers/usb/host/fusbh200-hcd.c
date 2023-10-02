@@ -1479,8 +1479,8 @@ fusbh200_hub_descriptor (
 	memset(&desc->u.hs.DeviceRemovable[0], 0, temp);
 	memset(&desc->u.hs.DeviceRemovable[temp], 0xff, temp);
 
-	temp = 0x0008;		/* per-port overcurrent reporting */
-	temp |= 0x0002;		/* no power switching */
+	temp = HUB_CHAR_INDV_PORT_OCPM;	/* per-port overcurrent reporting */
+	temp |= HUB_CHAR_NO_LPSM;	/* no power switching */
 	desc->wHubCharacteristics = cpu_to_le16(temp);
 }
 
@@ -1550,9 +1550,10 @@ static int fusbh200_hub_control (
 			if ((temp & PORT_PE) == 0)
 				goto error;
 
+			/* resume signaling for 20 msec */
 			fusbh200_writel(fusbh200, temp | PORT_RESUME, status_reg);
 			fusbh200->reset_done[wIndex] = jiffies
-					+ msecs_to_jiffies(USB_RESUME_TIMEOUT);
+					+ msecs_to_jiffies(20);
 			break;
 		case USB_PORT_FEAT_C_SUSPEND:
 			clear_bit(wIndex, &fusbh200->port_c_suspend);

@@ -74,6 +74,8 @@
 #include <asm/uaccess.h>
 #include <trace/events/skb.h>
 #include <linux/highmem.h>
+#include <linux/capability.h>
+#include <linux/user_namespace.h>
 
 struct kmem_cache *skbuff_head_cache __read_mostly;
 static struct kmem_cache *skbuff_fclone_cache __read_mostly;
@@ -278,14 +280,13 @@ nodata:
 EXPORT_SYMBOL(__alloc_skb);
 
 /**
- * __build_skb - build a network buffer
+ * build_skb - build a network buffer
  * @data: data buffer provided by caller
- * @frag_size: size of data, or 0 if head was kmalloced
+ * @frag_size: size of fragment, or 0 if head was kmalloced
  *
  * Allocate a new &sk_buff. Caller provides space holding head and
  * skb_shared_info. @data must have been allocated by kmalloc() only if
- * @frag_size is 0, otherwise data should come from the page allocator
- *  or vmalloc()
+ * @frag_size is 0, otherwise data should come from the page allocator.
  * The return is the new skb buffer.
  * On a failure the return is %NULL, and @data is not freed.
  * Notes :
@@ -296,7 +297,7 @@ EXPORT_SYMBOL(__alloc_skb);
  *  before giving packet to stack.
  *  RX rings only contains data buffers, not full skbs.
  */
-struct sk_buff *__build_skb(void *data, unsigned int frag_size)
+struct sk_buff *build_skb(void *data, unsigned int frag_size)
 {
 	struct skb_shared_info *shinfo;
 	struct sk_buff *skb;
@@ -310,6 +311,7 @@ struct sk_buff *__build_skb(void *data, unsigned int frag_size)
 
 	memset(skb, 0, offsetof(struct sk_buff, tail));
 	skb->truesize = SKB_TRUESIZE(size);
+	skb->head_frag = frag_size != 0;
 	atomic_set(&skb->users, 1);
 	skb->head = data;
 	skb->data = data;
@@ -324,23 +326,6 @@ struct sk_buff *__build_skb(void *data, unsigned int frag_size)
 	atomic_set(&shinfo->dataref, 1);
 	kmemcheck_annotate_variable(shinfo->destructor_arg);
 
-	return skb;
-}
-
-/* build_skb() is wrapper over __build_skb(), that specifically
- * takes care of skb->head and skb->pfmemalloc
- * This means that if @frag_size is not zero, then @data must be backed
- * by a page fragment, not kmalloc() or vmalloc()
- */
-struct sk_buff *build_skb(void *data, unsigned int frag_size)
-{
-	struct sk_buff *skb = __build_skb(data, frag_size);
-
-	if (skb && frag_size) {
-		skb->head_frag = 1;
-		if (virt_to_head_page(data)->pfmemalloc)
-			skb->pfmemalloc = 1;
-	}
 	return skb;
 }
 EXPORT_SYMBOL(build_skb);
@@ -363,8 +348,7 @@ static struct page *__page_frag_refill(struct netdev_alloc_cache *nc,
 	gfp_t gfp = gfp_mask;
 
 	if (order) {
-		gfp_mask |= __GFP_COMP | __GFP_NOWARN | __GFP_NORETRY |
-			    __GFP_NOMEMALLOC;
+		gfp_mask |= __GFP_COMP | __GFP_NOWARN | __GFP_NORETRY;
 		page = alloc_pages_node(NUMA_NO_NODE, gfp_mask, order);
 		nc->frag.size = PAGE_SIZE << (page ? order : 0);
 	}
@@ -695,13 +679,6 @@ static void skb_release_head_state(struct sk_buff *skb)
 #if IS_ENABLED(CONFIG_BRIDGE_NETFILTER)
 	nf_bridge_put(skb->nf_bridge);
 #endif
-/* XXX: IS this still necessary? - JHS */
-#ifdef CONFIG_NET_SCHED
-	skb->tc_index = 0;
-#ifdef CONFIG_NET_CLS_ACT
-	skb->tc_verd = 0;
-#endif
-#endif
 }
 
 /* Free everything but the sk_buff shell. */
@@ -847,6 +824,9 @@ static void __copy_skb_header(struct sk_buff *new, const struct sk_buff *old)
 #endif
 #ifdef CONFIG_NET_RX_BUSY_POLL
 	CHECK_SKB_FIELD(napi_id);
+#endif
+#ifdef CONFIG_XPS
+	CHECK_SKB_FIELD(sender_cpu);
 #endif
 #ifdef CONFIG_NET_SCHED
 	CHECK_SKB_FIELD(tc_index);
@@ -3716,10 +3696,27 @@ static void __skb_complete_tx_timestamp(struct sk_buff *skb,
 		kfree_skb(skb);
 }
 
+static bool skb_may_tx_timestamp(struct sock *sk, bool tsonly)
+{
+	bool ret;
+
+	if (likely(sysctl_tstamp_allow_data || tsonly))
+		return true;
+
+	read_lock_bh(&sk->sk_callback_lock);
+	ret = sk->sk_socket && sk->sk_socket->file &&
+	      file_ns_capable(sk->sk_socket->file, &init_user_ns, CAP_NET_RAW);
+	read_unlock_bh(&sk->sk_callback_lock);
+	return ret;
+}
+
 void skb_complete_tx_timestamp(struct sk_buff *skb,
 			       struct skb_shared_hwtstamps *hwtstamps)
 {
 	struct sock *sk = skb->sk;
+
+	if (!skb_may_tx_timestamp(sk, false))
+		return;
 
 	/* take a reference to prevent skb_orphan() from freeing the socket */
 	sock_hold(sk);
@@ -3736,18 +3733,31 @@ void __skb_tstamp_tx(struct sk_buff *orig_skb,
 		     struct sock *sk, int tstype)
 {
 	struct sk_buff *skb;
+	bool tsonly;
 
 	if (!sk)
 		return;
 
-	if (hwtstamps)
-		*skb_hwtstamps(orig_skb) = *hwtstamps;
-	else
-		orig_skb->tstamp = ktime_get_real();
+	tsonly = sk->sk_tsflags & SOF_TIMESTAMPING_OPT_TSONLY;
+	if (!skb_may_tx_timestamp(sk, tsonly))
+		return;
 
-	skb = skb_clone(orig_skb, GFP_ATOMIC);
+	if (tsonly)
+		skb = alloc_skb(0, GFP_ATOMIC);
+	else
+		skb = skb_clone(orig_skb, GFP_ATOMIC);
 	if (!skb)
 		return;
+
+	if (tsonly) {
+		skb_shinfo(skb)->tx_flags = skb_shinfo(orig_skb)->tx_flags;
+		skb_shinfo(skb)->tskey = skb_shinfo(orig_skb)->tskey;
+	}
+
+	if (hwtstamps)
+		*skb_hwtstamps(skb) = *hwtstamps;
+	else
+		skb->tstamp = ktime_get_real();
 
 	__skb_complete_tx_timestamp(skb, sk, tstype);
 }
@@ -4159,20 +4169,19 @@ EXPORT_SYMBOL(skb_try_coalesce);
  */
 void skb_scrub_packet(struct sk_buff *skb, bool xnet)
 {
+	if (xnet)
+		skb_orphan(skb);
 	skb->tstamp.tv64 = 0;
 	skb->pkt_type = PACKET_HOST;
 	skb->skb_iif = 0;
 	skb->ignore_df = 0;
 	skb_dst_drop(skb);
+	skb->mark = 0;
+	skb_sender_cpu_clear(skb);
+	skb_init_secmark(skb);
 	secpath_reset(skb);
 	nf_reset(skb);
 	nf_reset_trace(skb);
-
-	if (!xnet)
-		return;
-
-	skb_orphan(skb);
-	skb->mark = 0;
 }
 EXPORT_SYMBOL_GPL(skb_scrub_packet);
 
@@ -4225,7 +4234,7 @@ struct sk_buff *skb_vlan_untag(struct sk_buff *skb)
 	struct vlan_hdr *vhdr;
 	u16 vlan_tci;
 
-	if (unlikely(vlan_tx_tag_present(skb))) {
+	if (unlikely(skb_vlan_tag_present(skb))) {
 		/* vlan_tci is already set-up so leave this for another time */
 		return skb;
 	}
@@ -4311,7 +4320,7 @@ int skb_vlan_pop(struct sk_buff *skb)
 	__be16 vlan_proto;
 	int err;
 
-	if (likely(vlan_tx_tag_present(skb))) {
+	if (likely(skb_vlan_tag_present(skb))) {
 		skb->vlan_tci = 0;
 	} else {
 		if (unlikely((skb->protocol != htons(ETH_P_8021Q) &&
@@ -4341,7 +4350,7 @@ EXPORT_SYMBOL(skb_vlan_pop);
 
 int skb_vlan_push(struct sk_buff *skb, __be16 vlan_proto, u16 vlan_tci)
 {
-	if (vlan_tx_tag_present(skb)) {
+	if (skb_vlan_tag_present(skb)) {
 		unsigned int offset = skb->data - skb_mac_header(skb);
 		int err;
 
@@ -4351,7 +4360,7 @@ int skb_vlan_push(struct sk_buff *skb, __be16 vlan_proto, u16 vlan_tci)
 		 */
 		__skb_push(skb, offset);
 		err = __vlan_insert_tag(skb, skb->vlan_proto,
-					vlan_tx_tag_get(skb));
+					skb_vlan_tag_get(skb));
 		if (err)
 			return err;
 		skb->protocol = skb->vlan_proto;

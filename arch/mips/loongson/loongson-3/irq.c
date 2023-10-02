@@ -44,7 +44,6 @@ void mach_irq_dispatch(unsigned int pending)
 
 static struct irqaction cascade_irqaction = {
 	.handler = no_action,
-	.flags = IRQF_NO_SUSPEND,
 	.name = "cascade",
 };
 

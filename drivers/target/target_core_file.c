@@ -264,32 +264,40 @@ static int fd_do_prot_rw(struct se_cmd *cmd, struct fd_prot *fd_prot,
 	struct se_device *se_dev = cmd->se_dev;
 	struct fd_dev *dev = FD_DEV(se_dev);
 	struct file *prot_fd = dev->fd_prot_file;
+	struct scatterlist *sg;
 	loff_t pos = (cmd->t_task_lba * se_dev->prot_length);
 	unsigned char *buf;
-	u32 prot_size;
-	int rc, ret = 1;
+	u32 prot_size, len, size;
+	int rc, ret = 1, i;
 
 	prot_size = (cmd->data_length / se_dev->dev_attrib.block_size) *
 		     se_dev->prot_length;
 
 	if (!is_write) {
-		fd_prot->prot_buf = kzalloc(prot_size, GFP_KERNEL);
+		fd_prot->prot_buf = vzalloc(prot_size);
 		if (!fd_prot->prot_buf) {
 			pr_err("Unable to allocate fd_prot->prot_buf\n");
 			return -ENOMEM;
 		}
 		buf = fd_prot->prot_buf;
 
-		fd_prot->prot_sg_nents = 1;
-		fd_prot->prot_sg = kzalloc(sizeof(struct scatterlist),
-					   GFP_KERNEL);
+		fd_prot->prot_sg_nents = cmd->t_prot_nents;
+		fd_prot->prot_sg = kzalloc(sizeof(struct scatterlist) *
+					   fd_prot->prot_sg_nents, GFP_KERNEL);
 		if (!fd_prot->prot_sg) {
 			pr_err("Unable to allocate fd_prot->prot_sg\n");
-			kfree(fd_prot->prot_buf);
+			vfree(fd_prot->prot_buf);
 			return -ENOMEM;
 		}
-		sg_init_table(fd_prot->prot_sg, fd_prot->prot_sg_nents);
-		sg_set_buf(fd_prot->prot_sg, buf, prot_size);
+		size = prot_size;
+
+		for_each_sg(fd_prot->prot_sg, sg, fd_prot->prot_sg_nents, i) {
+
+			len = min_t(u32, PAGE_SIZE, size);
+			sg_set_buf(sg, buf, len);
+			size -= len;
+			buf += len;
+		}
 	}
 
 	if (is_write) {
@@ -310,7 +318,7 @@ static int fd_do_prot_rw(struct se_cmd *cmd, struct fd_prot *fd_prot,
 
 	if (is_write || ret < 0) {
 		kfree(fd_prot->prot_sg);
-		kfree(fd_prot->prot_buf);
+		vfree(fd_prot->prot_buf);
 	}
 
 	return ret;
@@ -486,6 +494,11 @@ fd_execute_write_same(struct se_cmd *cmd)
 		target_complete_cmd(cmd, SAM_STAT_GOOD);
 		return 0;
 	}
+	if (cmd->prot_op) {
+		pr_err("WRITE_SAME: Protection information with FILEIO"
+		       " backends not supported\n");
+		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
+	}
 	sg = &cmd->t_data_sg[0];
 
 	if (cmd->t_data_nents > 1 ||
@@ -536,68 +549,12 @@ fd_execute_write_same(struct se_cmd *cmd)
 	return 0;
 }
 
-static int
-fd_do_prot_fill(struct se_device *se_dev, sector_t lba, sector_t nolb,
-		void *buf, size_t bufsize)
-{
-	struct fd_dev *fd_dev = FD_DEV(se_dev);
-	struct file *prot_fd = fd_dev->fd_prot_file;
-	sector_t prot_length, prot;
-	loff_t pos = lba * se_dev->prot_length;
-
-	if (!prot_fd) {
-		pr_err("Unable to locate fd_dev->fd_prot_file\n");
-		return -ENODEV;
-	}
-
-	prot_length = nolb * se_dev->prot_length;
-
-	for (prot = 0; prot < prot_length;) {
-		sector_t len = min_t(sector_t, bufsize, prot_length - prot);
-		ssize_t ret = kernel_write(prot_fd, buf, len, pos + prot);
-
-		if (ret != len) {
-			pr_err("vfs_write to prot file failed: %zd\n", ret);
-			return ret < 0 ? ret : -ENODEV;
-		}
-		prot += ret;
-	}
-
-	return 0;
-}
-
-static int
-fd_do_prot_unmap(struct se_cmd *cmd, sector_t lba, sector_t nolb)
-{
-	void *buf;
-	int rc;
-
-	buf = (void *)__get_free_page(GFP_KERNEL);
-	if (!buf) {
-		pr_err("Unable to allocate FILEIO prot buf\n");
-		return -ENOMEM;
-	}
-	memset(buf, 0xff, PAGE_SIZE);
-
-	rc = fd_do_prot_fill(cmd->se_dev, lba, nolb, buf, PAGE_SIZE);
-
-	free_page((unsigned long)buf);
-
-	return rc;
-}
-
 static sense_reason_t
 fd_do_unmap(struct se_cmd *cmd, void *priv, sector_t lba, sector_t nolb)
 {
 	struct file *file = priv;
 	struct inode *inode = file->f_mapping->host;
 	int ret;
-
-	if (cmd->se_dev->dev_attrib.pi_prot_type) {
-		ret = fd_do_prot_unmap(cmd, lba, nolb);
-		if (ret)
-			return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
-	}
 
 	if (S_ISBLK(inode->i_mode)) {
 		/* The backend is block device, use discard */
@@ -701,11 +658,11 @@ fd_execute_rw(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 						 0, fd_prot.prot_sg, 0);
 			if (rc) {
 				kfree(fd_prot.prot_sg);
-				kfree(fd_prot.prot_buf);
+				vfree(fd_prot.prot_buf);
 				return rc;
 			}
 			kfree(fd_prot.prot_sg);
-			kfree(fd_prot.prot_buf);
+			vfree(fd_prot.prot_buf);
 		}
 	} else {
 		memset(&fd_prot, 0, sizeof(struct fd_prot));
@@ -721,7 +678,7 @@ fd_execute_rw(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 						  0, fd_prot.prot_sg, 0);
 			if (rc) {
 				kfree(fd_prot.prot_sg);
-				kfree(fd_prot.prot_buf);
+				vfree(fd_prot.prot_buf);
 				return rc;
 			}
 		}
@@ -757,7 +714,7 @@ fd_execute_rw(struct se_cmd *cmd, struct scatterlist *sgl, u32 sgl_nents,
 
 	if (ret < 0) {
 		kfree(fd_prot.prot_sg);
-		kfree(fd_prot.prot_buf);
+		vfree(fd_prot.prot_buf);
 		return TCM_LOGICAL_UNIT_COMMUNICATION_FAILURE;
 	}
 
@@ -921,12 +878,20 @@ static int fd_init_prot(struct se_device *dev)
 
 static int fd_format_prot(struct se_device *dev)
 {
+	struct fd_dev *fd_dev = FD_DEV(dev);
+	struct file *prot_fd = fd_dev->fd_prot_file;
+	sector_t prot_length, prot;
 	unsigned char *buf;
+	loff_t pos = 0;
 	int unit_size = FDBD_FORMAT_UNIT_SIZE * dev->dev_attrib.block_size;
-	int ret;
+	int rc, ret = 0, size, len;
 
 	if (!dev->dev_attrib.pi_prot_type) {
 		pr_err("Unable to format_prot while pi_prot_type == 0\n");
+		return -ENODEV;
+	}
+	if (!prot_fd) {
+		pr_err("Unable to locate fd_dev->fd_prot_file\n");
 		return -ENODEV;
 	}
 
@@ -935,14 +900,26 @@ static int fd_format_prot(struct se_device *dev)
 		pr_err("Unable to allocate FILEIO prot buf\n");
 		return -ENOMEM;
 	}
+	prot_length = (dev->transport->get_blocks(dev) + 1) * dev->prot_length;
+	size = prot_length;
 
 	pr_debug("Using FILEIO prot_length: %llu\n",
-		 (unsigned long long)(dev->transport->get_blocks(dev) + 1) *
-					dev->prot_length);
+		 (unsigned long long)prot_length);
 
 	memset(buf, 0xff, unit_size);
-	ret = fd_do_prot_fill(dev, 0, dev->transport->get_blocks(dev) + 1,
-			      buf, unit_size);
+	for (prot = 0; prot < prot_length; prot += unit_size) {
+		len = min(unit_size, size);
+		rc = kernel_write(prot_fd, buf, len, pos);
+		if (rc != len) {
+			pr_err("vfs_write to prot file failed: %d\n", rc);
+			ret = -ENODEV;
+			goto out;
+		}
+		pos += len;
+		size -= len;
+	}
+
+out:
 	vfree(buf);
 	return ret;
 }

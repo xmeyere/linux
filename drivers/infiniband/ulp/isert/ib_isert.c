@@ -38,7 +38,7 @@
 #define ISER_MAX_CQ_LEN		(ISER_MAX_RX_CQ_LEN + ISER_MAX_TX_CQ_LEN + \
 				 ISERT_MAX_CONN)
 
-int isert_debug_level = 0;
+static int isert_debug_level;
 module_param_named(debug_level, isert_debug_level, int, 0644);
 MODULE_PARM_DESC(debug_level, "Enable debug tracing if > 0 (default:0)");
 
@@ -222,7 +222,7 @@ fail:
 static void
 isert_free_rx_descriptors(struct isert_conn *isert_conn)
 {
-	struct ib_device *ib_dev = isert_conn->conn_device->ib_device;
+	struct ib_device *ib_dev = isert_conn->conn_cm_id->device;
 	struct iser_rx_desc *rx_desc;
 	int i;
 
@@ -719,8 +719,8 @@ out:
 static void
 isert_connect_release(struct isert_conn *isert_conn)
 {
+	struct ib_device *ib_dev = isert_conn->conn_cm_id->device;
 	struct isert_device *device = isert_conn->conn_device;
-	struct ib_device *ib_dev = device->ib_device;
 
 	isert_dbg("conn %p\n", isert_conn);
 
@@ -728,8 +728,7 @@ isert_connect_release(struct isert_conn *isert_conn)
 		isert_conn_free_fastreg_pool(isert_conn);
 
 	isert_free_rx_descriptors(isert_conn);
-	if (isert_conn->conn_cm_id)
-		rdma_destroy_id(isert_conn->conn_cm_id);
+	rdma_destroy_id(isert_conn->conn_cm_id);
 
 	if (isert_conn->conn_qp) {
 		struct isert_comp *comp = isert_conn->conn_qp->recv_cq->cq_context;
@@ -879,15 +878,12 @@ isert_disconnected_handler(struct rdma_cm_id *cma_id,
 	return 0;
 }
 
-static int
+static void
 isert_connect_error(struct rdma_cm_id *cma_id)
 {
 	struct isert_conn *isert_conn = cma_id->qp->qp_context;
 
-	isert_conn->conn_cm_id = NULL;
 	isert_put_conn(isert_conn);
-
-	return -1;
 }
 
 static int
@@ -916,7 +912,7 @@ isert_cma_handler(struct rdma_cm_id *cma_id, struct rdma_cm_event *event)
 	case RDMA_CM_EVENT_REJECTED:       /* FALLTHRU */
 	case RDMA_CM_EVENT_UNREACHABLE:    /* FALLTHRU */
 	case RDMA_CM_EVENT_CONNECT_ERROR:
-		ret = isert_connect_error(cma_id);
+		isert_connect_error(cma_id);
 		break;
 	default:
 		isert_err("Unhandled RDMA CMA event: %d\n", event->event);
@@ -953,7 +949,7 @@ isert_post_recv(struct isert_conn *isert_conn, u32 count)
 		isert_err("ib_post_recv() failed with ret: %d\n", ret);
 		isert_conn->post_recv_buf_count -= count;
 	} else {
-		isert_dbg("isert_post_recv(): Posted %d RX buffers\n", count);
+		isert_dbg("Posted %d RX buffers\n", count);
 		isert_conn->conn_rx_desc_head = rx_head;
 	}
 	return ret;
@@ -1355,17 +1351,19 @@ isert_handle_text_cmd(struct isert_conn *isert_conn, struct isert_cmd *isert_cmd
 	struct iscsi_conn *conn = isert_conn->conn;
 	u32 payload_length = ntoh24(hdr->dlength);
 	int rc;
-	unsigned char *text_in;
+	unsigned char *text_in = NULL;
 
 	rc = iscsit_setup_text_cmd(conn, cmd, hdr);
 	if (rc < 0)
 		return rc;
 
-	text_in = kzalloc(payload_length, GFP_KERNEL);
-	if (!text_in) {
-		isert_err("Unable to allocate text_in of payload_length: %u\n",
-			  payload_length);
-		return -ENOMEM;
+	if (payload_length) {
+		text_in = kzalloc(payload_length, GFP_KERNEL);
+		if (!text_in) {
+			isert_err("Unable to allocate text_in of payload_length: %u\n",
+				  payload_length);
+			return -ENOMEM;
+		}
 	}
 	cmd->text_in_ptr = text_in;
 
@@ -1438,9 +1436,15 @@ isert_rx_opcode(struct isert_conn *isert_conn, struct iser_rx_desc *rx_desc,
 		ret = iscsit_handle_logout_cmd(conn, cmd, (unsigned char *)hdr);
 		break;
 	case ISCSI_OP_TEXT:
-		cmd = isert_allocate_cmd(conn);
-		if (!cmd)
-			break;
+		if (be32_to_cpu(hdr->ttt) != 0xFFFFFFFF) {
+			cmd = iscsit_find_cmd_from_itt(conn, hdr->itt);
+			if (!cmd)
+				break;
+		} else {
+			cmd = isert_allocate_cmd(conn);
+			if (!cmd)
+				break;
+		}
 
 		isert_cmd = iscsit_priv_cmd(cmd);
 		ret = isert_handle_text_cmd(isert_conn, isert_cmd, cmd,
@@ -1662,6 +1666,7 @@ isert_put_cmd(struct isert_cmd *isert_cmd, bool comp_err)
 	struct isert_conn *isert_conn = isert_cmd->conn;
 	struct iscsi_conn *conn = isert_conn->conn;
 	struct isert_device *device = isert_conn->conn_device;
+	struct iscsi_text_rsp *hdr;
 
 	isert_dbg("Cmd %p\n", isert_cmd);
 
@@ -1702,6 +1707,11 @@ isert_put_cmd(struct isert_cmd *isert_cmd, bool comp_err)
 	case ISCSI_OP_REJECT:
 	case ISCSI_OP_NOOP_OUT:
 	case ISCSI_OP_TEXT:
+		hdr = (struct iscsi_text_rsp *)&isert_cmd->tx_desc.iscsi_header;
+		/* If the continue bit is on, keep the command alive */
+		if (hdr->flags & ISCSI_FLAG_TEXT_CONTINUE)
+			break;
+
 		spin_lock_bh(&conn->cmd_lock);
 		if (!list_empty(&cmd->i_conn_node))
 			list_del_init(&cmd->i_conn_node);
@@ -1713,8 +1723,7 @@ isert_put_cmd(struct isert_cmd *isert_cmd, bool comp_err)
 		 * associated cmd->se_cmd needs to be released.
 		 */
 		if (cmd->se_cmd.se_tfo != NULL) {
-			isert_dbg("Calling transport_generic_free_cmd from"
-				 " isert_put_cmd for 0x%02x\n",
+			isert_dbg("Calling transport_generic_free_cmd for 0x%02x\n",
 				 cmd->iscsi_opcode);
 			transport_generic_free_cmd(&cmd->se_cmd, 0);
 			break;
@@ -1852,13 +1861,11 @@ isert_completion_rdma_read(struct iser_tx_desc *tx_desc,
 	cmd->i_state = ISTATE_RECEIVED_LAST_DATAOUT;
 	spin_unlock_bh(&cmd->istate_lock);
 
-	if (ret) {
-		target_put_sess_cmd(se_cmd->se_sess, se_cmd);
+	if (ret)
 		transport_send_check_condition_and_sense(se_cmd,
 							 se_cmd->pi_err, 0);
-	} else {
+	else
 		target_execute_cmd(se_cmd);
-	}
 }
 
 static void
@@ -2281,7 +2288,7 @@ isert_put_text_rsp(struct iscsi_cmd *cmd, struct iscsi_conn *conn)
 	}
 	isert_init_send_wr(isert_conn, isert_cmd, send_wr);
 
-	isert_dbg("conn %p Text Reject\n", isert_conn);
+	isert_dbg("conn %p Text Response\n", isert_conn);
 
 	return isert_post_response(isert_conn, isert_cmd);
 }
@@ -3142,7 +3149,7 @@ accept_wait:
 	spin_lock_bh(&np->np_thread_lock);
 	if (np->np_thread_state >= ISCSI_NP_THREAD_RESET) {
 		spin_unlock_bh(&np->np_thread_lock);
-		isert_dbg("np_thread_state %d for isert_accept_np\n",
+		isert_dbg("np_thread_state %d\n",
 			 np->np_thread_state);
 		/**
 		 * No point in stalling here when np_thread
@@ -3326,7 +3333,8 @@ static int __init isert_init(void)
 {
 	int ret;
 
-	isert_comp_wq = alloc_workqueue("isert_comp_wq", 0, 0);
+	isert_comp_wq = alloc_workqueue("isert_comp_wq",
+					WQ_UNBOUND | WQ_HIGHPRI, 0);
 	if (!isert_comp_wq) {
 		isert_err("Unable to allocate isert_comp_wq\n");
 		ret = -ENOMEM;

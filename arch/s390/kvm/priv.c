@@ -229,19 +229,18 @@ static int handle_tpi(struct kvm_vcpu *vcpu)
 	struct kvm_s390_interrupt_info *inti;
 	unsigned long len;
 	u32 tpi_data[3];
-	int rc;
+	int cc, rc;
 	u64 addr;
 
+	rc = 0;
 	addr = kvm_s390_get_base_disp_s(vcpu);
 	if (addr & 3)
 		return kvm_s390_inject_program_int(vcpu, PGM_SPECIFICATION);
-
+	cc = 0;
 	inti = kvm_s390_get_io_int(vcpu->kvm, vcpu->arch.sie_block->gcr[6], 0);
-	if (!inti) {
-		kvm_s390_set_psw_cc(vcpu, 0);
-		return 0;
-	}
-
+	if (!inti)
+		goto no_interrupt;
+	cc = 1;
 	tpi_data[0] = inti->io.subchannel_id << 16 | inti->io.subchannel_nr;
 	tpi_data[1] = inti->io.io_int_parm;
 	tpi_data[2] = inti->io.io_int_word;
@@ -252,38 +251,30 @@ static int handle_tpi(struct kvm_vcpu *vcpu)
 		 */
 		len = sizeof(tpi_data) - 4;
 		rc = write_guest(vcpu, addr, &tpi_data, len);
-		if (rc) {
-			rc = kvm_s390_inject_prog_cond(vcpu, rc);
-			goto reinject_interrupt;
-		}
+		if (rc)
+			return kvm_s390_inject_prog_cond(vcpu, rc);
 	} else {
 		/*
 		 * Store the three-word I/O interruption code into
 		 * the appropriate lowcore area.
 		 */
 		len = sizeof(tpi_data);
-		if (write_guest_lc(vcpu, __LC_SUBCHANNEL_ID, &tpi_data, len)) {
-			/* failed writes to the low core are not recoverable */
+		if (write_guest_lc(vcpu, __LC_SUBCHANNEL_ID, &tpi_data, len))
 			rc = -EFAULT;
-			goto reinject_interrupt;
-		}
 	}
-
-	/* irq was successfully handed to the guest */
-	kfree(inti);
-	kvm_s390_set_psw_cc(vcpu, 1);
-	return 0;
-reinject_interrupt:
 	/*
 	 * If we encounter a problem storing the interruption code, the
 	 * instruction is suppressed from the guest's view: reinject the
 	 * interrupt.
 	 */
-	if (kvm_s390_reinject_io_int(vcpu->kvm, inti)) {
+	if (!rc)
 		kfree(inti);
-		rc = -EFAULT;
-	}
-	/* don't set the cc, a pgm irq was injected or we drop to user space */
+	else
+		kvm_s390_reinject_io_int(vcpu->kvm, inti);
+no_interrupt:
+	/* Set condition code and we're done. */
+	if (!rc)
+		kvm_s390_set_psw_cc(vcpu, cc);
 	return rc ? -EFAULT : 0;
 }
 
@@ -346,19 +337,24 @@ static int handle_io_inst(struct kvm_vcpu *vcpu)
 static int handle_stfl(struct kvm_vcpu *vcpu)
 {
 	int rc;
+	unsigned int fac;
 
 	vcpu->stat.instruction_stfl++;
 
 	if (vcpu->arch.sie_block->gpsw.mask & PSW_MASK_PSTATE)
 		return kvm_s390_inject_program_int(vcpu, PGM_PRIVILEGED_OP);
 
+	/*
+	 * We need to shift the lower 32 facility bits (bit 0-31) from a u64
+	 * into a u32 memory representation. They will remain bits 0-31.
+	 */
+	fac = *vcpu->kvm->arch.model.fac->list >> 32;
 	rc = write_guest_lc(vcpu, offsetof(struct _lowcore, stfl_fac_list),
-			    vfacilities, 4);
+			    &fac, sizeof(fac));
 	if (rc)
 		return rc;
-	VCPU_EVENT(vcpu, 5, "store facility list value %x",
-		   *(unsigned int *) vfacilities);
-	trace_kvm_s390_handle_stfl(vcpu, *(unsigned int *) vfacilities);
+	VCPU_EVENT(vcpu, 5, "store facility list value %x", fac);
+	trace_kvm_s390_handle_stfl(vcpu, fac);
 	return 0;
 }
 
@@ -471,7 +467,6 @@ static void handle_stsi_3_2_2(struct kvm_vcpu *vcpu, struct sysinfo_3_2_2 *mem)
 	for (n = mem->count - 1; n > 0 ; n--)
 		memcpy(&mem->vm[n], &mem->vm[n - 1], sizeof(mem->vm[0]));
 
-	memset(&mem->vm[0], 0, sizeof(mem->vm[0]));
 	mem->vm[0].cpus_total = cpus;
 	mem->vm[0].cpus_configured = cpus;
 	mem->vm[0].cpus_standby = 0;
