@@ -20,7 +20,7 @@
 #include <linux/string.h>
 #include <linux/clk.h>
 #include <linux/mutex.h>
-#include <asm/clkdev.h>
+//#include <asm/clkdev.h>
 #include <linux/io.h>
 #include <mach/io.h>
 #include <mach/platform.h>

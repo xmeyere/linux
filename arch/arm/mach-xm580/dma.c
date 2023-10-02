@@ -1,6 +1,5 @@
 #include <linux/dma-mapping.h>
 #include <linux/amba/bus.h>
-#include <linux/amba/pl330.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/flash.h>
@@ -13,6 +12,8 @@
 #include <mach/irqs.h>
 #include <linux/clkdev.h>
 #include <mach/dma.h>
+#include <linux/dma-mapping.h>
+#include <linux/dmaengine.h>
 
 
 static u8  xm580_dma_peri[] = {
@@ -34,6 +35,22 @@ static u8  xm580_dma_peri[] = {
 	DMACH_I2S_TX,
 	DMACH_I2S_RX,
 	DMACH_MAX,
+};
+struct dma_pl330_platdata {
+	/*
+	 * Number of valid peripherals connected to DMAC.
+	 * This may be different from the value read from
+	 * CR0, as the PL330 implementation might have 'holes'
+	 * in the peri list or the peri could also be reached
+	 * from another DMAC which the platform prefers.
+	 */
+	u8 nr_valid_peri;
+	/* Array of valid peripherals */
+	u8 *peri_id;
+	/* Operational capabilities */
+	dma_cap_mask_t cap_mask;
+	/* Bytes to allocate for MC buffer */
+	unsigned mcbuf_sz;
 };
 
 static struct dma_pl330_platdata xm580_dma_platdata = {

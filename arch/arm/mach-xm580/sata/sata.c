@@ -1,3 +1,6 @@
+#include <linux/module.h>
+#include <linux/types.h>
+#include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/platform_device.h>
 #include <linux/ahci_platform.h>
@@ -111,9 +114,6 @@ int __init xm580_start_sata(void)
 
     return 0;
 }
-module_init(xm580_start_sata);
-
-
 
 static __init int xm_sata0_init(struct device *dev, void *mmio)
 {
@@ -157,3 +157,6 @@ static __init int xm_sata1_init(struct device *dev, void *mmio)
     iounmap(mmio);
     return 0;
 }
+
+module_init(xm580_start_sata);
+MODULE_DESCRIPTION("SATA helper driver for XM580 board");

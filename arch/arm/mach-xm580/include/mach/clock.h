@@ -5,7 +5,6 @@
 #include <linux/mutex.h>
 #include <linux/spinlock.h>
 #include <linux/clkdev.h>
-#include <asm/clkdev.h>
 
 struct clk;
 

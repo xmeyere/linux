@@ -21,11 +21,34 @@
 #include <mach/hardware.h>
 #include <mach/platform.h>
 #include <mach/irqs.h>
-#include <asm/hardware/timer-sp.h>
+
+//timer_sp.h header
+#define TIMER_1_BASE	0x00
+#define TIMER_2_BASE	0x20
+
+#define TIMER_LOAD	0x00			/* ACVR rw */
+#define TIMER_VALUE	0x04			/* ACVR ro */
+#define TIMER_CTRL	0x08			/* ACVR rw */
+#define TIMER_CTRL_ONESHOT	(1 << 0)	/*  CVR */
+#define TIMER_CTRL_32BIT	(1 << 1)	/*  CVR */
+#define TIMER_CTRL_DIV1		(0 << 2)	/* ACVR */
+#define TIMER_CTRL_DIV16	(1 << 2)	/* ACVR */
+#define TIMER_CTRL_DIV256	(2 << 2)	/* ACVR */
+#define TIMER_CTRL_IE		(1 << 5)	/*   VR */
+#define TIMER_CTRL_PERIODIC	(1 << 6)	/* ACVR */
+#define TIMER_CTRL_ENABLE	(1 << 7)	/* ACVR */
+
+#define TIMER_INTCLR	0x0c			/* ACVR wo */
+#define TIMER_RIS	0x10			/*  CVR ro */
+#define TIMER_MIS	0x14			/*  CVR ro */
+#define TIMER_BGLOAD	0x18			/*  CVR rw */
+//timer_sp header end
+
 #include <asm/mach/time.h>
 #include <linux/sched_clock.h>
-#include <asm/hardware/arm_timer.h>
+//#include <asm/hardware/arm_timer.h>
 #include <asm/smp_twd.h>
+#include <clocksource/timer-sp804.h>
 
 #include <mach/early-debug.h>
 
@@ -255,7 +278,7 @@ static void xm580_clocksource_start(void __iomem *base)
 		IOMEM(base + TIMER_CTRL));
 }
 
-static cycle_t xm580_clocksource_read(struct clocksource *cs)
+static u64 xm580_clocksource_read(struct clocksource *cs)
 {
 	return ~readl_relaxed(to_xm580_clksrc(cs)->base + TIMER_VALUE);
 }

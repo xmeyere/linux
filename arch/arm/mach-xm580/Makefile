@@ -8,6 +8,7 @@ obj-$(CONFIG_XM580_AUDIO) += i2s/
 obj-$(CONFIG_XM580_AUDIO) += acodec/
 obj-$(CONFIG_XM580_VO) += vo/
 obj-y += i2c/
+obj-y += sata/
 obj-y += usb.o
 #obj-$(CONFIG_MXC_HANTRO) += handrodec/
 obj-y += ddr.o

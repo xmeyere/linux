@@ -89,11 +89,11 @@ static int __init xmrtc_init_module(void)
             printk("do_settimeofday() failed\n");
         }
     }
-    init_timer_key(&g_timer, 0,0,0);
-    g_timer.function = rtc_adjust;
-    g_timer.expires = jiffies + 60000;
-    g_timer.data = 0;
-    add_timer(&g_timer);
+    //init_timer_key(&g_timer, 0,0,0);
+    //g_timer.function = rtc_adjust;
+    //g_timer.expires = jiffies + 60000;
+    //g_timer.data = 0;
+    //add_timer(&g_timer);
     printk("xm_rtc init is ok!\n");
     return 0;
 }
