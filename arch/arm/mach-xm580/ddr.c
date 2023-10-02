@@ -47,19 +47,19 @@ static int __init xmddr_init_module(void)
     writel(12000000, (void*)0xfe0d2020);
     writel(12000000, (void*)0xfe0d2038);
     writel(readl((void*)0xfe0d2028) | 0x80, (void*)0xfe0d2028);
-    printk("successfully initialized VO device\n");
 
     result = request_threaded_irq(0x5f, timer7_interrupt, 0, 0x20, "timer7", NULL);
     if (result < 0) {
         printk("request irq %d failed\n", 0x25);
-        result = -1;
+        return -1;
     }
-    return result;
+    printk("xm_ddr init OK\n");
+    return 0;
 }
 
 static void __exit xmddr_cleanup_module(void)
 {
-    
+    free_irq(0x25, 0);
 }
 
 module_init(xmddr_init_module);
