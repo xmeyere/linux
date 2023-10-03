@@ -94,7 +94,7 @@ static struct resource mem_res[] = {
  * The recorded values of x0 .. x3 upon kernel entry.
  */
 u64 __cacheline_aligned boot_args[4];
-
+extern void early_print(const char *str, ...);
 void __init smp_setup_processor_id(void)
 {
 	u64 mpidr = read_cpuid_mpidr() & MPIDR_HWID_BITMASK;
@@ -107,6 +107,8 @@ void __init smp_setup_processor_id(void)
 	 */
 	set_my_cpu_offset(0);
 	pr_info("Booting Linux on physical CPU 0x%010lx [0x%08x]\n",
+		(unsigned long)mpidr, read_cpuid_id());
+	early_print("Booting Linux on physical CPU 0x%010lx [0x%08x]\n",
 		(unsigned long)mpidr, read_cpuid_id());
 }
 

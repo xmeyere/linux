@@ -587,7 +587,7 @@ void notrace cpu_init(void)
 }
 
 u32 __cpu_logical_map[NR_CPUS] = { [0 ... NR_CPUS-1] = MPIDR_INVALID };
-
+extern void early_print(const char *str, ...);
 void __init smp_setup_processor_id(void)
 {
 	int i;
@@ -606,6 +606,8 @@ void __init smp_setup_processor_id(void)
 	set_my_cpu_offset(0);
 
 	pr_info("Booting Linux on physical CPU 0x%x\n", mpidr);
+
+	early_print("smp_setup_processor_id: smp booting CPU %x\n", mpidr);
 }
 
 struct mpidr_hash mpidr_hash;
