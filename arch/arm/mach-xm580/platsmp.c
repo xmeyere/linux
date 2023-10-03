@@ -158,12 +158,12 @@ static void __init xm580_smp_prepare_cpus(unsigned int max_cpus)
 }
 /*****************************************************************************/
 
-//struct smp_operations xm580_smp_ops __initdata = {
-//	.smp_init_cpus = xm580_smp_init_cpus,
-//	.smp_prepare_cpus = xm580_smp_prepare_cpus,
-//	.smp_secondary_init = xm580_secondary_init,
-//	.smp_boot_secondary = xm580_boot_secondary,
-//#ifdef CONFIG_HOTPLUG_CPU
-//	.cpu_die = xm580_cpu_die,
-//#endif
-//};
+struct smp_operations xm580_smp_ops __initdata = {
+	.smp_init_cpus = xm580_smp_init_cpus,
+	.smp_prepare_cpus = xm580_smp_prepare_cpus,
+	.smp_secondary_init = xm580_secondary_init,
+	.smp_boot_secondary = xm580_boot_secondary,
+#ifdef CONFIG_HOTPLUG_CPU
+	.cpu_die = xm580_cpu_die,
+#endif
+};

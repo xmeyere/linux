@@ -194,7 +194,7 @@ void __init xm580_init(void)
 	writel(0x84, (void*)0xfe020054);
 
 	for (i = 0; i < ARRAY_SIZE(amba_devs); i++) {
-		early_print("register result: %d\n",  amba_device_register(amba_devs[i], &iomem_resource));
+		amba_device_register(amba_devs[i], &iomem_resource);
 	}
 }
 static void __init xm580_reserve(void)
@@ -220,7 +220,7 @@ MACHINE_START(XM580, "xm580")
 	.init_irq       = xm580_gic_init_irq,
 	.init_time    	= xm580_timer_init,
 	.init_machine   = xm580_init,
-	//.smp          = smp_ops(xm580_smp_ops),
+	.smp          = smp_ops(xm580_smp_ops),
 	.reserve      = xm580_reserve,
 	.restart      = xm580_restart,
 MACHINE_END

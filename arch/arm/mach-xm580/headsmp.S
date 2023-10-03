@@ -80,7 +80,7 @@ way_loop:
 	mov	r1, #0                  /* r1->set counter */
 line_loop:
 	mov	r2, r0, LSL #30
-	/*orr	r2, r1, LSL #5           /* r2->set/way cache-op format */
+	orr	r2, r1, LSL #5           /* r2->set/way cache-op format */
 	mcr     p15, 0, r2, c7, c6, 2    /* Invalidate line described by r2 */
 	add	r1, r1, #1               /* Increment set counter */
 	cmp	r1, r3                   /* Check if the last set is reached */

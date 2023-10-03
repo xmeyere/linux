@@ -16,7 +16,6 @@
  * Place - Suite 330, Boston, MA 02111-1307 USA.
  *
  */
-#include <asm/setup.h>
 
 #include <linux/dma-mapping.h>
 #include <linux/serial_8250.h>

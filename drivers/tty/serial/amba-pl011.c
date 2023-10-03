@@ -47,7 +47,6 @@
 #include <linux/io.h>
 #include <linux/acpi.h>
 
-void __init early_print(const char *str, ...);
 #include "amba-pl011.h"
 
 #define UART_NR			14
@@ -438,7 +437,7 @@ static void pl011_dma_probe(struct uart_amba_port *uap)
 		chan = dma_request_channel(mask, plat->dma_filter,
 						plat->dma_tx_param);
 		if (!chan) {
-			early_print("no TX DMA channel!\n");
+			dev_err(uap->port.dev, "no TX DMA channel!\n");
 			return;
 		}
 	}
@@ -456,7 +455,7 @@ static void pl011_dma_probe(struct uart_amba_port *uap)
 		chan = dma_request_channel(mask, plat->dma_filter, plat->dma_rx_param);
 
 		if (!chan) {
-			early_print("no RX DMA channel!\n");
+			dev_err(uap->port.dev, "no RX DMA channel!\n");
 			return;
 		}
 	}
@@ -967,11 +966,11 @@ static void pl011_dma_rx_irq(struct uart_amba_port *uap)
 	 * overflow the FIFO.
 	 */
 	if (dmaengine_pause(rxchan))
-		early_print("unable to pause DMA transfer\n");
+		dev_err(uap->port.dev, "unable to pause DMA transfer\n");
 	dmastat = rxchan->device->device_tx_status(rxchan,
 						   dmarx->cookie, &state);
 	if (dmastat != DMA_PAUSED)
-		early_print("unable to pause DMA transfer\n");
+		dev_err(uap->port.dev, "unable to pause DMA transfer\n");
 
 	/* Disable RX DMA - incoming data will wait in the FIFO */
 	uap->dmacr &= ~UART011_RXDMAE;
@@ -992,7 +991,8 @@ static void pl011_dma_rx_irq(struct uart_amba_port *uap)
 	/* Switch buffer & re-trigger DMA job */
 	dmarx->use_buf_b = !dmarx->use_buf_b;
 	if (pl011_dma_rx_trigger_dma(uap)) {
-
+		dev_dbg(uap->port.dev, "could not retrigger RX DMA job "
+			"fall back to interrupt mode\n");
 		uap->im |= UART011_RXIM;
 		pl011_write(uap->im, uap, REG_IMSC);
 	}
@@ -1039,7 +1039,8 @@ static void pl011_dma_rx_callback(void *data)
 	 * get some IRQ immediately from RX.
 	 */
 	if (ret) {
-
+		dev_dbg(uap->port.dev, "could not retrigger RX DMA job "
+			"fall back to interrupt mode\n");
 		uap->im |= UART011_RXIM;
 		pl011_write(uap->im, uap, REG_IMSC);
 	}
@@ -1125,7 +1126,7 @@ static void pl011_dma_startup(struct uart_amba_port *uap)
 
 	uap->dmatx.buf = kmalloc(PL011_DMA_BUFFER_SIZE, GFP_KERNEL | __GFP_DMA);
 	if (!uap->dmatx.buf) {
-		early_print("no memory for DMA TX buffer\n");
+		dev_err(uap->port.dev, "no memory for DMA TX buffer\n");
 		uap->port.fifosize = uap->fifosize;
 		return;
 	}
@@ -1143,7 +1144,7 @@ static void pl011_dma_startup(struct uart_amba_port *uap)
 	ret = pl011_sgbuf_init(uap->dmarx.chan, &uap->dmarx.sgbuf_a,
 			       DMA_FROM_DEVICE);
 	if (ret) {
-		early_print("failed to init DMA %s: %d\n",
+		dev_err(uap->port.dev, "failed to init DMA %s: %d\n",
 			"RX buffer A", ret);
 		goto skip_rx;
 	}
@@ -1151,7 +1152,7 @@ static void pl011_dma_startup(struct uart_amba_port *uap)
 	ret = pl011_sgbuf_init(uap->dmarx.chan, &uap->dmarx.sgbuf_b,
 			       DMA_FROM_DEVICE);
 	if (ret) {
-		early_print("failed to init DMA %s: %d\n",
+		dev_err(uap->port.dev, "failed to init DMA %s: %d\n",
 			"RX buffer B", ret);
 		pl011_sgbuf_free(uap->dmarx.chan, &uap->dmarx.sgbuf_a,
 				 DMA_FROM_DEVICE);
@@ -2614,7 +2615,8 @@ static int pl011_register_port(struct uart_amba_port *uap)
 	if (!amba_reg.state) {
 		ret = uart_register_driver(&amba_reg);
 		if (ret < 0) {
-			early_print("Failed to register AMBA-PL011 driver\n");
+			dev_err(uap->port.dev,
+				"Failed to register AMBA-PL011 driver\n");
 			for (i = 0; i < ARRAY_SIZE(amba_ports); i++)
 				if (amba_ports[i] == uap)
 					amba_ports[i] = NULL;
@@ -2634,7 +2636,6 @@ static int pl011_probe(struct amba_device *dev, const struct amba_id *id)
 	struct uart_amba_port *uap;
 	struct vendor_data *vendor = id->data;
 	int portnr, ret;
-	early_print("pl011 probe\n");
 
 	portnr = pl011_find_free_port();
 	if (portnr < 0)
@@ -2664,9 +2665,7 @@ static int pl011_probe(struct amba_device *dev, const struct amba_id *id)
 
 	amba_set_drvdata(dev, uap);
 
-	int hr= pl011_register_port(uap);
-	early_print("register pl011: %d\n", hr);
-	return hr;
+	return pl011_register_port(uap);
 }
 
 static int pl011_remove(struct amba_device *dev)
@@ -2735,7 +2734,7 @@ static int sbsa_uart_probe(struct platform_device *pdev)
 	ret = platform_get_irq(pdev, 0);
 	if (ret < 0) {
 		if (ret != -EPROBE_DEFER)
-			early_print("cannot obtain irq\n");
+			dev_err(&pdev->dev, "cannot obtain irq\n");
 		return ret;
 	}
 	uap->port.irq	= ret;
@@ -2831,10 +2830,11 @@ static struct amba_driver pl011_driver = {
 	.probe		= pl011_probe,
 	.remove		= pl011_remove,
 };
+
 static int __init pl011_init(void)
 {
 	printk(KERN_INFO "Serial: AMBA PL011 UART driver\n");
-	early_print("register pl011\n");
+
 	if (platform_driver_register(&arm_sbsa_uart_platform_driver))
 		pr_warn("could not register SBSA UART platform driver\n");
 	return amba_driver_register(&pl011_driver);

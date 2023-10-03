@@ -57,7 +57,7 @@
 #include "console_cmdline.h"
 #include "braille.h"
 #include "internal.h"
-void __init early_print(const char *str, ...);
+
 int console_printk[4] = {
 	CONSOLE_LOGLEVEL_DEFAULT,	/* console_loglevel */
 	MESSAGE_LOGLEVEL_DEFAULT,	/* default_message_loglevel */
@@ -2638,7 +2638,7 @@ void register_console(struct console *newcon)
 	struct console *bcon = NULL;
 	struct console_cmdline *c;
 	static bool has_preferred;
-	early_print("register console\n");
+
 	if (console_drivers)
 		for_each_console(bcon)
 			if (WARN(bcon == newcon,
@@ -2852,7 +2852,6 @@ EXPORT_SYMBOL(unregister_console);
  */
 void __init console_init(void)
 {
-	early_print("console_init()\n");
 	int ret;
 	initcall_t call;
 	initcall_entry_t *ce;
