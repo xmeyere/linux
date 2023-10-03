@@ -26,7 +26,7 @@ static DEFINE_SPINLOCK(boot_lock);
 
 /*****************************************************************************/
 
-static void  write_pen_release(int val)
+static void __cpuinit write_pen_release(int val)
 {
 	pen_release = val;
 	smp_wmb();
@@ -39,7 +39,7 @@ static void __iomem *scu_base_addr(void)
 	return (void*)0xfe300000;//__io_address(ARM_INTNL_BASE + REG_A5_PERI_SCU);
 }
 
-static int  xm580_boot_secondary(unsigned int cpu,
+static int __cpuinit xm580_boot_secondary(unsigned int cpu,
 					struct task_struct *idle)
 {
 	unsigned long timeout;
@@ -96,7 +96,7 @@ static int  xm580_boot_secondary(unsigned int cpu,
 }
 /*****************************************************************************/
 
-static void  xm580_secondary_init(unsigned int cpu)
+static void __cpuinit xm580_secondary_init(unsigned int cpu)
 {
 	/*
 	 * 1. enable L1 prefetch                       [2]

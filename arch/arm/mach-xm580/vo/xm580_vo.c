@@ -14,7 +14,7 @@ void* reg_vo_base_va = NULL;
 static int __init xmvo_init_module(void)
 {
     printk("initilizing video output!\n");
-    reg_vo_base_va = ioremap(0x31000000, 0x90000);
+    reg_vo_base_va = __arm_ioremap(0x31000000,0x90000,0);
     if(!reg_vo_base_va)
     {
         printk("ioremap video in base failed!\n");

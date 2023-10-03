@@ -16,6 +16,7 @@
 //#include <asm/system.h>
 #include <asm/irq.h>
 #include <linux/leds.h>
+#include <asm/hardware/arm_timer.h>
 #include <asm/mach-types.h>
 #include <linux/irqchip/arm-gic.h>    
 
@@ -33,6 +34,7 @@
 #include <mach/dma.h>
 #include <linux/bootmem.h>
 #include <linux/amba/serial.h> 
+#include <linux/amba/pl330.h> 
 #include "mach/clock.h" 
 #include "platsmp.h"
 #include <asm/device.h>
