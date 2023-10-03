@@ -367,8 +367,8 @@ static void ata_force_link_limits(struct ata_link *link)
 	int linkno = link->pmp;
 	int i;
 
-	if (ata_is_host_link(link))
-		linkno += 15;
+	//if (ata_is_host_link(link))
+	//	linkno += 15;
 
 	for (i = ata_force_tbl_size - 1; i >= 0; i--) {
 		const struct ata_force_ent *fe = &ata_force_tbl[i];
@@ -3585,6 +3585,19 @@ int sata_link_resume(struct ata_link *link, const unsigned long *params,
 		scontrol = (scontrol & 0x0f0) | 0x300;
 		if ((rc = sata_scr_write(link, SCR_CONTROL, scontrol)))
 			return rc;
+
+		if(!strcmp(link->ap->host->dev->kobj.name, "ahci.0"))
+		{
+			writel(7, (void*)0xfe100150);
+		}
+		if(!strcmp(link->ap->host->dev->kobj.name, "ahci.1"))
+		{
+			writel(7, (void*)0xfe100154);
+		}
+
+		if ((rc = sata_scr_read(link, SCR_CONTROL, &scontrol)))
+			return rc;
+
 		/*
 		 * Some PHYs react badly if SStatus is pounded
 		 * immediately after resuming.  Delay 200ms before
@@ -3792,6 +3805,14 @@ int sata_link_hardreset(struct ata_link *link, const unsigned long *timing,
 		goto out;
 
 	scontrol = (scontrol & 0x0f0) | 0x301;
+	if(!strcmp(link->ap->host->dev->kobj.name, "ahci.0"))
+	{
+		writel(3, (void*)0xfe100150);
+	}
+	if(!strcmp(link->ap->host->dev->kobj.name, "ahci.1"))
+	{
+		writel(3, (void*)0xfe100154);
+	}
 
 	if ((rc = sata_scr_write_flush(link, SCR_CONTROL, scontrol)))
 		goto out;
@@ -5584,6 +5605,10 @@ int sata_link_init_spd(struct ata_link *link)
 	if (spd)
 		link->hw_sata_spd_limit &= (1 << spd) - 1;
 
+	//this seems to be a big hack added by whoever made the XM sata driver
+	link->hw_sata_spd_limit = 3;
+	ata_link_err(link, "FORCE: PHY spd limit set to 3.0 Gbps i think\n");
+	
 	ata_force_link_limits(link);
 
 	link->sata_spd_limit = link->hw_sata_spd_limit;
