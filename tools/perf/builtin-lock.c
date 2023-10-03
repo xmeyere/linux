@@ -1,6 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <errno.h>
-#include <inttypes.h>
 #include "builtin.h"
 #include "perf.h"
 
@@ -12,7 +9,7 @@
 #include "util/thread.h"
 #include "util/header.h"
 
-#include <subcmd/parse-options.h>
+#include "util/parse-options.h"
 #include "util/trace-event.h"
 
 #include "util/debug.h"
@@ -29,7 +26,6 @@
 
 #include <linux/list.h>
 #include <linux/hash.h>
-#include <linux/kernel.h>
 
 static struct perf_session *session;
 
@@ -620,7 +616,7 @@ static int report_lock_release_event(struct perf_evsel *evsel,
 	case SEQ_STATE_READ_ACQUIRED:
 		seq->read_count--;
 		BUG_ON(seq->read_count < 0);
-		if (seq->read_count) {
+		if (!seq->read_count) {
 			ls->nr_release++;
 			goto end;
 		}
@@ -773,7 +769,6 @@ static void dump_threads(void)
 		t = perf_session__findnew(session, st->tid);
 		pr_info("%10d: %s\n", st->tid, thread__comm_str(t));
 		node = rb_next(node);
-		thread__put(t);
 	};
 }
 
@@ -815,7 +810,6 @@ static int process_sample_event(struct perf_tool *tool __maybe_unused,
 				struct perf_evsel *evsel,
 				struct machine *machine)
 {
-	int err = 0;
 	struct thread *thread = machine__findnew_thread(machine, sample->pid,
 							sample->tid);
 
@@ -827,12 +821,10 @@ static int process_sample_event(struct perf_tool *tool __maybe_unused,
 
 	if (evsel->handler != NULL) {
 		tracepoint_handler f = evsel->handler;
-		err = f(evsel, sample);
+		return f(evsel, sample);
 	}
 
-	thread__put(thread);
-
-	return err;
+	return 0;
 }
 
 static void sort_result(void)
@@ -854,26 +846,20 @@ static const struct perf_evsel_str_handler lock_tracepoints[] = {
 	{ "lock:lock_release",	 perf_evsel__process_lock_release,   }, /* CONFIG_LOCKDEP */
 };
 
-static bool force;
-
 static int __cmd_report(bool display_info)
 {
 	int err = -EINVAL;
 	struct perf_tool eops = {
 		.sample		 = process_sample_event,
 		.comm		 = perf_event__process_comm,
-		.namespaces	 = perf_event__process_namespaces,
 		.ordered_events	 = true,
 	};
-	struct perf_data data = {
-		.file      = {
-			.path = input_name,
-		},
-		.mode      = PERF_DATA_MODE_READ,
-		.force     = force,
+	struct perf_data_file file = {
+		.path = input_name,
+		.mode = PERF_DATA_MODE_READ,
 	};
 
-	session = perf_session__new(&data, false, &eops);
+	session = perf_session__new(&file, false, &eops);
 	if (!session) {
 		pr_err("Initializing perf session failed\n");
 		return -1;
@@ -892,7 +878,7 @@ static int __cmd_report(bool display_info)
 	if (select_key())
 		goto out_delete;
 
-	err = perf_session__process_events(session);
+	err = perf_session__process_events(session, &eops);
 	if (err)
 		goto out_delete;
 
@@ -947,36 +933,32 @@ static int __cmd_record(int argc, const char **argv)
 
 	BUG_ON(i != rec_argc);
 
-	ret = cmd_record(i, rec_argv);
+	ret = cmd_record(i, rec_argv, NULL);
 	free(rec_argv);
 	return ret;
 }
 
-int cmd_lock(int argc, const char **argv)
+int cmd_lock(int argc, const char **argv, const char *prefix __maybe_unused)
 {
-	const struct option lock_options[] = {
-	OPT_STRING('i', "input", &input_name, "file", "input file name"),
-	OPT_INCR('v', "verbose", &verbose, "be more verbose (show symbol address, etc)"),
-	OPT_BOOLEAN('D', "dump-raw-trace", &dump_trace, "dump raw trace in ASCII"),
-	OPT_BOOLEAN('f', "force", &force, "don't complain, do it"),
-	OPT_END()
-	};
-
 	const struct option info_options[] = {
 	OPT_BOOLEAN('t', "threads", &info_threads,
 		    "dump thread list in perf.data"),
 	OPT_BOOLEAN('m', "map", &info_map,
 		    "map of lock instances (address:name table)"),
-	OPT_PARENT(lock_options)
+	OPT_END()
 	};
-
+	const struct option lock_options[] = {
+	OPT_STRING('i', "input", &input_name, "file", "input file name"),
+	OPT_INCR('v', "verbose", &verbose, "be more verbose (show symbol address, etc)"),
+	OPT_BOOLEAN('D', "dump-raw-trace", &dump_trace, "dump raw trace in ASCII"),
+	OPT_END()
+	};
 	const struct option report_options[] = {
 	OPT_STRING('k', "key", &sort_key, "acquired",
 		    "key for sorting (acquired / contended / avg_wait / wait_total / wait_max / wait_min)"),
 	/* TODO: type */
-	OPT_PARENT(lock_options)
+	OPT_END()
 	};
-
 	const char * const info_usage[] = {
 		"perf lock info [<options>]",
 		NULL
@@ -1015,7 +997,7 @@ int cmd_lock(int argc, const char **argv)
 		rc = __cmd_report(false);
 	} else if (!strcmp(argv[0], "script")) {
 		/* Aliased to 'perf script' */
-		return cmd_script(argc, argv);
+		return cmd_script(argc, argv, prefix);
 	} else if (!strcmp(argv[0], "info")) {
 		if (argc) {
 			argc = parse_options(argc, argv,

@@ -64,7 +64,6 @@
 #include <linux/i8042.h>
 #include <linux/input.h>
 #include <linux/input/sparse-keymap.h>
-#include <acpi/video.h>
 
 #define MSI_DRIVER_VERSION "0.5"
 
@@ -223,7 +222,7 @@ static ssize_t set_device_state(const char *buf, size_t count, u8 mask)
 		return -EINVAL;
 
 	if (quirks->ec_read_only)
-		return 0;
+		return -EOPNOTSUPP;
 
 	/* read current device state */
 	result = ec_read(MSI_STANDARD_EC_COMMAND_ADDRESS, &rdata);
@@ -563,11 +562,11 @@ static struct attribute *msipf_old_attributes[] = {
 	NULL
 };
 
-static const struct attribute_group msipf_attribute_group = {
+static struct attribute_group msipf_attribute_group = {
 	.attrs = msipf_attributes
 };
 
-static const struct attribute_group msipf_old_attribute_group = {
+static struct attribute_group msipf_old_attribute_group = {
 	.attrs = msipf_old_attributes
 };
 
@@ -605,14 +604,15 @@ static int dmi_check_cb(const struct dmi_system_id *dmi)
 	return 1;
 }
 
-static const struct dmi_system_id msi_dmi_table[] __initconst = {
+static struct dmi_system_id __initdata msi_dmi_table[] = {
 	{
 		.ident = "MSI S270",
 		.matches = {
-			DMI_MATCH(DMI_SYS_VENDOR, "MICRO-STAR INT"),
+			DMI_MATCH(DMI_SYS_VENDOR, "MICRO-STAR INT'L CO.,LTD"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "MS-1013"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "0131"),
-			DMI_MATCH(DMI_CHASSIS_VENDOR, "MICRO-STAR INT")
+			DMI_MATCH(DMI_CHASSIS_VENDOR,
+				  "MICRO-STAR INT'L CO.,LTD")
 		},
 		.driver_data = &quirk_old_ec_model,
 		.callback = dmi_check_cb
@@ -645,7 +645,8 @@ static const struct dmi_system_id msi_dmi_table[] __initconst = {
 			DMI_MATCH(DMI_SYS_VENDOR, "NOTEBOOK"),
 			DMI_MATCH(DMI_PRODUCT_NAME, "SAM2000"),
 			DMI_MATCH(DMI_PRODUCT_VERSION, "0131"),
-			DMI_MATCH(DMI_CHASSIS_VENDOR, "MICRO-STAR INT")
+			DMI_MATCH(DMI_CHASSIS_VENDOR,
+				  "MICRO-STAR INT'L CO.,LTD")
 		},
 		.driver_data = &quirk_old_ec_model,
 		.callback = dmi_check_cb
@@ -854,15 +855,15 @@ static bool msi_laptop_i8042_filter(unsigned char data, unsigned char str,
 static void msi_init_rfkill(struct work_struct *ignored)
 {
 	if (rfk_wlan) {
-		msi_rfkill_set_state(rfk_wlan, !wlan_s);
+		rfkill_set_sw_state(rfk_wlan, !wlan_s);
 		rfkill_wlan_set(NULL, !wlan_s);
 	}
 	if (rfk_bluetooth) {
-		msi_rfkill_set_state(rfk_bluetooth, !bluetooth_s);
+		rfkill_set_sw_state(rfk_bluetooth, !bluetooth_s);
 		rfkill_bluetooth_set(NULL, !bluetooth_s);
 	}
 	if (rfk_threeg) {
-		msi_rfkill_set_state(rfk_threeg, !threeg_s);
+		rfkill_set_sw_state(rfk_threeg, !threeg_s);
 		rfkill_threeg_set(NULL, !threeg_s);
 	}
 }
@@ -974,13 +975,21 @@ static int __init msi_laptop_input_setup(void)
 
 	err = input_register_device(msi_laptop_input_dev);
 	if (err)
-		goto err_free_dev;
+		goto err_free_keymap;
 
 	return 0;
 
+err_free_keymap:
+	sparse_keymap_free(msi_laptop_input_dev);
 err_free_dev:
 	input_free_device(msi_laptop_input_dev);
 	return err;
+}
+
+static void msi_laptop_input_destroy(void)
+{
+	sparse_keymap_free(msi_laptop_input_dev);
+	input_unregister_device(msi_laptop_input_dev);
 }
 
 static int __init load_scm_model_init(struct platform_device *sdev)
@@ -1027,7 +1036,7 @@ static int __init load_scm_model_init(struct platform_device *sdev)
 	return 0;
 
 fail_filter:
-	input_unregister_device(msi_laptop_input_dev);
+	msi_laptop_input_destroy();
 
 fail_input:
 	rfkill_cleanup();
@@ -1059,8 +1068,10 @@ static int __init msi_init(void)
 		return -EINVAL;
 
 	/* Register backlight stuff */
-	if (quirks->old_ec_model &&
-	    acpi_video_get_backlight_type() == acpi_backlight_vendor) {
+
+	if (!quirks->old_ec_model || acpi_video_backlight_support()) {
+		pr_info("Brightness ignored, must be controlled by ACPI video driver\n");
+	} else {
 		struct backlight_properties props;
 		memset(&props, 0, sizeof(struct backlight_properties));
 		props.type = BACKLIGHT_PLATFORM;
@@ -1127,8 +1138,6 @@ fail_create_attr:
 fail_create_group:
 	if (quirks->load_scm_model) {
 		i8042_remove_filter(msi_laptop_i8042_filter);
-		cancel_delayed_work_sync(&msi_touchpad_dwork);
-		input_unregister_device(msi_laptop_input_dev);
 		cancel_delayed_work_sync(&msi_rfkill_dwork);
 		cancel_work_sync(&msi_rfkill_work);
 		rfkill_cleanup();
@@ -1149,8 +1158,7 @@ static void __exit msi_cleanup(void)
 {
 	if (quirks->load_scm_model) {
 		i8042_remove_filter(msi_laptop_i8042_filter);
-		cancel_delayed_work_sync(&msi_touchpad_dwork);
-		input_unregister_device(msi_laptop_input_dev);
+		msi_laptop_input_destroy();
 		cancel_delayed_work_sync(&msi_rfkill_dwork);
 		cancel_work_sync(&msi_rfkill_work);
 		rfkill_cleanup();

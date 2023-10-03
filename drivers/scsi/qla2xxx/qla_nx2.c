@@ -11,24 +11,9 @@
 #include "qla_def.h"
 #include "qla_gbl.h"
 
-#define TIMEOUT_100_MS 100
+#include <linux/delay.h>
 
-static const uint32_t qla8044_reg_tbl[] = {
-	QLA8044_PEG_HALT_STATUS1,
-	QLA8044_PEG_HALT_STATUS2,
-	QLA8044_PEG_ALIVE_COUNTER,
-	QLA8044_CRB_DRV_ACTIVE,
-	QLA8044_CRB_DEV_STATE,
-	QLA8044_CRB_DRV_STATE,
-	QLA8044_CRB_DRV_SCRATCH,
-	QLA8044_CRB_DEV_PART_INFO1,
-	QLA8044_CRB_IDC_VER_MAJOR,
-	QLA8044_FW_VER_MAJOR,
-	QLA8044_FW_VER_MINOR,
-	QLA8044_FW_VER_SUB,
-	QLA8044_CMDPEG_STATE,
-	QLA8044_ASIC_TEMP,
-};
+#define TIMEOUT_100_MS 100
 
 /* 8044 Flash Read/Write functions */
 uint32_t
@@ -280,8 +265,9 @@ qla8044_clear_qsnt_ready(struct scsi_qla_host *vha)
 }
 
 /**
+ *
  * qla8044_lock_recovery - Recovers the idc_lock.
- * @vha : Pointer to adapter structure
+ * @ha : Pointer to adapter structure
  *
  * Lock Recovery Register
  * 5-2	Lock recovery owner: Function ID of driver doing lock recovery,
@@ -411,11 +397,11 @@ qla8044_idc_lock(struct qla_hw_data *ha)
 				 * has the lock, wait for 2secs
 				 * and retry
 				 */
-				ql_dbg(ql_dbg_p3p, vha, 0xb08a,
-				       "%s: IDC lock Recovery by %d "
-				       "failed, Retrying timeout\n", __func__,
-				       ha->portnum);
-				timeout = 0;
+				 ql_dbg(ql_dbg_p3p, vha, 0xb08a,
+				     "%s: IDC lock Recovery by %d "
+				     "failed, Retrying timeout\n", __func__,
+				     ha->portnum);
+				 timeout = 0;
 			}
 		}
 		msleep(QLA8044_DRV_LOCK_MSLEEP);
@@ -476,11 +462,12 @@ qla8044_flash_lock(scsi_qla_host_t *vha)
 static void
 qla8044_flash_unlock(scsi_qla_host_t *vha)
 {
+	int ret_val;
 	struct qla_hw_data *ha = vha->hw;
 
 	/* Reading FLASH_UNLOCK register unlocks the Flash */
 	qla8044_wr_reg(ha, QLA8044_FLASH_LOCK_ID, 0xFF);
-	qla8044_rd_reg(ha, QLA8044_FLASH_UNLOCK);
+	ret_val = qla8044_rd_reg(ha, QLA8044_FLASH_UNLOCK);
 }
 
 
@@ -574,7 +561,7 @@ qla8044_read_optrom_data(struct scsi_qla_host *vha, uint8_t *buf,
 	return buf;
 }
 
-static inline int
+inline int
 qla8044_need_reset(struct scsi_qla_host *vha)
 {
 	uint32_t drv_state, drv_active;
@@ -1143,9 +1130,9 @@ qla8044_ms_mem_write_128b(struct scsi_qla_host *vha,
 	}
 
 	for (i = 0; i < count; i++, addr += 16) {
-		if (!((addr_in_range(addr, QLA8044_ADDR_QDR_NET,
+		if (!((QLA8044_ADDR_IN_RANGE(addr, QLA8044_ADDR_QDR_NET,
 		    QLA8044_ADDR_QDR_NET_MAX)) ||
-		    (addr_in_range(addr, QLA8044_ADDR_DDR_NET,
+		    (QLA8044_ADDR_IN_RANGE(addr, QLA8044_ADDR_DDR_NET,
 			QLA8044_ADDR_DDR_NET_MAX)))) {
 			ret_val = QLA_FUNCTION_FAILED;
 			goto exit_ms_mem_write_unlock;
@@ -1569,7 +1556,7 @@ qla8044_read_reset_template(struct scsi_qla_host *vha)
 	/* Copy rest of the template */
 	if (qla8044_read_flash_data(vha, p_buff, addr, tmplt_hdr_def_size)) {
 		ql_log(ql_log_fatal, vha, 0xb0bd,
-		    "%s: Failed to read reset template\n", __func__);
+		    "%s: Failed to read reset tempelate\n", __func__);
 		goto exit_read_template_error;
 	}
 
@@ -1618,7 +1605,7 @@ qla8044_set_idc_dontreset(struct scsi_qla_host *vha)
 	qla8044_wr_reg(ha, QLA8044_IDC_DRV_CTRL, idc_ctrl);
 }
 
-static inline void
+inline void
 qla8044_set_rst_ready(struct scsi_qla_host *vha)
 {
 	uint32_t drv_state;
@@ -1638,10 +1625,10 @@ qla8044_set_rst_ready(struct scsi_qla_host *vha)
 
 /**
  * qla8044_need_reset_handler - Code to start reset sequence
- * @vha: pointer to adapter structure
+ * @ha: pointer to adapter structure
  *
  * Note: IDC lock must be held upon entry
- */
+ **/
 static void
 qla8044_need_reset_handler(struct scsi_qla_host *vha)
 {
@@ -1858,8 +1845,8 @@ exit_update_idc_reg:
 
 /**
  * qla8044_need_qsnt_handler - Code to start qsnt
- * @vha: pointer to adapter structure
- */
+ * @ha: pointer to adapter structure
+ **/
 static void
 qla8044_need_qsnt_handler(struct scsi_qla_host *vha)
 {
@@ -2030,10 +2017,10 @@ exit_error:
 
 /**
  * qla4_8xxx_check_temp - Check the ISP82XX temperature.
- * @vha: adapter block pointer.
+ * @ha: adapter block pointer.
  *
  * Note: The caller should not hold the idc lock.
- */
+ **/
 static int
 qla8044_check_temp(struct scsi_qla_host *vha)
 {
@@ -2070,10 +2057,10 @@ int qla8044_read_temperature(scsi_qla_host_t *vha)
 
 /**
  * qla8044_check_fw_alive  - Check firmware health
- * @vha: Pointer to host adapter structure.
+ * @ha: Pointer to host adapter structure.
  *
  * Context: Interrupt
- */
+ **/
 int
 qla8044_check_fw_alive(struct scsi_qla_host *vha)
 {
@@ -3005,7 +2992,7 @@ qla8044_minidump_process_rddfe(struct scsi_qla_host *vha,
 	uint32_t addr1, addr2, value, data, temp, wrVal;
 	uint8_t stride, stride2;
 	uint16_t count;
-	uint32_t poll, mask, modify_mask;
+	uint32_t poll, mask, data_size, modify_mask;
 	uint32_t wait_count = 0;
 
 	uint32_t *data_ptr = *d_ptr;
@@ -3022,6 +3009,7 @@ qla8044_minidump_process_rddfe(struct scsi_qla_host *vha,
 	poll = rddfe->poll;
 	mask = rddfe->mask;
 	modify_mask = rddfe->modify_mask;
+	data_size = rddfe->data_size;
 
 	addr2 = addr1 + stride;
 
@@ -3103,7 +3091,7 @@ qla8044_minidump_process_rdmdio(struct scsi_qla_host *vha,
 	uint8_t stride1, stride2;
 	uint32_t addr3, addr4, addr5, addr6, addr7;
 	uint16_t count, loop_cnt;
-	uint32_t mask;
+	uint32_t poll, mask;
 	uint32_t *data_ptr = *d_ptr;
 
 	struct qla8044_minidump_entry_rdmdio *rdmdio;
@@ -3117,6 +3105,7 @@ qla8044_minidump_process_rdmdio(struct scsi_qla_host *vha,
 	stride2 = rdmdio->stride_2;
 	count = rdmdio->count;
 
+	poll = rdmdio->poll;
 	mask = rdmdio->mask;
 	value2 = rdmdio->value_2;
 
@@ -3152,7 +3141,8 @@ qla8044_minidump_process_rdmdio(struct scsi_qla_host *vha,
 			goto error;
 
 		addr7 = addr2 - (4 * stride1);
-		data = qla8044_ipmdio_rd_reg(vha, addr1, addr3, mask, addr7);
+			data = qla8044_ipmdio_rd_reg(vha, addr1, addr3,
+			    mask, addr7);
 		if (data == -1)
 			goto error;
 
@@ -3175,7 +3165,7 @@ error:
 static uint32_t qla8044_minidump_process_pollwr(struct scsi_qla_host *vha,
 		struct qla8044_minidump_entry_hdr *entry_hdr, uint32_t **d_ptr)
 {
-	uint32_t addr1, addr2, value1, value2, poll, r_value;
+	uint32_t addr1, addr2, value1, value2, poll, mask, r_value;
 	uint32_t wait_count = 0;
 	struct qla8044_minidump_entry_pollwr *pollwr_hdr;
 
@@ -3186,6 +3176,7 @@ static uint32_t qla8044_minidump_process_pollwr(struct scsi_qla_host *vha,
 	value2 = pollwr_hdr->value_2;
 
 	poll = pollwr_hdr->poll;
+	mask = pollwr_hdr->mask;
 
 	while (wait_count < poll) {
 		qla8044_rd_reg_indirect(vha, addr1, &r_value);

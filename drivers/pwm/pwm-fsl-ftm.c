@@ -16,7 +16,6 @@
 #include <linux/module.h>
 #include <linux/mutex.h>
 #include <linux/of_address.h>
-#include <linux/of_device.h>
 #include <linux/platform_device.h>
 #include <linux/pm.h>
 #include <linux/pwm.h>
@@ -76,15 +75,12 @@ enum fsl_pwm_clk {
 	FSL_PWM_CLK_MAX
 };
 
-struct fsl_ftm_soc {
-	bool has_enable_bits;
-};
-
 struct fsl_pwm_chip {
 	struct pwm_chip chip;
 
 	struct mutex lock;
 
+	unsigned int use_count;
 	unsigned int cnt_select;
 	unsigned int clk_ps;
 
@@ -92,10 +88,7 @@ struct fsl_pwm_chip {
 
 	int period_ns;
 
-	struct clk *ipg_clk;
 	struct clk *clk[FSL_PWM_CLK_MAX];
-
-	const struct fsl_ftm_soc *soc;
 };
 
 static inline struct fsl_pwm_chip *to_fsl_chip(struct pwm_chip *chip)
@@ -105,32 +98,16 @@ static inline struct fsl_pwm_chip *to_fsl_chip(struct pwm_chip *chip)
 
 static int fsl_pwm_request(struct pwm_chip *chip, struct pwm_device *pwm)
 {
-	int ret;
 	struct fsl_pwm_chip *fpc = to_fsl_chip(chip);
 
-	ret = clk_prepare_enable(fpc->ipg_clk);
-	if (!ret && fpc->soc->has_enable_bits) {
-		mutex_lock(&fpc->lock);
-		regmap_update_bits(fpc->regmap, FTM_SC, BIT(pwm->hwpwm + 16),
-				   BIT(pwm->hwpwm + 16));
-		mutex_unlock(&fpc->lock);
-	}
-
-	return ret;
+	return clk_prepare_enable(fpc->clk[FSL_PWM_CLK_SYS]);
 }
 
 static void fsl_pwm_free(struct pwm_chip *chip, struct pwm_device *pwm)
 {
 	struct fsl_pwm_chip *fpc = to_fsl_chip(chip);
 
-	if (fpc->soc->has_enable_bits) {
-		mutex_lock(&fpc->lock);
-		regmap_update_bits(fpc->regmap, FTM_SC, BIT(pwm->hwpwm + 16),
-				   0);
-		mutex_unlock(&fpc->lock);
-	}
-
-	clk_disable_unprepare(fpc->ipg_clk);
+	clk_disable_unprepare(fpc->clk[FSL_PWM_CLK_SYS]);
 }
 
 static int fsl_pwm_calculate_default_ps(struct fsl_pwm_chip *fpc,
@@ -323,6 +300,9 @@ static int fsl_counter_clock_enable(struct fsl_pwm_chip *fpc)
 {
 	int ret;
 
+	if (fpc->use_count++ != 0)
+		return 0;
+
 	/* select counter clock source */
 	regmap_update_bits(fpc->regmap, FTM_SC, FTM_SC_CLK_MASK,
 			   FTM_SC_CLK(fpc->cnt_select));
@@ -354,6 +334,25 @@ static int fsl_pwm_enable(struct pwm_chip *chip, struct pwm_device *pwm)
 	return ret;
 }
 
+static void fsl_counter_clock_disable(struct fsl_pwm_chip *fpc)
+{
+	/*
+	 * already disabled, do nothing
+	 */
+	if (fpc->use_count == 0)
+		return;
+
+	/* there are still users, so can't disable yet */
+	if (--fpc->use_count > 0)
+		return;
+
+	/* no users left, disable PWM counter clock */
+	regmap_update_bits(fpc->regmap, FTM_SC, FTM_SC_CLK_MASK, 0);
+
+	clk_disable_unprepare(fpc->clk[FSL_PWM_CLK_CNTEN]);
+	clk_disable_unprepare(fpc->clk[fpc->cnt_select]);
+}
+
 static void fsl_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 {
 	struct fsl_pwm_chip *fpc = to_fsl_chip(chip);
@@ -363,8 +362,7 @@ static void fsl_pwm_disable(struct pwm_chip *chip, struct pwm_device *pwm)
 	regmap_update_bits(fpc->regmap, FTM_OUTMASK, BIT(pwm->hwpwm),
 			   BIT(pwm->hwpwm));
 
-	clk_disable_unprepare(fpc->clk[FSL_PWM_CLK_CNTEN]);
-	clk_disable_unprepare(fpc->clk[fpc->cnt_select]);
+	fsl_counter_clock_disable(fpc);
 
 	regmap_read(fpc->regmap, FTM_OUTMASK, &val);
 	if ((val & 0xFF) == 0xFF)
@@ -387,7 +385,7 @@ static int fsl_pwm_init(struct fsl_pwm_chip *fpc)
 {
 	int ret;
 
-	ret = clk_prepare_enable(fpc->ipg_clk);
+	ret = clk_prepare_enable(fpc->clk[FSL_PWM_CLK_SYS]);
 	if (ret)
 		return ret;
 
@@ -395,7 +393,7 @@ static int fsl_pwm_init(struct fsl_pwm_chip *fpc)
 	regmap_write(fpc->regmap, FTM_OUTINIT, 0x00);
 	regmap_write(fpc->regmap, FTM_OUTMASK, 0xFF);
 
-	clk_disable_unprepare(fpc->ipg_clk);
+	clk_disable_unprepare(fpc->clk[FSL_PWM_CLK_SYS]);
 
 	return 0;
 }
@@ -416,7 +414,7 @@ static const struct regmap_config fsl_pwm_regmap_config = {
 
 	.max_register = FTM_PWMLOAD,
 	.volatile_reg = fsl_pwm_volatile_reg,
-	.cache_type = REGCACHE_FLAT,
+	.cache_type = REGCACHE_RBTREE,
 };
 
 static int fsl_pwm_probe(struct platform_device *pdev)
@@ -432,7 +430,6 @@ static int fsl_pwm_probe(struct platform_device *pdev)
 
 	mutex_init(&fpc->lock);
 
-	fpc->soc = of_device_get_match_data(&pdev->dev);
 	fpc->chip.dev = &pdev->dev;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -466,20 +463,12 @@ static int fsl_pwm_probe(struct platform_device *pdev)
 	if (IS_ERR(fpc->clk[FSL_PWM_CLK_CNTEN]))
 		return PTR_ERR(fpc->clk[FSL_PWM_CLK_CNTEN]);
 
-	/*
-	 * ipg_clk is the interface clock for the IP. If not provided, use the
-	 * ftm_sys clock as the default.
-	 */
-	fpc->ipg_clk = devm_clk_get(&pdev->dev, "ipg");
-	if (IS_ERR(fpc->ipg_clk))
-		fpc->ipg_clk = fpc->clk[FSL_PWM_CLK_SYS];
-
-
 	fpc->chip.ops = &fsl_pwm_ops;
 	fpc->chip.of_xlate = of_pwm_xlate_with_flags;
 	fpc->chip.of_pwm_n_cells = 3;
 	fpc->chip.base = -1;
 	fpc->chip.npwm = 8;
+	fpc->chip.can_sleep = true;
 
 	ret = pwmchip_add(&fpc->chip);
 	if (ret < 0) {
@@ -503,24 +492,17 @@ static int fsl_pwm_remove(struct platform_device *pdev)
 static int fsl_pwm_suspend(struct device *dev)
 {
 	struct fsl_pwm_chip *fpc = dev_get_drvdata(dev);
-	int i;
+	u32 val;
 
 	regcache_cache_only(fpc->regmap, true);
 	regcache_mark_dirty(fpc->regmap);
 
-	for (i = 0; i < fpc->chip.npwm; i++) {
-		struct pwm_device *pwm = &fpc->chip.pwms[i];
-
-		if (!test_bit(PWMF_REQUESTED, &pwm->flags))
-			continue;
-
-		clk_disable_unprepare(fpc->ipg_clk);
-
-		if (!pwm_is_enabled(pwm))
-			continue;
-
+	/* read from cache */
+	regmap_read(fpc->regmap, FTM_OUTMASK, &val);
+	if ((val & 0xFF) != 0xFF) {
 		clk_disable_unprepare(fpc->clk[FSL_PWM_CLK_CNTEN]);
 		clk_disable_unprepare(fpc->clk[fpc->cnt_select]);
+		clk_disable_unprepare(fpc->clk[FSL_PWM_CLK_SYS]);
 	}
 
 	return 0;
@@ -529,19 +511,12 @@ static int fsl_pwm_suspend(struct device *dev)
 static int fsl_pwm_resume(struct device *dev)
 {
 	struct fsl_pwm_chip *fpc = dev_get_drvdata(dev);
-	int i;
+	u32 val;
 
-	for (i = 0; i < fpc->chip.npwm; i++) {
-		struct pwm_device *pwm = &fpc->chip.pwms[i];
-
-		if (!test_bit(PWMF_REQUESTED, &pwm->flags))
-			continue;
-
-		clk_prepare_enable(fpc->ipg_clk);
-
-		if (!pwm_is_enabled(pwm))
-			continue;
-
+	/* read from cache */
+	regmap_read(fpc->regmap, FTM_OUTMASK, &val);
+	if ((val & 0xFF) != 0xFF) {
+		clk_prepare_enable(fpc->clk[FSL_PWM_CLK_SYS]);
 		clk_prepare_enable(fpc->clk[fpc->cnt_select]);
 		clk_prepare_enable(fpc->clk[FSL_PWM_CLK_CNTEN]);
 	}
@@ -558,17 +533,8 @@ static const struct dev_pm_ops fsl_pwm_pm_ops = {
 	SET_SYSTEM_SLEEP_PM_OPS(fsl_pwm_suspend, fsl_pwm_resume)
 };
 
-static const struct fsl_ftm_soc vf610_ftm_pwm = {
-	.has_enable_bits = false,
-};
-
-static const struct fsl_ftm_soc imx8qm_ftm_pwm = {
-	.has_enable_bits = true,
-};
-
 static const struct of_device_id fsl_pwm_dt_ids[] = {
-	{ .compatible = "fsl,vf610-ftm-pwm", .data = &vf610_ftm_pwm },
-	{ .compatible = "fsl,imx8qm-ftm-pwm", .data = &imx8qm_ftm_pwm },
+	{ .compatible = "fsl,vf610-ftm-pwm", },
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, fsl_pwm_dt_ids);

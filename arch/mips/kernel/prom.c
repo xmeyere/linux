@@ -18,7 +18,6 @@
 #include <linux/of_fdt.h>
 #include <linux/of_platform.h>
 
-#include <asm/bootinfo.h>
 #include <asm/page.h>
 #include <asm/prom.h>
 
@@ -38,29 +37,15 @@ char *mips_get_machine_name(void)
 	return mips_machine_name;
 }
 
-#ifdef CONFIG_USE_OF
+#ifdef CONFIG_OF
 void __init early_init_dt_add_memory_arch(u64 base, u64 size)
 {
-	if (base >= PHYS_ADDR_MAX) {
-		pr_warn("Trying to add an invalid memory region, skipped\n");
-		return;
-	}
-
-	/* Truncate the passed memory region instead of type casting */
-	if (base + size - 1 >= PHYS_ADDR_MAX || base + size < base) {
-		pr_warn("Truncate memory region %llx @ %llx to size %llx\n",
-			size, base, PHYS_ADDR_MAX - base);
-		size = PHYS_ADDR_MAX - base;
-	}
-
-	add_memory_region(base, size, BOOT_MEM_RAM);
+	return add_memory_region(base, size, BOOT_MEM_RAM);
 }
 
-int __init early_init_dt_reserve_memory_arch(phys_addr_t base,
-					phys_addr_t size, bool nomap)
+void * __init early_init_dt_alloc_memory_arch(u64 size, u64 align)
 {
-	add_memory_region(base, size, BOOT_MEM_RESERVED);
-	return 0;
+	return __alloc_bootmem(size, align, __pa(MAX_DMA_ADDRESS));
 }
 
 void __init __dt_setup_arch(void *bph)
@@ -79,10 +64,7 @@ int __init __dt_register_buses(const char *bus0, const char *bus1)
 		panic("device tree not present");
 
 	strlcpy(of_ids[0].compatible, bus0, sizeof(of_ids[0].compatible));
-	if (bus1) {
-		strlcpy(of_ids[1].compatible, bus1,
-			sizeof(of_ids[1].compatible));
-	}
+	strlcpy(of_ids[1].compatible, bus1, sizeof(of_ids[1].compatible));
 
 	if (of_platform_populate(NULL, of_ids, NULL, NULL))
 		panic("failed to populate DT");

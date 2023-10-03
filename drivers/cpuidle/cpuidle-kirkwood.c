@@ -21,6 +21,7 @@
 #include <linux/cpuidle.h>
 #include <linux/io.h>
 #include <linux/export.h>
+#include <asm/proc-fns.h>
 #include <asm/cpuidle.h>
 
 #define KIRKWOOD_MAX_STATES	2

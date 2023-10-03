@@ -112,7 +112,7 @@ int ipu_dp_set_global_alpha(struct ipu_dp *dp, bool enable,
 		writel(reg & ~DP_COM_CONF_GWAM, flow->base + DP_COM_CONF);
 	}
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	mutex_unlock(&priv->mutex);
 
@@ -127,7 +127,7 @@ int ipu_dp_set_window_pos(struct ipu_dp *dp, u16 x_pos, u16 y_pos)
 
 	writel((x_pos << 16) | y_pos, flow->base + DP_FG_POS);
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	return 0;
 }
@@ -195,8 +195,7 @@ int ipu_dp_setup_channel(struct ipu_dp *dp,
 		ipu_dp_csc_init(flow, flow->foreground.in_cs, flow->out_cs,
 				DP_COM_CONF_CSC_DEF_BOTH);
 	} else {
-		if (flow->foreground.in_cs == IPUV3_COLORSPACE_UNKNOWN ||
-		    flow->foreground.in_cs == flow->out_cs)
+		if (flow->foreground.in_cs == flow->out_cs)
 			/*
 			 * foreground identical to output, apply color
 			 * conversion on background
@@ -208,7 +207,7 @@ int ipu_dp_setup_channel(struct ipu_dp *dp,
 					flow->out_cs, DP_COM_CONF_CSC_DEF_FG);
 	}
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	mutex_unlock(&priv->mutex);
 
@@ -248,7 +247,7 @@ int ipu_dp_enable_channel(struct ipu_dp *dp)
 	reg |= DP_COM_CONF_FG_EN;
 	writel(reg, flow->base + DP_COM_CONF);
 
-	ipu_srm_dp_update(priv->ipu, true);
+	ipu_srm_dp_sync_update(priv->ipu);
 
 	mutex_unlock(&priv->mutex);
 
@@ -256,13 +255,11 @@ int ipu_dp_enable_channel(struct ipu_dp *dp)
 }
 EXPORT_SYMBOL_GPL(ipu_dp_enable_channel);
 
-void ipu_dp_disable_channel(struct ipu_dp *dp, bool sync)
+void ipu_dp_disable_channel(struct ipu_dp *dp)
 {
 	struct ipu_flow *flow = to_flow(dp);
 	struct ipu_dp_priv *priv = flow->priv;
 	u32 reg, csc;
-
-	dp->in_cs = IPUV3_COLORSPACE_UNKNOWN;
 
 	if (!dp->foreground)
 		return;
@@ -271,15 +268,17 @@ void ipu_dp_disable_channel(struct ipu_dp *dp, bool sync)
 
 	reg = readl(flow->base + DP_COM_CONF);
 	csc = reg & DP_COM_CONF_CSC_DEF_MASK;
-	reg &= ~DP_COM_CONF_CSC_DEF_MASK;
-	if (csc == DP_COM_CONF_CSC_DEF_BOTH || csc == DP_COM_CONF_CSC_DEF_BG)
-		reg |= DP_COM_CONF_CSC_DEF_BG;
+	if (csc == DP_COM_CONF_CSC_DEF_FG)
+		reg &= ~DP_COM_CONF_CSC_DEF_MASK;
 
 	reg &= ~DP_COM_CONF_FG_EN;
 	writel(reg, flow->base + DP_COM_CONF);
 
 	writel(0, flow->base + DP_FG_POS);
-	ipu_srm_dp_update(priv->ipu, sync);
+	ipu_srm_dp_sync_update(priv->ipu);
+
+	if (ipu_idmac_channel_busy(priv->ipu, IPUV3_CHANNEL_MEM_BG_SYNC))
+		ipu_wait_interrupt(priv->ipu, IPU_IRQ_DP_SF_END, 50);
 
 	mutex_unlock(&priv->mutex);
 }
@@ -351,8 +350,6 @@ int ipu_dp_init(struct ipu_soc *ipu, struct device *dev, unsigned long base)
 	mutex_init(&priv->mutex);
 
 	for (i = 0; i < IPUV3_NUM_FLOWS; i++) {
-		priv->flow[i].background.in_cs = IPUV3_COLORSPACE_UNKNOWN;
-		priv->flow[i].foreground.in_cs = IPUV3_COLORSPACE_UNKNOWN;
 		priv->flow[i].foreground.foreground = true;
 		priv->flow[i].base = priv->base + ipu_dp_flow_base[i];
 		priv->flow[i].priv = priv;

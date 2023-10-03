@@ -1,9 +1,7 @@
 #include <linux/export.h>
 #include <linux/sched.h>
-#include <linux/sched/debug.h>
 #include <linux/stacktrace.h>
 
-#include <asm/sections.h>
 #include <asm/stacktrace.h>
 #include <asm/traps.h>
 
@@ -21,19 +19,6 @@
  * A simple function epilogue looks like this:
  *	ldm	sp, {fp, sp, pc}
  *
- * When compiled with clang, pc and sp are not pushed. A simple function
- * prologue looks like this when built with clang:
- *
- *	stmdb	{..., fp, lr}
- *	add	fp, sp, #x
- *	sub	sp, sp, #y
- *
- * A simple function epilogue looks like this when built with clang:
- *
- *	sub	sp, fp, #x
- *	ldm	{..., fp, pc}
- *
- *
  * Note that with framepointer enabled, even the leaf functions have the same
  * prologue and epilogue, therefore we can ignore the LR value in this case.
  */
@@ -46,24 +31,14 @@ int notrace unwind_frame(struct stackframe *frame)
 	low = frame->sp;
 	high = ALIGN(low, THREAD_SIZE);
 
-#ifdef CONFIG_CC_IS_CLANG
-	/* check current frame pointer is within bounds */
-	if (fp < low + 4 || fp > high - 4)
-		return -EINVAL;
-
-	frame->sp = frame->fp;
-	frame->fp = READ_ONCE_NOCHECK(*(unsigned long *)(fp));
-	frame->pc = READ_ONCE_NOCHECK(*(unsigned long *)(fp + 4));
-#else
 	/* check current frame pointer is within bounds */
 	if (fp < low + 12 || fp > high - 4)
 		return -EINVAL;
 
 	/* restore the registers from the stack frame */
-	frame->fp = READ_ONCE_NOCHECK(*(unsigned long *)(fp - 12));
-	frame->sp = READ_ONCE_NOCHECK(*(unsigned long *)(fp - 8));
-	frame->pc = READ_ONCE_NOCHECK(*(unsigned long *)(fp - 4));
-#endif
+	frame->fp = *(unsigned long *)(fp - 12);
+	frame->sp = *(unsigned long *)(fp - 8);
+	frame->pc = *(unsigned long *)(fp - 4);
 
 	return 0;
 }
@@ -87,6 +62,7 @@ EXPORT_SYMBOL(walk_stackframe);
 #ifdef CONFIG_STACKTRACE
 struct stack_trace_data {
 	struct stack_trace *trace;
+	unsigned long last_pc;
 	unsigned int no_sched_functions;
 	unsigned int skip;
 };
@@ -110,12 +86,19 @@ static int save_trace(struct stackframe *frame, void *d)
 	if (trace->nr_entries >= trace->max_entries)
 		return 1;
 
-	if (!in_entry_text(frame->pc))
+	/*
+	 * in_exception_text() is designed to test if the PC is one of
+	 * the functions which has an exception stack above it, but
+	 * unfortunately what is in frame->pc is the return LR value,
+	 * not the saved PC value.  So, we need to track the previous
+	 * frame PC value when doing this.
+	 */
+	addr = data->last_pc;
+	data->last_pc = frame->pc;
+	if (!in_exception_text(addr))
 		return 0;
 
 	regs = (struct pt_regs *)frame->sp;
-	if ((unsigned long)&regs[1] > ALIGN(frame->sp, THREAD_SIZE))
-		return 0;
 
 	trace->entries[trace->nr_entries++] = regs->ARM_pc;
 
@@ -130,6 +113,7 @@ static noinline void __save_stack_trace(struct task_struct *tsk,
 	struct stackframe frame;
 
 	data.trace = trace;
+	data.last_pc = ULONG_MAX;
 	data.skip = trace->skip;
 	data.no_sched_functions = nosched;
 
@@ -186,7 +170,6 @@ void save_stack_trace_tsk(struct task_struct *tsk, struct stack_trace *trace)
 {
 	__save_stack_trace(tsk, trace, 1);
 }
-EXPORT_SYMBOL(save_stack_trace_tsk);
 
 void save_stack_trace(struct stack_trace *trace)
 {

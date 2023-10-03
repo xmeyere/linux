@@ -48,42 +48,42 @@ static DEVICE_ATTR_RO(power_on_acct);
 static DEVICE_ATTR_RO(power_off_acct);
 #endif /* CONFIG_PM */
 
-#define CODEC_INFO_SHOW(type, field)				\
+#define CODEC_INFO_SHOW(type)					\
 static ssize_t type##_show(struct device *dev,			\
 			   struct device_attribute *attr,	\
 			   char *buf)				\
 {								\
 	struct hda_codec *codec = dev_get_drvdata(dev);		\
-	return sprintf(buf, "0x%x\n", codec->field);		\
+	return sprintf(buf, "0x%x\n", codec->type);		\
 }
 
-#define CODEC_INFO_STR_SHOW(type, field)			\
+#define CODEC_INFO_STR_SHOW(type)				\
 static ssize_t type##_show(struct device *dev,			\
 			     struct device_attribute *attr,	\
 					char *buf)		\
 {								\
 	struct hda_codec *codec = dev_get_drvdata(dev);		\
 	return sprintf(buf, "%s\n",				\
-		       codec->field ? codec->field : "");	\
+		       codec->type ? codec->type : "");		\
 }
 
-CODEC_INFO_SHOW(vendor_id, core.vendor_id);
-CODEC_INFO_SHOW(subsystem_id, core.subsystem_id);
-CODEC_INFO_SHOW(revision_id, core.revision_id);
-CODEC_INFO_SHOW(afg, core.afg);
-CODEC_INFO_SHOW(mfg, core.mfg);
-CODEC_INFO_STR_SHOW(vendor_name, core.vendor_name);
-CODEC_INFO_STR_SHOW(chip_name, core.chip_name);
-CODEC_INFO_STR_SHOW(modelname, modelname);
+CODEC_INFO_SHOW(vendor_id);
+CODEC_INFO_SHOW(subsystem_id);
+CODEC_INFO_SHOW(revision_id);
+CODEC_INFO_SHOW(afg);
+CODEC_INFO_SHOW(mfg);
+CODEC_INFO_STR_SHOW(vendor_name);
+CODEC_INFO_STR_SHOW(chip_name);
+CODEC_INFO_STR_SHOW(modelname);
 
 static ssize_t pin_configs_show(struct hda_codec *codec,
 				struct snd_array *list,
 				char *buf)
 {
-	const struct hda_pincfg *pin;
 	int i, len = 0;
 	mutex_lock(&codec->user_mutex);
-	snd_array_for_each(list, i, pin) {
+	for (i = 0; i < list->used; i++) {
+		struct hda_pincfg *pin = snd_array_elem(list, i);
 		len += sprintf(buf + len, "0x%02x 0x%08x\n",
 			       pin->nid, pin->cfg);
 	}
@@ -138,10 +138,18 @@ static int reconfig_codec(struct hda_codec *codec)
 			   "The codec is being used, can't reconfigure.\n");
 		goto error;
 	}
-	err = device_reprobe(hda_codec_dev(codec));
+	err = snd_hda_codec_configure(codec);
 	if (err < 0)
 		goto error;
-	err = snd_card_register(codec->card);
+	/* rebuild PCMs */
+	err = snd_hda_codec_build_pcms(codec);
+	if (err < 0)
+		goto error;
+	/* rebuild mixers */
+	err = snd_hda_codec_build_controls(codec);
+	if (err < 0)
+		goto error;
+	err = snd_card_register(codec->bus->card);
  error:
 	snd_hda_power_down(codec);
 	return err;
@@ -162,7 +170,7 @@ static char *kstrndup_noeol(const char *src, size_t len)
 	return s;
 }
 
-#define CODEC_INFO_STORE(type, field)				\
+#define CODEC_INFO_STORE(type)					\
 static ssize_t type##_store(struct device *dev,			\
 			    struct device_attribute *attr,	\
 			    const char *buf, size_t count)	\
@@ -172,11 +180,11 @@ static ssize_t type##_store(struct device *dev,			\
 	int err = kstrtoul(buf, 0, &val);			\
 	if (err < 0)						\
 		return err;					\
-	codec->field = val;					\
+	codec->type = val;					\
 	return count;						\
 }
 
-#define CODEC_INFO_STR_STORE(type, field)			\
+#define CODEC_INFO_STR_STORE(type)				\
 static ssize_t type##_store(struct device *dev,			\
 			    struct device_attribute *attr,	\
 			    const char *buf, size_t count)	\
@@ -185,17 +193,17 @@ static ssize_t type##_store(struct device *dev,			\
 	char *s = kstrndup_noeol(buf, 64);			\
 	if (!s)							\
 		return -ENOMEM;					\
-	kfree(codec->field);					\
-	codec->field = s;					\
+	kfree(codec->type);					\
+	codec->type = s;					\
 	return count;						\
 }
 
-CODEC_INFO_STORE(vendor_id, core.vendor_id);
-CODEC_INFO_STORE(subsystem_id, core.subsystem_id);
-CODEC_INFO_STORE(revision_id, core.revision_id);
-CODEC_INFO_STR_STORE(vendor_name, core.vendor_name);
-CODEC_INFO_STR_STORE(chip_name, core.chip_name);
-CODEC_INFO_STR_STORE(modelname, modelname);
+CODEC_INFO_STORE(vendor_id);
+CODEC_INFO_STORE(subsystem_id);
+CODEC_INFO_STORE(revision_id);
+CODEC_INFO_STR_STORE(vendor_name);
+CODEC_INFO_STR_STORE(chip_name);
+CODEC_INFO_STR_STORE(modelname);
 
 #define CODEC_ACTION_STORE(type)				\
 static ssize_t type##_store(struct device *dev,			\
@@ -217,11 +225,11 @@ static ssize_t init_verbs_show(struct device *dev,
 			       char *buf)
 {
 	struct hda_codec *codec = dev_get_drvdata(dev);
-	const struct hda_verb *v;
 	int i, len = 0;
 	mutex_lock(&codec->user_mutex);
-	snd_array_for_each(&codec->init_verbs, i, v) {
-		len += scnprintf(buf + len, PAGE_SIZE - len,
+	for (i = 0; i < codec->init_verbs.used; i++) {
+		struct hda_verb *v = snd_array_elem(&codec->init_verbs, i);
+		len += snprintf(buf + len, PAGE_SIZE - len,
 				"0x%02x 0x%03x 0x%04x\n",
 				v->nid, v->verb, v->param);
 	}
@@ -267,11 +275,11 @@ static ssize_t hints_show(struct device *dev,
 			  char *buf)
 {
 	struct hda_codec *codec = dev_get_drvdata(dev);
-	const struct hda_hint *hint;
 	int i, len = 0;
 	mutex_lock(&codec->user_mutex);
-	snd_array_for_each(&codec->hints, i, hint) {
-		len += scnprintf(buf + len, PAGE_SIZE - len,
+	for (i = 0; i < codec->hints.used; i++) {
+		struct hda_hint *hint = snd_array_elem(&codec->hints, i);
+		len += snprintf(buf + len, PAGE_SIZE - len,
 				"%s = %s\n", hint->key, hint->val);
 	}
 	mutex_unlock(&codec->user_mutex);
@@ -280,10 +288,10 @@ static ssize_t hints_show(struct device *dev,
 
 static struct hda_hint *get_hint(struct hda_codec *codec, const char *key)
 {
-	struct hda_hint *hint;
 	int i;
 
-	snd_array_for_each(&codec->hints, i, hint) {
+	for (i = 0; i < codec->hints.used; i++) {
+		struct hda_hint *hint = snd_array_elem(&codec->hints, i);
 		if (!strcmp(hint->key, key))
 			return hint;
 	}
@@ -544,10 +552,10 @@ static void parse_codec_mode(char *buf, struct hda_bus *bus,
 
 	*codecp = NULL;
 	if (sscanf(buf, "%i %i %i", &vendorid, &subid, &caddr) == 3) {
-		list_for_each_codec(codec, bus) {
-			if ((vendorid <= 0 || codec->core.vendor_id == vendorid) &&
-			    (subid <= 0 || codec->core.subsystem_id == subid) &&
-			    codec->core.addr == caddr) {
+		list_for_each_entry(codec, &bus->codec_list, list) {
+			if ((vendorid <= 0 || codec->vendor_id == vendorid) &&
+			    (subid <= 0 || codec->subsystem_id == subid) &&
+			    codec->addr == caddr) {
 				*codecp = codec;
 				break;
 			}
@@ -587,7 +595,8 @@ static void parse_model_mode(char *buf, struct hda_bus *bus,
 static void parse_chip_name_mode(char *buf, struct hda_bus *bus,
 				 struct hda_codec **codecp)
 {
-	snd_hda_codec_set_name(*codecp, buf);
+	kfree((*codecp)->chip_name);
+	(*codecp)->chip_name = kstrdup(buf, GFP_KERNEL);
 }
 
 #define DEFINE_PARSE_ID_MODE(name) \
@@ -596,7 +605,7 @@ static void parse_##name##_mode(char *buf, struct hda_bus *bus, \
 { \
 	unsigned long val; \
 	if (!kstrtoul(buf, 0, &val)) \
-		(*codecp)->core.name = val; \
+		(*codecp)->name = val; \
 }
 
 DEFINE_PARSE_ID_MODE(vendor_id);
@@ -761,7 +770,7 @@ static struct attribute *hda_dev_attrs[] = {
 	NULL
 };
 
-static const struct attribute_group hda_dev_attr_group = {
+static struct attribute_group hda_dev_attr_group = {
 	.attrs	= hda_dev_attrs,
 };
 
@@ -783,13 +792,13 @@ void snd_hda_sysfs_init(struct hda_codec *codec)
 void snd_hda_sysfs_clear(struct hda_codec *codec)
 {
 #ifdef CONFIG_SND_HDA_RECONFIG
-	struct hda_hint *hint;
 	int i;
 
 	/* clear init verbs */
 	snd_array_free(&codec->init_verbs);
 	/* clear hints */
-	snd_array_for_each(&codec->hints, i, hint) {
+	for (i = 0; i < codec->hints.used; i++) {
+		struct hda_hint *hint = snd_array_elem(&codec->hints, i);
 		kfree(hint->key); /* we don't need to free hint->val */
 	}
 	snd_array_free(&codec->hints);

@@ -1,10 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NFT_REDIR_H_
 #define _NFT_REDIR_H_
 
 struct nft_redir {
-	u8			sreg_proto_min;
-	u8			sreg_proto_max;
+	enum nft_registers	sreg_proto_min:8;
+	enum nft_registers	sreg_proto_max:8;
 	u16			flags;
 };
 

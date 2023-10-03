@@ -6,10 +6,9 @@
 
 #undef DEBUG
 
-#include <linux/dma-noncoherent.h>
+#include <linux/dma-mapping.h>
 #include <linux/device.h>
 #include <linux/kernel.h>
-#include <linux/platform_device.h>
 #include <linux/scatterlist.h>
 #include <linux/slab.h>
 #include <linux/vmalloc.h>
@@ -19,8 +18,8 @@
 
 #if defined(CONFIG_MMU) && !defined(CONFIG_COLDFIRE)
 
-void *arch_dma_alloc(struct device *dev, size_t size, dma_addr_t *handle,
-		gfp_t flag, unsigned long attrs)
+void *dma_alloc_coherent(struct device *dev, size_t size,
+			 dma_addr_t *handle, gfp_t flag)
 {
 	struct page *page, **map;
 	pgprot_t pgprot;
@@ -62,8 +61,8 @@ void *arch_dma_alloc(struct device *dev, size_t size, dma_addr_t *handle,
 	return addr;
 }
 
-void arch_dma_free(struct device *dev, size_t size, void *addr,
-		dma_addr_t handle, unsigned long attrs)
+void dma_free_coherent(struct device *dev, size_t size,
+		       void *addr, dma_addr_t handle)
 {
 	pr_debug("dma_free_coherent: %p, %x\n", addr, handle);
 	vfree(addr);
@@ -73,10 +72,12 @@ void arch_dma_free(struct device *dev, size_t size, void *addr,
 
 #include <asm/cacheflush.h>
 
-void *arch_dma_alloc(struct device *dev, size_t size, dma_addr_t *dma_handle,
-		gfp_t gfp, unsigned long attrs)
+void *dma_alloc_coherent(struct device *dev, size_t size,
+			   dma_addr_t *dma_handle, gfp_t gfp)
 {
 	void *ret;
+	/* ignore region specifiers */
+	gfp &= ~(__GFP_DMA | __GFP_HIGHMEM);
 
 	if (dev == NULL || (*dev->dma_mask < 0xffffffff))
 		gfp |= GFP_DMA;
@@ -89,16 +90,19 @@ void *arch_dma_alloc(struct device *dev, size_t size, dma_addr_t *dma_handle,
 	return ret;
 }
 
-void arch_dma_free(struct device *dev, size_t size, void *vaddr,
-		dma_addr_t dma_handle, unsigned long attrs)
+void dma_free_coherent(struct device *dev, size_t size,
+			 void *vaddr, dma_addr_t dma_handle)
 {
 	free_pages((unsigned long)vaddr, get_order(size));
 }
 
 #endif /* CONFIG_MMU && !CONFIG_COLDFIRE */
 
-void arch_sync_dma_for_device(struct device *dev, phys_addr_t handle,
-		size_t size, enum dma_data_direction dir)
+EXPORT_SYMBOL(dma_alloc_coherent);
+EXPORT_SYMBOL(dma_free_coherent);
+
+void dma_sync_single_for_device(struct device *dev, dma_addr_t handle,
+				size_t size, enum dma_data_direction dir)
 {
 	switch (dir) {
 	case DMA_BIDIRECTIONAL:
@@ -109,17 +113,53 @@ void arch_sync_dma_for_device(struct device *dev, phys_addr_t handle,
 		cache_clear(handle, size);
 		break;
 	default:
-		pr_err_ratelimited("dma_sync_single_for_device: unsupported dir %u\n",
-				   dir);
+		if (printk_ratelimit())
+			printk("dma_sync_single_for_device: unsupported dir %u\n", dir);
 		break;
 	}
 }
+EXPORT_SYMBOL(dma_sync_single_for_device);
 
-void arch_setup_pdev_archdata(struct platform_device *pdev)
+void dma_sync_sg_for_device(struct device *dev, struct scatterlist *sg, int nents,
+			    enum dma_data_direction dir)
 {
-	if (pdev->dev.coherent_dma_mask == DMA_MASK_NONE &&
-	    pdev->dev.dma_mask == NULL) {
-		pdev->dev.coherent_dma_mask = DMA_BIT_MASK(32);
-		pdev->dev.dma_mask = &pdev->dev.coherent_dma_mask;
-	}
+	int i;
+
+	for (i = 0; i < nents; sg++, i++)
+		dma_sync_single_for_device(dev, sg->dma_address, sg->length, dir);
 }
+EXPORT_SYMBOL(dma_sync_sg_for_device);
+
+dma_addr_t dma_map_single(struct device *dev, void *addr, size_t size,
+			  enum dma_data_direction dir)
+{
+	dma_addr_t handle = virt_to_bus(addr);
+
+	dma_sync_single_for_device(dev, handle, size, dir);
+	return handle;
+}
+EXPORT_SYMBOL(dma_map_single);
+
+dma_addr_t dma_map_page(struct device *dev, struct page *page,
+			unsigned long offset, size_t size,
+			enum dma_data_direction dir)
+{
+	dma_addr_t handle = page_to_phys(page) + offset;
+
+	dma_sync_single_for_device(dev, handle, size, dir);
+	return handle;
+}
+EXPORT_SYMBOL(dma_map_page);
+
+int dma_map_sg(struct device *dev, struct scatterlist *sg, int nents,
+	       enum dma_data_direction dir)
+{
+	int i;
+
+	for (i = 0; i < nents; sg++, i++) {
+		sg->dma_address = sg_phys(sg);
+		dma_sync_single_for_device(dev, sg->dma_address, sg->length, dir);
+	}
+	return nents;
+}
+EXPORT_SYMBOL(dma_map_sg);

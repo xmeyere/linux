@@ -26,8 +26,7 @@
 #endif
 
 static void fake_update_pmtu(struct dst_entry *dst, struct sock *sk,
-			     struct sk_buff *skb, u32 mtu,
-			     bool confirm_neigh)
+			     struct sk_buff *skb, u32 mtu)
 {
 }
 
@@ -55,6 +54,7 @@ static unsigned int fake_mtu(const struct dst_entry *dst)
 
 static struct dst_ops fake_dst_ops = {
 	.family		= AF_INET,
+	.protocol	= cpu_to_be16(ETH_P_IP),
 	.update_pmtu	= fake_update_pmtu,
 	.redirect	= fake_redirect,
 	.cow_metrics	= fake_cow_metrics,
@@ -79,6 +79,7 @@ void br_netfilter_rtable_init(struct net_bridge *br)
 
 	atomic_set(&rt->dst.__refcnt, 1);
 	rt->dst.dev = br->dev;
+	rt->dst.path = &rt->dst;
 	dst_init_metrics(&rt->dst, br_dst_default_metrics, true);
 	rt->dst.flags	= DST_NOXFRM | DST_FAKE_RTABLE;
 	rt->dst.ops = &fake_dst_ops;

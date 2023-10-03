@@ -26,6 +26,7 @@
 #include <asm/pgalloc.h>
 #include <asm/sun3-head.h>
 #include <asm/sun3mmu.h>
+#include <asm/rtc.h>
 #include <asm/machdep.h>
 #include <asm/machines.h>
 #include <asm/idprom.h>
@@ -117,12 +118,16 @@ static void __init sun3_bootmem_alloc(unsigned long memory_start,
 	memory_end = memory_end & PAGE_MASK;
 
 	start_page = __pa(memory_start) >> PAGE_SHIFT;
-	max_pfn = num_pages = __pa(memory_end) >> PAGE_SHIFT;
+	num_pages = __pa(memory_end) >> PAGE_SHIFT;
 
 	high_memory = (void *)memory_end;
 	availmem = memory_start;
 
 	m68k_setup_node(0);
+	availmem += init_bootmem_node(NODE_DATA(0), start_page, 0, num_pages);
+	availmem = (availmem + (PAGE_SIZE-1)) & PAGE_MASK;
+
+	free_bootmem(__pa(availmem), memory_end - (availmem));
 }
 
 
@@ -130,7 +135,7 @@ void __init config_sun3(void)
 {
 	unsigned long memory_start, memory_end;
 
-	pr_info("ARCH: SUN3\n");
+	printk("ARCH: SUN3\n");
 	idprom_init();
 
 	/* Subtract kernel memory from available memory */
@@ -166,7 +171,7 @@ static void __init sun3_sched_init(irq_handler_t timer_routine)
         intersil_clear();
 }
 
-#if IS_ENABLED(CONFIG_SUN3_SCSI)
+#ifdef CONFIG_SUN3_SCSI
 
 static const struct resource sun3_scsi_vme_rsrc[] __initconst = {
 	{

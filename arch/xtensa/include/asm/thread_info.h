@@ -11,9 +11,7 @@
 #ifndef _XTENSA_THREAD_INFO_H
 #define _XTENSA_THREAD_INFO_H
 
-#include <asm/kmem_layout.h>
-
-#define CURRENT_SHIFT KERNEL_STACK_SHIFT
+#ifdef __KERNEL__
 
 #ifndef __ASSEMBLY__
 # include <asm/processor.h>
@@ -46,6 +44,7 @@ typedef struct xtregs_coprocessor {
 
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
+	struct exec_domain	*exec_domain;	/* execution domain */
 	unsigned long		flags;		/* low level flags */
 	unsigned long		status;		/* thread-synchronous flags */
 	__u32			cpu;		/* current CPU */
@@ -62,6 +61,17 @@ struct thread_info {
 	xtregs_user_t		xtregs_user;
 };
 
+#else /* !__ASSEMBLY__ */
+
+/* offsets into the thread_info struct for assembly code access */
+#define TI_TASK		 0x00000000
+#define TI_EXEC_DOMAIN	 0x00000004
+#define TI_FLAGS	 0x00000008
+#define TI_STATUS	 0x0000000C
+#define TI_CPU		 0x00000010
+#define TI_PRE_COUNT	 0x00000014
+#define TI_ADDR_LIMIT	 0x00000018
+
 #endif
 
 /*
@@ -73,17 +83,21 @@ struct thread_info {
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task		= &tsk,			\
+	.exec_domain	= &default_exec_domain,	\
 	.flags		= 0,			\
 	.cpu		= 0,			\
 	.preempt_count	= INIT_PREEMPT_COUNT,	\
 	.addr_limit	= KERNEL_DS,		\
 }
 
+#define init_thread_info	(init_thread_union.thread_info)
+#define init_stack		(init_thread_union.stack)
+
 /* how to get the thread information struct from C */
 static inline struct thread_info *current_thread_info(void)
 {
 	struct thread_info *ti;
-	 __asm__("extui %0, a1, 0, "__stringify(CURRENT_SHIFT)"\n\t"
+	 __asm__("extui %0,a1,0,13\n\t"
 	         "xor %0, a1, %0" : "=&r" (ti) : );
 	return ti;
 }
@@ -92,7 +106,7 @@ static inline struct thread_info *current_thread_info(void)
 
 /* how to get the thread information struct from ASM */
 #define GET_THREAD_INFO(reg,sp) \
-	extui reg, sp, 0, CURRENT_SHIFT; \
+	extui reg, sp, 0, 13; \
 	xor   reg, sp, reg
 #endif
 
@@ -110,7 +124,6 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_MEMDIE		5	/* is terminating due to OOM killer */
 #define TIF_RESTORE_SIGMASK	6	/* restore signal mask in do_signal() */
 #define TIF_NOTIFY_RESUME	7	/* callback before returning to user */
-#define TIF_DB_DISABLED		8	/* debug trap disabled for syscall */
 
 #define _TIF_SYSCALL_TRACE	(1<<TIF_SYSCALL_TRACE)
 #define _TIF_SIGPENDING		(1<<TIF_SIGPENDING)
@@ -129,7 +142,8 @@ static inline struct thread_info *current_thread_info(void)
  */
 #define TS_USEDFPU		0x0001	/* FPU was used by this task this quantum (SMP) */
 
-#define THREAD_SIZE KERNEL_STACK_SIZE
-#define THREAD_SIZE_ORDER (KERNEL_STACK_SHIFT - PAGE_SHIFT)
+#define THREAD_SIZE 8192	//(2*PAGE_SIZE)
+#define THREAD_SIZE_ORDER 1
 
+#endif	/* __KERNEL__ */
 #endif	/* _XTENSA_THREAD_INFO */

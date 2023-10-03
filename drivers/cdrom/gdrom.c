@@ -481,7 +481,7 @@ static int gdrom_audio_ioctl(struct cdrom_device_info *cdi, unsigned int cmd,
 	return -EINVAL;
 }
 
-static const struct cdrom_device_ops gdrom_ops = {
+static struct cdrom_device_ops gdrom_ops = {
 	.open			= gdrom_open,
 	.release		= gdrom_release,
 	.drive_status		= gdrom_drivestatus,
@@ -489,17 +489,14 @@ static const struct cdrom_device_ops gdrom_ops = {
 	.get_last_session	= gdrom_get_last_session,
 	.reset			= gdrom_hardreset,
 	.audio_ioctl		= gdrom_audio_ioctl,
-	.generic_packet		= cdrom_dummy_generic_packet,
 	.capability		= CDC_MULTI_SESSION | CDC_MEDIA_CHANGED |
 				  CDC_RESET | CDC_DRIVE_STATUS | CDC_CD_R,
+	.n_minors		= 1,
 };
 
 static int gdrom_bdops_open(struct block_device *bdev, fmode_t mode)
 {
 	int ret;
-
-	check_disk_change(bdev);
-
 	mutex_lock(&gdrom_mutex);
 	ret = cdrom_open(gd.cd_info, bdev, mode);
 	mutex_unlock(&gdrom_mutex);
@@ -586,8 +583,7 @@ static int gdrom_set_interrupt_handlers(void)
  */
 static void gdrom_readdisk_dma(struct work_struct *work)
 {
-	int block, block_cnt;
-	blk_status_t err;
+	int err, block, block_cnt;
 	struct packet_command *read_command;
 	struct list_head *elem, *next;
 	struct request *req;
@@ -645,7 +641,7 @@ static void gdrom_readdisk_dma(struct work_struct *work)
 		__raw_writeb(1, GDROM_DMA_STATUS_REG);
 		wait_event_interruptible_timeout(request_queue,
 			gd.transfer == 0, GDROM_DEFAULT_TIMEOUT);
-		err = gd.transfer ? BLK_STS_IOERR : BLK_STS_OK;
+		err = gd.transfer ? -EIO : 0;
 		gd.transfer = 0;
 		gd.pending = 0;
 		/* now seek to take the request spinlock
@@ -663,24 +659,23 @@ static void gdrom_request(struct request_queue *rq)
 	struct request *req;
 
 	while ((req = blk_fetch_request(rq)) != NULL) {
-		switch (req_op(req)) {
-		case REQ_OP_READ:
-			/*
-			 * Add to list of deferred work and then schedule
-			 * workqueue.
-			 */
-			list_add_tail(&req->queuelist, &gdrom_deferred);
-			schedule_work(&work);
-			break;
-		case REQ_OP_WRITE:
-			pr_notice("Read only device - write request ignored\n");
-			__blk_end_request_all(req, BLK_STS_IOERR);
-			break;
-		default:
+		if (req->cmd_type != REQ_TYPE_FS) {
 			printk(KERN_DEBUG "gdrom: Non-fs request ignored\n");
-			__blk_end_request_all(req, BLK_STS_IOERR);
-			break;
+			__blk_end_request_all(req, -EIO);
+			continue;
 		}
+		if (rq_data_dir(req) != READ) {
+			pr_notice("Read only device - write request ignored\n");
+			__blk_end_request_all(req, -EIO);
+			continue;
+		}
+
+		/*
+		 * Add to list of deferred work and then schedule
+		 * workqueue.
+		 */
+		list_add_tail(&req->queuelist, &gdrom_deferred);
+		schedule_work(&work);
 	}
 }
 
@@ -775,13 +770,6 @@ static int probe_gdrom_setupqueue(void)
 static int probe_gdrom(struct platform_device *devptr)
 {
 	int err;
-
-	/*
-	 * Ensure our "one" device is initialized properly in case of previous
-	 * usages of it
-	 */
-	memset(&gd, 0, sizeof(gd));
-
 	/* Start the device */
 	if (gdrom_execute_diagnostic() != 1) {
 		pr_warning("ATA Probe for GDROM failed\n");
@@ -819,21 +807,16 @@ static int probe_gdrom(struct platform_device *devptr)
 	if (err)
 		goto probe_fail_cmdirq_register;
 	gd.gdrom_rq = blk_init_queue(gdrom_request, &gdrom_lock);
-	if (!gd.gdrom_rq) {
-		err = -ENOMEM;
+	if (!gd.gdrom_rq)
 		goto probe_fail_requestq;
-	}
-	blk_queue_bounce_limit(gd.gdrom_rq, BLK_BOUNCE_HIGH);
 
 	err = probe_gdrom_setupqueue();
 	if (err)
 		goto probe_fail_toc;
 
 	gd.toc = kzalloc(sizeof(struct gdromtoc), GFP_KERNEL);
-	if (!gd.toc) {
-		err = -ENOMEM;
+	if (!gd.toc)
 		goto probe_fail_toc;
-	}
 	add_disk(gd.disk);
 	return 0;
 
@@ -864,8 +847,6 @@ static int remove_gdrom(struct platform_device *devptr)
 	if (gdrom_major)
 		unregister_blkdev(gdrom_major, GDROM_DEV_NAME);
 	unregister_cdrom(gd.cd_info);
-	kfree(gd.cd_info);
-	kfree(gd.toc);
 
 	return 0;
 }
@@ -881,7 +862,7 @@ static struct platform_driver gdrom_driver = {
 static int __init init_gdrom(void)
 {
 	int rc;
-
+	gd.toc = NULL;
 	rc = platform_driver_register(&gdrom_driver);
 	if (rc)
 		return rc;
@@ -897,6 +878,7 @@ static void __exit exit_gdrom(void)
 {
 	platform_device_unregister(pd);
 	platform_driver_unregister(&gdrom_driver);
+	kfree(gd.toc);
 }
 
 module_init(init_gdrom);

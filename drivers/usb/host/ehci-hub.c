@@ -1,6 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (C) 2001-2004 by David Brownell
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but
+ * WITHOUT ANY WARRANTY; without even the implied warranty of MERCHANTABILITY
+ * or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License
+ * for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software Foundation,
+ * Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 /* this file is part of ehci-hcd.c */
@@ -14,12 +27,11 @@
  */
 
 /*-------------------------------------------------------------------------*/
+#include <linux/usb/otg.h>
 
 #define	PORT_WAKE_BITS	(PORT_WKOC_E|PORT_WKDISC_E|PORT_WKCONN_E)
 
 #ifdef	CONFIG_PM
-
-static void unlink_empty_async_suspended(struct ehci_hcd *ehci);
 
 static int persist_enabled_on_companion(struct usb_device *udev, void *unused)
 {
@@ -143,7 +155,7 @@ static int ehci_port_change(struct ehci_hcd *ehci)
 	return 0;
 }
 
-void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
+static void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 		bool suspending, bool do_wakeup)
 {
 	int		port;
@@ -208,7 +220,6 @@ void ehci_adjust_port_wakeup_flags(struct ehci_hcd *ehci,
 
 	spin_unlock_irq(&ehci->lock);
 }
-EXPORT_SYMBOL_GPL(ehci_adjust_port_wakeup_flags);
 
 static int ehci_bus_suspend (struct usb_hcd *hcd)
 {
@@ -296,14 +307,6 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 	}
 	spin_unlock_irq(&ehci->lock);
 
-	if (changed && ehci_has_fsl_susp_errata(ehci))
-		/*
-		 * Wait for at least 10 millisecondes to ensure the controller
-		 * enter the suspend status before initiating a port resume
-		 * using the Force Port Resume bit (Not-EHCI compatible).
-		 */
-		usleep_range(10000, 20000);
-
 	if ((changed && ehci->has_tdi_phy_lpm) || fs_idle_delay) {
 		/*
 		 * Wait for HCD to enter low-power mode or for the bus
@@ -343,13 +346,8 @@ static int ehci_bus_suspend (struct usb_hcd *hcd)
 		goto done;
 	ehci->rh_state = EHCI_RH_SUSPENDED;
 
+	end_unlink_async(ehci);
 	unlink_empty_async_suspended(ehci);
-
-	/* Some Synopsys controllers mistakenly leave IAA turned on */
-	ehci_writel(ehci, STS_IAA, &ehci->regs->status);
-
-	/* Any IAA cycle that started before the suspend is now invalid */
-	end_iaa_cycle(ehci);
 	ehci_handle_start_intr_unlinks(ehci);
 	ehci_handle_intr_unlinks(ehci);
 	end_free_itds(ehci);
@@ -473,13 +471,10 @@ static int ehci_bus_resume (struct usb_hcd *hcd)
 		ehci_writel(ehci, temp, &ehci->regs->port_status [i]);
 	}
 
-	/*
-	 * msleep for USB_RESUME_TIMEOUT ms only if code is trying to resume
-	 * port
-	 */
+	/* msleep for 20ms only if code is trying to resume port */
 	if (resume_needed) {
 		spin_unlock_irq(&ehci->lock);
-		msleep(USB_RESUME_TIMEOUT);
+		msleep(20);
 		spin_lock_irq(&ehci->lock);
 		if (ehci->shutdown)
 			goto shutdown;
@@ -514,18 +509,10 @@ static int ehci_bus_resume (struct usb_hcd *hcd)
 	return -ESHUTDOWN;
 }
 
-static unsigned long ehci_get_resuming_ports(struct usb_hcd *hcd)
-{
-	struct ehci_hcd		*ehci = hcd_to_ehci(hcd);
-
-	return ehci->resuming_ports;
-}
-
 #else
 
 #define ehci_bus_suspend	NULL
 #define ehci_bus_resume		NULL
-#define ehci_get_resuming_ports	NULL
 
 #endif	/* CONFIG_PM */
 
@@ -701,7 +688,7 @@ ehci_hub_descriptor (
 	int		ports = HCS_N_PORTS (ehci->hcs_params);
 	u16		temp;
 
-	desc->bDescriptorType = USB_DT_HUB;
+	desc->bDescriptorType = 0x29;
 	desc->bPwrOn2PwrGood = 10;	/* ehci 1.0, 2.3.9 says 20ms max */
 	desc->bHubContrCurrent = 0;
 
@@ -784,12 +771,12 @@ static struct urb *request_single_step_set_feature_urb(
 	atomic_inc(&urb->use_count);
 	atomic_inc(&urb->dev->urbnum);
 	urb->setup_dma = dma_map_single(
-			hcd->self.sysdev,
+			hcd->self.controller,
 			urb->setup_packet,
 			sizeof(struct usb_ctrlrequest),
 			DMA_TO_DEVICE);
 	urb->transfer_dma = dma_map_single(
-			hcd->self.sysdev,
+			hcd->self.controller,
 			urb->transfer_buffer,
 			urb->transfer_buffer_length,
 			DMA_FROM_DEVICE);
@@ -877,21 +864,13 @@ int ehci_hub_control(
 ) {
 	struct ehci_hcd	*ehci = hcd_to_ehci (hcd);
 	int		ports = HCS_N_PORTS (ehci->hcs_params);
-	u32 __iomem	*status_reg, *hostpc_reg;
+	u32 __iomem	*status_reg = &ehci->regs->port_status[
+				(wIndex & 0xff) - 1];
+	u32 __iomem	*hostpc_reg = &ehci->regs->hostpc[(wIndex & 0xff) - 1];
 	u32		temp, temp1, status;
 	unsigned long	flags;
 	int		retval = 0;
 	unsigned	selector;
-
-	/*
-	 * Avoid underflow while calculating (wIndex & 0xff) - 1.
-	 * The compiler might deduce that wIndex can never be 0 and then
-	 * optimize away the tests for !wIndex below.
-	 */
-	temp = wIndex & 0xff;
-	temp -= (temp > 0);
-	status_reg = &ehci->regs->port_status[temp];
-	hostpc_reg = &ehci->regs->hostpc[temp];
 
 	/*
 	 * FIXME:  support SetPortFeatures USB_PORT_FEAT_INDICATOR.
@@ -963,7 +942,7 @@ int ehci_hub_control(
 			temp &= ~PORT_WAKE_BITS;
 			ehci_writel(ehci, temp | PORT_RESUME, status_reg);
 			ehci->reset_done[wIndex] = jiffies
-					+ msecs_to_jiffies(USB_RESUME_TIMEOUT);
+					+ msecs_to_jiffies(20);
 			set_bit(wIndex, &ehci->resuming_ports);
 			usb_hcd_start_port_resume(&hcd->self, wIndex);
 			break;
@@ -1205,12 +1184,6 @@ int ehci_hub_control(
 					wIndex, (temp1 & HOSTPC_PHCD) ?
 					"succeeded" : "failed");
 			}
-			if (ehci_has_fsl_susp_errata(ehci)) {
-				/* 10ms for HCD enter suspend */
-				spin_unlock_irqrestore(&ehci->lock, flags);
-				usleep_range(10000, 20000);
-				spin_lock_irqsave(&ehci->lock, flags);
-			}
 			set_bit(wIndex, &ehci->suspended_ports);
 			break;
 		case USB_PORT_FEAT_POWER:
@@ -1244,13 +1217,6 @@ int ehci_hub_control(
 				 */
 				ehci->reset_done [wIndex] = jiffies
 						+ msecs_to_jiffies (50);
-
-				/*
-				 * Force full-speed connect for FSL high-speed
-				 * erratum; disable HS Chirp by setting PFSC bit
-				 */
-				if (ehci_has_fsl_hs_errata(ehci))
-					temp |= (1 << PORTSC_FSL_PFSC);
 			}
 			ehci_writel(ehci, temp, status_reg);
 			break;

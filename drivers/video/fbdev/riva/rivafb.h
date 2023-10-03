@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __RIVAFB_H
 #define __RIVAFB_H
 
@@ -62,7 +61,9 @@ struct riva_par {
 	int FlatPanel;
 	struct pci_dev *pdev;
 	int cursor_reset;
-	int wc_cookie;
+#ifdef CONFIG_MTRR
+	struct { int vram; int vram_valid; } mtrr;
+#endif
 	struct riva_i2c_chan chan[3];
 };
 

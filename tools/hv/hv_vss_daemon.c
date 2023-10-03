@@ -19,10 +19,9 @@
 
 
 #include <sys/types.h>
+#include <sys/socket.h>
 #include <sys/poll.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
-#include <sys/sysmacros.h>
 #include <fcntl.h>
 #include <stdio.h>
 #include <mntent.h>
@@ -31,13 +30,20 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <arpa/inet.h>
 #include <linux/fs.h>
-#include <linux/major.h>
+#include <linux/connector.h>
 #include <linux/hyperv.h>
+#include <linux/netlink.h>
 #include <syslog.h>
 #include <getopt.h>
-#include <stdbool.h>
-#include <dirent.h>
+
+static struct sockaddr_nl addr;
+
+#ifndef SOL_NETLINK
+#define SOL_NETLINK 270
+#endif
+
 
 /* Don't use syslog() in the function since that can cause write to disk */
 static int vss_do_freeze(char *dir, unsigned int cmd)
@@ -70,63 +76,11 @@ static int vss_do_freeze(char *dir, unsigned int cmd)
 	return !!ret;
 }
 
-static bool is_dev_loop(const char *blkname)
-{
-	char *buffer;
-	DIR *dir;
-	struct dirent *entry;
-	bool ret = false;
-
-	buffer = malloc(PATH_MAX);
-	if (!buffer) {
-		syslog(LOG_ERR, "Can't allocate memory!");
-		exit(1);
-	}
-
-	snprintf(buffer, PATH_MAX, "%s/loop", blkname);
-	if (!access(buffer, R_OK | X_OK)) {
-		ret = true;
-		goto free_buffer;
-	} else if (errno != ENOENT) {
-		syslog(LOG_ERR, "Can't access: %s; error:%d %s!",
-		       buffer, errno, strerror(errno));
-	}
-
-	snprintf(buffer, PATH_MAX, "%s/slaves", blkname);
-	dir = opendir(buffer);
-	if (!dir) {
-		if (errno != ENOENT)
-			syslog(LOG_ERR, "Can't opendir: %s; error:%d %s!",
-			       buffer, errno, strerror(errno));
-		goto free_buffer;
-	}
-
-	while ((entry = readdir(dir)) != NULL) {
-		if (strcmp(entry->d_name, ".") == 0 ||
-		    strcmp(entry->d_name, "..") == 0)
-			continue;
-
-		snprintf(buffer, PATH_MAX, "%s/slaves/%s", blkname,
-			 entry->d_name);
-		if (is_dev_loop(buffer)) {
-			ret = true;
-			break;
-		}
-	}
-	closedir(dir);
-free_buffer:
-	free(buffer);
-	return ret;
-}
-
 static int vss_operate(int operation)
 {
 	char match[] = "/dev/";
 	FILE *mounts;
 	struct mntent *ent;
-	struct stat sb;
-	char errdir[1024] = {0};
-	char blkdir[23]; /* /sys/dev/block/XXX:XXX */
 	unsigned int cmd;
 	int error = 0, root_seen = 0, save_errno = 0;
 
@@ -148,15 +102,6 @@ static int vss_operate(int operation)
 	while ((ent = getmntent(mounts))) {
 		if (strncmp(ent->mnt_fsname, match, strlen(match)))
 			continue;
-		if (stat(ent->mnt_fsname, &sb)) {
-			syslog(LOG_ERR, "Can't stat: %s; error:%d %s!",
-			       ent->mnt_fsname, errno, strerror(errno));
-		} else {
-			sprintf(blkdir, "/sys/dev/block/%d:%d",
-				major(sb.st_rdev), minor(sb.st_rdev));
-			if (is_dev_loop(blkdir))
-				continue;
-		}
 		if (hasmntopt(ent, MNTOPT_RO) != NULL)
 			continue;
 		if (strcmp(ent->mnt_type, "vfat") == 0)
@@ -170,8 +115,6 @@ static int vss_operate(int operation)
 			goto err;
 	}
 
-	endmntent(mounts);
-
 	if (root_seen) {
 		error |= vss_do_freeze("/", cmd);
 		if (error && operation == VSS_OP_FREEZE)
@@ -181,20 +124,44 @@ static int vss_operate(int operation)
 	goto out;
 err:
 	save_errno = errno;
-	if (ent) {
-		strncpy(errdir, ent->mnt_dir, sizeof(errdir)-1);
-		endmntent(mounts);
-	}
 	vss_operate(VSS_OP_THAW);
 	/* Call syslog after we thaw all filesystems */
 	if (ent)
 		syslog(LOG_ERR, "FREEZE of %s failed; error:%d %s",
-		       errdir, save_errno, strerror(save_errno));
+		       ent->mnt_dir, save_errno, strerror(save_errno));
 	else
 		syslog(LOG_ERR, "FREEZE of / failed; error:%d %s", save_errno,
 		       strerror(save_errno));
 out:
+	endmntent(mounts);
 	return error;
+}
+
+static int netlink_send(int fd, struct cn_msg *msg)
+{
+	struct nlmsghdr nlh = { .nlmsg_type = NLMSG_DONE };
+	unsigned int size;
+	struct msghdr message;
+	struct iovec iov[2];
+
+	size = sizeof(struct cn_msg) + msg->len;
+
+	nlh.nlmsg_pid = getpid();
+	nlh.nlmsg_len = NLMSG_LENGTH(size);
+
+	iov[0].iov_base = &nlh;
+	iov[0].iov_len = sizeof(nlh);
+
+	iov[1].iov_base = msg;
+	iov[1].iov_len = size;
+
+	memset(&message, 0, sizeof(message));
+	message.msg_name = &addr;
+	message.msg_namelen = sizeof(addr);
+	message.msg_iov = iov;
+	message.msg_iovlen = 2;
+
+	return sendmsg(fd, &message, 0);
 }
 
 void print_usage(char *argv[])
@@ -207,14 +174,17 @@ void print_usage(char *argv[])
 
 int main(int argc, char *argv[])
 {
-	int vss_fd, len;
+	int fd, len, nl_group;
 	int error;
+	struct cn_msg *message;
 	struct pollfd pfd;
+	struct nlmsghdr *incoming_msg;
+	struct cn_msg	*incoming_cn_msg;
 	int	op;
-	struct hv_vss_msg vss_msg[1];
+	struct hv_vss_msg *vss_msg;
+	char *vss_recv_buffer;
+	size_t vss_recv_buffer_len;
 	int daemonize = 1, long_index = 0, opt;
-	int in_handshake = 1;
-	__u32 kernel_modver;
 
 	static struct option long_options[] = {
 		{"help",	no_argument,	   0,  'h' },
@@ -229,8 +199,6 @@ int main(int argc, char *argv[])
 			daemonize = 0;
 			break;
 		case 'h':
-			print_usage(argv);
-			exit(0);
 		default:
 			print_usage(argv);
 			exit(EXIT_FAILURE);
@@ -243,62 +211,98 @@ int main(int argc, char *argv[])
 	openlog("Hyper-V VSS", 0, LOG_USER);
 	syslog(LOG_INFO, "VSS starting; pid is:%d", getpid());
 
-	vss_fd = open("/dev/vmbus/hv_vss", O_RDWR);
-	if (vss_fd < 0) {
-		syslog(LOG_ERR, "open /dev/vmbus/hv_vss failed; error: %d %s",
-		       errno, strerror(errno));
+	vss_recv_buffer_len = NLMSG_LENGTH(0) + sizeof(struct cn_msg) + sizeof(struct hv_vss_msg);
+	vss_recv_buffer = calloc(1, vss_recv_buffer_len);
+	if (!vss_recv_buffer) {
+		syslog(LOG_ERR, "Failed to allocate netlink buffers");
+		exit(EXIT_FAILURE);
+	}
+
+	fd = socket(AF_NETLINK, SOCK_DGRAM, NETLINK_CONNECTOR);
+	if (fd < 0) {
+		syslog(LOG_ERR, "netlink socket creation failed; error:%d %s",
+				errno, strerror(errno));
+		exit(EXIT_FAILURE);
+	}
+	addr.nl_family = AF_NETLINK;
+	addr.nl_pad = 0;
+	addr.nl_pid = 0;
+	addr.nl_groups = 0;
+
+
+	error = bind(fd, (struct sockaddr *)&addr, sizeof(addr));
+	if (error < 0) {
+		syslog(LOG_ERR, "bind failed; error:%d %s", errno, strerror(errno));
+		close(fd);
+		exit(EXIT_FAILURE);
+	}
+	nl_group = CN_VSS_IDX;
+	if (setsockopt(fd, SOL_NETLINK, NETLINK_ADD_MEMBERSHIP, &nl_group, sizeof(nl_group)) < 0) {
+		syslog(LOG_ERR, "setsockopt failed; error:%d %s", errno, strerror(errno));
+		close(fd);
 		exit(EXIT_FAILURE);
 	}
 	/*
 	 * Register ourselves with the kernel.
 	 */
-	vss_msg->vss_hdr.operation = VSS_OP_REGISTER1;
+	message = (struct cn_msg *)vss_recv_buffer;
+	message->id.idx = CN_VSS_IDX;
+	message->id.val = CN_VSS_VAL;
+	message->ack = 0;
+	vss_msg = (struct hv_vss_msg *)message->data;
+	vss_msg->vss_hdr.operation = VSS_OP_REGISTER;
 
-	len = write(vss_fd, vss_msg, sizeof(struct hv_vss_msg));
+	message->len = sizeof(struct hv_vss_msg);
+
+	len = netlink_send(fd, message);
 	if (len < 0) {
-		syslog(LOG_ERR, "registration to kernel failed; error: %d %s",
-		       errno, strerror(errno));
-		close(vss_fd);
+		syslog(LOG_ERR, "netlink_send failed; error:%d %s", errno, strerror(errno));
+		close(fd);
 		exit(EXIT_FAILURE);
 	}
 
-	pfd.fd = vss_fd;
+	pfd.fd = fd;
 
 	while (1) {
+		struct sockaddr *addr_p = (struct sockaddr *) &addr;
+		socklen_t addr_l = sizeof(addr);
 		pfd.events = POLLIN;
 		pfd.revents = 0;
 
 		if (poll(&pfd, 1, -1) < 0) {
 			syslog(LOG_ERR, "poll failed; error:%d %s", errno, strerror(errno));
 			if (errno == EINVAL) {
-				close(vss_fd);
+				close(fd);
 				exit(EXIT_FAILURE);
 			}
 			else
 				continue;
 		}
 
-		len = read(vss_fd, vss_msg, sizeof(struct hv_vss_msg));
+		len = recvfrom(fd, vss_recv_buffer, vss_recv_buffer_len, 0,
+				addr_p, &addr_l);
 
-		if (in_handshake) {
-			if (len != sizeof(kernel_modver)) {
-				syslog(LOG_ERR, "invalid version negotiation");
-				exit(EXIT_FAILURE);
-			}
-			kernel_modver = *(__u32 *)vss_msg;
-			in_handshake = 0;
-			syslog(LOG_INFO, "VSS: kernel module version: %d",
-			       kernel_modver);
+		if (len < 0) {
+			syslog(LOG_ERR, "recvfrom failed; pid:%u error:%d %s",
+					addr.nl_pid, errno, strerror(errno));
+			close(fd);
+			return -1;
+		}
+
+		if (addr.nl_pid) {
+			syslog(LOG_WARNING,
+				"Received packet from untrusted pid:%u",
+				addr.nl_pid);
 			continue;
 		}
 
-		if (len != sizeof(struct hv_vss_msg)) {
-			syslog(LOG_ERR, "read failed; error:%d %s",
-			       errno, strerror(errno));
-			close(vss_fd);
-			return EXIT_FAILURE;
-		}
+		incoming_msg = (struct nlmsghdr *)vss_recv_buffer;
 
+		if (incoming_msg->nlmsg_type != NLMSG_DONE)
+			continue;
+
+		incoming_cn_msg = (struct cn_msg *)NLMSG_DATA(incoming_msg);
+		vss_msg = (struct hv_vss_msg *)incoming_cn_msg->data;
 		op = vss_msg->vss_hdr.operation;
 		error =  HV_S_OK;
 
@@ -317,23 +321,16 @@ int main(int argc, char *argv[])
 				syslog(LOG_ERR, "/etc/fstab and /proc/mounts");
 			}
 			break;
-		case VSS_OP_HOT_BACKUP:
-			syslog(LOG_INFO, "VSS: op=CHECK HOT BACKUP\n");
-			break;
 		default:
 			syslog(LOG_ERR, "Illegal op:%d\n", op);
 		}
 		vss_msg->error = error;
-		len = write(vss_fd, vss_msg, sizeof(struct hv_vss_msg));
-		if (len != sizeof(struct hv_vss_msg)) {
-			syslog(LOG_ERR, "write failed; error: %d %s", errno,
-			       strerror(errno));
-
-			if (op == VSS_OP_FREEZE)
-				vss_operate(VSS_OP_THAW);
+		len = netlink_send(fd, incoming_cn_msg);
+		if (len < 0) {
+			syslog(LOG_ERR, "net_link send failed; error:%d %s",
+					errno, strerror(errno));
+			exit(EXIT_FAILURE);
 		}
 	}
 
-	close(vss_fd);
-	exit(0);
 }

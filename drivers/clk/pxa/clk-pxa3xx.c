@@ -78,7 +78,7 @@ unsigned int pxa3xx_get_clk_frequency_khz(int info)
 		pr_info("System bus clock: %ld.%02ldMHz\n",
 			clks[4] / 1000000, (clks[4] % 1000000) / 10000);
 	}
-	return (unsigned int)clks[0] / KHz;
+	return (unsigned int)clks[0];
 }
 
 static unsigned long clk_pxa3xx_ac97_get_rate(struct clk_hw *hw,
@@ -126,7 +126,7 @@ PARENTS(pxa3xx_ac97_bus) = { "ring_osc_60mhz", "ac97" };
 PARENTS(pxa3xx_sbus) = { "ring_osc_60mhz", "system_bus" };
 PARENTS(pxa3xx_smemcbus) = { "ring_osc_60mhz", "smemc" };
 
-#define CKEN_AB(bit) ((CKEN_ ## bit > 31) ? &CKENB : &CKENA)
+#define CKEN_AB(bit) ((CKEN_ ## bit > 31) ? &CKENA : &CKENB)
 #define PXA3XX_CKEN(dev_id, con_id, parents, mult_lp, div_lp, mult_hp,	\
 		    div_hp, bit, is_lp, flags)				\
 	PXA_CKEN(dev_id, con_id, bit, parents, mult_lp, div_lp,		\
@@ -284,16 +284,15 @@ static void __init pxa3xx_register_core(void)
 static void __init pxa3xx_register_plls(void)
 {
 	clk_register_fixed_rate(NULL, "osc_13mhz", NULL,
-				CLK_GET_RATE_NOCACHE,
+				CLK_GET_RATE_NOCACHE | CLK_IS_ROOT,
 				13 * MHz);
-	clkdev_pxa_register(CLK_OSC32k768, "osc_32_768khz", NULL,
-			    clk_register_fixed_rate(NULL, "osc_32_768khz", NULL,
-						    CLK_GET_RATE_NOCACHE,
-						    32768));
+	clk_register_fixed_rate(NULL, "osc_32_768khz", NULL,
+				CLK_GET_RATE_NOCACHE | CLK_IS_ROOT,
+				32768);
 	clk_register_fixed_rate(NULL, "ring_osc_120mhz", NULL,
-				CLK_GET_RATE_NOCACHE,
+				CLK_GET_RATE_NOCACHE | CLK_IS_ROOT,
 				120 * MHz);
-	clk_register_fixed_rate(NULL, "clk_dummy", NULL, 0, 0);
+	clk_register_fixed_rate(NULL, "clk_dummy", NULL, CLK_IS_ROOT, 0);
 	clk_register_fixed_factor(NULL, "spll_624mhz", "osc_13mhz", 0, 48, 1);
 	clk_register_fixed_factor(NULL, "ring_osc_60mhz", "ring_osc_120mhz",
 				  0, 1, 2);
@@ -330,19 +329,13 @@ static void __init pxa3xx_dummy_clocks_init(void)
 
 static void __init pxa3xx_base_clocks_init(void)
 {
-	struct clk *clk;
-
 	pxa3xx_register_plls();
 	pxa3xx_register_core();
 	clk_register_clk_pxa3xx_system_bus();
 	clk_register_clk_pxa3xx_ac97();
 	clk_register_clk_pxa3xx_smemc();
-	clk = clk_register_gate(NULL, "CLK_POUT",
-				"osc_13mhz", 0, OSCC, 11, 0, NULL);
-	clk_register_clkdev(clk, "CLK_POUT", NULL);
-	clkdev_pxa_register(CLK_OSTIMER, "OSTIMER0", NULL,
-			    clk_register_fixed_factor(NULL, "os-timer0",
-						      "osc_13mhz", 0, 1, 4));
+	clk_register_gate(NULL, "CLK_POUT", "osc_13mhz", 0,
+			  (void __iomem *)&OSCC, 11, 0, NULL);
 }
 
 int __init pxa3xx_clocks_init(void)

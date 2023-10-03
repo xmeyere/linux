@@ -15,7 +15,6 @@
 
 #include <linux/rbtree.h>
 #include <linux/list.h>
-#include <errno.h>
 #include "thread.h"
 #include "event.h"
 #include "machine.h"
@@ -23,8 +22,43 @@
 #include "debug.h"
 #include "symbol.h"
 #include "comm.h"
-#include "call-path.h"
 #include "thread-stack.h"
+
+#define CALL_PATH_BLOCK_SHIFT 8
+#define CALL_PATH_BLOCK_SIZE (1 << CALL_PATH_BLOCK_SHIFT)
+#define CALL_PATH_BLOCK_MASK (CALL_PATH_BLOCK_SIZE - 1)
+
+struct call_path_block {
+	struct call_path cp[CALL_PATH_BLOCK_SIZE];
+	struct list_head node;
+};
+
+/**
+ * struct call_path_root - root of all call paths.
+ * @call_path: root call path
+ * @blocks: list of blocks to store call paths
+ * @next: next free space
+ * @sz: number of spaces
+ */
+struct call_path_root {
+	struct call_path call_path;
+	struct list_head blocks;
+	size_t next;
+	size_t sz;
+};
+
+/**
+ * struct call_return_processor - provides a call-back to consume call-return
+ *                                information.
+ * @cpr: call path root
+ * @process: call-back that accepts call/return information
+ * @data: anonymous data for call-back
+ */
+struct call_return_processor {
+	struct call_path_root *cpr;
+	int (*process)(struct call_return *cr, void *data);
+	void *data;
+};
 
 #define STACK_GROWTH 2048
 
@@ -185,7 +219,7 @@ static int thread_stack__call_return(struct thread *thread,
 	return crp->process(&cr, crp->data);
 }
 
-static int __thread_stack__flush(struct thread *thread, struct thread_stack *ts)
+static int thread_stack__flush(struct thread *thread, struct thread_stack *ts)
 {
 	struct call_return_processor *crp = ts->crp;
 	int err;
@@ -204,14 +238,6 @@ static int __thread_stack__flush(struct thread *thread, struct thread_stack *ts)
 			return err;
 		}
 	}
-
-	return 0;
-}
-
-int thread_stack__flush(struct thread *thread)
-{
-	if (thread->ts)
-		return __thread_stack__flush(thread, thread->ts);
 
 	return 0;
 }
@@ -238,7 +264,7 @@ int thread_stack__event(struct thread *thread, u32 flags, u64 from_ip,
 	 */
 	if (trace_nr != thread->ts->trace_nr) {
 		if (thread->ts->trace_nr)
-			__thread_stack__flush(thread, thread->ts);
+			thread_stack__flush(thread, thread->ts);
 		thread->ts->trace_nr = trace_nr;
 	}
 
@@ -271,7 +297,7 @@ void thread_stack__set_trace_nr(struct thread *thread, u64 trace_nr)
 
 	if (trace_nr != thread->ts->trace_nr) {
 		if (thread->ts->trace_nr)
-			__thread_stack__flush(thread, thread->ts);
+			thread_stack__flush(thread, thread->ts);
 		thread->ts->trace_nr = trace_nr;
 	}
 }
@@ -279,52 +305,128 @@ void thread_stack__set_trace_nr(struct thread *thread, u64 trace_nr)
 void thread_stack__free(struct thread *thread)
 {
 	if (thread->ts) {
-		__thread_stack__flush(thread, thread->ts);
+		thread_stack__flush(thread, thread->ts);
 		zfree(&thread->ts->stack);
 		zfree(&thread->ts);
 	}
 }
 
-static inline u64 callchain_context(u64 ip, u64 kernel_start)
+void thread_stack__sample(struct thread *thread, struct ip_callchain *chain,
+			  size_t sz, u64 ip)
 {
-	return ip < kernel_start ? PERF_CONTEXT_USER : PERF_CONTEXT_KERNEL;
+	size_t i;
+
+	if (!thread || !thread->ts)
+		chain->nr = 1;
+	else
+		chain->nr = min(sz, thread->ts->cnt + 1);
+
+	chain->ips[0] = ip;
+
+	for (i = 1; i < chain->nr; i++)
+		chain->ips[i] = thread->ts->stack[thread->ts->cnt - i].ret_addr;
 }
 
-void thread_stack__sample(struct thread *thread, struct ip_callchain *chain,
-			  size_t sz, u64 ip, u64 kernel_start)
+static void call_path__init(struct call_path *cp, struct call_path *parent,
+			    struct symbol *sym, u64 ip, bool in_kernel)
 {
-	u64 context = callchain_context(ip, kernel_start);
-	u64 last_context;
-	size_t i, j;
+	cp->parent = parent;
+	cp->sym = sym;
+	cp->ip = sym ? 0 : ip;
+	cp->db_id = 0;
+	cp->in_kernel = in_kernel;
+	RB_CLEAR_NODE(&cp->rb_node);
+	cp->children = RB_ROOT;
+}
 
-	if (sz < 2) {
-		chain->nr = 0;
-		return;
+static struct call_path_root *call_path_root__new(void)
+{
+	struct call_path_root *cpr;
+
+	cpr = zalloc(sizeof(struct call_path_root));
+	if (!cpr)
+		return NULL;
+	call_path__init(&cpr->call_path, NULL, NULL, 0, false);
+	INIT_LIST_HEAD(&cpr->blocks);
+	return cpr;
+}
+
+static void call_path_root__free(struct call_path_root *cpr)
+{
+	struct call_path_block *pos, *n;
+
+	list_for_each_entry_safe(pos, n, &cpr->blocks, node) {
+		list_del(&pos->node);
+		free(pos);
+	}
+	free(cpr);
+}
+
+static struct call_path *call_path__new(struct call_path_root *cpr,
+					struct call_path *parent,
+					struct symbol *sym, u64 ip,
+					bool in_kernel)
+{
+	struct call_path_block *cpb;
+	struct call_path *cp;
+	size_t n;
+
+	if (cpr->next < cpr->sz) {
+		cpb = list_last_entry(&cpr->blocks, struct call_path_block,
+				      node);
+	} else {
+		cpb = zalloc(sizeof(struct call_path_block));
+		if (!cpb)
+			return NULL;
+		list_add_tail(&cpb->node, &cpr->blocks);
+		cpr->sz += CALL_PATH_BLOCK_SIZE;
 	}
 
-	chain->ips[0] = context;
-	chain->ips[1] = ip;
+	n = cpr->next++ & CALL_PATH_BLOCK_MASK;
+	cp = &cpb->cp[n];
 
-	if (!thread || !thread->ts) {
-		chain->nr = 2;
-		return;
+	call_path__init(cp, parent, sym, ip, in_kernel);
+
+	return cp;
+}
+
+static struct call_path *call_path__findnew(struct call_path_root *cpr,
+					    struct call_path *parent,
+					    struct symbol *sym, u64 ip, u64 ks)
+{
+	struct rb_node **p;
+	struct rb_node *node_parent = NULL;
+	struct call_path *cp;
+	bool in_kernel = ip >= ks;
+
+	if (sym)
+		ip = 0;
+
+	if (!parent)
+		return call_path__new(cpr, parent, sym, ip, in_kernel);
+
+	p = &parent->children.rb_node;
+	while (*p != NULL) {
+		node_parent = *p;
+		cp = rb_entry(node_parent, struct call_path, rb_node);
+
+		if (cp->sym == sym && cp->ip == ip)
+			return cp;
+
+		if (sym < cp->sym || (sym == cp->sym && ip < cp->ip))
+			p = &(*p)->rb_left;
+		else
+			p = &(*p)->rb_right;
 	}
 
-	last_context = context;
+	cp = call_path__new(cpr, parent, sym, ip, in_kernel);
+	if (!cp)
+		return NULL;
 
-	for (i = 2, j = 1; i < sz && j <= thread->ts->cnt; i++, j++) {
-		ip = thread->ts->stack[thread->ts->cnt - j].ret_addr;
-		context = callchain_context(ip, kernel_start);
-		if (context != last_context) {
-			if (i >= sz - 1)
-				break;
-			chain->ips[i++] = context;
-			last_context = context;
-		}
-		chain->ips[i] = ip;
-	}
+	rb_link_node(&cp->rb_node, node_parent, p);
+	rb_insert_color(&cp->rb_node, &parent->children);
 
-	chain->nr = i;
+	return cp;
 }
 
 struct call_return_processor *
@@ -587,7 +689,7 @@ int thread_stack__process(struct thread *thread, struct comm *comm,
 
 	/* Flush stack on exec */
 	if (ts->comm != comm && thread->pid_ == thread->tid) {
-		err = __thread_stack__flush(thread, ts);
+		err = thread_stack__flush(thread, ts);
 		if (err)
 			return err;
 		ts->comm = comm;
@@ -642,11 +744,4 @@ int thread_stack__process(struct thread *thread, struct comm *comm,
 	}
 
 	return err;
-}
-
-size_t thread_stack__depth(struct thread *thread)
-{
-	if (!thread->ts)
-		return 0;
-	return thread->ts->cnt;
 }

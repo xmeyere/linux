@@ -760,7 +760,7 @@
 #define RT5670_PWR_VREF2_BIT			4
 #define RT5670_PWR_FV2				(0x1 << 3)
 #define RT5670_PWR_FV2_BIT			3
-#define RT5670_LDO_SEL_MASK			(0x7)
+#define RT5670_LDO_SEL_MASK			(0x3)
 #define RT5670_LDO_SEL_SFT			0
 
 /* Power Management for Analog 2 (0x64) */
@@ -973,12 +973,12 @@
 #define RT5670_SCLK_SRC_MCLK			(0x0 << 14)
 #define RT5670_SCLK_SRC_PLL1			(0x1 << 14)
 #define RT5670_SCLK_SRC_RCCLK			(0x2 << 14) /* 15MHz */
-#define RT5670_PLL1_SRC_MASK			(0x7 << 11)
-#define RT5670_PLL1_SRC_SFT			11
-#define RT5670_PLL1_SRC_MCLK			(0x0 << 11)
-#define RT5670_PLL1_SRC_BCLK1			(0x1 << 11)
-#define RT5670_PLL1_SRC_BCLK2			(0x2 << 11)
-#define RT5670_PLL1_SRC_BCLK3			(0x3 << 11)
+#define RT5670_PLL1_SRC_MASK			(0x3 << 12)
+#define RT5670_PLL1_SRC_SFT			12
+#define RT5670_PLL1_SRC_MCLK			(0x0 << 12)
+#define RT5670_PLL1_SRC_BCLK1			(0x1 << 12)
+#define RT5670_PLL1_SRC_BCLK2			(0x2 << 12)
+#define RT5670_PLL1_SRC_BCLK3			(0x3 << 12)
 #define RT5670_PLL1_PD_MASK			(0x1 << 3)
 #define RT5670_PLL1_PD_SFT			3
 #define RT5670_PLL1_PD_1			(0x0 << 3)
@@ -1816,10 +1816,6 @@
 #define RT5670_ZCD_HP_DIS			(0x0 << 15)
 #define RT5670_ZCD_HP_EN			(0x1 << 15)
 
-/* General Control 3 (0xfc) */
-#define RT5670_TDM_DATA_MODE_SEL		(0x1 << 11)
-#define RT5670_TDM_DATA_MODE_NOR		(0x0 << 11)
-#define RT5670_TDM_DATA_MODE_50FS		(0x1 << 11)
 
 /* Codec Private Register definition */
 /* 3D Speaker Control (0x63) */
@@ -1918,7 +1914,6 @@ enum {
 #define RT5670_IF1_ADC1_IN2_SFT			11
 #define RT5670_IF1_ADC2_IN1_SEL			(0x1 << 10)
 #define RT5670_IF1_ADC2_IN1_SFT			10
-#define RT5670_MCLK_DET				(0x1 << 3)
 
 /* General Control2 (0xfb) */
 #define RT5670_RXDC_SRC_MASK			(0x1 << 7)
@@ -1955,20 +1950,17 @@ enum {
 };
 
 enum {
-	RT5670_DMIC1_DISABLED,
 	RT5670_DMIC_DATA_GPIO6,
 	RT5670_DMIC_DATA_IN2P,
 	RT5670_DMIC_DATA_GPIO7,
 };
 
 enum {
-	RT5670_DMIC2_DISABLED,
 	RT5670_DMIC_DATA_GPIO8,
 	RT5670_DMIC_DATA_IN3N,
 };
 
 enum {
-	RT5670_DMIC3_DISABLED,
 	RT5670_DMIC_DATA_GPIO9,
 	RT5670_DMIC_DATA_GPIO10,
 	RT5670_DMIC_DATA_GPIO5,
@@ -1986,15 +1978,13 @@ enum {
 	RT5670_DOWN_RATE_FILTER = (0x1 << 7),
 };
 
-int rt5670_sel_asrc_clk_src(struct snd_soc_component *component,
+int rt5670_sel_asrc_clk_src(struct snd_soc_codec *codec,
 			    unsigned int filter_mask, unsigned int clk_src);
 
 struct rt5670_priv {
-	struct snd_soc_component *component;
+	struct snd_soc_codec *codec;
 	struct rt5670_platform_data pdata;
 	struct regmap *regmap;
-	struct snd_soc_jack *jack;
-	struct snd_soc_jack_gpio hp_gpio;
 
 	int sysclk;
 	int sysclk_src;
@@ -2009,11 +1999,6 @@ struct rt5670_priv {
 	int dsp_sw; /* expected parameter setting */
 	int dsp_rate;
 	int jack_type;
-	int jack_type_saved;
 };
 
-void rt5670_jack_suspend(struct snd_soc_component *component);
-void rt5670_jack_resume(struct snd_soc_component *component);
-int rt5670_set_jack_detect(struct snd_soc_component *component,
-	struct snd_soc_jack *jack);
 #endif /* __RT5670_H__ */

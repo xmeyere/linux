@@ -29,28 +29,30 @@
 #include "nx.h"
 
 
-static int nx_crypto_ctx_sha256_init(struct crypto_tfm *tfm)
+static int nx_sha256_init(struct shash_desc *desc)
 {
-	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(tfm);
-	int err;
-
-	err = nx_crypto_ctx_sha_init(tfm);
-	if (err)
-		return err;
+	struct sha256_state *sctx = shash_desc_ctx(desc);
+	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
+	int len;
+	int rc;
 
 	nx_ctx_init(nx_ctx, HCOP_FC_SHA);
+
+	memset(sctx, 0, sizeof *sctx);
 
 	nx_ctx->ap = &nx_ctx->props[NX_PROPS_SHA256];
 
 	NX_CPB_SET_DIGEST_SIZE(nx_ctx->csbcpb, NX_DS_SHA256);
 
-	return 0;
-}
+	len = SHA256_DIGEST_SIZE;
+	rc = nx_sha_build_sg_list(nx_ctx, nx_ctx->out_sg,
+				  &nx_ctx->op.outlen,
+				  &len,
+				  (u8 *) sctx->state,
+				  NX_DS_SHA256);
 
-static int nx_sha256_init(struct shash_desc *desc) {
-	struct sha256_state *sctx = shash_desc_ctx(desc);
-
-	memset(sctx, 0, sizeof *sctx);
+	if (rc)
+		goto out;
 
 	sctx->state[0] = __cpu_to_be32(SHA256_H0);
 	sctx->state[1] = __cpu_to_be32(SHA256_H1);
@@ -62,6 +64,7 @@ static int nx_sha256_init(struct shash_desc *desc) {
 	sctx->state[7] = __cpu_to_be32(SHA256_H7);
 	sctx->count = 0;
 
+out:
 	return 0;
 }
 
@@ -71,12 +74,10 @@ static int nx_sha256_update(struct shash_desc *desc, const u8 *data,
 	struct sha256_state *sctx = shash_desc_ctx(desc);
 	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
 	struct nx_csbcpb *csbcpb = (struct nx_csbcpb *)nx_ctx->csbcpb;
-	struct nx_sg *out_sg;
 	u64 to_process = 0, leftover, total;
 	unsigned long irq_flags;
 	int rc = 0;
 	int data_len;
-	u32 max_sg_len;
 	u64 buf_len = (sctx->count % SHA256_BLOCK_SIZE);
 
 	spin_lock_irqsave(&nx_ctx->lock, irq_flags);
@@ -96,57 +97,38 @@ static int nx_sha256_update(struct shash_desc *desc, const u8 *data,
 	NX_CPB_FDM(csbcpb) |= NX_FDM_INTERMEDIATE;
 	NX_CPB_FDM(csbcpb) |= NX_FDM_CONTINUATION;
 
-	max_sg_len = min_t(u64, nx_ctx->ap->sglen,
-			nx_driver.of.max_sg_len/sizeof(struct nx_sg));
-	max_sg_len = min_t(u64, max_sg_len,
-			nx_ctx->ap->databytelen/NX_PAGE_SIZE);
-
-	data_len = SHA256_DIGEST_SIZE;
-	out_sg = nx_build_sg_list(nx_ctx->out_sg, (u8 *)sctx->state,
-				  &data_len, max_sg_len);
-	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
-
-	if (data_len != SHA256_DIGEST_SIZE) {
-		rc = -EINVAL;
-		goto out;
-	}
-
 	do {
-		int used_sgs = 0;
-		struct nx_sg *in_sg = nx_ctx->in_sg;
+		/*
+		 * to_process: the SHA256_BLOCK_SIZE data chunk to process in
+		 * this update. This value is also restricted by the sg list
+		 * limits.
+		 */
+		to_process = total - to_process;
+		to_process = to_process & ~(SHA256_BLOCK_SIZE - 1);
 
 		if (buf_len) {
 			data_len = buf_len;
-			in_sg = nx_build_sg_list(in_sg,
-						 (u8 *) sctx->buf,
-						 &data_len,
-						 max_sg_len);
+			rc = nx_sha_build_sg_list(nx_ctx, nx_ctx->in_sg,
+						  &nx_ctx->op.inlen,
+						  &data_len,
+						  (u8 *) sctx->buf,
+						  NX_DS_SHA256);
 
-			if (data_len != buf_len) {
-				rc = -EINVAL;
+			if (rc || data_len != buf_len)
 				goto out;
-			}
-			used_sgs = in_sg - nx_ctx->in_sg;
 		}
 
-		/* to_process: SHA256_BLOCK_SIZE aligned chunk to be
-		 * processed in this iteration. This value is restricted
-		 * by sg list limits and number of sgs we already used
-		 * for leftover data. (see above)
-		 * In ideal case, we could allow NX_PAGE_SIZE * max_sg_len,
-		 * but because data may not be aligned, we need to account
-		 * for that too. */
-		to_process = min_t(u64, total,
-			(max_sg_len - 1 - used_sgs) * NX_PAGE_SIZE);
-		to_process = to_process & ~(SHA256_BLOCK_SIZE - 1);
-
 		data_len = to_process - buf_len;
-		in_sg = nx_build_sg_list(in_sg, (u8 *) data,
-					 &data_len, max_sg_len);
+		rc = nx_sha_build_sg_list(nx_ctx, nx_ctx->in_sg,
+					  &nx_ctx->op.inlen,
+					  &data_len,
+					  (u8 *) data,
+					  NX_DS_SHA256);
 
-		nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) * sizeof(struct nx_sg);
+		if (rc)
+			goto out;
 
-		to_process = data_len + buf_len;
+		to_process = (data_len + buf_len);
 		leftover = total - to_process;
 
 		/*
@@ -191,18 +173,11 @@ static int nx_sha256_final(struct shash_desc *desc, u8 *out)
 	struct sha256_state *sctx = shash_desc_ctx(desc);
 	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
 	struct nx_csbcpb *csbcpb = (struct nx_csbcpb *)nx_ctx->csbcpb;
-	struct nx_sg *in_sg, *out_sg;
 	unsigned long irq_flags;
-	u32 max_sg_len;
-	int rc = 0;
+	int rc;
 	int len;
 
 	spin_lock_irqsave(&nx_ctx->lock, irq_flags);
-
-	max_sg_len = min_t(u64, nx_ctx->ap->sglen,
-			nx_driver.of.max_sg_len/sizeof(struct nx_sg));
-	max_sg_len = min_t(u64, max_sg_len,
-			nx_ctx->ap->databytelen/NX_PAGE_SIZE);
 
 	/* final is represented by continuing the operation and indicating that
 	 * this is not an intermediate operation */
@@ -220,24 +195,25 @@ static int nx_sha256_final(struct shash_desc *desc, u8 *out)
 	csbcpb->cpb.sha256.message_bit_length = (u64) (sctx->count * 8);
 
 	len = sctx->count & (SHA256_BLOCK_SIZE - 1);
-	in_sg = nx_build_sg_list(nx_ctx->in_sg, (u8 *) sctx->buf,
-				 &len, max_sg_len);
+	rc = nx_sha_build_sg_list(nx_ctx, nx_ctx->in_sg,
+				  &nx_ctx->op.inlen,
+				  &len,
+				  (u8 *) sctx->buf,
+				  NX_DS_SHA256);
 
-	if (len != (sctx->count & (SHA256_BLOCK_SIZE - 1))) {
-		rc = -EINVAL;
+	if (rc || len != (sctx->count & (SHA256_BLOCK_SIZE - 1)))
 		goto out;
-	}
 
 	len = SHA256_DIGEST_SIZE;
-	out_sg = nx_build_sg_list(nx_ctx->out_sg, out, &len, max_sg_len);
+	rc = nx_sha_build_sg_list(nx_ctx, nx_ctx->out_sg,
+				  &nx_ctx->op.outlen,
+				  &len,
+				  out,
+				  NX_DS_SHA256);
 
-	if (len != SHA256_DIGEST_SIZE) {
-		rc = -EINVAL;
+	if (rc || len != SHA256_DIGEST_SIZE)
 		goto out;
-	}
 
-	nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) * sizeof(struct nx_sg);
-	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
 	if (!nx_ctx->op.outlen) {
 		rc = -EINVAL;
 		goto out;
@@ -288,10 +264,11 @@ struct shash_alg nx_shash_sha256_alg = {
 		.cra_name        = "sha256",
 		.cra_driver_name = "sha256-nx",
 		.cra_priority    = 300,
+		.cra_flags       = CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize   = SHA256_BLOCK_SIZE,
 		.cra_module      = THIS_MODULE,
 		.cra_ctxsize     = sizeof(struct nx_crypto_ctx),
-		.cra_init        = nx_crypto_ctx_sha256_init,
+		.cra_init        = nx_crypto_ctx_sha_init,
 		.cra_exit        = nx_crypto_ctx_exit,
 	}
 };

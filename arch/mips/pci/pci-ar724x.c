@@ -11,18 +11,14 @@
 
 #include <linux/irq.h>
 #include <linux/pci.h>
-#include <linux/init.h>
-#include <linux/delay.h>
+#include <linux/module.h>
 #include <linux/platform_device.h>
 #include <asm/mach-ath79/ath79.h>
 #include <asm/mach-ath79/ar71xx_regs.h>
 
-#define AR724X_PCI_REG_APP		0x00
 #define AR724X_PCI_REG_RESET		0x18
 #define AR724X_PCI_REG_INT_STATUS	0x4c
 #define AR724X_PCI_REG_INT_MASK		0x50
-
-#define AR724X_PCI_APP_LTSSM_ENABLE	BIT(0)
 
 #define AR724X_PCI_RESET_LINK_UP	BIT(0)
 
@@ -229,13 +225,13 @@ static struct pci_ops ar724x_pci_ops = {
 	.write	= ar724x_pci_write,
 };
 
-static void ar724x_pci_irq_handler(struct irq_desc *desc)
+static void ar724x_pci_irq_handler(unsigned int irq, struct irq_desc *desc)
 {
 	struct ar724x_pci_controller *apc;
 	void __iomem *base;
 	u32 pending;
 
-	apc = irq_desc_get_handler_data(desc);
+	apc = irq_get_handler_data(irq);
 	base = apc->ctrl_base;
 
 	pending = __raw_readl(base + AR724X_PCI_REG_INT_STATUS) &
@@ -325,39 +321,8 @@ static void ar724x_pci_irq_init(struct ar724x_pci_controller *apc,
 		irq_set_chip_data(i, apc);
 	}
 
-	irq_set_chained_handler_and_data(apc->irq, ar724x_pci_irq_handler,
-					 apc);
-}
-
-static void ar724x_pci_hw_init(struct ar724x_pci_controller *apc)
-{
-	u32 ppl, app;
-	int wait = 0;
-
-	/* deassert PCIe host controller and PCIe PHY reset */
-	ath79_device_reset_clear(AR724X_RESET_PCIE);
-	ath79_device_reset_clear(AR724X_RESET_PCIE_PHY);
-
-	/* remove the reset of the PCIE PLL */
-	ppl = ath79_pll_rr(AR724X_PLL_REG_PCIE_CONFIG);
-	ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_RESET;
-	ath79_pll_wr(AR724X_PLL_REG_PCIE_CONFIG, ppl);
-
-	/* deassert bypass for the PCIE PLL */
-	ppl = ath79_pll_rr(AR724X_PLL_REG_PCIE_CONFIG);
-	ppl &= ~AR724X_PLL_REG_PCIE_CONFIG_PPL_BYPASS;
-	ath79_pll_wr(AR724X_PLL_REG_PCIE_CONFIG, ppl);
-
-	/* set PCIE Application Control to ready */
-	app = __raw_readl(apc->ctrl_base + AR724X_PCI_REG_APP);
-	app |= AR724X_PCI_APP_LTSSM_ENABLE;
-	__raw_writel(app, apc->ctrl_base + AR724X_PCI_REG_APP);
-
-	/* wait up to 100ms for PHY link up */
-	do {
-		mdelay(10);
-		wait++;
-	} while (wait < 10 && !ar724x_pci_check_link(apc));
+	irq_set_handler_data(apc->irq, apc);
+	irq_set_chained_handler(apc->irq, ar724x_pci_irq_handler);
 }
 
 static int ar724x_pci_probe(struct platform_device *pdev)
@@ -417,13 +382,6 @@ static int ar724x_pci_probe(struct platform_device *pdev)
 	apc->pci_controller.pci_ops = &ar724x_pci_ops;
 	apc->pci_controller.io_resource = &apc->io_res;
 	apc->pci_controller.mem_resource = &apc->mem_res;
-
-	/*
-	 * Do the full PCIE Root Complex Initialization Sequence if the PCIe
-	 * host controller is in reset.
-	 */
-	if (ath79_reset_rr(AR724X_RESET_REG_RESET_MODULE) & AR724X_RESET_PCIE)
-		ar724x_pci_hw_init(apc);
 
 	apc->link_up = ar724x_pci_check_link(apc);
 	if (!apc->link_up)

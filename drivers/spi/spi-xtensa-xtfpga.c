@@ -34,13 +34,13 @@ struct xtfpga_spi {
 static inline void xtfpga_spi_write32(const struct xtfpga_spi *spi,
 				      unsigned addr, u32 val)
 {
-	__raw_writel(val, spi->regs + addr);
+	iowrite32(val, spi->regs + addr);
 }
 
 static inline unsigned int xtfpga_spi_read32(const struct xtfpga_spi *spi,
 					     unsigned addr)
 {
-	return __raw_readl(spi->regs + addr);
+	return ioread32(spi->regs + addr);
 }
 
 static inline void xtfpga_spi_wait_busy(struct xtfpga_spi *xspi)
@@ -54,7 +54,7 @@ static inline void xtfpga_spi_wait_busy(struct xtfpga_spi *xspi)
 }
 
 static u32 xtfpga_spi_txrx_word(struct spi_device *spi, unsigned nsecs,
-				u32 v, u8 bits, unsigned flags)
+				u32 v, u8 bits)
 {
 	struct xtfpga_spi *xspi = spi_master_get_devdata(spi->master);
 

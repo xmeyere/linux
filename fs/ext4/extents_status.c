@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  fs/ext4/extents_status.c
  *
@@ -10,10 +9,12 @@
  *
  * Ext4 extents status tree core functions.
  */
+#include <linux/rbtree.h>
 #include <linux/list_sort.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include "ext4.h"
+#include "extents_status.h"
 
 #include <trace/events/ext4.h>
 
@@ -85,7 +86,7 @@
  *   --	writeout
  *	Writeout looks up whole page cache to see if a buffer is
  *	mapped, If there are not very many delayed buffers, then it is
- *	time consuming.
+ *	time comsuming.
  *
  * With extent status tree implementation, FIEMAP, SEEK_HOLE/DATA,
  * bigalloc and writeout can figure out if a block or a range of
@@ -162,7 +163,8 @@ int __init ext4_init_es(void)
 
 void ext4_exit_es(void)
 {
-	kmem_cache_destroy(ext4_es_cachep);
+	if (ext4_es_cachep)
+		kmem_cache_destroy(ext4_es_cachep);
 }
 
 void ext4_es_init_tree(struct ext4_es_tree *tree)
@@ -703,14 +705,6 @@ int ext4_es_insert_extent(struct inode *inode, ext4_lblk_t lblk,
 
 	BUG_ON(end < lblk);
 
-	if ((status & EXTENT_STATUS_DELAYED) &&
-	    (status & EXTENT_STATUS_WRITTEN)) {
-		ext4_warning(inode->i_sb, "Inserting extent [%u/%u] as "
-				" delayed and written which can potentially "
-				" cause data loss.", lblk, len);
-		WARN_ON(1);
-	}
-
 	newes.es_lblk = lblk;
 	newes.es_len = len;
 	ext4_es_store_pblock_status(&newes, pblk, status);
@@ -823,8 +817,8 @@ out:
 		es->es_lblk = es1->es_lblk;
 		es->es_len = es1->es_len;
 		es->es_pblk = es1->es_pblk;
-		if (!ext4_es_is_referenced(es1))
-			ext4_es_set_referenced(es1);
+		if (!ext4_es_is_referenced(es))
+			ext4_es_set_referenced(es);
 		stats->es_stats_cache_hits++;
 	} else {
 		stats->es_stats_cache_misses++;
@@ -1080,16 +1074,29 @@ static unsigned long ext4_es_scan(struct shrinker *shrink,
 	ret = percpu_counter_read_positive(&sbi->s_es_stats.es_stats_shk_cnt);
 	trace_ext4_es_shrink_scan_enter(sbi->s_sb, nr_to_scan, ret);
 
+	if (!nr_to_scan)
+		return ret;
+
 	nr_shrunk = __es_shrink(sbi, nr_to_scan, NULL);
 
-	ret = percpu_counter_read_positive(&sbi->s_es_stats.es_stats_shk_cnt);
 	trace_ext4_es_shrink_scan_exit(sbi->s_sb, nr_shrunk, ret);
 	return nr_shrunk;
 }
 
-int ext4_seq_es_shrinker_info_show(struct seq_file *seq, void *v)
+static void *ext4_es_seq_shrinker_info_start(struct seq_file *seq, loff_t *pos)
 {
-	struct ext4_sb_info *sbi = EXT4_SB((struct super_block *) seq->private);
+	return *pos ? NULL : SEQ_START_TOKEN;
+}
+
+static void *
+ext4_es_seq_shrinker_info_next(struct seq_file *seq, void *v, loff_t *pos)
+{
+	return NULL;
+}
+
+static int ext4_es_seq_shrinker_info_show(struct seq_file *seq, void *v)
+{
+	struct ext4_sb_info *sbi = seq->private;
 	struct ext4_es_stats *es_stats = &sbi->s_es_stats;
 	struct ext4_inode_info *ei, *max = NULL;
 	unsigned int inode_cnt = 0;
@@ -1130,6 +1137,45 @@ int ext4_seq_es_shrinker_info_show(struct seq_file *seq, void *v)
 	return 0;
 }
 
+static void ext4_es_seq_shrinker_info_stop(struct seq_file *seq, void *v)
+{
+}
+
+static const struct seq_operations ext4_es_seq_shrinker_info_ops = {
+	.start = ext4_es_seq_shrinker_info_start,
+	.next  = ext4_es_seq_shrinker_info_next,
+	.stop  = ext4_es_seq_shrinker_info_stop,
+	.show  = ext4_es_seq_shrinker_info_show,
+};
+
+static int
+ext4_es_seq_shrinker_info_open(struct inode *inode, struct file *file)
+{
+	int ret;
+
+	ret = seq_open(file, &ext4_es_seq_shrinker_info_ops);
+	if (!ret) {
+		struct seq_file *m = file->private_data;
+		m->private = PDE_DATA(inode);
+	}
+
+	return ret;
+}
+
+static int
+ext4_es_seq_shrinker_info_release(struct inode *inode, struct file *file)
+{
+	return seq_release(inode, file);
+}
+
+static const struct file_operations ext4_es_seq_shrinker_info_fops = {
+	.owner		= THIS_MODULE,
+	.open		= ext4_es_seq_shrinker_info_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= ext4_es_seq_shrinker_info_release,
+};
+
 int ext4_es_register_shrinker(struct ext4_sb_info *sbi)
 {
 	int err;
@@ -1158,6 +1204,10 @@ int ext4_es_register_shrinker(struct ext4_sb_info *sbi)
 	if (err)
 		goto err2;
 
+	if (sbi->s_proc)
+		proc_create_data("es_shrinker_info", S_IRUGO, sbi->s_proc,
+				 &ext4_es_seq_shrinker_info_fops, sbi);
+
 	return 0;
 
 err2:
@@ -1169,6 +1219,8 @@ err1:
 
 void ext4_es_unregister_shrinker(struct ext4_sb_info *sbi)
 {
+	if (sbi->s_proc)
+		remove_proc_entry("es_shrinker_info", sbi->s_proc);
 	percpu_counter_destroy(&sbi->s_es_stats.es_stats_all_cnt);
 	percpu_counter_destroy(&sbi->s_es_stats.es_stats_shk_cnt);
 	unregister_shrinker(&sbi->s_es_shrinker);

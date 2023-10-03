@@ -28,7 +28,7 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-subdev.h>
 #include <media/v4l2-mediabus.h>
-#include <media/i2c/s5k6aa.h>
+#include <media/s5k6aa.h>
 
 static int debug;
 module_param(debug, int, 0644);
@@ -181,7 +181,7 @@ static const char * const s5k6aa_supply_names[] = {
 
 enum s5k6aa_gpio_id {
 	STBY,
-	RSET,
+	RST,
 	GPIO_NUM,
 };
 
@@ -421,7 +421,6 @@ static int s5k6aa_set_ahb_address(struct i2c_client *client)
 
 /**
  * s5k6aa_configure_pixel_clock - apply ISP main clock/PLL configuration
- * @s5k6aa: pointer to &struct s5k6aa describing the device
  *
  * Configure the internal ISP PLL for the required output frequency.
  * Locking: called with s5k6aa.lock mutex held.
@@ -670,7 +669,6 @@ static int s5k6aa_set_input_params(struct s5k6aa *s5k6aa)
 
 /**
  * s5k6aa_configure_video_bus - configure the video output interface
- * @s5k6aa: pointer to &struct s5k6aa describing the device
  * @bus_type: video bus type: parallel or MIPI-CSI
  * @nlanes: number of MIPI lanes to be used (MIPI-CSI only)
  *
@@ -726,8 +724,6 @@ static int s5k6aa_new_config_sync(struct i2c_client *client, int timeout,
 
 /**
  * s5k6aa_set_prev_config - write user preview register set
- * @s5k6aa: pointer to &struct s5k6aa describing the device
- * @preset: s5kaa preset to be applied
  *
  * Configure output resolution and color fromat, pixel clock
  * frequency range, device frame rate type and frame period range.
@@ -781,7 +777,6 @@ static int s5k6aa_set_prev_config(struct s5k6aa *s5k6aa,
 
 /**
  * s5k6aa_initialize_isp - basic ISP MCU initialization
- * @sd: pointer to V4L2 sub-device descriptor
  *
  * Configure AHB addresses for registers read/write; configure PLLs for
  * required output pixel clock. The ISP power supply needs to be already
@@ -843,9 +838,9 @@ static int __s5k6aa_power_on(struct s5k6aa *s5k6aa)
 
 	if (s5k6aa->s_power)
 		ret = s5k6aa->s_power(1);
-	usleep_range(4000, 5000);
+	usleep_range(4000, 4000);
 
-	if (s5k6aa_gpio_deassert(s5k6aa, RSET))
+	if (s5k6aa_gpio_deassert(s5k6aa, RST))
 		msleep(20);
 
 	return ret;
@@ -855,7 +850,7 @@ static int __s5k6aa_power_off(struct s5k6aa *s5k6aa)
 {
 	int ret;
 
-	if (s5k6aa_gpio_assert(s5k6aa, RSET))
+	if (s5k6aa_gpio_assert(s5k6aa, RST))
 		usleep_range(100, 150);
 
 	if (s5k6aa->s_power) {
@@ -880,7 +875,7 @@ static int s5k6aa_set_power(struct v4l2_subdev *sd, int on)
 
 	mutex_lock(&s5k6aa->lock);
 
-	if (s5k6aa->power == !on) {
+	if (!on == s5k6aa->power) {
 		if (on) {
 			ret = __s5k6aa_power_on(s5k6aa);
 			if (!ret)
@@ -1001,7 +996,7 @@ static int s5k6aa_s_frame_interval(struct v4l2_subdev *sd,
  * V4L2 subdev pad level and video operations
  */
 static int s5k6aa_enum_frame_interval(struct v4l2_subdev *sd,
-			      struct v4l2_subdev_pad_config *cfg,
+			      struct v4l2_subdev_fh *fh,
 			      struct v4l2_subdev_frame_interval_enum *fie)
 {
 	struct s5k6aa *s5k6aa = to_s5k6aa(sd);
@@ -1028,7 +1023,7 @@ static int s5k6aa_enum_frame_interval(struct v4l2_subdev *sd,
 }
 
 static int s5k6aa_enum_mbus_code(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_pad_config *cfg,
+				 struct v4l2_subdev_fh *fh,
 				 struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index >= ARRAY_SIZE(s5k6aa_formats))
@@ -1039,7 +1034,7 @@ static int s5k6aa_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int s5k6aa_enum_frame_size(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_fh *fh,
 				  struct v4l2_subdev_frame_size_enum *fse)
 {
 	int i = ARRAY_SIZE(s5k6aa_formats);
@@ -1061,14 +1056,14 @@ static int s5k6aa_enum_frame_size(struct v4l2_subdev *sd,
 }
 
 static struct v4l2_rect *
-__s5k6aa_get_crop_rect(struct s5k6aa *s5k6aa, struct v4l2_subdev_pad_config *cfg,
+__s5k6aa_get_crop_rect(struct s5k6aa *s5k6aa, struct v4l2_subdev_fh *fh,
 		       enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_ACTIVE)
 		return &s5k6aa->ccd_rect;
 
 	WARN_ON(which != V4L2_SUBDEV_FORMAT_TRY);
-	return v4l2_subdev_get_try_crop(&s5k6aa->sd, cfg, 0);
+	return v4l2_subdev_get_try_crop(fh, 0);
 }
 
 static void s5k6aa_try_format(struct s5k6aa *s5k6aa,
@@ -1092,7 +1087,7 @@ static void s5k6aa_try_format(struct s5k6aa *s5k6aa,
 	mf->field	= V4L2_FIELD_NONE;
 }
 
-static int s5k6aa_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+static int s5k6aa_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct s5k6aa *s5k6aa = to_s5k6aa(sd);
@@ -1101,7 +1096,7 @@ static int s5k6aa_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 	memset(fmt->reserved, 0, sizeof(fmt->reserved));
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_get_try_format(sd, cfg, 0);
+		mf = v4l2_subdev_get_try_format(fh, 0);
 		fmt->format = *mf;
 		return 0;
 	}
@@ -1113,7 +1108,7 @@ static int s5k6aa_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 	return 0;
 }
 
-static int s5k6aa_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+static int s5k6aa_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 			  struct v4l2_subdev_format *fmt)
 {
 	struct s5k6aa *s5k6aa = to_s5k6aa(sd);
@@ -1126,8 +1121,8 @@ static int s5k6aa_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 	s5k6aa_try_format(s5k6aa, &fmt->format);
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		mf = v4l2_subdev_get_try_format(sd, cfg, fmt->pad);
-		crop = v4l2_subdev_get_try_crop(sd, cfg, 0);
+		mf = v4l2_subdev_get_try_format(fh, fmt->pad);
+		crop = v4l2_subdev_get_try_crop(fh, 0);
 	} else {
 		if (s5k6aa->streaming) {
 			ret = -EBUSY;
@@ -1167,7 +1162,7 @@ static int s5k6aa_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config 
 }
 
 static int s5k6aa_get_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_fh *fh,
 				struct v4l2_subdev_selection *sel)
 {
 	struct s5k6aa *s5k6aa = to_s5k6aa(sd);
@@ -1179,7 +1174,7 @@ static int s5k6aa_get_selection(struct v4l2_subdev *sd,
 	memset(sel->reserved, 0, sizeof(sel->reserved));
 
 	mutex_lock(&s5k6aa->lock);
-	rect = __s5k6aa_get_crop_rect(s5k6aa, cfg, sel->which);
+	rect = __s5k6aa_get_crop_rect(s5k6aa, fh, sel->which);
 	sel->r = *rect;
 	mutex_unlock(&s5k6aa->lock);
 
@@ -1190,7 +1185,7 @@ static int s5k6aa_get_selection(struct v4l2_subdev *sd,
 }
 
 static int s5k6aa_set_selection(struct v4l2_subdev *sd,
-				struct v4l2_subdev_pad_config *cfg,
+				struct v4l2_subdev_fh *fh,
 				struct v4l2_subdev_selection *sel)
 {
 	struct s5k6aa *s5k6aa = to_s5k6aa(sd);
@@ -1202,13 +1197,13 @@ static int s5k6aa_set_selection(struct v4l2_subdev *sd,
 		return -EINVAL;
 
 	mutex_lock(&s5k6aa->lock);
-	crop_r = __s5k6aa_get_crop_rect(s5k6aa, cfg, sel->which);
+	crop_r = __s5k6aa_get_crop_rect(s5k6aa, fh, sel->which);
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		mf = &s5k6aa->preset->mbus_fmt;
 		s5k6aa->apply_crop = 1;
 	} else {
-		mf = v4l2_subdev_get_try_format(sd, cfg, 0);
+		mf = v4l2_subdev_get_try_format(fh, 0);
 	}
 	v4l_bound_align_image(&sel->r.width, mf->width,
 			      S5K6AA_WIN_WIDTH_MAX, 1,
@@ -1429,8 +1424,8 @@ static int s5k6aa_initialize_ctrls(struct s5k6aa *s5k6aa)
  */
 static int s5k6aa_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
-	struct v4l2_mbus_framefmt *format = v4l2_subdev_get_try_format(sd, fh->pad, 0);
-	struct v4l2_rect *crop = v4l2_subdev_get_try_crop(sd, fh->pad, 0);
+	struct v4l2_mbus_framefmt *format = v4l2_subdev_get_try_format(fh, 0);
+	struct v4l2_rect *crop = v4l2_subdev_get_try_crop(fh, 0);
 
 	format->colorspace = s5k6aa_formats[0].colorspace;
 	format->code = s5k6aa_formats[0].code;
@@ -1514,7 +1509,7 @@ static int s5k6aa_configure_gpios(struct s5k6aa *s5k6aa,
 	int ret;
 
 	s5k6aa->gpio[STBY].gpio = -EINVAL;
-	s5k6aa->gpio[RSET].gpio  = -EINVAL;
+	s5k6aa->gpio[RST].gpio  = -EINVAL;
 
 	gpio = &pdata->gpio_stby;
 	if (gpio_is_valid(gpio->gpio)) {
@@ -1537,7 +1532,7 @@ static int s5k6aa_configure_gpios(struct s5k6aa *s5k6aa,
 		if (ret < 0)
 			return ret;
 
-		s5k6aa->gpio[RSET] = *gpio;
+		s5k6aa->gpio[RST] = *gpio;
 	}
 
 	return 0;
@@ -1582,8 +1577,8 @@ static int s5k6aa_probe(struct i2c_client *client,
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
 
 	s5k6aa->pad.flags = MEDIA_PAD_FL_SOURCE;
-	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
-	ret = media_entity_pads_init(&sd->entity, 1, &s5k6aa->pad);
+	sd->entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
+	ret = media_entity_init(&sd->entity, 1, &s5k6aa->pad, 0);
 	if (ret)
 		return ret;
 

@@ -99,11 +99,11 @@ static int alloc_region_table(struct dm_target *ti, unsigned nr_paths)
 	if (sector_div(nr_regions, sctx->region_size))
 		nr_regions++;
 
-	if (nr_regions >= ULONG_MAX) {
+	sctx->nr_regions = nr_regions;
+	if (sctx->nr_regions != nr_regions || sctx->nr_regions >= ULONG_MAX) {
 		ti->error = "Region table too large";
 		return -EINVAL;
 	}
-	sctx->nr_regions = nr_regions;
 
 	nr_slots = nr_regions;
 	if (sector_div(nr_slots, sctx->region_entries_per_slot))
@@ -114,8 +114,7 @@ static int alloc_region_table(struct dm_target *ti, unsigned nr_paths)
 		return -EINVAL;
 	}
 
-	sctx->region_table = vmalloc(array_size(nr_slots,
-						sizeof(region_table_slot_t)));
+	sctx->region_table = vmalloc(nr_slots * sizeof(region_table_slot_t));
 	if (!sctx->region_table) {
 		ti->error = "Cannot allocate region table";
 		return -ENOMEM;
@@ -145,7 +144,7 @@ static unsigned switch_region_table_read(struct switch_ctx *sctx, unsigned long 
 
 	switch_get_position(sctx, region_nr, &region_index, &bit);
 
-	return (READ_ONCE(sctx->region_table[region_index]) >> bit) &
+	return (ACCESS_ONCE(sctx->region_table[region_index]) >> bit) &
 		((1 << sctx->region_table_entry_bits) - 1);
 }
 
@@ -252,7 +251,7 @@ static void switch_dtr(struct dm_target *ti)
  */
 static int switch_ctr(struct dm_target *ti, unsigned argc, char **argv)
 {
-	static const struct dm_arg _args[] = {
+	static struct dm_arg _args[] = {
 		{1, (KMALLOC_MAX_SIZE - sizeof(struct switch_ctx)) / sizeof(struct switch_path), "Invalid number of paths"},
 		{1, UINT_MAX, "Invalid region size"},
 		{0, 0, "Invalid number of optional args"},
@@ -323,7 +322,7 @@ static int switch_map(struct dm_target *ti, struct bio *bio)
 	sector_t offset = dm_target_offset(ti, bio->bi_iter.bi_sector);
 	unsigned path_nr = switch_get_path_nr(sctx, offset);
 
-	bio_set_dev(bio, sctx->path_list[path_nr].dmdev->bdev);
+	bio->bi_bdev = sctx->path_list[path_nr].dmdev->bdev;
 	bio->bi_iter.bi_sector = sctx->path_list[path_nr].start + offset;
 
 	return DM_MAPIO_REMAPPED;
@@ -467,8 +466,7 @@ static int process_set_region_mappings(struct switch_ctx *sctx,
  *
  * Only set_region_mappings is supported.
  */
-static int switch_message(struct dm_target *ti, unsigned argc, char **argv,
-			  char *result, unsigned maxlen)
+static int switch_message(struct dm_target *ti, unsigned argc, char **argv)
 {
 	static DEFINE_MUTEX(message_mutex);
 
@@ -513,22 +511,27 @@ static void switch_status(struct dm_target *ti, status_type_t type,
  *
  * Passthrough all ioctls to the path for sector 0
  */
-static int switch_prepare_ioctl(struct dm_target *ti, struct block_device **bdev)
+static int switch_ioctl(struct dm_target *ti, unsigned cmd,
+			unsigned long arg)
 {
 	struct switch_ctx *sctx = ti->private;
+	struct block_device *bdev;
+	fmode_t mode;
 	unsigned path_nr;
+	int r = 0;
 
 	path_nr = switch_get_path_nr(sctx, 0);
 
-	*bdev = sctx->path_list[path_nr].dmdev->bdev;
+	bdev = sctx->path_list[path_nr].dmdev->bdev;
+	mode = sctx->path_list[path_nr].dmdev->mode;
 
 	/*
 	 * Only pass ioctls through if the device sizes match exactly.
 	 */
-	if (ti->len + sctx->path_list[path_nr].start !=
-	    i_size_read((*bdev)->bd_inode) >> SECTOR_SHIFT)
-		return 1;
-	return 0;
+	if (ti->len + sctx->path_list[path_nr].start != i_size_read(bdev->bd_inode) >> SECTOR_SHIFT)
+		r = scsi_verify_blk_ioctl(NULL, cmd);
+
+	return r ? : __blkdev_driver_ioctl(bdev, mode, cmd, arg);
 }
 
 static int switch_iterate_devices(struct dm_target *ti,
@@ -557,7 +560,7 @@ static struct target_type switch_target = {
 	.map = switch_map,
 	.message = switch_message,
 	.status = switch_status,
-	.prepare_ioctl = switch_prepare_ioctl,
+	.ioctl = switch_ioctl,
 	.iterate_devices = switch_iterate_devices,
 };
 

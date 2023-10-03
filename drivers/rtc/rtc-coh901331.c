@@ -8,7 +8,6 @@
  */
 #include <linux/init.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/rtc.h>
 #include <linux/clk.h>
 #include <linux/interrupt.h>
@@ -83,7 +82,7 @@ static int coh901331_read_time(struct device *dev, struct rtc_time *tm)
 	if (readl(rtap->virtbase + COH901331_VALID)) {
 		rtc_time_to_tm(readl(rtap->virtbase + COH901331_CUR_TIME), tm);
 		clk_disable(rtap->clk);
-		return 0;
+		return rtc_valid_tm(tm);
 	}
 	clk_disable(rtap->clk);
 	return -EINVAL;
@@ -141,7 +140,7 @@ static int coh901331_alarm_irq_enable(struct device *dev, unsigned int enabled)
 	return 0;
 }
 
-static const struct rtc_class_ops coh901331_ops = {
+static struct rtc_class_ops coh901331_ops = {
 	.read_time = coh901331_read_time,
 	.set_mmss = coh901331_set_mmss,
 	.read_alarm = coh901331_read_alarm,
@@ -264,7 +263,6 @@ static const struct of_device_id coh901331_dt_match[] = {
 	{ .compatible = "stericsson,coh901331" },
 	{},
 };
-MODULE_DEVICE_TABLE(of, coh901331_dt_match);
 
 static struct platform_driver coh901331_driver = {
 	.driver = {

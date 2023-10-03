@@ -15,7 +15,6 @@
 #include <linux/capability.h>
 #include <linux/kernel.h>
 #include <linux/sched.h>
-#include <linux/cred.h>
 #include <linux/fs.h>
 #include <linux/list.h>
 #include <linux/mtd/mtd.h>
@@ -191,10 +190,10 @@ int jffs2_do_setattr (struct inode *inode, struct iattr *iattr)
 
 int jffs2_setattr(struct dentry *dentry, struct iattr *iattr)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	int rc;
 
-	rc = setattr_prepare(dentry, iattr);
+	rc = inode_change_ok(inode, iattr);
 	if (rc)
 		return rc;
 
@@ -273,9 +272,12 @@ struct inode *jffs2_iget(struct super_block *sb, unsigned long ino)
 	mutex_lock(&f->sem);
 
 	ret = jffs2_do_read_inode(c, f, inode->i_ino, &latest_node);
-	if (ret)
-		goto error;
 
+	if (ret) {
+		mutex_unlock(&f->sem);
+		iget_failed(inode);
+		return ERR_PTR(ret);
+	}
 	inode->i_mode = jemode_to_cpu(latest_node.mode);
 	i_uid_write(inode, je16_to_cpu(latest_node.uid));
 	i_gid_write(inode, je16_to_cpu(latest_node.gid));
@@ -292,7 +294,6 @@ struct inode *jffs2_iget(struct super_block *sb, unsigned long ino)
 
 	case S_IFLNK:
 		inode->i_op = &jffs2_symlink_inode_operations;
-		inode->i_link = f->target;
 		break;
 
 	case S_IFDIR:
@@ -362,6 +363,7 @@ error_io:
 	ret = -EIO;
 error:
 	mutex_unlock(&f->sem);
+	jffs2_do_clear_inode(c, f);
 	iget_failed(inode);
 	return ERR_PTR(ret);
 }
@@ -394,24 +396,24 @@ int jffs2_do_remount_fs(struct super_block *sb, int *flags, char *data)
 {
 	struct jffs2_sb_info *c = JFFS2_SB_INFO(sb);
 
-	if (c->flags & JFFS2_SB_FLAG_RO && !sb_rdonly(sb))
+	if (c->flags & JFFS2_SB_FLAG_RO && !(sb->s_flags & MS_RDONLY))
 		return -EROFS;
 
 	/* We stop if it was running, then restart if it needs to.
 	   This also catches the case where it was stopped and this
 	   is just a remount to restart it.
 	   Flush the writebuffer, if neccecary, else we loose it */
-	if (!sb_rdonly(sb)) {
+	if (!(sb->s_flags & MS_RDONLY)) {
 		jffs2_stop_garbage_collect_thread(c);
 		mutex_lock(&c->alloc_sem);
 		jffs2_flush_wbuf_pad(c);
 		mutex_unlock(&c->alloc_sem);
 	}
 
-	if (!(*flags & SB_RDONLY))
+	if (!(*flags & MS_RDONLY))
 		jffs2_start_garbage_collect_thread(c);
 
-	*flags |= SB_NOATIME;
+	*flags |= MS_NOATIME;
 	return 0;
 }
 
@@ -472,7 +474,7 @@ struct inode *jffs2_new_inode (struct inode *dir_i, umode_t mode, struct jffs2_r
 	inode->i_mode = jemode_to_cpu(ri->mode);
 	i_gid_write(inode, je16_to_cpu(ri->gid));
 	i_uid_write(inode, je16_to_cpu(ri->uid));
-	inode->i_atime = inode->i_ctime = inode->i_mtime = current_time(inode);
+	inode->i_atime = inode->i_ctime = inode->i_mtime = CURRENT_TIME_SEC;
 	ri->atime = ri->mtime = ri->ctime = cpu_to_je32(I_SEC(inode->i_mtime));
 
 	inode->i_blocks = 0;
@@ -586,20 +588,22 @@ int jffs2_do_fill_super(struct super_block *sb, void *data, int silent)
 		goto out_root;
 
 	sb->s_maxbytes = 0xFFFFFFFF;
-	sb->s_blocksize = PAGE_SIZE;
-	sb->s_blocksize_bits = PAGE_SHIFT;
+	sb->s_blocksize = PAGE_CACHE_SIZE;
+	sb->s_blocksize_bits = PAGE_CACHE_SHIFT;
 	sb->s_magic = JFFS2_SUPER_MAGIC;
-	if (!sb_rdonly(sb))
+	if (!(sb->s_flags & MS_RDONLY))
 		jffs2_start_garbage_collect_thread(c);
 	return 0;
 
 out_root:
 	jffs2_free_ino_caches(c);
 	jffs2_free_raw_node_refs(c);
-	kvfree(c->blocks);
-	jffs2_clear_xattr_subsystem(c);
-	jffs2_sum_exit(c);
+	if (jffs2_blocks_use_vmalloc(c))
+		vfree(c->blocks);
+	else
+		kfree(c->blocks);
  out_inohash:
+	jffs2_clear_xattr_subsystem(c);
 	kfree(c->inocache_list);
  out_wbuf:
 	jffs2_flash_cleanup(c);
@@ -686,7 +690,7 @@ unsigned char *jffs2_gc_fetch_page(struct jffs2_sb_info *c,
 	struct inode *inode = OFNI_EDONI_2SFFJ(f);
 	struct page *pg;
 
-	pg = read_cache_page(inode->i_mapping, offset >> PAGE_SHIFT,
+	pg = read_cache_page(inode->i_mapping, offset >> PAGE_CACHE_SHIFT,
 			     (void *)jffs2_do_readpage_unlock, inode);
 	if (IS_ERR(pg))
 		return (void *)pg;
@@ -702,7 +706,7 @@ void jffs2_gc_release_page(struct jffs2_sb_info *c,
 	struct page *pg = (void *)*priv;
 
 	kunmap(pg);
-	put_page(pg);
+	page_cache_release(pg);
 }
 
 static int jffs2_flash_setup(struct jffs2_sb_info *c) {

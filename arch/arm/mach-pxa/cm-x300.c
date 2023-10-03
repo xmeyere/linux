@@ -23,16 +23,14 @@
 #include <linux/clk.h>
 
 #include <linux/gpio.h>
-#include <linux/gpio/machine.h>
 #include <linux/dm9000.h>
 #include <linux/leds.h>
-#include <linux/platform_data/rtc-v3020.h>
-#include <linux/pwm.h>
+#include <linux/rtc-v3020.h>
 #include <linux/pwm_backlight.h>
 
 #include <linux/i2c.h>
 #include <linux/platform_data/pca953x.h>
-#include <linux/platform_data/i2c-pxa.h>
+#include <linux/i2c/pxa-i2c.h>
 
 #include <linux/mfd/da903x.h>
 #include <linux/regulator/machine.h>
@@ -48,8 +46,8 @@
 #include <asm/setup.h>
 #include <asm/system_info.h>
 
-#include "pxa300.h"
-#include "pxa27x-udc.h"
+#include <mach/pxa300.h>
+#include <mach/pxa27x-udc.h>
 #include <linux/platform_data/video-pxafb.h>
 #include <linux/platform_data/mmc-pxamci.h>
 #include <linux/platform_data/usb-ohci-pxa27x.h>
@@ -307,14 +305,11 @@ static inline void cm_x300_init_lcd(void) {}
 #endif
 
 #if defined(CONFIG_BACKLIGHT_PWM) || defined(CONFIG_BACKLIGHT_PWM_MODULE)
-static struct pwm_lookup cm_x300_pwm_lookup[] = {
-	PWM_LOOKUP("pxa27x-pwm.0", 1, "pwm-backlight.0", NULL, 10000,
-		   PWM_POLARITY_NORMAL),
-};
-
 static struct platform_pwm_backlight_data cm_x300_backlight_data = {
+	.pwm_id		= 2,
 	.max_brightness	= 100,
 	.dft_brightness	= 100,
+	.pwm_period_ns	= 10000,
 	.enable_gpio	= -1,
 };
 
@@ -328,7 +323,6 @@ static struct platform_device cm_x300_backlight_device = {
 
 static void cm_x300_init_bl(void)
 {
-	pwm_add_table(cm_x300_pwm_lookup, ARRAY_SIZE(cm_x300_pwm_lookup));
 	platform_device_register(&cm_x300_backlight_device);
 }
 #else
@@ -344,6 +338,9 @@ static inline void cm_x300_init_bl(void) {}
 #define LCD_SPI_BUS_NUM	(1)
 
 static struct spi_gpio_platform_data cm_x300_spi_gpio_pdata = {
+	.sck		= GPIO_LCD_SCL,
+	.mosi		= GPIO_LCD_DIN,
+	.miso		= GPIO_LCD_DOUT,
 	.num_chipselect	= 1,
 };
 
@@ -352,21 +349,6 @@ static struct platform_device cm_x300_spi_gpio = {
 	.id		= LCD_SPI_BUS_NUM,
 	.dev		= {
 		.platform_data	= &cm_x300_spi_gpio_pdata,
-	},
-};
-
-static struct gpiod_lookup_table cm_x300_spi_gpiod_table = {
-	.dev_id         = "spi_gpio",
-	.table          = {
-		GPIO_LOOKUP("gpio-pxa", GPIO_LCD_SCL,
-			    "sck", GPIO_ACTIVE_HIGH),
-		GPIO_LOOKUP("gpio-pxa", GPIO_LCD_DIN,
-			    "mosi", GPIO_ACTIVE_HIGH),
-		GPIO_LOOKUP("gpio-pxa", GPIO_LCD_DOUT,
-			    "miso", GPIO_ACTIVE_HIGH),
-		GPIO_LOOKUP("gpio-pxa", GPIO_LCD_CS,
-			    "cs", GPIO_ACTIVE_HIGH),
-		{ },
 	},
 };
 
@@ -380,6 +362,7 @@ static struct spi_board_info cm_x300_spi_devices[] __initdata = {
 		.max_speed_hz		= 1000000,
 		.bus_num		= LCD_SPI_BUS_NUM,
 		.chip_select		= 0,
+		.controller_data	= (void *) GPIO_LCD_CS,
 		.platform_data		= &cm_x300_tdo24m_pdata,
 	},
 };
@@ -388,7 +371,6 @@ static void __init cm_x300_init_spi(void)
 {
 	spi_register_board_info(cm_x300_spi_devices,
 				ARRAY_SIZE(cm_x300_spi_devices));
-	gpiod_add_lookup_table(&cm_x300_spi_gpiod_table);
 	platform_device_register(&cm_x300_spi_gpio);
 }
 #else
@@ -404,7 +386,7 @@ static void __init cm_x300_init_ac97(void)
 static inline void cm_x300_init_ac97(void) {}
 #endif
 
-#if IS_ENABLED(CONFIG_MTD_NAND_MARVELL)
+#if defined(CONFIG_MTD_NAND_PXA3xx) || defined(CONFIG_MTD_NAND_PXA3xx_MODULE)
 static struct mtd_partition cm_x300_nand_partitions[] = {
 	[0] = {
 		.name        = "OBM",
@@ -442,9 +424,11 @@ static struct mtd_partition cm_x300_nand_partitions[] = {
 };
 
 static struct pxa3xx_nand_platform_data cm_x300_nand_info = {
+	.enable_arbiter	= 1,
 	.keep_config	= 1,
-	.parts		= cm_x300_nand_partitions,
-	.nr_parts	= ARRAY_SIZE(cm_x300_nand_partitions),
+	.num_cs		= 1,
+	.parts[0]	= cm_x300_nand_partitions,
+	.nr_parts[0]	= ARRAY_SIZE(cm_x300_nand_partitions),
 };
 
 static void __init cm_x300_init_nand(void)
@@ -520,7 +504,7 @@ static int cm_x300_ulpi_phy_reset(void)
 	return 0;
 }
 
-static int cm_x300_u2d_init(struct device *dev)
+static inline int cm_x300_u2d_init(struct device *dev)
 {
 	int err = 0;
 
@@ -532,7 +516,7 @@ static int cm_x300_u2d_init(struct device *dev)
 			pr_err("failed to get CLK_POUT: %d\n", err);
 			return err;
 		}
-		clk_prepare_enable(pout_clk);
+		clk_enable(pout_clk);
 
 		err = cm_x300_ulpi_phy_reset();
 		if (err) {
@@ -547,7 +531,7 @@ static int cm_x300_u2d_init(struct device *dev)
 static void cm_x300_u2d_exit(struct device *dev)
 {
 	if (cpu_is_pxa310()) {
-		clk_disable_unprepare(pout_clk);
+		clk_disable(pout_clk);
 		clk_put(pout_clk);
 	}
 }
@@ -558,7 +542,7 @@ static struct pxa3xx_u2d_platform_data cm_x300_u2d_platform_data = {
 	.exit		= cm_x300_u2d_exit,
 };
 
-static void __init cm_x300_init_u2d(void)
+static void cm_x300_init_u2d(void)
 {
 	pxa3xx_set_u2d_info(&cm_x300_u2d_platform_data);
 }
@@ -851,8 +835,6 @@ static void __init cm_x300_init(void)
 	cm_x300_init_ac97();
 	cm_x300_init_wi2wi();
 	cm_x300_init_bl();
-
-	regulator_has_full_constraints();
 }
 
 static void __init cm_x300_fixup(struct tag *tags, char **cmdline)

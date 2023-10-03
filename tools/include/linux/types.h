@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _TOOLS_LINUX_TYPES_H_
 #define _TOOLS_LINUX_TYPES_H_
 
@@ -8,7 +7,6 @@
 
 #define __SANE_USERSPACE_TYPES__	/* For PPC64, to get LL64 types */
 #include <asm/types.h>
-#include <asm/posix_types.h>
 
 struct page;
 struct kmem_cache;
@@ -44,7 +42,11 @@ typedef __s8  s8;
 #else
 #define __bitwise__
 #endif
+#ifdef __CHECK_ENDIAN__
 #define __bitwise __bitwise__
+#else
+#define __bitwise
+#endif
 
 #define __force
 #define __user
@@ -57,14 +59,6 @@ typedef __u32 __bitwise __le32;
 typedef __u32 __bitwise __be32;
 typedef __u64 __bitwise __le64;
 typedef __u64 __bitwise __be64;
-
-typedef struct {
-	int counter;
-} atomic_t;
-
-#ifndef __aligned_u64
-# define __aligned_u64 __u64 __attribute__((aligned(8)))
-#endif
 
 struct list_head {
 	struct list_head *next, *prev;

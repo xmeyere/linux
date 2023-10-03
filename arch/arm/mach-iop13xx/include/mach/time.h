@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _IOP13XX_TIME_H_
 #define _IOP13XX_TIME_H_
 
@@ -43,7 +42,7 @@ static inline unsigned long iop13xx_core_freq(void)
 	case IOP13XX_CORE_FREQ_1200:
 		return 1200000000;
 	default:
-		printk("%s: warning unknown frequency, defaulting to 800MHz\n",
+		printk("%s: warning unknown frequency, defaulting to 800Mhz\n",
 			__func__);
 	}
 

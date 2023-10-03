@@ -36,7 +36,6 @@
 #define RP_OFFSET	16
 #define FRAME_SIZE	128
 #define CALLEE_REG_FRAME_SIZE	144
-#define REG_SZ		8
 #define ASM_ULONG_INSN	.dword
 #else	/* CONFIG_64BIT */
 #define LDREG	ldw
@@ -51,7 +50,6 @@
 #define RP_OFFSET	20
 #define FRAME_SIZE	64
 #define CALLEE_REG_FRAME_SIZE	128
-#define REG_SZ		4
 #define ASM_ULONG_INSN	.word
 #endif
 
@@ -61,14 +59,14 @@
 #define LDCW		ldcw,co
 #define BL		b,l
 # ifdef CONFIG_64BIT
-#  define PA_ASM_LEVEL	2.0w
+#  define LEVEL		2.0w
 # else
-#  define PA_ASM_LEVEL	2.0
+#  define LEVEL		2.0
 # endif
 #else
 #define LDCW		ldcw
 #define BL		bl
-#define PA_ASM_LEVEL	1.1
+#define LEVEL		1.1
 #endif
 
 #ifdef __ASSEMBLY__
@@ -525,7 +523,7 @@
 	 */
 #define ASM_EXCEPTIONTABLE_ENTRY(fault_addr, except_addr)	\
 	.section __ex_table,"aw"			!	\
-	.word (fault_addr - .), (except_addr - .)	!	\
+	ASM_ULONG_INSN	fault_addr, except_addr		!	\
 	.previous
 
 

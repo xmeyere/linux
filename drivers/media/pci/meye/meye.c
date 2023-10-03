@@ -21,6 +21,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 #include <linux/module.h>
 #include <linux/pci.h>
@@ -33,7 +37,7 @@
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-fh.h>
 #include <media/v4l2-event.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/io.h>
 #include <linux/delay.h>
 #include <linux/interrupt.h>
@@ -56,7 +60,8 @@ MODULE_PARM_DESC(gbuffers, "number of capture buffers, default is 2 (32 max)");
 /* size of a grab buffer */
 static unsigned int gbufsize = MEYE_MAX_BUFSIZE;
 module_param(gbufsize, int, 0444);
-MODULE_PARM_DESC(gbufsize, "size of the capture buffers, default is 614400 (will be rounded up to a page multiple)");
+MODULE_PARM_DESC(gbufsize, "size of the capture buffers, default is 614400"
+		 " (will be rounded up to a page multiple)");
 
 /* /dev/videoX registration number */
 static int video_nr = -1;
@@ -582,7 +587,10 @@ static void mchip_hic_stop(void)
 /* get the next ready frame from the dma engine */
 static u32 mchip_get_frame(void)
 {
-	return mchip_read(MCHIP_MM_FIR(meye.mchip_fnum));
+	u32 v;
+
+	v = mchip_read(MCHIP_MM_FIR(meye.mchip_fnum));
+	return v;
 }
 
 /* frees the current frame from the dma engine */
@@ -1253,7 +1261,8 @@ static int vidioc_reqbufs(struct file *file, void *fh,
 	meye.grab_fbuffer = rvmalloc(gbuffers * gbufsize);
 
 	if (!meye.grab_fbuffer) {
-		printk(KERN_ERR "meye: v4l framebuffer allocation failed\n");
+		printk(KERN_ERR "meye: v4l framebuffer allocation"
+				" failed\n");
 		mutex_unlock(&meye.lock);
 		return -ENOMEM;
 	}
@@ -1423,14 +1432,14 @@ static long vidioc_default(struct file *file, void *fh, bool valid_prio,
 
 }
 
-static __poll_t meye_poll(struct file *file, poll_table *wait)
+static unsigned int meye_poll(struct file *file, poll_table *wait)
 {
-	__poll_t res = v4l2_ctrl_poll(file, wait);
+	unsigned int res = v4l2_ctrl_poll(file, wait);
 
 	mutex_lock(&meye.lock);
 	poll_wait(file, &meye.proc_list, wait);
 	if (kfifo_len(&meye.doneq))
-		res |= EPOLLIN | EPOLLRDNORM;
+		res |= POLLIN | POLLRDNORM;
 	mutex_unlock(&meye.lock);
 	return res;
 }
@@ -1460,7 +1469,7 @@ static int meye_mmap(struct file *file, struct vm_area_struct *vma)
 	unsigned long page, pos;
 
 	mutex_lock(&meye.lock);
-	if (size > gbuffers * gbufsize || offset > gbuffers * gbufsize - size) {
+	if (size > gbuffers * gbufsize) {
 		mutex_unlock(&meye.lock);
 		return -EINVAL;
 	}
@@ -1533,11 +1542,11 @@ static const struct v4l2_ioctl_ops meye_ioctl_ops = {
 	.vidioc_default		= vidioc_default,
 };
 
-static const struct video_device meye_template = {
+static struct video_device meye_template = {
 	.name		= "meye",
 	.fops		= &meye_fops,
-	.ioctl_ops	= &meye_ioctl_ops,
-	.release	= video_device_release_empty,
+	.ioctl_ops 	= &meye_ioctl_ops,
+	.release	= video_device_release,
 };
 
 static const struct v4l2_ctrl_ops meye_ctrl_ops = {
@@ -1614,7 +1623,7 @@ static int meye_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
 
 	if (meye.mchip_dev != NULL) {
 		printk(KERN_ERR "meye: only one device allowed!\n");
-		return ret;
+		goto outnotdev;
 	}
 
 	ret = v4l2_device_register(&pcidev->dev, v4l2_dev);
@@ -1624,38 +1633,47 @@ static int meye_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
 	}
 	ret = -ENOMEM;
 	meye.mchip_dev = pcidev;
+	meye.vdev = video_device_alloc();
+	if (!meye.vdev) {
+		v4l2_err(v4l2_dev, "video_device_alloc() failed!\n");
+		goto outnotdev;
+	}
 
-	meye.grab_temp = vmalloc(array_size(PAGE_SIZE, MCHIP_NB_PAGES_MJPEG));
-	if (!meye.grab_temp)
+	meye.grab_temp = vmalloc(MCHIP_NB_PAGES_MJPEG * PAGE_SIZE);
+	if (!meye.grab_temp) {
+		v4l2_err(v4l2_dev, "grab buffer allocation failed\n");
 		goto outvmalloc;
+	}
 
 	spin_lock_init(&meye.grabq_lock);
 	if (kfifo_alloc(&meye.grabq, sizeof(int) * MEYE_MAX_BUFNBRS,
-			GFP_KERNEL))
+				GFP_KERNEL)) {
+		v4l2_err(v4l2_dev, "fifo allocation failed\n");
 		goto outkfifoalloc1;
-
+	}
 	spin_lock_init(&meye.doneq_lock);
 	if (kfifo_alloc(&meye.doneq, sizeof(int) * MEYE_MAX_BUFNBRS,
-			GFP_KERNEL))
+				GFP_KERNEL)) {
+		v4l2_err(v4l2_dev, "fifo allocation failed\n");
 		goto outkfifoalloc2;
+	}
 
-	meye.vdev = meye_template;
-	meye.vdev.v4l2_dev = &meye.v4l2_dev;
+	memcpy(meye.vdev, &meye_template, sizeof(meye_template));
+	meye.vdev->v4l2_dev = &meye.v4l2_dev;
 
-	ret = sony_pic_camera_command(SONY_PIC_COMMAND_SETCAMERA, 1);
-	if (ret) {
+	ret = -EIO;
+	if ((ret = sony_pic_camera_command(SONY_PIC_COMMAND_SETCAMERA, 1))) {
 		v4l2_err(v4l2_dev, "meye: unable to power on the camera\n");
-		v4l2_err(v4l2_dev, "meye: did you enable the camera in sonypi using the module options ?\n");
+		v4l2_err(v4l2_dev, "meye: did you enable the camera in "
+				"sonypi using the module options ?\n");
 		goto outsonypienable;
 	}
 
-	ret = pci_enable_device(meye.mchip_dev);
-	if (ret) {
+	if ((ret = pci_enable_device(meye.mchip_dev))) {
 		v4l2_err(v4l2_dev, "meye: pci_enable_device failed\n");
 		goto outenabledev;
 	}
 
-	ret = -EIO;
 	mchip_adr = pci_resource_start(meye.mchip_dev,0);
 	if (!mchip_adr) {
 		v4l2_err(v4l2_dev, "meye: mchip has no device base address\n");
@@ -1725,9 +1743,9 @@ static int meye_probe(struct pci_dev *pcidev, const struct pci_device_id *ent)
 	}
 
 	v4l2_ctrl_handler_setup(&meye.hdl);
-	meye.vdev.ctrl_handler = &meye.hdl;
+	meye.vdev->ctrl_handler = &meye.hdl;
 
-	if (video_register_device(&meye.vdev, VFL_TYPE_GRABBER,
+	if (video_register_device(meye.vdev, VFL_TYPE_GRABBER,
 				  video_nr) < 0) {
 		v4l2_err(v4l2_dev, "video_register_device failed\n");
 		goto outvideoreg;
@@ -1759,12 +1777,14 @@ outkfifoalloc2:
 outkfifoalloc1:
 	vfree(meye.grab_temp);
 outvmalloc:
+	video_device_release(meye.vdev);
+outnotdev:
 	return ret;
 }
 
 static void meye_remove(struct pci_dev *pcidev)
 {
-	video_unregister_device(&meye.vdev);
+	video_unregister_device(meye.vdev);
 
 	mchip_hic_stop();
 
@@ -1797,7 +1817,7 @@ static void meye_remove(struct pci_dev *pcidev)
 	printk(KERN_INFO "meye: removed\n");
 }
 
-static const struct pci_device_id meye_pci_tbl[] = {
+static struct pci_device_id meye_pci_tbl[] = {
 	{ PCI_VDEVICE(KAWASAKI, PCI_DEVICE_ID_MCHIP_KL5A72002), 0 },
 	{ }
 };
@@ -1821,7 +1841,8 @@ static int __init meye_init(void)
 	if (gbufsize > MEYE_MAX_BUFSIZE)
 		gbufsize = MEYE_MAX_BUFSIZE;
 	gbufsize = PAGE_ALIGN(gbufsize);
-	printk(KERN_INFO "meye: using %d buffers with %dk (%dk total) for capture\n",
+	printk(KERN_INFO "meye: using %d buffers with %dk (%dk total) "
+			 "for capture\n",
 			 gbuffers,
 			 gbufsize / 1024, gbuffers * gbufsize / 1024);
 	return pci_register_driver(&meye_driver);

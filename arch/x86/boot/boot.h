@@ -16,15 +16,15 @@
 #ifndef BOOT_BOOT_H
 #define BOOT_BOOT_H
 
-#define STACK_SIZE	1024	/* Minimum number of bytes for stack */
+#define STACK_SIZE	512	/* Minimum number of bytes for stack */
 
 #ifndef __ASSEMBLY__
 
 #include <stdarg.h>
 #include <linux/types.h>
 #include <linux/edd.h>
+#include <asm/boot.h>
 #include <asm/setup.h>
-#include <asm/asm.h>
 #include "bitops.h"
 #include "ctype.h"
 #include "cpuflags.h"
@@ -114,93 +114,81 @@ typedef unsigned int addr_t;
 
 static inline u8 rdfs8(addr_t addr)
 {
-	u8 *ptr = (u8 *)absolute_pointer(addr);
 	u8 v;
-	asm volatile("movb %%fs:%1,%0" : "=q" (v) : "m" (*ptr));
+	asm volatile("movb %%fs:%1,%0" : "=q" (v) : "m" (*(u8 *)addr));
 	return v;
 }
 static inline u16 rdfs16(addr_t addr)
 {
-	u16 *ptr = (u16 *)absolute_pointer(addr);
 	u16 v;
-	asm volatile("movw %%fs:%1,%0" : "=r" (v) : "m" (*ptr));
+	asm volatile("movw %%fs:%1,%0" : "=r" (v) : "m" (*(u16 *)addr));
 	return v;
 }
 static inline u32 rdfs32(addr_t addr)
 {
-	u32 *ptr = (u32 *)absolute_pointer(addr);
 	u32 v;
-	asm volatile("movl %%fs:%1,%0" : "=r" (v) : "m" (*ptr));
+	asm volatile("movl %%fs:%1,%0" : "=r" (v) : "m" (*(u32 *)addr));
 	return v;
 }
 
 static inline void wrfs8(u8 v, addr_t addr)
 {
-	u8 *ptr = (u8 *)absolute_pointer(addr);
-	asm volatile("movb %1,%%fs:%0" : "+m" (*ptr) : "qi" (v));
+	asm volatile("movb %1,%%fs:%0" : "+m" (*(u8 *)addr) : "qi" (v));
 }
 static inline void wrfs16(u16 v, addr_t addr)
 {
-	u16 *ptr = (u16 *)absolute_pointer(addr);
-	asm volatile("movw %1,%%fs:%0" : "+m" (*ptr) : "ri" (v));
+	asm volatile("movw %1,%%fs:%0" : "+m" (*(u16 *)addr) : "ri" (v));
 }
 static inline void wrfs32(u32 v, addr_t addr)
 {
-	u32 *ptr = (u32 *)absolute_pointer(addr);
-	asm volatile("movl %1,%%fs:%0" : "+m" (*ptr) : "ri" (v));
+	asm volatile("movl %1,%%fs:%0" : "+m" (*(u32 *)addr) : "ri" (v));
 }
 
 static inline u8 rdgs8(addr_t addr)
 {
-	u8 *ptr = (u8 *)absolute_pointer(addr);
 	u8 v;
-	asm volatile("movb %%gs:%1,%0" : "=q" (v) : "m" (*ptr));
+	asm volatile("movb %%gs:%1,%0" : "=q" (v) : "m" (*(u8 *)addr));
 	return v;
 }
 static inline u16 rdgs16(addr_t addr)
 {
-	u16 *ptr = (u16 *)absolute_pointer(addr);
 	u16 v;
-	asm volatile("movw %%gs:%1,%0" : "=r" (v) : "m" (*ptr));
+	asm volatile("movw %%gs:%1,%0" : "=r" (v) : "m" (*(u16 *)addr));
 	return v;
 }
 static inline u32 rdgs32(addr_t addr)
 {
-	u32 *ptr = (u32 *)absolute_pointer(addr);
 	u32 v;
-	asm volatile("movl %%gs:%1,%0" : "=r" (v) : "m" (*ptr));
+	asm volatile("movl %%gs:%1,%0" : "=r" (v) : "m" (*(u32 *)addr));
 	return v;
 }
 
 static inline void wrgs8(u8 v, addr_t addr)
 {
-	u8 *ptr = (u8 *)absolute_pointer(addr);
-	asm volatile("movb %1,%%gs:%0" : "+m" (*ptr) : "qi" (v));
+	asm volatile("movb %1,%%gs:%0" : "+m" (*(u8 *)addr) : "qi" (v));
 }
 static inline void wrgs16(u16 v, addr_t addr)
 {
-	u16 *ptr = (u16 *)absolute_pointer(addr);
-	asm volatile("movw %1,%%gs:%0" : "+m" (*ptr) : "ri" (v));
+	asm volatile("movw %1,%%gs:%0" : "+m" (*(u16 *)addr) : "ri" (v));
 }
 static inline void wrgs32(u32 v, addr_t addr)
 {
-	u32 *ptr = (u32 *)absolute_pointer(addr);
-	asm volatile("movl %1,%%gs:%0" : "+m" (*ptr) : "ri" (v));
+	asm volatile("movl %1,%%gs:%0" : "+m" (*(u32 *)addr) : "ri" (v));
 }
 
 /* Note: these only return true/false, not a signed return value! */
-static inline bool memcmp_fs(const void *s1, addr_t s2, size_t len)
+static inline int memcmp_fs(const void *s1, addr_t s2, size_t len)
 {
-	bool diff;
-	asm volatile("fs; repe; cmpsb" CC_SET(nz)
-		     : CC_OUT(nz) (diff), "+D" (s1), "+S" (s2), "+c" (len));
+	u8 diff;
+	asm volatile("fs; repe; cmpsb; setnz %0"
+		     : "=qm" (diff), "+D" (s1), "+S" (s2), "+c" (len));
 	return diff;
 }
-static inline bool memcmp_gs(const void *s1, addr_t s2, size_t len)
+static inline int memcmp_gs(const void *s1, addr_t s2, size_t len)
 {
-	bool diff;
-	asm volatile("gs; repe; cmpsb" CC_SET(nz)
-		     : CC_OUT(nz) (diff), "+D" (s1), "+S" (s2), "+c" (len));
+	u8 diff;
+	asm volatile("gs; repe; cmpsb; setnz %0"
+		     : "=qm" (diff), "+D" (s1), "+S" (s2), "+c" (len));
 	return diff;
 }
 
@@ -307,7 +295,6 @@ static inline int cmdline_find_option_bool(const char *option)
 
 /* cpu.c, cpucheck.c */
 int check_cpu(int *cpu_level_ptr, int *req_level_ptr, u32 **err_flags_ptr);
-int check_knl_erratum(void);
 int validate_cpu(void);
 
 /* early_serial_console.c */
@@ -319,6 +306,9 @@ void query_edd(void);
 
 /* header.S */
 void __attribute__((noreturn)) die(void);
+
+/* mca.c */
+int query_mca(void);
 
 /* memory.c */
 int detect_memory(void);
@@ -345,7 +335,6 @@ size_t strnlen(const char *s, size_t maxlen);
 unsigned int atou(const char *s);
 unsigned long long simple_strtoull(const char *cp, char **endp, unsigned int base);
 size_t strlen(const char *s);
-char *strchr(const char *s, int c);
 
 /* tty.c */
 void puts(const char *);

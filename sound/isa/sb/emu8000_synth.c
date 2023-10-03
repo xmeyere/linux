@@ -34,9 +34,8 @@ MODULE_LICENSE("GPL");
 /*
  * create a new hardware dependent device for Emu8000
  */
-static int snd_emu8000_probe(struct device *_dev)
+static int snd_emu8000_new_device(struct snd_seq_device *dev)
 {
-	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emu8000 *hw;
 	struct snd_emux *emu;
 
@@ -94,9 +93,8 @@ static int snd_emu8000_probe(struct device *_dev)
 /*
  * free all resources
  */
-static int snd_emu8000_remove(struct device *_dev)
+static int snd_emu8000_delete_device(struct snd_seq_device *dev)
 {
-	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct snd_emu8000 *hw;
 
 	if (dev->driver_data == NULL)
@@ -116,14 +114,21 @@ static int snd_emu8000_remove(struct device *_dev)
  *  INIT part
  */
 
-static struct snd_seq_driver emu8000_driver = {
-	.driver = {
-		.name = KBUILD_MODNAME,
-		.probe = snd_emu8000_probe,
-		.remove = snd_emu8000_remove,
-	},
-	.id = SNDRV_SEQ_DEV_ID_EMU8000,
-	.argsize = sizeof(struct snd_emu8000 *),
-};
+static int __init alsa_emu8000_init(void)
+{
+	
+	static struct snd_seq_dev_ops ops = {
+		snd_emu8000_new_device,
+		snd_emu8000_delete_device,
+	};
+	return snd_seq_device_register_driver(SNDRV_SEQ_DEV_ID_EMU8000, &ops,
+					      sizeof(struct snd_emu8000*));
+}
 
-module_snd_seq_driver(emu8000_driver);
+static void __exit alsa_emu8000_exit(void)
+{
+	snd_seq_device_unregister_driver(SNDRV_SEQ_DEV_ID_EMU8000);
+}
+
+module_init(alsa_emu8000_init)
+module_exit(alsa_emu8000_exit)

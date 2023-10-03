@@ -1,11 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _NFT_MASQ_H_
 #define _NFT_MASQ_H_
 
 struct nft_masq {
-	u32			flags;
-	u8			sreg_proto_min;
-	u8			sreg_proto_max;
+	u32	flags;
 };
 
 extern const struct nla_policy nft_masq_policy[];

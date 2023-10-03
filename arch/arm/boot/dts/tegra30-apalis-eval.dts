@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /dts-v1/;
 
 #include <dt-bindings/input/input.h>
@@ -18,11 +17,7 @@
 		serial3 = &uartd;
 	};
 
-	chosen {
-		stdout-path = "serial0:115200n8";
-	};
-
-	pcie@3000 {
+	pcie-controller@00003000 {
 		status = "okay";
 
 		pci@1,0 {
@@ -79,7 +74,7 @@
 	 */
 	i2c@7000c000 {
 		status = "okay";
-		clock-frequency = <400000>;
+		clock-frequency = <100000>;
 
 		pcie-switch@58 {
 			compatible = "plx,pex8605";
@@ -88,7 +83,7 @@
 
 		/* M41T0M6 real time clock on carrier board */
 		rtc@68 {
-			compatible = "st,m41t0";
+			compatible = "st,m41t00";
 			reg = <0x68>;
 		};
 	};
@@ -131,10 +126,6 @@
 		};
 	};
 
-	hda@70030000 {
-		status = "okay";
-	};
-
 	sd1: sdhci@78000000 {
 		status = "okay";
 		bus-width = <4>;
@@ -158,7 +149,6 @@
 
 	usb-phy@7d000000 {
 		status = "okay";
-		dr_mode = "otg";
 		vbus-supply = <&usbo1_vbus_reg>;
 	};
 
@@ -185,7 +175,7 @@
 	backlight: backlight {
 		compatible = "pwm-backlight";
 
-		/* PWM_BKL1 */
+		/* PWM0 */
 		pwms = <&pwm 0 5000000>;
 		brightness-levels = <255 231 223 207 191 159 127 0>;
 		default-brightness-level = <6>;
@@ -196,12 +186,12 @@
 	gpio-keys {
 		compatible = "gpio-keys";
 
-		wakeup {
-			label = "WAKE1_MICO";
+		power {
+			label = "Power";
 			gpios = <&gpio TEGRA_GPIO(V, 1) GPIO_ACTIVE_LOW>;
-			linux,code = <KEY_WAKEUP>;
+			linux,code = <KEY_POWER>;
 			debounce-interval = <10>;
-			wakeup-source;
+			gpio-key,wakeup;
 		};
 	};
 

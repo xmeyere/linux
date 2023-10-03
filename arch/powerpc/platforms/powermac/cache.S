@@ -17,14 +17,13 @@
 #include <asm/processor.h>
 #include <asm/ppc_asm.h>
 #include <asm/cputable.h>
-#include <asm/feature-fixups.h>
 
 /*
  * Flush and disable all data caches (dL1, L2, L3). This is used
  * when going to sleep, when doing a PMU based cpufreq transition,
  * or when "offlining" a CPU on SMP machines. This code is over
  * paranoid, but I've had enough issues with various CPU revs and
- * bugs that I decided it was worth being over cautious
+ * bugs that I decided it was worth beeing over cautious
  */
 
 _GLOBAL(flush_disable_caches)
@@ -53,7 +52,7 @@ flush_disable_75x:
 
 	/* Stop DST streams */
 BEGIN_FTR_SECTION
-	PPC_DSSALL
+	DSSALL
 	sync
 END_FTR_SECTION_IFSET(CPU_FTR_ALTIVEC)
 
@@ -201,7 +200,7 @@ flush_disable_745x:
 	isync
 
 	/* Stop prefetch streams */
-	PPC_DSSALL
+	DSSALL
 	sync
 
 	/* Disable L2 prefetching */

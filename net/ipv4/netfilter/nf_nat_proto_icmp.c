@@ -30,7 +30,7 @@ icmp_in_range(const struct nf_conntrack_tuple *tuple,
 static void
 icmp_unique_tuple(const struct nf_nat_l3proto *l3proto,
 		  struct nf_conntrack_tuple *tuple,
-		  const struct nf_nat_range2 *range,
+		  const struct nf_nat_range *range,
 		  enum nf_nat_manip_type maniptype,
 		  const struct nf_conn *ct)
 {
@@ -67,7 +67,7 @@ icmp_manip_pkt(struct sk_buff *skb,
 
 	hdr = (struct icmphdr *)(skb->data + hdroff);
 	inet_proto_csum_replace2(&hdr->checksum, skb,
-				 hdr->un.echo.id, tuple->src.u.icmp.id, false);
+				 hdr->un.echo.id, tuple->src.u.icmp.id, 0);
 	hdr->un.echo.id = tuple->src.u.icmp.id;
 	return true;
 }

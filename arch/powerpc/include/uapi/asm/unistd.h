@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0+ WITH Linux-syscall-note */
 /*
  * This file contains the system call numbers.
  *
@@ -386,19 +385,5 @@
 #define __NR_memfd_create	360
 #define __NR_bpf		361
 #define __NR_execveat		362
-#define __NR_switch_endian	363
-#define __NR_userfaultfd	364
-#define __NR_membarrier		365
-#define __NR_mlock2		378
-#define __NR_copy_file_range	379
-#define __NR_preadv2		380
-#define __NR_pwritev2		381
-#define __NR_kexec_file_load	382
-#define __NR_statx		383
-#define __NR_pkey_alloc		384
-#define __NR_pkey_free		385
-#define __NR_pkey_mprotect	386
-#define __NR_rseq		387
-#define __NR_io_pgetevents	388
 
 #endif /* _UAPI_ASM_POWERPC_UNISTD_H_ */

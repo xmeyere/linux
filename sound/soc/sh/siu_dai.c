@@ -1,9 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// siu_dai.c - ALSA SoC driver for Renesas SH7343, SH7722 SIU peripheral.
-//
-// Copyright (C) 2009-2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
-// Copyright (C) 2006 Carlos Munoz <carlos@kenati.com>
+/*
+ * siu_dai.c - ALSA SoC driver for Renesas SH7343, SH7722 SIU peripheral.
+ *
+ * Copyright (C) 2009-2010 Guennadi Liakhovetski <g.liakhovetski@gmx.de>
+ * Copyright (C) 2006 Carlos Munoz <carlos@kenati.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ */
 
 #include <linux/delay.h>
 #include <linux/firmware.h>
@@ -319,7 +333,7 @@ static void siu_dai_spbstop(struct siu_port *port_info)
 /*		API functions		*/
 
 /* Playback and capture hardware properties are identical */
-static const struct snd_pcm_hardware siu_dai_pcm_hw = {
+static struct snd_pcm_hardware siu_dai_pcm_hw = {
 	.info			= SNDRV_PCM_INFO_INTERLEAVED,
 	.formats		= SNDRV_PCM_FMTBIT_S16,
 	.rates			= SNDRV_PCM_RATE_8000_48000,
@@ -427,7 +441,7 @@ static int siu_dai_put_volume(struct snd_kcontrol *kctrl,
 	return 0;
 }
 
-static const struct snd_kcontrol_new playback_controls = {
+static struct snd_kcontrol_new playback_controls = {
 	.iface		= SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name		= "PCM Playback Volume",
 	.index		= 0,
@@ -437,7 +451,7 @@ static const struct snd_kcontrol_new playback_controls = {
 	.private_value	= VOLUME_PLAYBACK,
 };
 
-static const struct snd_kcontrol_new capture_controls = {
+static struct snd_kcontrol_new capture_controls = {
 	.iface		= SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name		= "PCM Capture Volume",
 	.index		= 0,
@@ -713,6 +727,10 @@ static struct snd_soc_dai_driver siu_i2s_dai = {
 	.ops = &siu_dai_ops,
 };
 
+static const struct snd_soc_component_driver siu_i2s_component = {
+	.name		= "siu-i2s",
+};
+
 static int siu_probe(struct platform_device *pdev)
 {
 	const struct firmware *fw_entry;
@@ -720,7 +738,7 @@ static int siu_probe(struct platform_device *pdev)
 	struct siu_info *info;
 	int ret;
 
-	info = devm_kmalloc(&pdev->dev, sizeof(*info), GFP_KERNEL);
+	info = kmalloc(sizeof(*info), GFP_KERNEL);
 	if (!info)
 		return -ENOMEM;
 	siu_i2s_data = info;
@@ -728,7 +746,7 @@ static int siu_probe(struct platform_device *pdev)
 
 	ret = request_firmware(&fw_entry, "siu_spb.bin", &pdev->dev);
 	if (ret)
-		return ret;
+		goto ereqfw;
 
 	/*
 	 * Loaded firmware is "const" - read only, but we have to modify it in
@@ -739,48 +757,89 @@ static int siu_probe(struct platform_device *pdev)
 	release_firmware(fw_entry);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!res)
-		return -ENODEV;
-
-	region = devm_request_mem_region(&pdev->dev, res->start,
-					 resource_size(res), pdev->name);
-	if (!region) {
-		dev_err(&pdev->dev, "SIU region already claimed\n");
-		return -EBUSY;
+	if (!res) {
+		ret = -ENODEV;
+		goto egetres;
 	}
 
-	info->pram = devm_ioremap(&pdev->dev, res->start, PRAM_SIZE);
+	region = request_mem_region(res->start, resource_size(res),
+				    pdev->name);
+	if (!region) {
+		dev_err(&pdev->dev, "SIU region already claimed\n");
+		ret = -EBUSY;
+		goto ereqmemreg;
+	}
+
+	ret = -ENOMEM;
+	info->pram = ioremap(res->start, PRAM_SIZE);
 	if (!info->pram)
-		return -ENOMEM;
-	info->xram = devm_ioremap(&pdev->dev, res->start + XRAM_OFFSET,
-				  XRAM_SIZE);
+		goto emappram;
+	info->xram = ioremap(res->start + XRAM_OFFSET, XRAM_SIZE);
 	if (!info->xram)
-		return -ENOMEM;
-	info->yram = devm_ioremap(&pdev->dev, res->start + YRAM_OFFSET,
-				  YRAM_SIZE);
+		goto emapxram;
+	info->yram = ioremap(res->start + YRAM_OFFSET, YRAM_SIZE);
 	if (!info->yram)
-		return -ENOMEM;
-	info->reg = devm_ioremap(&pdev->dev, res->start + REG_OFFSET,
-			    resource_size(res) - REG_OFFSET);
+		goto emapyram;
+	info->reg = ioremap(res->start + REG_OFFSET, resource_size(res) -
+			    REG_OFFSET);
 	if (!info->reg)
-		return -ENOMEM;
+		goto emapreg;
 
 	dev_set_drvdata(&pdev->dev, info);
 
 	/* register using ARRAY version so we can keep dai name */
-	ret = devm_snd_soc_register_component(&pdev->dev, &siu_component,
-					      &siu_i2s_dai, 1);
+	ret = snd_soc_register_component(&pdev->dev, &siu_i2s_component,
+					 &siu_i2s_dai, 1);
 	if (ret < 0)
-		return ret;
+		goto edaiinit;
+
+	ret = snd_soc_register_platform(&pdev->dev, &siu_platform);
+	if (ret < 0)
+		goto esocregp;
 
 	pm_runtime_enable(&pdev->dev);
 
-	return 0;
+	return ret;
+
+esocregp:
+	snd_soc_unregister_component(&pdev->dev);
+edaiinit:
+	iounmap(info->reg);
+emapreg:
+	iounmap(info->yram);
+emapyram:
+	iounmap(info->xram);
+emapxram:
+	iounmap(info->pram);
+emappram:
+	release_mem_region(res->start, resource_size(res));
+ereqmemreg:
+egetres:
+ereqfw:
+	kfree(info);
+
+	return ret;
 }
 
 static int siu_remove(struct platform_device *pdev)
 {
+	struct siu_info *info = dev_get_drvdata(&pdev->dev);
+	struct resource *res;
+
 	pm_runtime_disable(&pdev->dev);
+
+	snd_soc_unregister_platform(&pdev->dev);
+	snd_soc_unregister_component(&pdev->dev);
+
+	iounmap(info->reg);
+	iounmap(info->yram);
+	iounmap(info->xram);
+	iounmap(info->pram);
+	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
+	if (res)
+		release_mem_region(res->start, resource_size(res));
+	kfree(info);
+
 	return 0;
 }
 

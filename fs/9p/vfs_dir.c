@@ -33,7 +33,6 @@
 #include <linux/inet.h>
 #include <linux/idr.h>
 #include <linux/slab.h>
-#include <linux/uio.h>
 #include <net/9p/9p.h>
 #include <net/9p/client.h>
 
@@ -76,6 +75,15 @@ static inline int dt_type(struct p9_wstat *mistat)
 	return rettype;
 }
 
+static void p9stat_init(struct p9_wstat *stbuf)
+{
+	stbuf->name  = NULL;
+	stbuf->uid   = NULL;
+	stbuf->gid   = NULL;
+	stbuf->muid  = NULL;
+	stbuf->extension = NULL;
+}
+
 /**
  * v9fs_alloc_rdir_buf - Allocate buffer used for read and readdir
  * @filp: opened file structure
@@ -105,8 +113,8 @@ static int v9fs_dir_readdir(struct file *file, struct dir_context *ctx)
 	int err = 0;
 	struct p9_fid *fid;
 	int buflen;
+	int reclen = 0;
 	struct p9_rdir *rdir;
-	struct kvec kvec;
 
 	p9_debug(P9_DEBUG_VFS, "name %pD\n", file);
 	fid = file->private_data;
@@ -116,31 +124,27 @@ static int v9fs_dir_readdir(struct file *file, struct dir_context *ctx)
 	rdir = v9fs_alloc_rdir_buf(file, buflen);
 	if (!rdir)
 		return -ENOMEM;
-	kvec.iov_base = rdir->buf;
-	kvec.iov_len = buflen;
 
 	while (1) {
 		if (rdir->tail == rdir->head) {
-			struct iov_iter to;
-			int n;
-			iov_iter_kvec(&to, READ | ITER_KVEC, &kvec, 1, buflen);
-			n = p9_client_read(file->private_data, ctx->pos, &to,
-					   &err);
-			if (err)
+			err = v9fs_file_readn(file, rdir->buf, NULL,
+							buflen, ctx->pos);
+			if (err <= 0)
 				return err;
-			if (n == 0)
-				return 0;
 
 			rdir->head = 0;
-			rdir->tail = n;
+			rdir->tail = err;
 		}
 		while (rdir->head < rdir->tail) {
+			p9stat_init(&st);
 			err = p9stat_read(fid->clnt, rdir->buf + rdir->head,
 					  rdir->tail - rdir->head, &st);
-			if (err <= 0) {
+			if (err) {
 				p9_debug(P9_DEBUG_VFS, "returned %d\n", err);
+				p9stat_free(&st);
 				return -EIO;
 			}
+			reclen = st.size+2;
 
 			over = !dir_emit(ctx, st.name, strlen(st.name),
 					 v9fs_qid2ino(&st.qid), dt_type(&st));
@@ -148,8 +152,8 @@ static int v9fs_dir_readdir(struct file *file, struct dir_context *ctx)
 			if (over)
 				return 0;
 
-			rdir->head += err;
-			ctx->pos += err;
+			rdir->head += reclen;
+			ctx->pos += reclen;
 		}
 	}
 }
@@ -233,7 +237,7 @@ int v9fs_dir_release(struct inode *inode, struct file *filp)
 const struct file_operations v9fs_dir_operations = {
 	.read = generic_read_dir,
 	.llseek = generic_file_llseek,
-	.iterate_shared = v9fs_dir_readdir,
+	.iterate = v9fs_dir_readdir,
 	.open = v9fs_file_open,
 	.release = v9fs_dir_release,
 };
@@ -241,7 +245,7 @@ const struct file_operations v9fs_dir_operations = {
 const struct file_operations v9fs_dir_operations_dotl = {
 	.read = generic_read_dir,
 	.llseek = generic_file_llseek,
-	.iterate_shared = v9fs_dir_readdir_dotl,
+	.iterate = v9fs_dir_readdir_dotl,
 	.open = v9fs_file_open,
 	.release = v9fs_dir_release,
         .fsync = v9fs_file_fsync_dotl,

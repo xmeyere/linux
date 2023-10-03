@@ -69,13 +69,14 @@
 #include <linux/if_arp.h>
 #include <linux/skbuff.h>
 #include <net/sock.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <linux/mm.h>
 #include <linux/interrupt.h>
 #include <linux/notifier.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/stat.h>
+#include <linux/netfilter.h>
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/rtnetlink.h>
@@ -88,6 +89,10 @@
 
 static const char banner[] __initconst = KERN_INFO \
 	"AX.25: bpqether driver version 004\n";
+
+static char bcast_addr[6]={0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+
+static char bpq_eth_addr[6];
 
 static int bpq_rcv(struct sk_buff *, struct net_device *, struct packet_type *, struct net_device *);
 static int bpq_device_event(struct notifier_block *, unsigned long, void *);
@@ -245,9 +250,6 @@ static netdev_tx_t bpq_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct bpqdev *bpq;
 	struct net_device *orig_dev;
 	int size;
-
-	if (skb->protocol == htons(ETH_P_IP))
-		return ax25_ip_xmit(skb);
 
 	/*
 	 * Just to be *really* sure not to send anything if the interface
@@ -445,6 +447,20 @@ static const struct seq_operations bpq_seqops = {
 	.show = bpq_seq_show,
 };
 
+static int bpq_info_open(struct inode *inode, struct file *file)
+{
+	return seq_open(file, &bpq_seqops);
+}
+
+static const struct file_operations bpq_info_fops = {
+	.owner = THIS_MODULE,
+	.open = bpq_info_open,
+	.read = seq_read,
+	.llseek = seq_lseek,
+	.release = seq_release,
+};
+
+
 /* ------------------------------------------------------------------------ */
 
 static const struct net_device_ops bpq_netdev_ops = {
@@ -458,15 +474,14 @@ static const struct net_device_ops bpq_netdev_ops = {
 static void bpq_setup(struct net_device *dev)
 {
 	dev->netdev_ops	     = &bpq_netdev_ops;
-	dev->needs_free_netdev = true;
+	dev->destructor	     = free_netdev;
 
 	memcpy(dev->broadcast, &ax25_bcast, AX25_ADDR_LEN);
 	memcpy(dev->dev_addr,  &ax25_defaddr, AX25_ADDR_LEN);
 
 	dev->flags      = 0;
-	dev->features	= NETIF_F_LLTX;	/* Allow recursion */
 
-#if IS_ENABLED(CONFIG_AX25)
+#if defined(CONFIG_AX25) || defined(CONFIG_AX25_MODULE)
 	dev->header_ops      = &ax25_header_ops;
 #endif
 
@@ -497,8 +512,8 @@ static int bpq_new_device(struct net_device *edev)
 	bpq->ethdev = edev;
 	bpq->axdev = ndev;
 
-	eth_broadcast_addr(bpq->dest_addr);
-	eth_broadcast_addr(bpq->acpt_addr);
+	memcpy(bpq->dest_addr, bcast_addr, sizeof(bpq_eth_addr));
+	memcpy(bpq->acpt_addr, bcast_addr, sizeof(bpq_eth_addr));
 
 	err = register_netdevice(ndev);
 	if (err)
@@ -537,7 +552,7 @@ static int bpq_device_event(struct notifier_block *this,
 	if (!net_eq(dev_net(dev), &init_net))
 		return NOTIFY_DONE;
 
-	if (!dev_is_ethdev(dev) && !bpq_get_ax25_dev(dev))
+	if (!dev_is_ethdev(dev))
 		return NOTIFY_DONE;
 
 	switch (event) {
@@ -572,7 +587,8 @@ static int bpq_device_event(struct notifier_block *this,
 static int __init bpq_init_driver(void)
 {
 #ifdef CONFIG_PROC_FS
-	if (!proc_create_seq("bpqether", 0444, init_net.proc_net, &bpq_seqops)) {
+	if (!proc_create("bpqether", S_IRUGO, init_net.proc_net,
+			 &bpq_info_fops)) {
 		printk(KERN_ERR
 			"bpq: cannot create /proc/net/bpqether entry.\n");
 		return -ENOENT;

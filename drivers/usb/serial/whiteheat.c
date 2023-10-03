@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * USB ConnectTech WhiteHEAT driver
  *
@@ -7,6 +6,11 @@
  *
  *	Copyright (C) 1999 - 2001
  *	    Greg Kroah-Hartman (greg@kroah.com)
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  *
  * See Documentation/usb/usb-serial.txt for more information on using this
  * driver
@@ -112,8 +116,6 @@ static struct usb_serial_driver whiteheat_device = {
 	.description =		"Connect Tech - WhiteHEAT",
 	.id_table =		id_table_std,
 	.num_ports =		4,
-	.num_bulk_in =		5,
-	.num_bulk_out =		5,
 	.attach =		whiteheat_attach,
 	.release =		whiteheat_release,
 	.port_probe =		whiteheat_port_probe,
@@ -215,7 +217,6 @@ static int whiteheat_firmware_attach(struct usb_serial *serial)
 /*****************************************************************************
  * Connect Tech's White Heat serial driver functions
  *****************************************************************************/
-
 static int whiteheat_attach(struct usb_serial *serial)
 {
 	struct usb_serial_port *command_port;
@@ -455,6 +456,7 @@ static int whiteheat_ioctl(struct tty_struct *tty,
 		serstruct.type = PORT_16654;
 		serstruct.line = port->minor;
 		serstruct.port = port->port_number;
+		serstruct.flags = ASYNC_SKIP_TEST | ASYNC_AUTO_IRQ;
 		serstruct.xmit_fifo_size = kfifo_size(&port->write_fifo);
 		serstruct.custom_divisor = 0;
 		serstruct.baud_base = 460800;
@@ -571,10 +573,6 @@ static int firm_send_command(struct usb_serial_port *port, __u8 command,
 
 	command_port = port->serial->port[COMMAND_PORT];
 	command_info = usb_get_serial_port_data(command_port);
-
-	if (command_port->bulk_out_size < datasize + 1)
-		return -EIO;
-
 	mutex_lock(&command_info->mutex);
 	command_info->command_finished = false;
 
@@ -611,8 +609,9 @@ static int firm_send_command(struct usb_serial_port *port, __u8 command,
 		switch (command) {
 		case WHITEHEAT_GET_DTR_RTS:
 			info = usb_get_serial_port_data(port);
-			info->mcr = command_info->result_buffer[0];
-			break;
+			memcpy(&info->mcr, command_info->result_buffer,
+					sizeof(struct whiteheat_dr_info));
+				break;
 		}
 	}
 exit:
@@ -647,7 +646,6 @@ static void firm_setup_port(struct tty_struct *tty)
 	struct device *dev = &port->dev;
 	struct whiteheat_port_settings port_settings;
 	unsigned int cflag = tty->termios.c_cflag;
-	speed_t baud;
 
 	port_settings.port = port->port_number + 1;
 
@@ -708,13 +706,11 @@ static void firm_setup_port(struct tty_struct *tty)
 	dev_dbg(dev, "%s - XON = %2x, XOFF = %2x\n", __func__, port_settings.xon, port_settings.xoff);
 
 	/* get the baud rate wanted */
-	baud = tty_get_baud_rate(tty);
-	port_settings.baud = cpu_to_le32(baud);
-	dev_dbg(dev, "%s - baud rate = %u\n", __func__, baud);
+	port_settings.baud = tty_get_baud_rate(tty);
+	dev_dbg(dev, "%s - baud rate = %d\n", __func__, port_settings.baud);
 
 	/* fixme: should set validated settings */
-	tty_encode_baud_rate(tty, baud, baud);
-
+	tty_encode_baud_rate(tty, port_settings.baud, port_settings.baud);
 	/* handle any settings that aren't specified in the tty structure */
 	port_settings.lloop = 0;
 

@@ -238,10 +238,7 @@ static int gpio_flash_probe(struct platform_device *pdev)
 	state->map.copy_to    = gf_copy_to;
 	state->map.bankwidth  = pdata->width;
 	state->map.size       = state->win_size * (1 << state->gpio_count);
-	state->map.virt       = ioremap_nocache(memory->start, state->win_size);
-	if (!state->map.virt)
-		return -ENOMEM;
-
+	state->map.virt       = ioremap_nocache(memory->start, state->map.size);
 	state->map.phys       = NO_XIP;
 	state->map.map_priv_1 = (unsigned long)state;
 
@@ -269,7 +266,7 @@ static int gpio_flash_probe(struct platform_device *pdev)
 		kfree(state);
 		return -ENXIO;
 	}
-	state->mtd->dev.parent = &pdev->dev;
+
 
 	mtd_device_parse_register(state->mtd, part_probe_types, NULL,
 				  pdata->parts, pdata->nr_parts);

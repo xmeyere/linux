@@ -10,9 +10,7 @@
 
 #include <linux/slab.h>
 #include <linux/kernel.h>
-#include <linux/kmemleak.h>
 #include <linux/bitmap.h>
-#include <linux/bootmem.h>
 #include <asm/msi_bitmap.h>
 #include <asm/setup.h>
 
@@ -87,13 +85,13 @@ int msi_bitmap_reserve_dt_hwirqs(struct msi_bitmap *bmp)
 	p = of_get_property(bmp->of_node, "msi-available-ranges", &len);
 	if (!p) {
 		pr_debug("msi_bitmap: no msi-available-ranges property " \
-			 "found on %pOF\n", bmp->of_node);
+			 "found on %s\n", bmp->of_node->full_name);
 		return 1;
 	}
 
 	if (len % (2 * sizeof(u32)) != 0) {
 		printk(KERN_WARNING "msi_bitmap: Malformed msi-available-ranges"
-		       " property on %pOF\n", bmp->of_node);
+		       " property on %s\n", bmp->of_node->full_name);
 		return -EINVAL;
 	}
 
@@ -113,7 +111,7 @@ int msi_bitmap_reserve_dt_hwirqs(struct msi_bitmap *bmp)
 	return 0;
 }
 
-int __ref msi_bitmap_alloc(struct msi_bitmap *bmp, unsigned int irq_count,
+int msi_bitmap_alloc(struct msi_bitmap *bmp, unsigned int irq_count,
 		     struct device_node *of_node)
 {
 	int size;
@@ -124,15 +122,7 @@ int __ref msi_bitmap_alloc(struct msi_bitmap *bmp, unsigned int irq_count,
 	size = BITS_TO_LONGS(irq_count) * sizeof(long);
 	pr_debug("msi_bitmap: allocator bitmap size is 0x%x bytes\n", size);
 
-	bmp->bitmap_from_slab = slab_is_available();
-	if (bmp->bitmap_from_slab)
-		bmp->bitmap = kzalloc(size, GFP_KERNEL);
-	else {
-		bmp->bitmap = memblock_virt_alloc(size, 0);
-		/* the bitmap won't be freed from memblock allocator */
-		kmemleak_not_leak(bmp->bitmap);
-	}
-
+	bmp->bitmap = zalloc_maybe_bootmem(size, GFP_KERNEL);
 	if (!bmp->bitmap) {
 		pr_debug("msi_bitmap: ENOMEM allocating allocator bitmap!\n");
 		return -ENOMEM;
@@ -148,8 +138,7 @@ int __ref msi_bitmap_alloc(struct msi_bitmap *bmp, unsigned int irq_count,
 
 void msi_bitmap_free(struct msi_bitmap *bmp)
 {
-	if (bmp->bitmap_from_slab)
-		kfree(bmp->bitmap);
+	/* we can't free the bitmap we don't know if it's bootmem etc. */
 	of_node_put(bmp->of_node);
 	bmp->bitmap = NULL;
 }
@@ -214,6 +203,8 @@ static void __init test_basics(void)
 
 	/* Clients may WARN_ON bitmap == NULL for "not-allocated" */
 	WARN_ON(bmp.bitmap != NULL);
+
+	kfree(bmp.bitmap);
 }
 
 static void __init test_of_node(void)
@@ -225,23 +216,22 @@ static void __init test_of_node(void)
 	struct device_node of_node;
 	struct property prop;
 	struct msi_bitmap bmp;
-#define SIZE_EXPECTED 256
-	DECLARE_BITMAP(expected, SIZE_EXPECTED);
+	int size = 256;
+	DECLARE_BITMAP(expected, size);
 
 	/* There should really be a struct device_node allocator */
 	memset(&of_node, 0, sizeof(of_node));
 	of_node_init(&of_node);
 	of_node.full_name = node_name;
 
-	WARN_ON(msi_bitmap_alloc(&bmp, SIZE_EXPECTED, &of_node));
+	WARN_ON(msi_bitmap_alloc(&bmp, size, &of_node));
 
 	/* No msi-available-ranges, so expect > 0 */
 	WARN_ON(msi_bitmap_reserve_dt_hwirqs(&bmp) <= 0);
 
 	/* Should all still be free */
-	WARN_ON(bitmap_find_free_region(bmp.bitmap, SIZE_EXPECTED,
-					get_count_order(SIZE_EXPECTED)));
-	bitmap_release_region(bmp.bitmap, 0, get_count_order(SIZE_EXPECTED));
+	WARN_ON(bitmap_find_free_region(bmp.bitmap, size, get_count_order(size)));
+	bitmap_release_region(bmp.bitmap, 0, get_count_order(size));
 
 	/* Now create a fake msi-available-ranges property */
 
@@ -257,8 +247,8 @@ static void __init test_of_node(void)
 	WARN_ON(msi_bitmap_reserve_dt_hwirqs(&bmp));
 
 	/* Check we got the expected result */
-	WARN_ON(bitmap_parselist(expected_str, expected, SIZE_EXPECTED));
-	WARN_ON(!bitmap_equal(expected, bmp.bitmap, SIZE_EXPECTED));
+	WARN_ON(bitmap_parselist(expected_str, expected, size));
+	WARN_ON(!bitmap_equal(expected, bmp.bitmap, size));
 
 	msi_bitmap_free(&bmp);
 	kfree(bmp.bitmap);

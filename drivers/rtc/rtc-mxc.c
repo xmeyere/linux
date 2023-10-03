@@ -1,6 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// Copyright 2004-2008 Freescale Semiconductor, Inc. All Rights Reserved.
+/*
+ * Copyright 2004-2008 Freescale Semiconductor, Inc. All Rights Reserved.
+ *
+ * The code contained herein is licensed under the GNU General Public
+ * License. You may obtain a copy of the GNU General Public License
+ * Version 2 or later at the following locations:
+ *
+ * http://www.opensource.org/licenses/gpl-license.html
+ * http://www.gnu.org/copyleft/gpl.html
+ */
 
 #include <linux/io.h>
 #include <linux/rtc.h>
@@ -9,8 +16,6 @@
 #include <linux/interrupt.h>
 #include <linux/platform_device.h>
 #include <linux/clk.h>
-#include <linux/of.h>
-#include <linux/of_device.h>
 
 #define RTC_INPUT_CLK_32768HZ	(0x00 << 5)
 #define RTC_INPUT_CLK_32000HZ	(0x01 << 5)
@@ -36,6 +41,17 @@
 
 #define MAX_PIE_NUM     9
 #define MAX_PIE_FREQ    512
+static const u32 PIE_BIT_DEF[MAX_PIE_NUM][2] = {
+	{ 2,		RTC_2HZ_BIT },
+	{ 4,		RTC_SAM0_BIT },
+	{ 8,		RTC_SAM1_BIT },
+	{ 16,		RTC_SAM2_BIT },
+	{ 32,		RTC_SAM3_BIT },
+	{ 64,		RTC_SAM4_BIT },
+	{ 128,		RTC_SAM5_BIT },
+	{ 256,		RTC_SAM6_BIT },
+	{ MAX_PIE_FREQ,	RTC_SAM7_BIT },
+};
 
 #define MXC_RTC_TIME	0
 #define MXC_RTC_ALARM	1
@@ -63,13 +79,12 @@ struct rtc_plat_data {
 	struct rtc_device *rtc;
 	void __iomem *ioaddr;
 	int irq;
-	struct clk *clk_ref;
-	struct clk *clk_ipg;
+	struct clk *clk;
 	struct rtc_time g_rtc_alarm;
 	enum imx_rtc_type devtype;
 };
 
-static const struct platform_device_id imx_rtc_devtype[] = {
+static struct platform_device_id imx_rtc_devtype[] = {
 	{
 		.name = "imx1-rtc",
 		.driver_data = IMX1_RTC,
@@ -82,15 +97,6 @@ static const struct platform_device_id imx_rtc_devtype[] = {
 };
 MODULE_DEVICE_TABLE(platform, imx_rtc_devtype);
 
-#ifdef CONFIG_OF
-static const struct of_device_id imx_rtc_dt_ids[] = {
-	{ .compatible = "fsl,imx1-rtc", .data = (const void *)IMX1_RTC },
-	{ .compatible = "fsl,imx21-rtc", .data = (const void *)IMX21_RTC },
-	{}
-};
-MODULE_DEVICE_TABLE(of, imx_rtc_dt_ids);
-#endif
-
 static inline int is_imx1_rtc(struct rtc_plat_data *data)
 {
 	return data->devtype == IMX1_RTC;
@@ -100,9 +106,10 @@ static inline int is_imx1_rtc(struct rtc_plat_data *data)
  * This function is used to obtain the RTC time or the alarm value in
  * second.
  */
-static time64_t get_alarm_or_time(struct device *dev, int time_alarm)
+static u32 get_alarm_or_time(struct device *dev, int time_alarm)
 {
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr;
 	u32 day = 0, hr = 0, min = 0, sec = 0, hr_min = 0;
 
@@ -122,27 +129,29 @@ static time64_t get_alarm_or_time(struct device *dev, int time_alarm)
 	hr = hr_min >> 8;
 	min = hr_min & 0xff;
 
-	return ((((time64_t)day * 24 + hr) * 60) + min) * 60 + sec;
+	return (((day * 24 + hr) * 60) + min) * 60 + sec;
 }
 
 /*
  * This function sets the RTC alarm value or the time value.
  */
-static void set_alarm_or_time(struct device *dev, int time_alarm, time64_t time)
+static void set_alarm_or_time(struct device *dev, int time_alarm, u32 time)
 {
-	u32 tod, day, hr, min, sec, temp;
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	u32 day, hr, min, sec, temp;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr;
 
-	day = div_s64_rem(time, 86400, &tod);
+	day = time / 86400;
+	time -= day * 86400;
 
 	/* time is within a day now */
-	hr = tod / 3600;
-	tod -= hr * 3600;
+	hr = time / 3600;
+	time -= hr * 3600;
 
 	/* time is within an hour now */
-	min = tod / 60;
-	sec = tod - min * 60;
+	min = time / 60;
+	sec = time - min * 60;
 
 	temp = (hr << 8) + min;
 
@@ -164,23 +173,36 @@ static void set_alarm_or_time(struct device *dev, int time_alarm, time64_t time)
  * This function updates the RTC alarm registers and then clears all the
  * interrupt status bits.
  */
-static void rtc_update_alarm(struct device *dev, struct rtc_time *alrm)
+static int rtc_update_alarm(struct device *dev, struct rtc_time *alrm)
 {
-	time64_t time;
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	struct rtc_time alarm_tm, now_tm;
+	unsigned long now, time;
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr;
 
-	time = rtc_tm_to_time64(alrm);
+	now = get_alarm_or_time(dev, MXC_RTC_TIME);
+	rtc_time_to_tm(now, &now_tm);
+	alarm_tm.tm_year = now_tm.tm_year;
+	alarm_tm.tm_mon = now_tm.tm_mon;
+	alarm_tm.tm_mday = now_tm.tm_mday;
+	alarm_tm.tm_hour = alrm->tm_hour;
+	alarm_tm.tm_min = alrm->tm_min;
+	alarm_tm.tm_sec = alrm->tm_sec;
+	rtc_tm_to_time(&alarm_tm, &time);
 
 	/* clear all the interrupt status bits */
 	writew(readw(ioaddr + RTC_RTCISR), ioaddr + RTC_RTCISR);
 	set_alarm_or_time(dev, MXC_RTC_ALARM, time);
+
+	return 0;
 }
 
 static void mxc_rtc_irq_enable(struct device *dev, unsigned int bit,
 				unsigned int enabled)
 {
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr;
 	u32 reg;
 
@@ -218,6 +240,9 @@ static irqreturn_t mxc_rtc_interrupt(int irq, void *dev_id)
 		mxc_rtc_irq_enable(&pdev->dev, RTC_ALM_BIT, 0);
 	}
 
+	if (status & RTC_1HZ_BIT)
+		events |= (RTC_UF | RTC_IRQF);
+
 	if (status & PIT_ALL_ON)
 		events |= (RTC_PF | RTC_IRQF);
 
@@ -225,6 +250,26 @@ static irqreturn_t mxc_rtc_interrupt(int irq, void *dev_id)
 	spin_unlock_irqrestore(&pdata->rtc->irq_lock, flags);
 
 	return IRQ_HANDLED;
+}
+
+/*
+ * Clear all interrupts and release the IRQ
+ */
+static void mxc_rtc_release(struct device *dev)
+{
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
+	void __iomem *ioaddr = pdata->ioaddr;
+
+	spin_lock_irq(&pdata->rtc->irq_lock);
+
+	/* Disable all rtc interrupts */
+	writew(0, ioaddr + RTC_RTCIENR);
+
+	/* Clear all interrupt status */
+	writew(0xffffffff, ioaddr + RTC_RTCISR);
+
+	spin_unlock_irq(&pdata->rtc->irq_lock);
 }
 
 static int mxc_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
@@ -238,14 +283,14 @@ static int mxc_rtc_alarm_irq_enable(struct device *dev, unsigned int enabled)
  */
 static int mxc_rtc_read_time(struct device *dev, struct rtc_time *tm)
 {
-	time64_t val;
+	u32 val;
 
 	/* Avoid roll-over from reading the different registers */
 	do {
 		val = get_alarm_or_time(dev, MXC_RTC_TIME);
 	} while (val != get_alarm_or_time(dev, MXC_RTC_TIME));
 
-	rtc_time64_to_tm(val, tm);
+	rtc_time_to_tm(val, tm);
 
 	return 0;
 }
@@ -253,9 +298,10 @@ static int mxc_rtc_read_time(struct device *dev, struct rtc_time *tm)
 /*
  * This function sets the internal RTC time based on tm in Gregorian date.
  */
-static int mxc_rtc_set_mmss(struct device *dev, time64_t time)
+static int mxc_rtc_set_mmss(struct device *dev, unsigned long time)
 {
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 
 	/*
 	 * TTC_DAYR register is 9-bit in MX1 SoC, save time and day of year only
@@ -263,9 +309,9 @@ static int mxc_rtc_set_mmss(struct device *dev, time64_t time)
 	if (is_imx1_rtc(pdata)) {
 		struct rtc_time tm;
 
-		rtc_time64_to_tm(time, &tm);
+		rtc_time_to_tm(time, &tm);
 		tm.tm_year = 70;
-		time = rtc_tm_to_time64(&tm);
+		rtc_tm_to_time(&tm, &time);
 	}
 
 	/* Avoid roll-over from reading the different registers */
@@ -283,10 +329,11 @@ static int mxc_rtc_set_mmss(struct device *dev, time64_t time)
  */
 static int mxc_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 	void __iomem *ioaddr = pdata->ioaddr;
 
-	rtc_time64_to_tm(get_alarm_or_time(dev, MXC_RTC_ALARM), &alrm->time);
+	rtc_time_to_tm(get_alarm_or_time(dev, MXC_RTC_ALARM), &alrm->time);
 	alrm->pending = ((readw(ioaddr + RTC_RTCISR) & RTC_ALM_BIT)) ? 1 : 0;
 
 	return 0;
@@ -297,9 +344,13 @@ static int mxc_rtc_read_alarm(struct device *dev, struct rtc_wkalrm *alrm)
  */
 static int mxc_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 {
-	struct rtc_plat_data *pdata = dev_get_drvdata(dev);
+	struct platform_device *pdev = to_platform_device(dev);
+	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
+	int ret;
 
-	rtc_update_alarm(dev, &alrm->time);
+	ret = rtc_update_alarm(dev, &alrm->time);
+	if (ret)
+		return ret;
 
 	memcpy(&pdata->g_rtc_alarm, &alrm->time, sizeof(struct rtc_time));
 	mxc_rtc_irq_enable(dev, RTC_ALM_BIT, alrm->enabled);
@@ -308,9 +359,10 @@ static int mxc_rtc_set_alarm(struct device *dev, struct rtc_wkalrm *alrm)
 }
 
 /* RTC layer */
-static const struct rtc_class_ops mxc_rtc_ops = {
+static struct rtc_class_ops mxc_rtc_ops = {
+	.release		= mxc_rtc_release,
 	.read_time		= mxc_rtc_read_time,
-	.set_mmss64		= mxc_rtc_set_mmss,
+	.set_mmss		= mxc_rtc_set_mmss,
 	.read_alarm		= mxc_rtc_read_alarm,
 	.set_alarm		= mxc_rtc_set_alarm,
 	.alarm_irq_enable	= mxc_rtc_alarm_irq_enable,
@@ -324,45 +376,29 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 	u32 reg;
 	unsigned long rate;
 	int ret;
-	const struct of_device_id *of_id;
 
 	pdata = devm_kzalloc(&pdev->dev, sizeof(*pdata), GFP_KERNEL);
 	if (!pdata)
 		return -ENOMEM;
 
-	of_id = of_match_device(imx_rtc_dt_ids, &pdev->dev);
-	if (of_id)
-		pdata->devtype = (enum imx_rtc_type)of_id->data;
-	else
-		pdata->devtype = pdev->id_entry->driver_data;
+	pdata->devtype = pdev->id_entry->driver_data;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	pdata->ioaddr = devm_ioremap_resource(&pdev->dev, res);
 	if (IS_ERR(pdata->ioaddr))
 		return PTR_ERR(pdata->ioaddr);
 
-	pdata->clk_ipg = devm_clk_get(&pdev->dev, "ipg");
-	if (IS_ERR(pdata->clk_ipg)) {
-		dev_err(&pdev->dev, "unable to get ipg clock!\n");
-		return PTR_ERR(pdata->clk_ipg);
+	pdata->clk = devm_clk_get(&pdev->dev, NULL);
+	if (IS_ERR(pdata->clk)) {
+		dev_err(&pdev->dev, "unable to get clock!\n");
+		return PTR_ERR(pdata->clk);
 	}
 
-	ret = clk_prepare_enable(pdata->clk_ipg);
+	ret = clk_prepare_enable(pdata->clk);
 	if (ret)
 		return ret;
 
-	pdata->clk_ref = devm_clk_get(&pdev->dev, "ref");
-	if (IS_ERR(pdata->clk_ref)) {
-		dev_err(&pdev->dev, "unable to get ref clock!\n");
-		ret = PTR_ERR(pdata->clk_ref);
-		goto exit_put_clk_ipg;
-	}
-
-	ret = clk_prepare_enable(pdata->clk_ref);
-	if (ret)
-		goto exit_put_clk_ipg;
-
-	rate = clk_get_rate(pdata->clk_ref);
+	rate = clk_get_rate(pdata->clk);
 
 	if (rate == 32768)
 		reg = RTC_INPUT_CLK_32768HZ;
@@ -373,7 +409,7 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 	else {
 		dev_err(&pdev->dev, "rtc clock is not valid (%lu)\n", rate);
 		ret = -EINVAL;
-		goto exit_put_clk_ref;
+		goto exit_put_clk;
 	}
 
 	reg |= RTC_ENABLE_BIT;
@@ -381,7 +417,7 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 	if (((readw(pdata->ioaddr + RTC_RTCCTL)) & RTC_ENABLE_BIT) == 0) {
 		dev_err(&pdev->dev, "hardware module can't be enabled!\n");
 		ret = -EIO;
-		goto exit_put_clk_ref;
+		goto exit_put_clk;
 	}
 
 	platform_set_drvdata(pdev, pdata);
@@ -403,17 +439,15 @@ static int mxc_rtc_probe(struct platform_device *pdev)
 				  THIS_MODULE);
 	if (IS_ERR(rtc)) {
 		ret = PTR_ERR(rtc);
-		goto exit_put_clk_ref;
+		goto exit_put_clk;
 	}
 
 	pdata->rtc = rtc;
 
 	return 0;
 
-exit_put_clk_ref:
-	clk_disable_unprepare(pdata->clk_ref);
-exit_put_clk_ipg:
-	clk_disable_unprepare(pdata->clk_ipg);
+exit_put_clk:
+	clk_disable_unprepare(pdata->clk);
 
 	return ret;
 }
@@ -422,8 +456,7 @@ static int mxc_rtc_remove(struct platform_device *pdev)
 {
 	struct rtc_plat_data *pdata = platform_get_drvdata(pdev);
 
-	clk_disable_unprepare(pdata->clk_ref);
-	clk_disable_unprepare(pdata->clk_ipg);
+	clk_disable_unprepare(pdata->clk);
 
 	return 0;
 }
@@ -455,7 +488,6 @@ static SIMPLE_DEV_PM_OPS(mxc_rtc_pm_ops, mxc_rtc_suspend, mxc_rtc_resume);
 static struct platform_driver mxc_rtc_driver = {
 	.driver = {
 		   .name	= "mxc_rtc",
-		   .of_match_table = of_match_ptr(imx_rtc_dt_ids),
 		   .pm		= &mxc_rtc_pm_ops,
 	},
 	.id_table = imx_rtc_devtype,

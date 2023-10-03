@@ -13,13 +13,18 @@
  *    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *    GNU General Public License for more details.
  *
+ *    You should have received a copy of the GNU General Public License
+ *    along with this program; if not, write to the Free Software
+ *    Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
+ *
  */
 
 #ifndef _LGDT3305_H_
 #define _LGDT3305_H_
 
+#include <linux/kconfig.h>
 #include <linux/i2c.h>
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 
 
 enum lgdt3305_mpeg_mode {
@@ -75,7 +80,7 @@ struct lgdt3305_config {
 	enum lgdt_demod_chip_type demod_chip;
 };
 
-#if IS_REACHABLE(CONFIG_DVB_LGDT3305)
+#if IS_ENABLED(CONFIG_DVB_LGDT3305)
 extern
 struct dvb_frontend *lgdt3305_attach(const struct lgdt3305_config *config,
 				     struct i2c_adapter *i2c_adap);

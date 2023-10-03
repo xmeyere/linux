@@ -2,7 +2,7 @@
  * common LSM auditing functions
  *
  * Based on code written for SELinux by :
- *			Stephen Smalley, <sds@tycho.nsa.gov>
+ *			Stephen Smalley, <sds@epoch.ncsc.mil>
  * 			James Morris <jmorris@redhat.com>
  * Author : Etienne Basset, <etienne.basset@ensta.org>
  *
@@ -99,7 +99,7 @@ int ipv4_skb_to_auditdata(struct sk_buff *skb,
 	}
 	return ret;
 }
-#if IS_ENABLED(CONFIG_IPV6)
+#if defined(CONFIG_IPV6) || defined(CONFIG_IPV6_MODULE)
 /**
  * ipv6_skb_to_auditdata : fill auditdata from skb
  * @skb : the skb
@@ -211,7 +211,7 @@ static inline void print_ipv4_addr(struct audit_buffer *ab, __be32 addr,
 static void dump_common_audit_data(struct audit_buffer *ab,
 				   struct common_audit_data *a)
 {
-	char comm[sizeof(current->comm)];
+	struct task_struct *tsk = current;
 
 	/*
 	 * To keep stack sizes in check force programers to notice if they
@@ -220,8 +220,8 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 	 */
 	BUILD_BUG_ON(sizeof(a->u) > sizeof(void *)*2);
 
-	audit_log_format(ab, " pid=%d comm=", task_tgid_nr(current));
-	audit_log_untrustedstring(ab, memcpy(comm, current->comm, sizeof(comm)));
+	audit_log_format(ab, " pid=%d comm=", task_pid_nr(tsk));
+	audit_log_untrustedstring(ab, tsk->comm);
 
 	switch (a->type) {
 	case LSM_AUDIT_DATA_NONE:
@@ -237,51 +237,21 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 
 		audit_log_d_path(ab, " path=", &a->u.path);
 
-		inode = d_backing_inode(a->u.path.dentry);
+		inode = a->u.path.dentry->d_inode;
 		if (inode) {
 			audit_log_format(ab, " dev=");
 			audit_log_untrustedstring(ab, inode->i_sb->s_id);
 			audit_log_format(ab, " ino=%lu", inode->i_ino);
 		}
-		break;
-	}
-	case LSM_AUDIT_DATA_FILE: {
-		struct inode *inode;
-
-		audit_log_d_path(ab, " path=", &a->u.file->f_path);
-
-		inode = file_inode(a->u.file);
-		if (inode) {
-			audit_log_format(ab, " dev=");
-			audit_log_untrustedstring(ab, inode->i_sb->s_id);
-			audit_log_format(ab, " ino=%lu", inode->i_ino);
-		}
-		break;
-	}
-	case LSM_AUDIT_DATA_IOCTL_OP: {
-		struct inode *inode;
-
-		audit_log_d_path(ab, " path=", &a->u.op->path);
-
-		inode = a->u.op->path.dentry->d_inode;
-		if (inode) {
-			audit_log_format(ab, " dev=");
-			audit_log_untrustedstring(ab, inode->i_sb->s_id);
-			audit_log_format(ab, " ino=%lu", inode->i_ino);
-		}
-
-		audit_log_format(ab, " ioctlcmd=0x%hx", a->u.op->cmd);
 		break;
 	}
 	case LSM_AUDIT_DATA_DENTRY: {
 		struct inode *inode;
 
 		audit_log_format(ab, " name=");
-		spin_lock(&a->u.dentry->d_lock);
 		audit_log_untrustedstring(ab, a->u.dentry->d_name.name);
-		spin_unlock(&a->u.dentry->d_lock);
 
-		inode = d_backing_inode(a->u.dentry);
+		inode = a->u.dentry->d_inode;
 		if (inode) {
 			audit_log_format(ab, " dev=");
 			audit_log_untrustedstring(ab, inode->i_sb->s_id);
@@ -297,9 +267,8 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 		dentry = d_find_alias(inode);
 		if (dentry) {
 			audit_log_format(ab, " name=");
-			spin_lock(&dentry->d_lock);
-			audit_log_untrustedstring(ab, dentry->d_name.name);
-			spin_unlock(&dentry->d_lock);
+			audit_log_untrustedstring(ab,
+					 dentry->d_name.name);
 			dput(dentry);
 		}
 		audit_log_format(ab, " dev=");
@@ -307,24 +276,20 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 		audit_log_format(ab, " ino=%lu", inode->i_ino);
 		break;
 	}
-	case LSM_AUDIT_DATA_TASK: {
-		struct task_struct *tsk = a->u.tsk;
+	case LSM_AUDIT_DATA_TASK:
+		tsk = a->u.tsk;
 		if (tsk) {
-			pid_t pid = task_tgid_nr(tsk);
+			pid_t pid = task_pid_nr(tsk);
 			if (pid) {
-				char comm[sizeof(tsk->comm)];
-				audit_log_format(ab, " opid=%d ocomm=", pid);
-				audit_log_untrustedstring(ab,
-				    memcpy(comm, tsk->comm, sizeof(comm)));
+				audit_log_format(ab, " pid=%d comm=", pid);
+				audit_log_untrustedstring(ab, tsk->comm);
 			}
 		}
 		break;
-	}
 	case LSM_AUDIT_DATA_NET:
 		if (a->u.net->sk) {
 			struct sock *sk = a->u.net->sk;
 			struct unix_sock *u;
-			struct unix_address *addr;
 			int len = 0;
 			char *p = NULL;
 
@@ -355,15 +320,14 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 #endif
 			case AF_UNIX:
 				u = unix_sk(sk);
-				addr = smp_load_acquire(&u->addr);
-				if (!addr)
-					break;
 				if (u->path.dentry) {
 					audit_log_d_path(ab, " path=", &u->path);
 					break;
 				}
-				len = addr->len-sizeof(short);
-				p = &addr->name->sun_path[0];
+				if (!u->addr)
+					break;
+				len = u->addr->len-sizeof(short);
+				p = &u->addr->name->sun_path[0];
 				audit_log_format(ab, " path=");
 				if (*p)
 					audit_log_untrustedstring(ab, p);
@@ -415,22 +379,6 @@ static void dump_common_audit_data(struct audit_buffer *ab,
 		audit_log_format(ab, " kmod=");
 		audit_log_untrustedstring(ab, a->u.kmod_name);
 		break;
-	case LSM_AUDIT_DATA_IBPKEY: {
-		struct in6_addr sbn_pfx;
-
-		memset(&sbn_pfx.s6_addr, 0,
-		       sizeof(sbn_pfx.s6_addr));
-		memcpy(&sbn_pfx.s6_addr, &a->u.ibpkey->subnet_prefix,
-		       sizeof(a->u.ibpkey->subnet_prefix));
-		audit_log_format(ab, " pkey=0x%x subnet_prefix=%pI6c",
-				 a->u.ibpkey->pkey, &sbn_pfx);
-		break;
-	}
-	case LSM_AUDIT_DATA_IBENDPORT:
-		audit_log_format(ab, " device=%s port_num=%u",
-				 a->u.ibendport->dev_name,
-				 a->u.ibendport->port);
-		break;
 	} /* switch (a->type) */
 }
 
@@ -452,7 +400,7 @@ void common_lsm_audit(struct common_audit_data *a,
 	if (a == NULL)
 		return;
 	/* we use GFP_ATOMIC so we won't sleep */
-	ab = audit_log_start(audit_context(), GFP_ATOMIC | __GFP_NOWARN,
+	ab = audit_log_start(current->audit_context, GFP_ATOMIC | __GFP_NOWARN,
 			     AUDIT_AVC);
 
 	if (ab == NULL)

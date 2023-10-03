@@ -335,7 +335,7 @@ static int src_default_config_arcrw(struct src *src)
 	return 0;
 }
 
-static const struct src_rsc_ops src_rsc_ops = {
+static struct src_rsc_ops src_rsc_ops = {
 	.set_state		= src_set_state,
 	.set_bm			= src_set_bm,
 	.set_sf			= src_set_sf,
@@ -594,15 +594,16 @@ int src_mgr_destroy(struct src_mgr *src_mgr)
 
 /* SRCIMP resource manager operations */
 
-static void srcimp_master(struct rsc *rsc)
+static int srcimp_master(struct rsc *rsc)
 {
 	rsc->conj = 0;
-	rsc->idx = container_of(rsc, struct srcimp, rsc)->idx[0];
+	return rsc->idx = container_of(rsc, struct srcimp, rsc)->idx[0];
 }
 
-static void srcimp_next_conj(struct rsc *rsc)
+static int srcimp_next_conj(struct rsc *rsc)
 {
 	rsc->conj++;
+	return container_of(rsc, struct srcimp, rsc)->idx[rsc->conj];
 }
 
 static int srcimp_index(const struct rsc *rsc)
@@ -610,7 +611,7 @@ static int srcimp_index(const struct rsc *rsc)
 	return container_of(rsc, struct srcimp, rsc)->idx[rsc->conj];
 }
 
-static const struct rsc_ops srcimp_basic_rsc_ops = {
+static struct rsc_ops srcimp_basic_rsc_ops = {
 	.master		= srcimp_master,
 	.next_conj	= srcimp_next_conj,
 	.index		= srcimp_index,
@@ -661,7 +662,7 @@ static int srcimp_unmap(struct srcimp *srcimp)
 	return 0;
 }
 
-static const struct srcimp_rsc_ops srcimp_ops = {
+static struct srcimp_rsc_ops srcimp_ops = {
 	.map = srcimp_map,
 	.unmap = srcimp_unmap
 };
@@ -678,7 +679,7 @@ static int srcimp_rsc_init(struct srcimp *srcimp,
 		return err;
 
 	/* Reserve memory for imapper nodes */
-	srcimp->imappers = kcalloc(desc->msr, sizeof(struct imapper),
+	srcimp->imappers = kzalloc(sizeof(struct imapper)*desc->msr,
 				   GFP_KERNEL);
 	if (!srcimp->imappers) {
 		err = -ENOMEM;
@@ -701,8 +702,10 @@ error1:
 
 static int srcimp_rsc_uninit(struct srcimp *srcimp)
 {
-	kfree(srcimp->imappers);
-	srcimp->imappers = NULL;
+	if (NULL != srcimp->imappers) {
+		kfree(srcimp->imappers);
+		srcimp->imappers = NULL;
+	}
 	srcimp->ops = NULL;
 	srcimp->mgr = NULL;
 	rsc_uninit(&srcimp->rsc);

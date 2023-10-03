@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * PCI Backend Operations - respond to PCI requests from Frontend
  *
@@ -7,7 +6,7 @@
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/moduleparam.h>
+#include <linux/module.h>
 #include <linux/wait.h>
 #include <linux/bitops.h>
 #include <xen/events.h>
@@ -71,13 +70,6 @@ static void xen_pcibk_control_isr(struct pci_dev *dev, int reset)
 		enable ? "enable" : "disable");
 
 	if (enable) {
-		/*
-		 * The MSI or MSI-X should not have an IRQ handler. Otherwise
-		 * if the guest terminates we BUG_ON in free_msi_irqs.
-		 */
-		if (dev->msi_enabled || dev->msix_enabled)
-			goto out;
-
 		rc = request_irq(dev_data->irq,
 				xen_pcibk_guest_interrupt, IRQF_SHARED,
 				dev_data->irq_name, dev);
@@ -127,6 +119,8 @@ void xen_pcibk_reset_device(struct pci_dev *dev)
 		if (pci_is_enabled(dev))
 			pci_disable_device(dev);
 
+		pci_write_config_word(dev, PCI_COMMAND, 0);
+
 		dev->is_busmaster = 0;
 	} else {
 		pci_read_config_word(dev, PCI_COMMAND, &cmd);
@@ -150,12 +144,7 @@ int xen_pcibk_enable_msi(struct xen_pcibk_device *pdev,
 	if (unlikely(verbose_request))
 		printk(KERN_DEBUG DRV_NAME ": %s: enable MSI\n", pci_name(dev));
 
-	if (dev->msi_enabled)
-		status = -EALREADY;
-	else if (dev->msix_enabled)
-		status = -ENXIO;
-	else
-		status = pci_enable_msi(dev);
+	status = pci_enable_msi(dev);
 
 	if (status) {
 		pr_warn_ratelimited("%s: error enabling MSI for guest %u: err %d\n",
@@ -184,23 +173,20 @@ static
 int xen_pcibk_disable_msi(struct xen_pcibk_device *pdev,
 			  struct pci_dev *dev, struct xen_pci_op *op)
 {
+	struct xen_pcibk_dev_data *dev_data;
+
 	if (unlikely(verbose_request))
 		printk(KERN_DEBUG DRV_NAME ": %s: disable MSI\n",
 		       pci_name(dev));
+	pci_disable_msi(dev);
 
-	if (dev->msi_enabled) {
-		struct xen_pcibk_dev_data *dev_data;
-
-		pci_disable_msi(dev);
-
-		dev_data = pci_get_drvdata(dev);
-		if (dev_data)
-			dev_data->ack_intr = 1;
-	}
 	op->value = dev->irq ? xen_pirq_from_irq(dev->irq) : 0;
 	if (unlikely(verbose_request))
 		printk(KERN_DEBUG DRV_NAME ": %s: MSI: %d\n", pci_name(dev),
 			op->value);
+	dev_data = pci_get_drvdata(dev);
+	if (dev_data)
+		dev_data->ack_intr = 1;
 	return 0;
 }
 
@@ -211,28 +197,14 @@ int xen_pcibk_enable_msix(struct xen_pcibk_device *pdev,
 	struct xen_pcibk_dev_data *dev_data;
 	int i, result;
 	struct msix_entry *entries;
-	u16 cmd;
 
 	if (unlikely(verbose_request))
 		printk(KERN_DEBUG DRV_NAME ": %s: enable MSI-X\n",
 		       pci_name(dev));
-
 	if (op->value > SH_INFO_MAX_VEC)
 		return -EINVAL;
 
-	if (dev->msix_enabled)
-		return -EALREADY;
-
-	/*
-	 * PCI_COMMAND_MEMORY must be enabled, otherwise we may not be able
-	 * to access the BARs where the MSI-X entries reside.
-	 * But VF devices are unique in which the PF needs to be checked.
-	 */
-	pci_read_config_word(pci_physfn(dev), PCI_COMMAND, &cmd);
-	if (dev->msi_enabled || !(cmd & PCI_COMMAND_MEMORY))
-		return -ENXIO;
-
-	entries = kmalloc_array(op->value, sizeof(*entries), GFP_KERNEL);
+	entries = kmalloc(op->value * sizeof(*entries), GFP_KERNEL);
 	if (entries == NULL)
 		return -ENOMEM;
 
@@ -273,65 +245,46 @@ static
 int xen_pcibk_disable_msix(struct xen_pcibk_device *pdev,
 			   struct pci_dev *dev, struct xen_pci_op *op)
 {
+	struct xen_pcibk_dev_data *dev_data;
 	if (unlikely(verbose_request))
 		printk(KERN_DEBUG DRV_NAME ": %s: disable MSI-X\n",
 			pci_name(dev));
+	pci_disable_msix(dev);
 
-	if (dev->msix_enabled) {
-		struct xen_pcibk_dev_data *dev_data;
-
-		pci_disable_msix(dev);
-
-		dev_data = pci_get_drvdata(dev);
-		if (dev_data)
-			dev_data->ack_intr = 1;
-	}
 	/*
 	 * SR-IOV devices (which don't have any legacy IRQ) have
 	 * an undefined IRQ value of zero.
 	 */
 	op->value = dev->irq ? xen_pirq_from_irq(dev->irq) : 0;
 	if (unlikely(verbose_request))
-		printk(KERN_DEBUG DRV_NAME ": %s: MSI-X: %d\n",
-		       pci_name(dev), op->value);
+		printk(KERN_DEBUG DRV_NAME ": %s: MSI-X: %d\n", pci_name(dev),
+			op->value);
+	dev_data = pci_get_drvdata(dev);
+	if (dev_data)
+		dev_data->ack_intr = 1;
 	return 0;
 }
 #endif
-
-static inline bool xen_pcibk_test_op_pending(struct xen_pcibk_device *pdev)
-{
-	return test_bit(_XEN_PCIF_active,
-			(unsigned long *)&pdev->sh_info->flags) &&
-	       !test_and_set_bit(_PDEVF_op_active, &pdev->flags);
-}
-
 /*
 * Now the same evtchn is used for both pcifront conf_read_write request
 * as well as pcie aer front end ack. We use a new work_queue to schedule
 * xen_pcibk conf_read_write service for avoiding confict with aer_core
 * do_recovery job which also use the system default work_queue
 */
-static void xen_pcibk_test_and_schedule_op(struct xen_pcibk_device *pdev)
+void xen_pcibk_test_and_schedule_op(struct xen_pcibk_device *pdev)
 {
-	bool eoi = true;
-
 	/* Check that frontend is requesting an operation and that we are not
 	 * already processing a request */
-	if (xen_pcibk_test_op_pending(pdev)) {
-		schedule_work(&pdev->op_work);
-		eoi = false;
+	if (test_bit(_XEN_PCIF_active, (unsigned long *)&pdev->sh_info->flags)
+	    && !test_and_set_bit(_PDEVF_op_active, &pdev->flags)) {
+		queue_work(xen_pcibk_wq, &pdev->op_work);
 	}
 	/*_XEN_PCIB_active should have been cleared by pcifront. And also make
 	sure xen_pcibk is waiting for ack by checking _PCIB_op_pending*/
 	if (!test_bit(_XEN_PCIB_active, (unsigned long *)&pdev->sh_info->flags)
 	    && test_bit(_PCIB_op_pending, &pdev->flags)) {
 		wake_up(&xen_pcibk_aer_wait_queue);
-		eoi = false;
 	}
-
-	/* EOI if there was nothing to do. */
-	if (eoi)
-		xen_pcibk_lateeoi(pdev, XEN_EOI_FLAG_SPURIOUS);
 }
 
 /* Performing the configuration space reads/writes must not be done in atomic
@@ -339,18 +292,15 @@ static void xen_pcibk_test_and_schedule_op(struct xen_pcibk_device *pdev)
  * use of semaphores). This function is intended to be called from a work
  * queue in process context taking a struct xen_pcibk_device as a parameter */
 
-static void xen_pcibk_do_one_op(struct xen_pcibk_device *pdev)
+void xen_pcibk_do_op(struct work_struct *data)
 {
+	struct xen_pcibk_device *pdev =
+		container_of(data, struct xen_pcibk_device, op_work);
 	struct pci_dev *dev;
 	struct xen_pcibk_dev_data *dev_data = NULL;
-	struct xen_pci_op *op = &pdev->op;
+	struct xen_pci_op *op = &pdev->sh_info->op;
 	int test_intx = 0;
-#ifdef CONFIG_PCI_MSI
-	unsigned int nr = 0;
-#endif
 
-	*op = pdev->sh_info->op;
-	barrier();
 	dev = xen_pcibk_get_pci_dev(pdev, op->domain, op->bus, op->devfn);
 
 	if (dev == NULL)
@@ -376,7 +326,6 @@ static void xen_pcibk_do_one_op(struct xen_pcibk_device *pdev)
 			op->err = xen_pcibk_disable_msi(pdev, dev, op);
 			break;
 		case XEN_PCI_OP_enable_msix:
-			nr = op->value;
 			op->err = xen_pcibk_enable_msix(pdev, dev, op);
 			break;
 		case XEN_PCI_OP_disable_msix:
@@ -393,17 +342,6 @@ static void xen_pcibk_do_one_op(struct xen_pcibk_device *pdev)
 		if ((dev_data->enable_intx != test_intx))
 			xen_pcibk_control_isr(dev, 0 /* no reset */);
 	}
-	pdev->sh_info->op.err = op->err;
-	pdev->sh_info->op.value = op->value;
-#ifdef CONFIG_PCI_MSI
-	if (op->cmd == XEN_PCI_OP_enable_msix && op->err == 0) {
-		unsigned int i;
-
-		for (i = 0; i < nr; i++)
-			pdev->sh_info->op.msix_entries[i].vector =
-				op->msix_entries[i].vector;
-	}
-#endif
 	/* Tell the driver domain that we're done. */
 	wmb();
 	clear_bit(_XEN_PCIF_active, (unsigned long *)&pdev->sh_info->flags);
@@ -413,31 +351,16 @@ static void xen_pcibk_do_one_op(struct xen_pcibk_device *pdev)
 	smp_mb__before_atomic(); /* /after/ clearing PCIF_active */
 	clear_bit(_PDEVF_op_active, &pdev->flags);
 	smp_mb__after_atomic(); /* /before/ final check for work */
-}
 
-void xen_pcibk_do_op(struct work_struct *data)
-{
-	struct xen_pcibk_device *pdev =
-		container_of(data, struct xen_pcibk_device, op_work);
-
-	do {
-		xen_pcibk_do_one_op(pdev);
-	} while (xen_pcibk_test_op_pending(pdev));
-
-	xen_pcibk_lateeoi(pdev, 0);
+	/* Check to see if the driver domain tried to start another request in
+	 * between clearing _XEN_PCIF_active and clearing _PDEVF_op_active.
+	*/
+	xen_pcibk_test_and_schedule_op(pdev);
 }
 
 irqreturn_t xen_pcibk_handle_event(int irq, void *dev_id)
 {
 	struct xen_pcibk_device *pdev = dev_id;
-	bool eoi;
-
-	/* IRQs might come in before pdev->evtchn_irq is written. */
-	if (unlikely(pdev->evtchn_irq != irq))
-		pdev->evtchn_irq = irq;
-
-	eoi = test_and_set_bit(_EOI_pending, &pdev->flags);
-	WARN(eoi, "IRQ while EOI pending\n");
 
 	xen_pcibk_test_and_schedule_op(pdev);
 

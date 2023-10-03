@@ -27,7 +27,7 @@
 #include <linux/string.h>
 #include <linux/slab.h>
 
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 #include "tda10086.h"
 
 #define SACLK 96000000
@@ -185,8 +185,7 @@ static void tda10086_diseqc_wait(struct tda10086_state *state)
 	}
 }
 
-static int tda10086_set_tone(struct dvb_frontend *fe,
-			     enum fe_sec_tone_mode tone)
+static int tda10086_set_tone (struct dvb_frontend* fe, fe_sec_tone_mode_t tone)
 {
 	struct tda10086_state* state = fe->demodulator_priv;
 	u8 t22k_off = 0x80;
@@ -239,8 +238,7 @@ static int tda10086_send_master_cmd (struct dvb_frontend* fe,
 	return 0;
 }
 
-static int tda10086_send_burst(struct dvb_frontend *fe,
-			       enum fe_sec_mini_cmd minicmd)
+static int tda10086_send_burst (struct dvb_frontend* fe, fe_sec_mini_cmd_t minicmd)
 {
 	struct tda10086_state* state = fe->demodulator_priv;
 	u8 oldval = tda10086_read_byte(state, 0x36);
@@ -459,9 +457,9 @@ static int tda10086_set_frontend(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int tda10086_get_frontend(struct dvb_frontend *fe,
-				 struct dtv_frontend_properties *fe_params)
+static int tda10086_get_frontend(struct dvb_frontend *fe)
 {
+	struct dtv_frontend_properties *fe_params = &fe->dtv_property_cache;
 	struct tda10086_state* state = fe->demodulator_priv;
 	u8 val;
 	int tmp;
@@ -474,8 +472,8 @@ static int tda10086_get_frontend(struct dvb_frontend *fe,
 		return -EINVAL;
 
 	/* calculate the updated frequency (note: we convert from Hz->kHz) */
-	tmp64 = ((u64)tda10086_read_byte(state, 0x52)
-		| (tda10086_read_byte(state, 0x51) << 8));
+	tmp64 = tda10086_read_byte(state, 0x52);
+	tmp64 |= (tda10086_read_byte(state, 0x51) << 8);
 	if (tmp64 & 0x8000)
 		tmp64 |= 0xffffffffffff0000ULL;
 	tmp64 = (tmp64 * (SACLK/1000ULL));
@@ -553,8 +551,7 @@ static int tda10086_get_frontend(struct dvb_frontend *fe,
 	return 0;
 }
 
-static int tda10086_read_status(struct dvb_frontend *fe,
-				enum fe_status *fe_status)
+static int tda10086_read_status(struct dvb_frontend* fe, fe_status_t *fe_status)
 {
 	struct tda10086_state* state = fe->demodulator_priv;
 	u8 val;
@@ -706,13 +703,13 @@ static void tda10086_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static const struct dvb_frontend_ops tda10086_ops = {
+static struct dvb_frontend_ops tda10086_ops = {
 	.delsys = { SYS_DVBS },
 	.info = {
 		.name     = "Philips TDA10086 DVB-S",
-		.frequency_min_hz      =  950 * MHz,
-		.frequency_max_hz      = 2150 * MHz,
-		.frequency_stepsize_hz =  125 * kHz,
+		.frequency_min    = 950000,
+		.frequency_max    = 2150000,
+		.frequency_stepsize = 125,     /* kHz for QPSK frontends */
 		.symbol_rate_min  = 1000000,
 		.symbol_rate_max  = 45000000,
 		.caps = FE_CAN_INVERSION_AUTO |
@@ -777,4 +774,4 @@ MODULE_DESCRIPTION("Philips TDA10086 DVB-S Demodulator");
 MODULE_AUTHOR("Andrew de Quincey");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL_GPL(tda10086_attach);
+EXPORT_SYMBOL(tda10086_attach);

@@ -1681,7 +1681,7 @@ static irqreturn_t snd_m3_interrupt(int irq, void *dev_id)
 /*
  */
 
-static const struct snd_pcm_hardware snd_m3_playback =
+static struct snd_pcm_hardware snd_m3_playback =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP |
 				 SNDRV_PCM_INFO_INTERLEAVED |
@@ -1702,7 +1702,7 @@ static const struct snd_pcm_hardware snd_m3_playback =
 	.periods_max =		1024,
 };
 
-static const struct snd_pcm_hardware snd_m3_capture =
+static struct snd_pcm_hardware snd_m3_capture =
 {
 	.info =			(SNDRV_PCM_INFO_MMAP |
 				 SNDRV_PCM_INFO_INTERLEAVED |
@@ -1834,7 +1834,7 @@ snd_m3_capture_close(struct snd_pcm_substream *subs)
  * create pcm instance
  */
 
-static const struct snd_pcm_ops snd_m3_playback_ops = {
+static struct snd_pcm_ops snd_m3_playback_ops = {
 	.open =		snd_m3_playback_open,
 	.close =	snd_m3_playback_close,
 	.ioctl =	snd_pcm_lib_ioctl,
@@ -1845,7 +1845,7 @@ static const struct snd_pcm_ops snd_m3_playback_ops = {
 	.pointer =	snd_m3_pcm_pointer,
 };
 
-static const struct snd_pcm_ops snd_m3_capture_ops = {
+static struct snd_pcm_ops snd_m3_capture_ops = {
 	.open =		snd_m3_capture_open,
 	.close =	snd_m3_capture_close,
 	.ioctl =	snd_pcm_lib_ioctl,
@@ -1929,32 +1929,15 @@ snd_m3_ac97_write(struct snd_ac97 *ac97, unsigned short reg, unsigned short val)
 		return;
 	snd_m3_outw(chip, val, CODEC_DATA);
 	snd_m3_outb(chip, reg & 0x7f, CODEC_COMMAND);
-	/*
-	 * Workaround for buggy ES1988 integrated AC'97 codec. It remains silent
-	 * until the MASTER volume or mute is touched (alsactl restore does not
-	 * work).
-	 */
-	if (ac97->id == 0x45838308 && reg == AC97_MASTER) {
-		snd_m3_ac97_wait(chip);
-		snd_m3_outw(chip, val, CODEC_DATA);
-		snd_m3_outb(chip, reg & 0x7f, CODEC_COMMAND);
-	}
 }
 
 
-static void snd_m3_remote_codec_config(struct snd_m3 *chip, int isremote)
+static void snd_m3_remote_codec_config(int io, int isremote)
 {
-	int io = chip->iobase;
-	u16 tmp;
-
 	isremote = isremote ? 1 : 0;
 
-	tmp = inw(io + RING_BUS_CTRL_B) & ~SECOND_CODEC_ID_MASK;
-	/* enable dock on Dell Latitude C810 */
-	if (chip->pci->subsystem_vendor == 0x1028 &&
-	    chip->pci->subsystem_device == 0x00e5)
-		tmp |= M3I_DOCK_ENABLE;
-	outw(tmp | isremote, io + RING_BUS_CTRL_B);
+	outw((inw(io + RING_BUS_CTRL_B) & ~SECOND_CODEC_ID_MASK) | isremote,
+	     io + RING_BUS_CTRL_B);
 	outw((inw(io + SDO_OUT_DEST_CTRL) & ~COMMAND_ADDR_OUT) | isremote,
 	     io + SDO_OUT_DEST_CTRL);
 	outw((inw(io + SDO_IN_DEST_CTRL) & ~STATUS_ADDR_IN) | isremote,
@@ -2006,7 +1989,7 @@ static void snd_m3_ac97_reset(struct snd_m3 *chip)
 		if (!chip->irda_workaround)
 			dir |= 0x10; /* assuming pci bus master? */
 
-		snd_m3_remote_codec_config(chip, 0);
+		snd_m3_remote_codec_config(io, 0);
 
 		outw(IO_SRAM_ENABLE, io + RING_BUS_CTRL_A);
 		udelay(20);
@@ -2103,7 +2086,7 @@ static const u16 minisrc_lpf[MINISRC_LPF_LEN] = {
 static void snd_m3_assp_init(struct snd_m3 *chip)
 {
 	unsigned int i;
-	const __le16 *data;
+	const u16 *data;
 
 	/* zero kernel data */
 	for (i = 0; i < (REV_B_DATA_MEMORY_UNIT_LENGTH * NUM_UNITS_KERNEL_DATA) / 2; i++)
@@ -2121,7 +2104,7 @@ static void snd_m3_assp_init(struct snd_m3 *chip)
 			  KDATA_DMA_XFER0);
 
 	/* write kernel into code memory.. */
-	data = (const __le16 *)chip->assp_kernel_image->data;
+	data = (const u16 *)chip->assp_kernel_image->data;
 	for (i = 0 ; i * 2 < chip->assp_kernel_image->size; i++) {
 		snd_m3_assp_write(chip, MEMTYPE_INTERNAL_CODE, 
 				  REV_B_CODE_MEMORY_BEGIN + i,
@@ -2134,7 +2117,7 @@ static void snd_m3_assp_init(struct snd_m3 *chip)
 	 * drop it there.  It seems that the minisrc doesn't
 	 * need vectors, so we won't bother with them..
 	 */
-	data = (const __le16 *)chip->assp_minisrc_image->data;
+	data = (const u16 *)chip->assp_minisrc_image->data;
 	for (i = 0; i * 2 < chip->assp_minisrc_image->size; i++) {
 		snd_m3_assp_write(chip, MEMTYPE_INTERNAL_CODE, 
 				  0x400 + i, le16_to_cpu(data[i]));
@@ -2554,8 +2537,8 @@ snd_m3_create(struct snd_card *card, struct pci_dev *pci,
 		return -EIO;
 
 	/* check, if we can restrict PCI DMA transfers to 28 bits */
-	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(28)) < 0 ||
-	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(28)) < 0) {
+	if (pci_set_dma_mask(pci, DMA_BIT_MASK(28)) < 0 ||
+	    pci_set_consistent_dma_mask(pci, DMA_BIT_MASK(28)) < 0) {
 		dev_err(card->dev,
 			"architecture does not support 28bit PCI busmaster DMA\n");
 		pci_disable_device(pci);
@@ -2622,18 +2605,22 @@ snd_m3_create(struct snd_card *card, struct pci_dev *pci,
 
 	err = request_firmware(&chip->assp_kernel_image,
 			       "ess/maestro3_assp_kernel.fw", &pci->dev);
-	if (err < 0)
-		goto free_chip;
+	if (err < 0) {
+		snd_m3_free(chip);
+		return err;
+	}
 
 	err = request_firmware(&chip->assp_minisrc_image,
 			       "ess/maestro3_assp_minisrc.fw", &pci->dev);
-	if (err < 0)
-		goto free_chip;
+	if (err < 0) {
+		snd_m3_free(chip);
+		return err;
+	}
 
-	err = pci_request_regions(pci, card->driver);
-	if (err < 0)
-		goto free_chip;
-
+	if ((err = pci_request_regions(pci, card->driver)) < 0) {
+		snd_m3_free(chip);
+		return err;
+	}
 	chip->iobase = pci_resource_start(pci, 0);
 	
 	/* just to be sure */
@@ -2651,23 +2638,21 @@ snd_m3_create(struct snd_card *card, struct pci_dev *pci,
 	if (request_irq(pci->irq, snd_m3_interrupt, IRQF_SHARED,
 			KBUILD_MODNAME, chip)) {
 		dev_err(card->dev, "unable to grab IRQ %d\n", pci->irq);
-		err = -ENOMEM;
-		goto free_chip;
+		snd_m3_free(chip);
+		return -ENOMEM;
 	}
 	chip->irq = pci->irq;
 
 #ifdef CONFIG_PM_SLEEP
-	chip->suspend_mem =
-		vmalloc(array_size(sizeof(u16),
-				   REV_B_CODE_MEMORY_LENGTH +
-					REV_B_DATA_MEMORY_LENGTH));
+	chip->suspend_mem = vmalloc(sizeof(u16) * (REV_B_CODE_MEMORY_LENGTH + REV_B_DATA_MEMORY_LENGTH));
 	if (chip->suspend_mem == NULL)
 		dev_warn(card->dev, "can't allocate apm buffer\n");
 #endif
 
-	err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops);
-	if (err < 0)
-		goto free_chip;
+	if ((err = snd_device_new(card, SNDRV_DEV_LOWLEVEL, chip, &ops)) < 0) {
+		snd_m3_free(chip);
+		return err;
+	}
 
 	if ((err = snd_m3_mixer(chip)) < 0)
 		return err;
@@ -2697,10 +2682,6 @@ snd_m3_create(struct snd_card *card, struct pci_dev *pci,
 	*chip_ret = chip;
 
 	return 0; 
-
-free_chip:
-	snd_m3_free(chip);
-	return err;
 }
 
 /*
@@ -2743,19 +2724,23 @@ snd_m3_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 		break;
 	}
 
-	err = snd_m3_create(card, pci, external_amp[dev], amp_gpio[dev], &chip);
-	if (err < 0)
-		goto free_card;
-
+	if ((err = snd_m3_create(card, pci,
+				 external_amp[dev],
+				 amp_gpio[dev],
+				 &chip)) < 0) {
+		snd_card_free(card);
+		return err;
+	}
 	card->private_data = chip;
 
 	sprintf(card->shortname, "ESS %s PCI", card->driver);
 	sprintf(card->longname, "%s at 0x%lx, irq %d",
 		card->shortname, chip->iobase, chip->irq);
 
-	err = snd_card_register(card);
-	if (err < 0)
-		goto free_card;
+	if ((err = snd_card_register(card)) < 0) {
+		snd_card_free(card);
+		return err;
+	}
 
 #if 0 /* TODO: not supported yet */
 	/* TODO enable MIDI IRQ and I/O */
@@ -2770,10 +2755,6 @@ snd_m3_probe(struct pci_dev *pci, const struct pci_device_id *pci_id)
 	pci_set_drvdata(pci, card);
 	dev++;
 	return 0;
-
-free_card:
-	snd_card_free(card);
-	return err;
 }
 
 static void snd_m3_remove(struct pci_dev *pci)

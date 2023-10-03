@@ -15,12 +15,12 @@
 #include <linux/clk.h>
 #include <linux/delay.h>
 #include <linux/io.h>
-#include <linux/ktime.h>
+#include <linux/jiffies.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/platform_device.h>
 
-#include <linux/w1.h>
+#include "../w1.h"
+#include "../w1_int.h"
 
 /*
  * MXC W1 Register offsets
@@ -48,12 +48,12 @@ struct mxc_w1_device {
 static u8 mxc_w1_ds2_reset_bus(void *data)
 {
 	struct mxc_w1_device *dev = data;
-	ktime_t timeout;
+	unsigned long timeout;
 
 	writeb(MXC_W1_CONTROL_RPP, dev->regs + MXC_W1_CONTROL);
 
 	/* Wait for reset sequence 511+512us, use 1500us for sure */
-	timeout = ktime_add_us(ktime_get(), 1500);
+	timeout = jiffies + usecs_to_jiffies(1500);
 
 	udelay(511 + 512);
 
@@ -63,7 +63,7 @@ static u8 mxc_w1_ds2_reset_bus(void *data)
 		/* PST bit is valid after the RPP bit is self-cleared */
 		if (!(ctrl & MXC_W1_CONTROL_RPP))
 			return !(ctrl & MXC_W1_CONTROL_PST);
-	} while (ktime_before(ktime_get(), timeout));
+	} while (time_is_after_jiffies(timeout));
 
 	return 1;
 }
@@ -76,12 +76,12 @@ static u8 mxc_w1_ds2_reset_bus(void *data)
 static u8 mxc_w1_ds2_touch_bit(void *data, u8 bit)
 {
 	struct mxc_w1_device *dev = data;
-	ktime_t timeout;
+	unsigned long timeout;
 
 	writeb(MXC_W1_CONTROL_WR(bit), dev->regs + MXC_W1_CONTROL);
 
 	/* Wait for read/write bit (60us, Max 120us), use 200us for sure */
-	timeout = ktime_add_us(ktime_get(), 200);
+	timeout = jiffies + usecs_to_jiffies(200);
 
 	udelay(60);
 
@@ -91,7 +91,7 @@ static u8 mxc_w1_ds2_touch_bit(void *data, u8 bit)
 		/* RDST bit is valid after the WR1/RD bit is self-cleared */
 		if (!(ctrl & MXC_W1_CONTROL_WR(bit)))
 			return !!(ctrl & MXC_W1_CONTROL_RDST);
-	} while (ktime_before(ktime_get(), timeout));
+	} while (time_is_after_jiffies(timeout));
 
 	return 0;
 }
@@ -113,10 +113,6 @@ static int mxc_w1_probe(struct platform_device *pdev)
 	if (IS_ERR(mdev->clk))
 		return PTR_ERR(mdev->clk);
 
-	err = clk_prepare_enable(mdev->clk);
-	if (err)
-		return err;
-
 	clkrate = clk_get_rate(mdev->clk);
 	if (clkrate < 10000000)
 		dev_warn(&pdev->dev,
@@ -130,10 +126,12 @@ static int mxc_w1_probe(struct platform_device *pdev)
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	mdev->regs = devm_ioremap_resource(&pdev->dev, res);
-	if (IS_ERR(mdev->regs)) {
-		err = PTR_ERR(mdev->regs);
-		goto out_disable_clk;
-	}
+	if (IS_ERR(mdev->regs))
+		return PTR_ERR(mdev->regs);
+
+	err = clk_prepare_enable(mdev->clk);
+	if (err)
+		return err;
 
 	/* Software reset 1-Wire module */
 	writeb(MXC_W1_RESET_RST, mdev->regs + MXC_W1_RESET);
@@ -149,12 +147,8 @@ static int mxc_w1_probe(struct platform_device *pdev)
 
 	err = w1_add_master_device(&mdev->bus_master);
 	if (err)
-		goto out_disable_clk;
+		clk_disable_unprepare(mdev->clk);
 
-	return 0;
-
-out_disable_clk:
-	clk_disable_unprepare(mdev->clk);
 	return err;
 }
 
@@ -172,7 +166,7 @@ static int mxc_w1_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id mxc_w1_dt_ids[] = {
+static struct of_device_id mxc_w1_dt_ids[] = {
 	{ .compatible = "fsl,imx21-owire" },
 	{ /* sentinel */ }
 };

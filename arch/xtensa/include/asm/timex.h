@@ -12,16 +12,19 @@
 #include <asm/processor.h>
 #include <linux/stringify.h>
 
+#define _INTLEVEL(x)	XCHAL_INT ## x ## _LEVEL
+#define INTLEVEL(x)	_INTLEVEL(x)
+
 #if XCHAL_NUM_TIMERS > 0 && \
-	XTENSA_INT_LEVEL(XCHAL_TIMER0_INTERRUPT) <= XCHAL_EXCM_LEVEL
+	INTLEVEL(XCHAL_TIMER0_INTERRUPT) <= XCHAL_EXCM_LEVEL
 # define LINUX_TIMER     0
 # define LINUX_TIMER_INT XCHAL_TIMER0_INTERRUPT
 #elif XCHAL_NUM_TIMERS > 1 && \
-	XTENSA_INT_LEVEL(XCHAL_TIMER1_INTERRUPT) <= XCHAL_EXCM_LEVEL
+	INTLEVEL(XCHAL_TIMER1_INTERRUPT) <= XCHAL_EXCM_LEVEL
 # define LINUX_TIMER     1
 # define LINUX_TIMER_INT XCHAL_TIMER1_INTERRUPT
 #elif XCHAL_NUM_TIMERS > 2 && \
-	XTENSA_INT_LEVEL(XCHAL_TIMER2_INTERRUPT) <= XCHAL_EXCM_LEVEL
+	INTLEVEL(XCHAL_TIMER2_INTERRUPT) <= XCHAL_EXCM_LEVEL
 # define LINUX_TIMER     2
 # define LINUX_TIMER_INT XCHAL_TIMER2_INTERRUPT
 #else
@@ -29,6 +32,10 @@
 #endif
 
 extern unsigned long ccount_freq;
+
+typedef unsigned long long cycles_t;
+
+#define get_cycles()	(0)
 
 void local_timer_setup(unsigned cpu);
 
@@ -64,7 +71,5 @@ static inline void set_linux_timer (unsigned long ccompare)
 {
 	WSR_CCOMPARE(LINUX_TIMER, ccompare);
 }
-
-#include <asm-generic/timex.h>
 
 #endif	/* _XTENSA_TIMEX_H */

@@ -1,5 +1,12 @@
-CFLAGS := -static -ffreestanding -nostartfiles -s
+CC = $(CROSS_COMPILE)gcc
 
-TEST_GEN_PROGS := get_size
+all: get_size
 
-include ../lib.mk
+get_size: get_size.c
+	$(CC) -static -ffreestanding -nostartfiles -s $< -o $@
+
+run_tests: all
+	./get_size
+
+clean:
+	$(RM) get_size

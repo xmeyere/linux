@@ -53,68 +53,20 @@
 #include <linux/types.h>
 #include <linux/uaccess.h>
 #include <asm/io.h>
+#ifdef CONFIG_MTRR
+#include <asm/mtrr.h>
+#endif
 
 #include "sis.h"
 #include "sis_main.h"
-#include "init301.h"
 
 #if !defined(CONFIG_FB_SIS_300) && !defined(CONFIG_FB_SIS_315)
 #warning Neither CONFIG_FB_SIS_300 nor CONFIG_FB_SIS_315 is set
 #warning sisfb will not work!
 #endif
 
-/* ---------------------- Prototypes ------------------------- */
-
-/* Interface used by the world */
-#ifndef MODULE
-static int sisfb_setup(char *options);
-#endif
-
-/* Interface to the low level console driver */
-static int sisfb_init(void);
-
-/* fbdev routines */
-static int	sisfb_get_fix(struct fb_fix_screeninfo *fix, int con,
-				struct fb_info *info);
-
-static int	sisfb_ioctl(struct fb_info *info, unsigned int cmd,
-			    unsigned long arg);
-static int	sisfb_set_par(struct fb_info *info);
-static int	sisfb_blank(int blank,
-				struct fb_info *info);
-
 static void sisfb_handle_command(struct sis_video_info *ivideo,
 				 struct sisfb_cmd *sisfb_command);
-
-static void	sisfb_search_mode(char *name, bool quiet);
-static int	sisfb_validate_mode(struct sis_video_info *ivideo, int modeindex, u32 vbflags);
-static u8	sisfb_search_refresh_rate(struct sis_video_info *ivideo, unsigned int rate,
-				int index);
-static int	sisfb_setcolreg(unsigned regno, unsigned red, unsigned green,
-				unsigned blue, unsigned transp,
-				struct fb_info *fb_info);
-static int	sisfb_do_set_var(struct fb_var_screeninfo *var, int isactive,
-				struct fb_info *info);
-static void	sisfb_pre_setmode(struct sis_video_info *ivideo);
-static void	sisfb_post_setmode(struct sis_video_info *ivideo);
-static bool	sisfb_CheckVBRetrace(struct sis_video_info *ivideo);
-static bool	sisfbcheckvretracecrt2(struct sis_video_info *ivideo);
-static bool	sisfbcheckvretracecrt1(struct sis_video_info *ivideo);
-static bool	sisfb_bridgeisslave(struct sis_video_info *ivideo);
-static void	sisfb_detect_VB_connect(struct sis_video_info *ivideo);
-static void	sisfb_get_VB_type(struct sis_video_info *ivideo);
-static void	sisfb_set_TVxposoffset(struct sis_video_info *ivideo, int val);
-static void	sisfb_set_TVyposoffset(struct sis_video_info *ivideo, int val);
-
-/* Internal heap routines */
-static int		sisfb_heap_init(struct sis_video_info *ivideo);
-static struct SIS_OH *	sisfb_poh_new_node(struct SIS_HEAP *memheap);
-static struct SIS_OH *	sisfb_poh_allocate(struct SIS_HEAP *memheap, u32 size);
-static void		sisfb_delete_node(struct SIS_OH *poh);
-static void		sisfb_insert_node(struct SIS_OH *pohList, struct SIS_OH *poh);
-static struct SIS_OH *	sisfb_poh_free(struct SIS_HEAP *memheap, u32 base);
-static void		sisfb_free_node(struct SIS_HEAP *memheap, struct SIS_OH *poh);
-
 
 /* ------------------ Internal helper routines ----------------- */
 
@@ -1753,7 +1705,6 @@ static int	sisfb_ioctl(struct fb_info *info, unsigned int cmd,
 		if(ivideo->warncount++ < 10)
 			printk(KERN_INFO
 				"sisfb: Deprecated ioctl call received - update your application!\n");
-		/* fall through */
 	   case SISFB_GET_INFO:  /* For communication with X driver */
 		ivideo->sisfb_infoblock.sisfb_id         = SISFB_ID;
 		ivideo->sisfb_infoblock.sisfb_version    = VER_MAJOR;
@@ -1807,7 +1758,6 @@ static int	sisfb_ioctl(struct fb_info *info, unsigned int cmd,
 		if(ivideo->warncount++ < 10)
 			printk(KERN_INFO
 				"sisfb: Deprecated ioctl call received - update your application!\n");
-		/* fall through */
 	   case SISFB_GET_VBRSTATUS:
 		if(sisfb_CheckVBRetrace(ivideo))
 			return put_user((u32)1, argp);
@@ -1818,7 +1768,6 @@ static int	sisfb_ioctl(struct fb_info *info, unsigned int cmd,
 		if(ivideo->warncount++ < 10)
 			printk(KERN_INFO
 				"sisfb: Deprecated ioctl call received - update your application!\n");
-		/* fall through */
 	   case SISFB_GET_AUTOMAXIMIZE:
 		if(ivideo->sisfb_max)
 			return put_user((u32)1, argp);
@@ -1829,7 +1778,6 @@ static int	sisfb_ioctl(struct fb_info *info, unsigned int cmd,
 		if(ivideo->warncount++ < 10)
 			printk(KERN_INFO
 				"sisfb: Deprecated ioctl call received - update your application!\n");
-		/* fall through */
 	   case SISFB_SET_AUTOMAXIMIZE:
 		if(get_user(gpu32, argp))
 			return -EFAULT;
@@ -4182,13 +4130,13 @@ static void sisfb_post_map_vram(struct sis_video_info *ivideo,
 	if (*mapsize < (min << 20))
 		return;
 
-	ivideo->video_vbase = ioremap_wc(ivideo->video_base, (*mapsize));
+	ivideo->video_vbase = ioremap(ivideo->video_base, (*mapsize));
 
 	if(!ivideo->video_vbase) {
 		printk(KERN_ERR
 			"sisfb: Unable to map maximum video RAM for size detection\n");
 		(*mapsize) >>= 1;
-		while((!(ivideo->video_vbase = ioremap_wc(ivideo->video_base, (*mapsize))))) {
+		while((!(ivideo->video_vbase = ioremap(ivideo->video_base, (*mapsize))))) {
 			(*mapsize) >>= 1;
 			if((*mapsize) < (min << 20))
 				break;
@@ -6238,7 +6186,7 @@ static int sisfb_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 		goto error_2;
 	}
 
-	ivideo->video_vbase = ioremap_wc(ivideo->video_base, ivideo->video_size);
+	ivideo->video_vbase = ioremap(ivideo->video_base, ivideo->video_size);
 	ivideo->SiS_Pr.VideoMemoryAddress = ivideo->video_vbase;
 	if(!ivideo->video_vbase) {
 		printk(KERN_ERR "sisfb: Fatal error: Unable to map framebuffer memory\n");
@@ -6305,6 +6253,8 @@ error_3:	vfree(ivideo->bios_abase);
 	/* Used for clearing the screen only, therefore respect our mem limit */
 	ivideo->SiS_Pr.VideoMemoryAddress += ivideo->video_offset;
 	ivideo->SiS_Pr.VideoMemorySize = ivideo->sisfb_mem;
+
+	ivideo->mtrr = -1;
 
 	ivideo->vbflags = 0;
 	ivideo->lcddefmodeidx = DEFAULT_LCDMODE;
@@ -6493,8 +6443,14 @@ error_3:	vfree(ivideo->bios_abase);
 
 		printk(KERN_DEBUG "sisfb: Initial vbflags 0x%x\n", (int)ivideo->vbflags);
 
-		ivideo->wc_cookie = arch_phys_wc_add(ivideo->video_base,
-						     ivideo->video_size);
+#ifdef CONFIG_MTRR
+		ivideo->mtrr = mtrr_add(ivideo->video_base, ivideo->video_size,
+					MTRR_TYPE_WRCOMB, 1);
+		if(ivideo->mtrr < 0) {
+			printk(KERN_DEBUG "sisfb: Failed to add MTRRs\n");
+		}
+#endif
+
 		if(register_framebuffer(sis_fb_info) < 0) {
 			printk(KERN_ERR "sisfb: Fatal error: Failed to register framebuffer\n");
 			ret = -EINVAL;
@@ -6551,7 +6507,11 @@ static void sisfb_remove(struct pci_dev *pdev)
 
 	pci_dev_put(ivideo->nbridge);
 
-	arch_phys_wc_del(ivideo->wc_cookie);
+#ifdef CONFIG_MTRR
+	/* Release MTRR region */
+	if(ivideo->mtrr >= 0)
+		mtrr_del(ivideo->mtrr, ivideo->video_base, ivideo->video_size);
+#endif
 
 	/* If device was disabled when starting, disable
 	 * it when quitting.

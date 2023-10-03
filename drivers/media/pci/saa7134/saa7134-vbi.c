@@ -14,15 +14,19 @@
  *  but WITHOUT ANY WARRANTY; without even the implied warranty of
  *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *  GNU General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License
+ *  along with this program; if not, write to the Free Software
+ *  Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
-
-#include "saa7134.h"
-#include "saa7134-reg.h"
 
 #include <linux/init.h>
 #include <linux/list.h>
 #include <linux/module.h>
 #include <linux/kernel.h>
+
+#include "saa7134-reg.h"
+#include "saa7134.h"
 
 /* ------------------------------------------------------------------ */
 
@@ -34,10 +38,8 @@ static unsigned int vbibufs = 4;
 module_param(vbibufs, int, 0444);
 MODULE_PARM_DESC(vbibufs,"number of vbi buffers, range 2-32");
 
-#define vbi_dbg(fmt, arg...) do { \
-	if (vbi_debug) \
-		printk(KERN_DEBUG pr_fmt("vbi: " fmt), ## arg); \
-	} while (0)
+#define dprintk(fmt, arg...)	if (vbi_debug) \
+	printk(KERN_DEBUG "%s/vbi: " fmt, dev->name , ## arg)
 
 /* ------------------------------------------------------------------ */
 
@@ -79,10 +81,10 @@ static int buffer_activate(struct saa7134_dev *dev,
 			   struct saa7134_buf *buf,
 			   struct saa7134_buf *next)
 {
-	struct saa7134_dmaqueue *dmaq = buf->vb2.vb2_buf.vb2_queue->drv_priv;
+	struct saa7134_dmaqueue *dmaq = buf->vb2.vb2_queue->drv_priv;
 	unsigned long control, base;
 
-	vbi_dbg("buffer_activate [%p]\n", buf);
+	dprintk("buffer_activate [%p]\n", buf);
 	buf->top_seen = 0;
 
 	task_init(dev, buf, TASK_A);
@@ -115,9 +117,8 @@ static int buffer_prepare(struct vb2_buffer *vb2)
 {
 	struct saa7134_dmaqueue *dmaq = vb2->vb2_queue->drv_priv;
 	struct saa7134_dev *dev = dmaq->dev;
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb2);
-	struct saa7134_buf *buf = container_of(vbuf, struct saa7134_buf, vb2);
-	struct sg_table *dma = vb2_dma_sg_plane_desc(vb2, 0);
+	struct saa7134_buf *buf = container_of(vb2, struct saa7134_buf, vb2);
+	struct sg_table *dma = vb2_dma_sg_plane_desc(&buf->vb2, 0);
 	unsigned int size;
 
 	if (dma->sgl->offset) {
@@ -134,9 +135,9 @@ static int buffer_prepare(struct vb2_buffer *vb2)
 				    saa7134_buffer_startpage(buf));
 }
 
-static int queue_setup(struct vb2_queue *q,
+static int queue_setup(struct vb2_queue *q, const struct v4l2_format *fmt,
 			   unsigned int *nbuffers, unsigned int *nplanes,
-			   unsigned int sizes[], struct device *alloc_devs[])
+			   unsigned int sizes[], void *alloc_ctxs[])
 {
 	struct saa7134_dmaqueue *dmaq = q->drv_priv;
 	struct saa7134_dev *dev = dmaq->dev;
@@ -151,21 +152,21 @@ static int queue_setup(struct vb2_queue *q,
 	*nbuffers = saa7134_buffer_count(size, *nbuffers);
 	*nplanes = 1;
 	sizes[0] = size;
+	alloc_ctxs[0] = dev->alloc_ctx;
 	return 0;
 }
 
 static int buffer_init(struct vb2_buffer *vb2)
 {
 	struct saa7134_dmaqueue *dmaq = vb2->vb2_queue->drv_priv;
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb2);
-	struct saa7134_buf *buf = container_of(vbuf, struct saa7134_buf, vb2);
+	struct saa7134_buf *buf = container_of(vb2, struct saa7134_buf, vb2);
 
 	dmaq->curr = NULL;
 	buf->activate = buffer_activate;
 	return 0;
 }
 
-const struct vb2_ops saa7134_vbi_qops = {
+struct vb2_ops saa7134_vbi_qops = {
 	.queue_setup	= queue_setup,
 	.buf_init	= buffer_init,
 	.buf_prepare	= buffer_prepare,
@@ -181,7 +182,9 @@ const struct vb2_ops saa7134_vbi_qops = {
 int saa7134_vbi_init1(struct saa7134_dev *dev)
 {
 	INIT_LIST_HEAD(&dev->vbi_q.queue);
-	timer_setup(&dev->vbi_q.timeout, saa7134_buffer_timeout, 0);
+	init_timer(&dev->vbi_q.timeout);
+	dev->vbi_q.timeout.function = saa7134_buffer_timeout;
+	dev->vbi_q.timeout.data     = (unsigned long)(&dev->vbi_q);
 	dev->vbi_q.dev              = dev;
 
 	if (vbibufs < 2)
@@ -194,7 +197,6 @@ int saa7134_vbi_init1(struct saa7134_dev *dev)
 int saa7134_vbi_fini(struct saa7134_dev *dev)
 {
 	/* nothing */
-	del_timer_sync(&dev->vbi_q.timeout);
 	return 0;
 }
 

@@ -1,12 +1,9 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_REBOOT_H
 #define _LINUX_REBOOT_H
 
 
 #include <linux/notifier.h>
 #include <uapi/linux/reboot.h>
-
-struct device;
 
 #define SYS_DOWN	0x0001	/* Notify of system down */
 #define SYS_RESTART	SYS_DOWN
@@ -41,8 +38,6 @@ extern int reboot_force;
 extern int register_reboot_notifier(struct notifier_block *);
 extern int unregister_reboot_notifier(struct notifier_block *);
 
-extern int devm_register_reboot_notifier(struct device *, struct notifier_block *);
-
 extern int register_restart_handler(struct notifier_block *);
 extern int unregister_restart_handler(struct notifier_block *);
 extern void do_kernel_restart(char *cmd);
@@ -75,8 +70,7 @@ void ctrl_alt_del(void);
 #define POWEROFF_CMD_PATH_LEN	256
 extern char poweroff_cmd[POWEROFF_CMD_PATH_LEN];
 
-extern void orderly_poweroff(bool force);
-extern void orderly_reboot(void);
+extern int orderly_poweroff(bool force);
 
 /*
  * Emergency restart, callable from an interrupt handler.

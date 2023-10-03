@@ -9,21 +9,14 @@
  * as published by the Free Software Foundation.
  */
 
-#include <errno.h>
 #include "../../util/kvm-stat.h"
-#include <asm/sie.h>
+#include <asm/kvm_perf.h>
 
 define_exit_reasons_table(sie_exit_reasons, sie_intercept_code);
 define_exit_reasons_table(sie_icpt_insn_codes, icpt_insn_codes);
 define_exit_reasons_table(sie_sigp_order_codes, sigp_order_codes);
 define_exit_reasons_table(sie_diagnose_codes, diagnose_codes);
 define_exit_reasons_table(sie_icpt_prog_codes, icpt_prog_codes);
-
-const char *vcpu_id_str = "id";
-const int decode_str_len = 40;
-const char *kvm_exit_reason = "icptcode";
-const char *kvm_entry_trace = "kvm:kvm_s390_sie_enter";
-const char *kvm_exit_trace = "kvm:kvm_s390_sie_exit";
 
 static void event_icpt_insn_get_key(struct perf_evsel *evsel,
 				    struct perf_sample *sample,
@@ -80,7 +73,7 @@ static struct kvm_events_ops exit_events = {
 	.name = "VM-EXIT"
 };
 
-const char *kvm_events_tp[] = {
+const char * const kvm_events_tp[] = {
 	"kvm:kvm_s390_sie_enter",
 	"kvm:kvm_s390_sie_exit",
 	"kvm:kvm_s390_intercept_instruction",
@@ -102,7 +95,7 @@ const char * const kvm_skip_events[] = {
 
 int cpu_isa_init(struct perf_kvm_stat *kvm, const char *cpuid)
 {
-	if (strstr(cpuid, "IBM")) {
+	if (strstr(cpuid, "IBM/S390")) {
 		kvm->exit_reasons = sie_exit_reasons;
 		kvm->exit_reasons_isa = "SIE";
 	} else

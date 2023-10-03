@@ -9,7 +9,6 @@
 #include <linux/kdebug.h>
 #include <linux/notifier.h>
 #include <linux/sched.h>
-#include <linux/sched/debug.h>
 #include <linux/hardirq.h>
 
 enum nmi_action {
@@ -52,7 +51,7 @@ static int __init nmi_debug_setup(char *str)
 	register_die_notifier(&nmi_debug_nb);
 
 	if (*str != '=')
-		return 1;
+		return 0;
 
 	for (p = str + 1; *p; p = sep + 1) {
 		sep = strchr(p, ',');
@@ -73,6 +72,6 @@ static int __init nmi_debug_setup(char *str)
 			break;
 	}
 
-	return 1;
+	return 0;
 }
 __setup("nmi_debug", nmi_debug_setup);

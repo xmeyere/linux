@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * V4L2 subdev userspace API
  *
@@ -70,14 +69,12 @@ struct v4l2_subdev_crop {
  * @pad: pad number, as reported by the media API
  * @index: format index during enumeration
  * @code: format code (MEDIA_BUS_FMT_ definitions)
- * @which: format type (from enum v4l2_subdev_format_whence)
  */
 struct v4l2_subdev_mbus_code_enum {
 	__u32 pad;
 	__u32 index;
 	__u32 code;
-	__u32 which;
-	__u32 reserved[8];
+	__u32 reserved[9];
 };
 
 /**
@@ -85,7 +82,6 @@ struct v4l2_subdev_mbus_code_enum {
  * @pad: pad number, as reported by the media API
  * @index: format index during enumeration
  * @code: format code (MEDIA_BUS_FMT_ definitions)
- * @which: format type (from enum v4l2_subdev_format_whence)
  */
 struct v4l2_subdev_frame_size_enum {
 	__u32 index;
@@ -95,8 +91,7 @@ struct v4l2_subdev_frame_size_enum {
 	__u32 max_width;
 	__u32 min_height;
 	__u32 max_height;
-	__u32 which;
-	__u32 reserved[8];
+	__u32 reserved[9];
 };
 
 /**
@@ -118,7 +113,6 @@ struct v4l2_subdev_frame_interval {
  * @width: frame width in pixels
  * @height: frame height in pixels
  * @interval: frame interval in seconds
- * @which: format type (from enum v4l2_subdev_format_whence)
  */
 struct v4l2_subdev_frame_interval_enum {
 	__u32 index;
@@ -127,8 +121,7 @@ struct v4l2_subdev_frame_interval_enum {
 	__u32 width;
 	__u32 height;
 	struct v4l2_fract interval;
-	__u32 which;
-	__u32 reserved[8];
+	__u32 reserved[9];
 };
 
 /**
@@ -170,12 +163,8 @@ struct v4l2_subdev_selection {
 #define VIDIOC_SUBDEV_G_SELECTION		_IOWR('V', 61, struct v4l2_subdev_selection)
 #define VIDIOC_SUBDEV_S_SELECTION		_IOWR('V', 62, struct v4l2_subdev_selection)
 /* The following ioctls are identical to the ioctls in videodev2.h */
-#define VIDIOC_SUBDEV_G_STD			_IOR('V', 23, v4l2_std_id)
-#define VIDIOC_SUBDEV_S_STD			_IOW('V', 24, v4l2_std_id)
-#define VIDIOC_SUBDEV_ENUMSTD			_IOWR('V', 25, struct v4l2_standard)
 #define VIDIOC_SUBDEV_G_EDID			_IOWR('V', 40, struct v4l2_edid)
 #define VIDIOC_SUBDEV_S_EDID			_IOWR('V', 41, struct v4l2_edid)
-#define VIDIOC_SUBDEV_QUERYSTD			_IOR('V', 63, v4l2_std_id)
 #define VIDIOC_SUBDEV_S_DV_TIMINGS		_IOWR('V', 87, struct v4l2_dv_timings)
 #define VIDIOC_SUBDEV_G_DV_TIMINGS		_IOWR('V', 88, struct v4l2_dv_timings)
 #define VIDIOC_SUBDEV_ENUM_DV_TIMINGS		_IOWR('V', 98, struct v4l2_enum_dv_timings)

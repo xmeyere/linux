@@ -446,9 +446,9 @@ static void setup_i2c_controller(struct nmk_i2c_dev *dev)
  */
 static int read_i2c(struct nmk_i2c_dev *dev, u16 flags)
 {
-	int status = 0;
+	u32 status = 0;
 	u32 mcr, irq_mask;
-	unsigned long timeout;
+	int timeout;
 
 	mcr = load_i2c_mcr_reg(dev, flags);
 	writel(mcr, dev->virtbase + I2C_MCR);
@@ -517,7 +517,7 @@ static int write_i2c(struct nmk_i2c_dev *dev, u16 flags)
 {
 	u32 status = 0;
 	u32 mcr, irq_mask;
-	unsigned long timeout;
+	int timeout;
 
 	mcr = load_i2c_mcr_reg(dev, flags);
 
@@ -1012,6 +1012,8 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 		goto err_no_mem;
 	}
 
+	pm_suspend_ignore_children(&adev->dev, true);
+
 	dev->clk = devm_clk_get(&adev->dev, NULL);
 	if (IS_ERR(dev->clk)) {
 		dev_err(&adev->dev, "could not get i2c clock\n");
@@ -1044,8 +1046,10 @@ static int nmk_i2c_probe(struct amba_device *adev, const struct amba_id *id)
 		 adap->name, dev->virtbase);
 
 	ret = i2c_add_adapter(adap);
-	if (ret)
+	if (ret) {
+		dev_err(&adev->dev, "failed to add adapter\n");
 		goto err_no_adap;
+	}
 
 	pm_runtime_put(&adev->dev);
 
@@ -1086,7 +1090,7 @@ static struct i2c_vendor_data vendor_db8500 = {
 	.fifodepth = 32, /* Guessed from TFTR/RFTR = 15 */
 };
 
-static const struct amba_id nmk_i2c_ids[] = {
+static struct amba_id nmk_i2c_ids[] = {
 	{
 		.id	= 0x00180024,
 		.mask	= 0x00ffffff,

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * usb-serial driver for Quatech SSU-100
  *
@@ -81,17 +80,9 @@ static inline int ssu100_setdevice(struct usb_device *dev, u8 *data)
 
 static inline int ssu100_getdevice(struct usb_device *dev, u8 *data)
 {
-	int ret;
-
-	ret = usb_control_msg(dev, usb_rcvctrlpipe(dev, 0),
-			      QT_SET_GET_DEVICE, 0xc0, 0, 0,
-			      data, 3, 300);
-	if (ret < 3) {
-		if (ret >= 0)
-			ret = -EIO;
-	}
-
-	return ret;
+	return usb_control_msg(dev, usb_rcvctrlpipe(dev, 0),
+			       QT_SET_GET_DEVICE, 0xc0, 0, 0,
+			       data, 3, 300);
 }
 
 static inline int ssu100_getregister(struct usb_device *dev,
@@ -99,17 +90,10 @@ static inline int ssu100_getregister(struct usb_device *dev,
 				     unsigned short reg,
 				     u8 *data)
 {
-	int ret;
+	return usb_control_msg(dev, usb_rcvctrlpipe(dev, 0),
+			       QT_SET_GET_REGISTER, 0xc0, reg,
+			       uart, data, sizeof(*data), 300);
 
-	ret = usb_control_msg(dev, usb_rcvctrlpipe(dev, 0),
-			      QT_SET_GET_REGISTER, 0xc0, reg,
-			      uart, data, sizeof(*data), 300);
-	if (ret < (int)sizeof(*data)) {
-		if (ret >= 0)
-			ret = -EIO;
-	}
-
-	return ret;
 }
 
 
@@ -305,10 +289,8 @@ static int ssu100_open(struct tty_struct *tty, struct usb_serial_port *port)
 				 QT_OPEN_CLOSE_CHANNEL,
 				 QT_TRANSFER_IN, 0x01,
 				 0, data, 2, 300);
-	if (result < 2) {
+	if (result < 0) {
 		dev_dbg(&port->dev, "%s - open failed %i\n", __func__, result);
-		if (result >= 0)
-			result = -EIO;
 		kfree(data);
 		return result;
 	}
@@ -336,10 +318,14 @@ static int get_serial_info(struct usb_serial_port *port,
 {
 	struct serial_struct tmp;
 
+	if (!retinfo)
+		return -EFAULT;
+
 	memset(&tmp, 0, sizeof(tmp));
 	tmp.line		= port->minor;
 	tmp.port		= 0;
 	tmp.irq			= 0;
+	tmp.flags		= ASYNC_SKIP_TEST | ASYNC_AUTO_IRQ;
 	tmp.xmit_fifo_size	= port->bulk_out_size;
 	tmp.baud_base		= 9600;
 	tmp.close_delay		= 5*HZ;
@@ -577,4 +563,4 @@ static struct usb_serial_driver * const serial_drivers[] = {
 module_usb_serial_driver(serial_drivers, id_table);
 
 MODULE_DESCRIPTION(DRIVER_DESC);
-MODULE_LICENSE("GPL v2");
+MODULE_LICENSE("GPL");

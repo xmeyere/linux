@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/core_irongate.c
  *
@@ -23,6 +22,7 @@
 #include <linux/bootmem.h>
 
 #include <asm/ptrace.h>
+#include <asm/pci.h>
 #include <asm/cacheflush.h>
 #include <asm/tlbflush.h>
 

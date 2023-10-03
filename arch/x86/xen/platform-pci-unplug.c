@@ -21,7 +21,7 @@
 
 #include <linux/init.h>
 #include <linux/io.h>
-#include <linux/export.h>
+#include <linux/module.h>
 
 #include <xen/platform_pci.h>
 #include "xen-ops.h"
@@ -61,20 +61,20 @@ static int check_platform_magic(void)
 		}
 		break;
 	default:
-		printk(KERN_WARNING "Xen Platform PCI: unknown I/O protocol version\n");
+		printk(KERN_WARNING "Xen Platform PCI: unknown I/O protocol version");
 		return XEN_PLATFORM_ERR_PROTOCOL;
 	}
 
 	return 0;
 }
 
-bool xen_has_pv_devices(void)
+bool xen_has_pv_devices()
 {
 	if (!xen_domain())
 		return false;
 
-	/* PV and PVH domains always have them. */
-	if (xen_pv_domain() || xen_pvh_domain())
+	/* PV domains always have them. */
+	if (xen_pv_domain())
 		return true;
 
 	/* And user has xen_platform_pci=0 set in guest config as
@@ -145,10 +145,6 @@ EXPORT_SYMBOL_GPL(xen_has_pv_and_legacy_disk_devices);
 void xen_unplug_emulated_devices(void)
 {
 	int r;
-
-	/* PVH guests don't have emulated devices. */
-	if (xen_pvh_domain())
-		return;
 
 	/* user explicitly requested no unplug */
 	if (xen_emul_unplug & XEN_UNPLUG_NEVER)

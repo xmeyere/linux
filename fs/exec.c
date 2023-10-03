@@ -19,7 +19,7 @@
  * current->executable is only used by the procfs.  This allows a dispatch
  * table to check for several different types  of binary formats.  We keep
  * trying until we recognize the file or we run out of supported binary
- * formats.
+ * formats. 
  */
 
 #include <linux/slab.h>
@@ -32,11 +32,6 @@
 #include <linux/swap.h>
 #include <linux/string.h>
 #include <linux/init.h>
-#include <linux/sched/mm.h>
-#include <linux/sched/coredump.h>
-#include <linux/sched/signal.h>
-#include <linux/sched/numa_balancing.h>
-#include <linux/sched/task.h>
 #include <linux/pagemap.h>
 #include <linux/perf_event.h>
 #include <linux/highmem.h>
@@ -61,9 +56,8 @@
 #include <linux/pipe_fs_i.h>
 #include <linux/oom.h>
 #include <linux/compat.h>
-#include <linux/vmalloc.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/mmu_context.h>
 #include <asm/tlb.h>
 
@@ -104,12 +98,6 @@ static inline void put_binfmt(struct linux_binfmt * fmt)
 	module_put(fmt->module);
 }
 
-bool path_noexec(const struct path *path)
-{
-	return (path->mnt->mnt_flags & MNT_NOEXEC) ||
-	       (path->mnt->mnt_sb->s_iflags & SB_I_NOEXEC);
-}
-
 #ifdef CONFIG_USELIB
 /*
  * Note that a shared library must be both readable and executable due to
@@ -125,7 +113,7 @@ SYSCALL_DEFINE1(uselib, const char __user *, library)
 	int error = PTR_ERR(tmp);
 	static const struct open_flags uselib_flags = {
 		.open_flag = O_LARGEFILE | O_RDONLY | __FMODE_EXEC,
-		.acc_mode = MAY_READ | MAY_EXEC,
+		.acc_mode = MAY_READ | MAY_EXEC | MAY_OPEN,
 		.intent = LOOKUP_OPEN,
 		.lookup_flags = LOOKUP_FOLLOW,
 	};
@@ -144,7 +132,7 @@ SYSCALL_DEFINE1(uselib, const char __user *, library)
 		goto exit;
 
 	error = -EACCES;
-	if (path_noexec(&file->f_path))
+	if (file->f_path.mnt->mnt_flags & MNT_NOEXEC)
 		goto exit;
 
 	fsnotify_open(file);
@@ -196,7 +184,6 @@ static struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 {
 	struct page *page;
 	int ret;
-	unsigned int gup_flags = FOLL_FORCE;
 
 #ifdef CONFIG_STACK_GROWSUP
 	if (write) {
@@ -205,39 +192,14 @@ static struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 			return NULL;
 	}
 #endif
-
-	if (write)
-		gup_flags |= FOLL_WRITE;
-
-	/*
-	 * We are doing an exec().  'current' is the process
-	 * doing the exec and bprm->mm is the new process's mm.
-	 */
-	ret = get_user_pages_remote(current, bprm->mm, pos, 1, gup_flags,
-			&page, NULL, NULL);
+	ret = get_user_pages(current, bprm->mm, pos,
+			1, write, 1, &page, NULL);
 	if (ret <= 0)
 		return NULL;
 
 	if (write) {
 		unsigned long size = bprm->vma->vm_end - bprm->vma->vm_start;
-		unsigned long ptr_size, limit;
-
-		/*
-		 * Since the stack will hold pointers to the strings, we
-		 * must account for them as well.
-		 *
-		 * The size calculation is the entire vma while each arg page is
-		 * built, so each time we get here it's calculating how far it
-		 * is currently (rather than each call being just the newly
-		 * added size from the arg page).  As a result, we need to
-		 * always add the entire size of the pointers, so that on the
-		 * last call to get_arg_page() we'll actually have the entire
-		 * correct size.
-		 */
-		ptr_size = (bprm->argc + bprm->envc) * sizeof(void *);
-		if (ptr_size > ULONG_MAX - size)
-			goto fail;
-		size += ptr_size;
+		struct rlimit *rlim;
 
 		acct_arg_size(bprm, size / PAGE_SIZE);
 
@@ -249,29 +211,29 @@ static struct page *get_arg_page(struct linux_binprm *bprm, unsigned long pos,
 			return page;
 
 		/*
-		 * Limit to 1/4 of the max stack size or 3/4 of _STK_LIM
-		 * (whichever is smaller) for the argv+env strings.
+		 * Limit to 1/4-th the stack size for the argv+env strings.
 		 * This ensures that:
 		 *  - the remaining binfmt code will not run out of stack space,
 		 *  - the program will have a reasonable amount of stack left
 		 *    to work from.
 		 */
-		limit = _STK_LIM / 4 * 3;
-		limit = min(limit, bprm->rlim_stack.rlim_cur / 4);
-		if (size > limit)
-			goto fail;
+		rlim = current->signal->rlim;
+		if (size > ACCESS_ONCE(rlim[RLIMIT_STACK].rlim_cur) / 4) {
+			put_page(page);
+			return NULL;
+		}
 	}
 
 	return page;
-
-fail:
-	put_page(page);
-	return NULL;
 }
 
 static void put_arg_page(struct page *page)
 {
 	put_page(page);
+}
+
+static void free_arg_page(struct linux_binprm *bprm, int i)
+{
 }
 
 static void free_arg_pages(struct linux_binprm *bprm)
@@ -290,15 +252,12 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	struct vm_area_struct *vma = NULL;
 	struct mm_struct *mm = bprm->mm;
 
-	bprm->vma = vma = vm_area_alloc(mm);
+	bprm->vma = vma = kmem_cache_zalloc(vm_area_cachep, GFP_KERNEL);
 	if (!vma)
 		return -ENOMEM;
-	vma_set_anonymous(vma);
 
-	if (down_write_killable(&mm->mmap_sem)) {
-		err = -EINTR;
-		goto err_free;
-	}
+	down_write(&mm->mmap_sem);
+	vma->vm_mm = mm;
 
 	/*
 	 * Place the stack at the largest stack address the architecture
@@ -311,6 +270,7 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	vma->vm_start = vma->vm_end - PAGE_SIZE;
 	vma->vm_flags = VM_SOFTDIRTY | VM_STACK_FLAGS | VM_STACK_INCOMPLETE_SETUP;
 	vma->vm_page_prot = vm_get_page_prot(vma->vm_flags);
+	INIT_LIST_HEAD(&vma->anon_vma_chain);
 
 	err = insert_vm_struct(mm, vma);
 	if (err)
@@ -323,9 +283,8 @@ static int __bprm_mm_init(struct linux_binprm *bprm)
 	return 0;
 err:
 	up_write(&mm->mmap_sem);
-err_free:
 	bprm->vma = NULL;
-	vm_area_free(vma);
+	kmem_cache_free(vm_area_cachep, vma);
 	return err;
 }
 
@@ -409,11 +368,6 @@ static int bprm_mm_init(struct linux_binprm *bprm)
 	err = -ENOMEM;
 	if (!mm)
 		goto err;
-
-	/* Save current stack limit for all calculations made during exec. */
-	task_lock(current->group_leader);
-	bprm->rlim_stack = current->signal->rlim[RLIMIT_STACK];
-	task_unlock(current->group_leader);
 
 	err = __bprm_mm_init(bprm);
 	if (err)
@@ -701,12 +655,9 @@ int setup_arg_pages(struct linux_binprm *bprm,
 
 #ifdef CONFIG_STACK_GROWSUP
 	/* Limit stack size */
-	stack_base = bprm->rlim_stack.rlim_max;
+	stack_base = rlimit_max(RLIMIT_STACK);
 	if (stack_base > STACK_SIZE_MAX)
 		stack_base = STACK_SIZE_MAX;
-
-	/* Add space for stack randomization. */
-	stack_base += (STACK_RND_MASK << PAGE_SHIFT);
 
 	/* Make sure we didn't let the argument array grow too large. */
 	if (vma->vm_end - vma->vm_start > stack_base)
@@ -735,9 +686,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 		bprm->loader -= stack_shift;
 	bprm->exec -= stack_shift;
 
-	if (down_write_killable(&mm->mmap_sem))
-		return -EINTR;
-
+	down_write(&mm->mmap_sem);
 	vm_flags = VM_STACK_FLAGS;
 
 	/*
@@ -774,7 +723,7 @@ int setup_arg_pages(struct linux_binprm *bprm,
 	 * Align this down to a page boundary as expand_stack
 	 * will align it up.
 	 */
-	rlim_stack = bprm->rlim_stack.rlim_cur & PAGE_MASK;
+	rlim_stack = rlimit(RLIMIT_STACK) & PAGE_MASK;
 #ifdef CONFIG_STACK_GROWSUP
 	if (stack_size + stack_expand > rlim_stack)
 		stack_base = vma->vm_start + rlim_stack;
@@ -797,39 +746,6 @@ out_unlock:
 }
 EXPORT_SYMBOL(setup_arg_pages);
 
-#else
-
-/*
- * Transfer the program arguments and environment from the holding pages
- * onto the stack. The provided stack pointer is adjusted accordingly.
- */
-int transfer_args_to_stack(struct linux_binprm *bprm,
-			   unsigned long *sp_location)
-{
-	unsigned long index, stop, sp;
-	int ret = 0;
-
-	stop = bprm->p >> PAGE_SHIFT;
-	sp = *sp_location;
-
-	for (index = MAX_ARG_PAGES - 1; index >= stop; index--) {
-		unsigned int offset = index == stop ? bprm->p & ~PAGE_MASK : 0;
-		char *src = kmap(bprm->page[index]) + offset;
-		sp -= PAGE_SIZE - offset;
-		if (copy_to_user((void *) sp, src, PAGE_SIZE - offset) != 0)
-			ret = -EFAULT;
-		kunmap(bprm->page[index]);
-		if (ret)
-			goto out;
-	}
-
-	*sp_location = sp;
-
-out:
-	return ret;
-}
-EXPORT_SYMBOL(transfer_args_to_stack);
-
 #endif /* CONFIG_MMU */
 
 static struct file *do_open_execat(int fd, struct filename *name, int flags)
@@ -838,7 +754,7 @@ static struct file *do_open_execat(int fd, struct filename *name, int flags)
 	int err;
 	struct open_flags open_exec_flags = {
 		.open_flag = O_LARGEFILE | O_RDONLY | __FMODE_EXEC,
-		.acc_mode = MAY_EXEC,
+		.acc_mode = MAY_EXEC | MAY_OPEN,
 		.intent = LOOKUP_OPEN,
 		.lookup_flags = LOOKUP_FOLLOW,
 	};
@@ -858,7 +774,7 @@ static struct file *do_open_execat(int fd, struct filename *name, int flags)
 	if (!S_ISREG(file_inode(file)->i_mode))
 		goto exit;
 
-	if (path_noexec(&file->f_path))
+	if (file->f_path.mnt->mnt_flags & MNT_NOEXEC)
 		goto exit;
 
 	err = deny_write_access(file);
@@ -889,110 +805,22 @@ struct file *open_exec(const char *name)
 }
 EXPORT_SYMBOL(open_exec);
 
-int kernel_read_file(struct file *file, void **buf, loff_t *size,
-		     loff_t max_size, enum kernel_read_file_id id)
+int kernel_read(struct file *file, loff_t offset,
+		char *addr, unsigned long count)
 {
-	loff_t i_size, pos;
-	ssize_t bytes = 0;
-	int ret;
+	mm_segment_t old_fs;
+	loff_t pos = offset;
+	int result;
 
-	if (!S_ISREG(file_inode(file)->i_mode) || max_size < 0)
-		return -EINVAL;
-
-	ret = deny_write_access(file);
-	if (ret)
-		return ret;
-
-	ret = security_kernel_read_file(file, id);
-	if (ret)
-		goto out;
-
-	i_size = i_size_read(file_inode(file));
-	if (max_size > 0 && i_size > max_size) {
-		ret = -EFBIG;
-		goto out;
-	}
-	if (i_size <= 0) {
-		ret = -EINVAL;
-		goto out;
-	}
-
-	if (id != READING_FIRMWARE_PREALLOC_BUFFER)
-		*buf = vmalloc(i_size);
-	if (!*buf) {
-		ret = -ENOMEM;
-		goto out;
-	}
-
-	pos = 0;
-	while (pos < i_size) {
-		bytes = kernel_read(file, *buf + pos, i_size - pos, &pos);
-		if (bytes < 0) {
-			ret = bytes;
-			goto out_free;
-		}
-
-		if (bytes == 0)
-			break;
-	}
-
-	if (pos != i_size) {
-		ret = -EIO;
-		goto out_free;
-	}
-
-	ret = security_kernel_post_read_file(file, *buf, i_size, id);
-	if (!ret)
-		*size = pos;
-
-out_free:
-	if (ret < 0) {
-		if (id != READING_FIRMWARE_PREALLOC_BUFFER) {
-			vfree(*buf);
-			*buf = NULL;
-		}
-	}
-
-out:
-	allow_write_access(file);
-	return ret;
+	old_fs = get_fs();
+	set_fs(get_ds());
+	/* The cast to a user pointer is valid due to the set_fs() */
+	result = vfs_read(file, (void __user *)addr, count, &pos);
+	set_fs(old_fs);
+	return result;
 }
-EXPORT_SYMBOL_GPL(kernel_read_file);
 
-int kernel_read_file_from_path(const char *path, void **buf, loff_t *size,
-			       loff_t max_size, enum kernel_read_file_id id)
-{
-	struct file *file;
-	int ret;
-
-	if (!path || !*path)
-		return -EINVAL;
-
-	file = filp_open(path, O_RDONLY, 0);
-	if (IS_ERR(file))
-		return PTR_ERR(file);
-
-	ret = kernel_read_file(file, buf, size, max_size, id);
-	fput(file);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(kernel_read_file_from_path);
-
-int kernel_read_file_from_fd(int fd, void **buf, loff_t *size, loff_t max_size,
-			     enum kernel_read_file_id id)
-{
-	struct fd f = fdget(fd);
-	int ret = -EBADF;
-
-	if (!f.file || !(f.file->f_mode & FMODE_READ))
-		goto out;
-
-	ret = kernel_read_file(f.file, buf, size, max_size, id);
-out:
-	fdput(f);
-	return ret;
-}
-EXPORT_SYMBOL_GPL(kernel_read_file_from_fd);
+EXPORT_SYMBOL(kernel_read);
 
 ssize_t read_code(struct file *file, unsigned long addr, loff_t pos, size_t len)
 {
@@ -1011,7 +839,7 @@ static int exec_mmap(struct mm_struct *mm)
 	/* Notify parent that we're no longer interested in the old VM */
 	tsk = current;
 	old_mm = current->mm;
-	exec_mm_release(tsk, old_mm);
+	mm_release(tsk, old_mm);
 
 	if (old_mm) {
 		sync_mm_rss(old_mm);
@@ -1028,23 +856,10 @@ static int exec_mmap(struct mm_struct *mm)
 		}
 	}
 	task_lock(tsk);
-
-	local_irq_disable();
 	active_mm = tsk->active_mm;
-	tsk->active_mm = mm;
 	tsk->mm = mm;
-	/*
-	 * This prevents preemption while active_mm is being loaded and
-	 * it and mm are being updated, which could cause problems for
-	 * lazy tlb mm refcounting when these are updated by context
-	 * switches. Not all architectures can handle irqs off over
-	 * activate_mm yet.
-	 */
-	if (!IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
-		local_irq_enable();
+	tsk->active_mm = mm;
 	activate_mm(active_mm, mm);
-	if (IS_ENABLED(CONFIG_ARCH_WANT_IRQS_OFF_ACTIVATE_MM))
-		local_irq_enable();
 	tsk->mm->vmacache_seqnum = 0;
 	vmacache_flush(tsk);
 	task_unlock(tsk);
@@ -1111,19 +926,15 @@ static int de_thread(struct task_struct *tsk)
 	if (!thread_group_leader(tsk)) {
 		struct task_struct *leader = tsk->group_leader;
 
+		sig->notify_count = -1;	/* for exit_notify() */
 		for (;;) {
-			cgroup_threadgroup_change_begin(tsk);
+			threadgroup_change_begin(tsk);
 			write_lock_irq(&tasklist_lock);
-			/*
-			 * Do this under tasklist_lock to ensure that
-			 * exit_notify() can't miss ->group_exit_task
-			 */
-			sig->notify_count = -1;
 			if (likely(leader->exit_state))
 				break;
 			__set_current_state(TASK_KILLABLE);
 			write_unlock_irq(&tasklist_lock);
-			cgroup_threadgroup_change_end(tsk);
+			threadgroup_change_end(tsk);
 			schedule();
 			if (unlikely(__fatal_signal_pending(tsk)))
 				goto killed;
@@ -1158,7 +969,6 @@ static int de_thread(struct task_struct *tsk)
 		 */
 		tsk->pid = leader->pid;
 		change_pid(tsk, PIDTYPE_PID, task_pid(leader));
-		transfer_pid(leader, tsk, PIDTYPE_TGID);
 		transfer_pid(leader, tsk, PIDTYPE_PGID);
 		transfer_pid(leader, tsk, PIDTYPE_SID);
 
@@ -1182,7 +992,7 @@ static int de_thread(struct task_struct *tsk)
 		if (unlikely(leader->ptrace))
 			__wake_up_parent(leader, leader->parent);
 		write_unlock_irq(&tasklist_lock);
-		cgroup_threadgroup_change_end(tsk);
+		threadgroup_change_end(tsk);
 
 		release_task(leader);
 	}
@@ -1194,10 +1004,8 @@ no_thread_group:
 	/* we have changed execution domain */
 	tsk->exit_signal = SIGCHLD;
 
-#ifdef CONFIG_POSIX_TIMERS
 	exit_itimers(sig);
 	flush_itimer_signals();
-#endif
 
 	if (atomic_read(&oldsighand->count) != 1) {
 		struct sighand_struct *newsighand;
@@ -1234,14 +1042,15 @@ killed:
 	return -EAGAIN;
 }
 
-char *__get_task_comm(char *buf, size_t buf_size, struct task_struct *tsk)
+char *get_task_comm(char *buf, struct task_struct *tsk)
 {
+	/* buf must be at least sizeof(tsk->comm) in size */
 	task_lock(tsk);
-	strncpy(buf, tsk->comm, buf_size);
+	strncpy(buf, tsk->comm, sizeof(tsk->comm));
 	task_unlock(tsk);
 	return buf;
 }
-EXPORT_SYMBOL_GPL(__get_task_comm);
+EXPORT_SYMBOL_GPL(get_task_comm);
 
 /*
  * These functions flushes out all traces of the currently running executable
@@ -1257,12 +1066,6 @@ void __set_task_comm(struct task_struct *tsk, const char *buf, bool exec)
 	perf_event_comm(tsk, exec);
 }
 
-/*
- * Calling this is the point of no return. None of the failures will be
- * seen by userspace since either the process is already taking a fatal
- * signal (via de_thread() or coredump), or will have SEGV raised
- * (after exec_mmap()) by search_binary_handlers (see below).
- */
 int flush_old_exec(struct linux_binprm * bprm)
 {
 	int retval;
@@ -1275,15 +1078,7 @@ int flush_old_exec(struct linux_binprm * bprm)
 	if (retval)
 		goto out;
 
-	/*
-	 * Must be called _before_ exec_mmap() as bprm->mm is
-	 * not visibile until then. This also enables the update
-	 * to be lockless.
-	 */
 	set_mm_exe_file(bprm->mm, bprm->file);
-
-	would_dump(bprm, bprm->file);
-
 	/*
 	 * Release all of the old mmap stuff
 	 */
@@ -1292,13 +1087,7 @@ int flush_old_exec(struct linux_binprm * bprm)
 	if (retval)
 		goto out;
 
-	/*
-	 * After clearing bprm->mm (to mark that current is using the
-	 * prepared mm now), we have nothing left of the original
-	 * process. If anything from here on returns an error, the check
-	 * in search_binary_handler() will SEGV current.
-	 */
-	bprm->mm = NULL;
+	bprm->mm = NULL;		/* We're using it now */
 
 	set_fs(USER_DS);
 	current->flags &= ~(PF_RANDOMIZE | PF_FORKNOEXEC | PF_KTHREAD |
@@ -1306,13 +1095,6 @@ int flush_old_exec(struct linux_binprm * bprm)
 	flush_thread();
 	current->personality &= ~bprm->per_clear;
 
-	/*
-	 * We have to apply CLOEXEC before we change whether the process is
-	 * dumpable (in setup_new_exec) to avoid a race with a process in userspace
-	 * trying to access the should-be-closed file descriptors of a process
-	 * undergoing exec(2).
-	 */
-	do_close_on_exec(current->files);
 	return 0;
 
 out:
@@ -1322,66 +1104,23 @@ EXPORT_SYMBOL(flush_old_exec);
 
 void would_dump(struct linux_binprm *bprm, struct file *file)
 {
-	struct inode *inode = file_inode(file);
-	if (inode_permission(inode, MAY_READ) < 0) {
-		struct user_namespace *old, *user_ns;
+	if (inode_permission(file_inode(file), MAY_READ) < 0)
 		bprm->interp_flags |= BINPRM_FLAGS_ENFORCE_NONDUMP;
-
-		/* Ensure mm->user_ns contains the executable */
-		user_ns = old = bprm->mm->user_ns;
-		while ((user_ns != &init_user_ns) &&
-		       !privileged_wrt_inode_uidgid(user_ns, inode))
-			user_ns = user_ns->parent;
-
-		if (old != user_ns) {
-			bprm->mm->user_ns = get_user_ns(user_ns);
-			put_user_ns(old);
-		}
-	}
 }
 EXPORT_SYMBOL(would_dump);
 
 void setup_new_exec(struct linux_binprm * bprm)
 {
-	/*
-	 * Once here, prepare_binrpm() will not be called any more, so
-	 * the final state of setuid/setgid/fscaps can be merged into the
-	 * secureexec flag.
-	 */
-	bprm->secureexec |= bprm->cap_elevated;
+	arch_pick_mmap_layout(current->mm);
 
-	if (bprm->secureexec) {
-		/* Make sure parent cannot signal privileged process. */
-		current->pdeath_signal = 0;
-
-		/*
-		 * For secureexec, reset the stack limit to sane default to
-		 * avoid bad behavior from the prior rlimits. This has to
-		 * happen before arch_pick_mmap_layout(), which examines
-		 * RLIMIT_STACK, but after the point of no return to avoid
-		 * needing to clean up the change on failure.
-		 */
-		if (bprm->rlim_stack.rlim_cur > _STK_LIM)
-			bprm->rlim_stack.rlim_cur = _STK_LIM;
-	}
-
-	arch_pick_mmap_layout(current->mm, &bprm->rlim_stack);
-
+	/* This is the point of no return */
 	current->sas_ss_sp = current->sas_ss_size = 0;
 
-	/*
-	 * Figure out dumpability. Note that this checking only of current
-	 * is wrong, but userspace depends on it. This should be testing
-	 * bprm->secureexec instead.
-	 */
-	if (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP ||
-	    !(uid_eq(current_euid(), current_uid()) &&
-	      gid_eq(current_egid(), current_gid())))
-		set_dumpable(current->mm, suid_dumpable);
-	else
+	if (uid_eq(current_euid(), current_uid()) && gid_eq(current_egid(), current_gid()))
 		set_dumpable(current->mm, SUID_DUMP_USER);
+	else
+		set_dumpable(current->mm, suid_dumpable);
 
-	arch_setup_new_exec();
 	perf_event_exec();
 	__set_task_comm(current, kbasename(bprm->filename), true);
 
@@ -1391,22 +1130,23 @@ void setup_new_exec(struct linux_binprm * bprm)
 	 */
 	current->mm->task_size = TASK_SIZE;
 
+	/* install the new credentials */
+	if (!uid_eq(bprm->cred->uid, current_euid()) ||
+	    !gid_eq(bprm->cred->gid, current_egid())) {
+		current->pdeath_signal = 0;
+	} else {
+		would_dump(bprm, bprm->file);
+		if (bprm->interp_flags & BINPRM_FLAGS_ENFORCE_NONDUMP)
+			set_dumpable(current->mm, suid_dumpable);
+	}
+
 	/* An exec changes our domain. We are no longer part of the thread
 	   group */
-	WRITE_ONCE(current->self_exec_id, current->self_exec_id + 1);
+	current->self_exec_id++;
 	flush_signal_handlers(current, 0);
+	do_close_on_exec(current->files);
 }
 EXPORT_SYMBOL(setup_new_exec);
-
-/* Runs immediately before start_thread() takes over. */
-void finalize_exec(struct linux_binprm *bprm)
-{
-	/* Store any stack rlimit changes before starting thread. */
-	task_lock(current->group_leader);
-	current->signal->rlim[RLIMIT_STACK] = bprm->rlim_stack;
-	task_unlock(current->group_leader);
-}
-EXPORT_SYMBOL(finalize_exec);
 
 /*
  * Prepare credentials and lock ->cred_guard_mutex.
@@ -1444,7 +1184,7 @@ static void free_bprm(struct linux_binprm *bprm)
 	kfree(bprm);
 }
 
-int bprm_change_interp(const char *interp, struct linux_binprm *bprm)
+int bprm_change_interp(char *interp, struct linux_binprm *bprm)
 {
 	/* If a binfmt changed the interp, free it first. */
 	if (bprm->interp != bprm->filename)
@@ -1494,8 +1234,12 @@ static void check_unsafe_exec(struct linux_binprm *bprm)
 	struct task_struct *p = current, *t;
 	unsigned n_fs;
 
-	if (p->ptrace)
-		bprm->unsafe |= LSM_UNSAFE_PTRACE;
+	if (p->ptrace) {
+		if (p->ptrace & PT_PTRACE_CAP)
+			bprm->unsafe |= LSM_UNSAFE_PTRACE_CAP;
+		else
+			bprm->unsafe |= LSM_UNSAFE_PTRACE;
+	}
 
 	/*
 	 * This isn't strictly necessary, but it makes it harder for LSMs to
@@ -1521,58 +1265,6 @@ static void check_unsafe_exec(struct linux_binprm *bprm)
 	spin_unlock(&p->fs->lock);
 }
 
-static void bprm_fill_uid(struct linux_binprm *bprm)
-{
-	struct inode *inode;
-	unsigned int mode;
-	kuid_t uid;
-	kgid_t gid;
-
-	/*
-	 * Since this can be called multiple times (via prepare_binprm),
-	 * we must clear any previous work done when setting set[ug]id
-	 * bits from any earlier bprm->file uses (for example when run
-	 * first for a setuid script then again for its interpreter).
-	 */
-	bprm->cred->euid = current_euid();
-	bprm->cred->egid = current_egid();
-
-	if (!mnt_may_suid(bprm->file->f_path.mnt))
-		return;
-
-	if (task_no_new_privs(current))
-		return;
-
-	inode = bprm->file->f_path.dentry->d_inode;
-	mode = READ_ONCE(inode->i_mode);
-	if (!(mode & (S_ISUID|S_ISGID)))
-		return;
-
-	/* Be careful if suid/sgid is set */
-	inode_lock(inode);
-
-	/* reload atomically mode/uid/gid now that lock held */
-	mode = inode->i_mode;
-	uid = inode->i_uid;
-	gid = inode->i_gid;
-	inode_unlock(inode);
-
-	/* We ignore suid/sgid if there are no mappings for them in the ns */
-	if (!kuid_has_mapping(bprm->cred->user_ns, uid) ||
-		 !kgid_has_mapping(bprm->cred->user_ns, gid))
-		return;
-
-	if (mode & S_ISUID) {
-		bprm->per_clear |= PER_CLEAR_ON_SETID;
-		bprm->cred->euid = uid;
-	}
-
-	if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP)) {
-		bprm->per_clear |= PER_CLEAR_ON_SETID;
-		bprm->cred->egid = gid;
-	}
-}
-
 /*
  * Fill the binprm structure from the inode.
  * Check permissions, then read the first 128 (BINPRM_BUF_SIZE) bytes
@@ -1581,19 +1273,45 @@ static void bprm_fill_uid(struct linux_binprm *bprm)
  */
 int prepare_binprm(struct linux_binprm *bprm)
 {
+	struct inode *inode = file_inode(bprm->file);
+	umode_t mode = inode->i_mode;
 	int retval;
-	loff_t pos = 0;
 
-	bprm_fill_uid(bprm);
+
+	/* clear any previous set[ug]id data from a previous binary */
+	bprm->cred->euid = current_euid();
+	bprm->cred->egid = current_egid();
+
+	if (!(bprm->file->f_path.mnt->mnt_flags & MNT_NOSUID) &&
+	    !task_no_new_privs(current) &&
+	    kuid_has_mapping(bprm->cred->user_ns, inode->i_uid) &&
+	    kgid_has_mapping(bprm->cred->user_ns, inode->i_gid)) {
+		/* Set-uid? */
+		if (mode & S_ISUID) {
+			bprm->per_clear |= PER_CLEAR_ON_SETID;
+			bprm->cred->euid = inode->i_uid;
+		}
+
+		/* Set-gid? */
+		/*
+		 * If setgid is set but no group execute bit then this
+		 * is a candidate for mandatory locking, not a setgid
+		 * executable.
+		 */
+		if ((mode & (S_ISGID | S_IXGRP)) == (S_ISGID | S_IXGRP)) {
+			bprm->per_clear |= PER_CLEAR_ON_SETID;
+			bprm->cred->egid = inode->i_gid;
+		}
+	}
 
 	/* fill in binprm security blob */
 	retval = security_bprm_set_creds(bprm);
 	if (retval)
 		return retval;
-	bprm->called_set_creds = 1;
+	bprm->cred_prepared = 1;
 
 	memset(bprm->buf, 0, BINPRM_BUF_SIZE);
-	return kernel_read(bprm->file, bprm->buf, BINPRM_BUF_SIZE, &pos);
+	return kernel_read(bprm->file, 0, bprm->buf, BINPRM_BUF_SIZE);
 }
 
 EXPORT_SYMBOL(prepare_binprm);
@@ -1628,6 +1346,9 @@ int remove_arg_zero(struct linux_binprm *bprm)
 
 		kunmap_atomic(kaddr);
 		put_arg_page(page);
+
+		if (offset == PAGE_SIZE)
+			free_arg_page(bprm, (bprm->p >> PAGE_SHIFT) - 1);
 	} while (offset == PAGE_SIZE);
 
 	bprm->p++;
@@ -1721,13 +1442,14 @@ static int exec_binprm(struct linux_binprm *bprm)
 /*
  * sys_execve() executes a new program.
  */
-static int __do_execve_file(int fd, struct filename *filename,
-			    struct user_arg_ptr argv,
-			    struct user_arg_ptr envp,
-			    int flags, struct file *file)
+static int do_execveat_common(int fd, struct filename *filename,
+			      struct user_arg_ptr argv,
+			      struct user_arg_ptr envp,
+			      int flags)
 {
 	char *pathbuf = NULL;
 	struct linux_binprm *bprm;
+	struct file *file;
 	struct files_struct *displaced;
 	int retval;
 
@@ -1766,8 +1488,7 @@ static int __do_execve_file(int fd, struct filename *filename,
 	check_unsafe_exec(bprm);
 	current->in_execve = 1;
 
-	if (!file)
-		file = do_open_execat(fd, filename, flags);
+	file = do_open_execat(fd, filename, flags);
 	retval = PTR_ERR(file);
 	if (IS_ERR(file))
 		goto out_unmark;
@@ -1775,15 +1496,13 @@ static int __do_execve_file(int fd, struct filename *filename,
 	sched_exec();
 
 	bprm->file = file;
-	if (!filename) {
-		bprm->filename = "none";
-	} else if (fd == AT_FDCWD || filename->name[0] == '/') {
+	if (fd == AT_FDCWD || filename->name[0] == '/') {
 		bprm->filename = filename->name;
 	} else {
 		if (filename->name[0] == '\0')
-			pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d", fd);
+			pathbuf = kasprintf(GFP_TEMPORARY, "/dev/fd/%d", fd);
 		else
-			pathbuf = kasprintf(GFP_KERNEL, "/dev/fd/%d/%s",
+			pathbuf = kasprintf(GFP_TEMPORARY, "/dev/fd/%d/%s",
 					    fd, filename->name);
 		if (!pathbuf) {
 			retval = -ENOMEM;
@@ -1805,9 +1524,6 @@ static int __do_execve_file(int fd, struct filename *filename,
 		goto out_unmark;
 
 	bprm->argc = count(argv, MAX_ARG_STRINGS);
-	if (bprm->argc == 0)
-		pr_warn_once("process '%s' launched '%s' with NULL argv: empty string added\n",
-			     current->comm, bprm->filename);
 	if ((retval = bprm->argc) < 0)
 		goto out;
 
@@ -1832,20 +1548,6 @@ static int __do_execve_file(int fd, struct filename *filename,
 	if (retval < 0)
 		goto out;
 
-	/*
-	 * When argv is empty, add an empty string ("") as argv[0] to
-	 * ensure confused userspace programs that start processing
-	 * from argv[1] won't end up walking envp. See also
-	 * bprm_stack_limits().
-	 */
-	if (bprm->argc == 0) {
-		const char *argv[] = { "", NULL };
-		retval = copy_strings_kernel(1, argv, bprm);
-		if (retval < 0)
-			goto out;
-		bprm->argc = 1;
-	}
-
 	retval = exec_binprm(bprm);
 	if (retval < 0)
 		goto out;
@@ -1853,14 +1555,11 @@ static int __do_execve_file(int fd, struct filename *filename,
 	/* execve succeeded */
 	current->fs->in_exec = 0;
 	current->in_execve = 0;
-	membarrier_execve(current);
-	rseq_execve(current);
 	acct_update_integrals(current);
-	task_numa_free(current, false);
+	task_numa_free(current);
 	free_bprm(bprm);
 	kfree(pathbuf);
-	if (filename)
-		putname(filename);
+	putname(filename);
 	if (displaced)
 		put_files_struct(displaced);
 	return retval;
@@ -1883,25 +1582,8 @@ out_files:
 	if (displaced)
 		reset_files_struct(displaced);
 out_ret:
-	if (filename)
-		putname(filename);
+	putname(filename);
 	return retval;
-}
-
-static int do_execveat_common(int fd, struct filename *filename,
-			      struct user_arg_ptr argv,
-			      struct user_arg_ptr envp,
-			      int flags)
-{
-	return __do_execve_file(fd, filename, argv, envp, flags, NULL);
-}
-
-int do_execve_file(struct file *file, void *__argv, void *__envp)
-{
-	struct user_arg_ptr argv = { .ptr.native = __argv };
-	struct user_arg_ptr envp = { .ptr.native = __envp };
-
-	return __do_execve_file(AT_FDCWD, NULL, argv, envp, 0, file);
 }
 
 int do_execve(struct filename *filename,
@@ -1981,7 +1663,7 @@ void set_dumpable(struct mm_struct *mm, int value)
 		return;
 
 	do {
-		old = READ_ONCE(mm->flags);
+		old = ACCESS_ONCE(mm->flags);
 		new = (old & ~MMF_DUMPABLE_MASK) | value;
 	} while (cmpxchg(&mm->flags, old, new) != old);
 }

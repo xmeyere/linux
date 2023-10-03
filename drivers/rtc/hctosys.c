@@ -9,8 +9,6 @@
  * published by the Free Software Foundation.
 */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/rtc.h>
 
 /* IMPORTANT: the RTC only stores whole seconds. It is arbitrary
@@ -34,8 +32,8 @@ static int __init rtc_hctosys(void)
 	struct rtc_device *rtc = rtc_class_open(CONFIG_RTC_HCTOSYS_DEVICE);
 
 	if (rtc == NULL) {
-		pr_info("unable to open rtc device (%s)\n",
-			CONFIG_RTC_HCTOSYS_DEVICE);
+		pr_err("%s: unable to open rtc device (%s)\n",
+			__FILE__, CONFIG_RTC_HCTOSYS_DEVICE);
 		goto err_open;
 	}
 
@@ -48,13 +46,6 @@ static int __init rtc_hctosys(void)
 	}
 
 	tv64.tv_sec = rtc_tm_to_time64(&tm);
-
-#if BITS_PER_LONG == 32
-	if (tv64.tv_sec > INT_MAX) {
-		err = -ERANGE;
-		goto err_read;
-	}
-#endif
 
 	err = do_settimeofday64(&tv64);
 

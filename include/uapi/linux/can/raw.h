@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: ((GPL-2.0 WITH Linux-syscall-note) OR BSD-3-Clause) */
 /*
  * linux/can/raw.h
  *
@@ -58,7 +57,6 @@ enum {
 	CAN_RAW_LOOPBACK,	/* local loopback (default:on)       */
 	CAN_RAW_RECV_OWN_MSGS,	/* receive my own msgs (default:off) */
 	CAN_RAW_FD_FRAMES,	/* allow CAN FD frames (default:off) */
-	CAN_RAW_JOIN_FILTERS,	/* all filters must match to trigger */
 };
 
 #endif /* !_UAPI_CAN_RAW_H */

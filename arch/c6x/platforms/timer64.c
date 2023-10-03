@@ -126,37 +126,35 @@ static int next_event(unsigned long delta,
 	return 0;
 }
 
-static int set_periodic(struct clock_event_device *evt)
+static void set_clock_mode(enum clock_event_mode mode,
+			   struct clock_event_device *evt)
 {
-	timer64_enable();
-	timer64_mode = TIMER64_MODE_PERIODIC;
-	timer64_config(TIMER64_RATE / HZ);
-	return 0;
-}
-
-static int set_oneshot(struct clock_event_device *evt)
-{
-	timer64_enable();
-	timer64_mode = TIMER64_MODE_ONE_SHOT;
-	return 0;
-}
-
-static int shutdown(struct clock_event_device *evt)
-{
-	timer64_mode = TIMER64_MODE_DISABLED;
-	timer64_disable();
-	return 0;
+	switch (mode) {
+	case CLOCK_EVT_MODE_PERIODIC:
+		timer64_enable();
+		timer64_mode = TIMER64_MODE_PERIODIC;
+		timer64_config(TIMER64_RATE / HZ);
+		break;
+	case CLOCK_EVT_MODE_ONESHOT:
+		timer64_enable();
+		timer64_mode = TIMER64_MODE_ONE_SHOT;
+		break;
+	case CLOCK_EVT_MODE_UNUSED:
+	case CLOCK_EVT_MODE_SHUTDOWN:
+		timer64_mode = TIMER64_MODE_DISABLED;
+		timer64_disable();
+		break;
+	case CLOCK_EVT_MODE_RESUME:
+		break;
+	}
 }
 
 static struct clock_event_device t64_clockevent_device = {
-	.name			= "TIMER64_EVT32_TIMER",
-	.features		= CLOCK_EVT_FEAT_ONESHOT |
-				  CLOCK_EVT_FEAT_PERIODIC,
-	.rating			= 200,
-	.set_state_shutdown	= shutdown,
-	.set_state_periodic	= set_periodic,
-	.set_state_oneshot	= set_oneshot,
-	.set_next_event		= next_event,
+	.name		= "TIMER64_EVT32_TIMER",
+	.features	= CLOCK_EVT_FEAT_ONESHOT | CLOCK_EVT_FEAT_PERIODIC,
+	.rating		= 200,
+	.set_mode	= set_clock_mode,
+	.set_next_event	= next_event,
 };
 
 static irqreturn_t timer_interrupt(int irq, void *dev_id)
@@ -204,14 +202,14 @@ void __init timer64_init(void)
 
 	timer = of_iomap(np, 0);
 	if (!timer) {
-		pr_debug("%pOF: Cannot map timer registers.\n", np);
+		pr_debug("%s: Cannot map timer registers.\n", np->full_name);
 		goto out;
 	}
-	pr_debug("%pOF: Timer registers=%p.\n", np, timer);
+	pr_debug("%s: Timer registers=%p.\n", np->full_name, timer);
 
 	cd->irq	= irq_of_parse_and_map(np, 0);
 	if (cd->irq == NO_IRQ) {
-		pr_debug("%pOF: Cannot find interrupt.\n", np);
+		pr_debug("%s: Cannot find interrupt.\n", np->full_name);
 		iounmap(timer);
 		goto out;
 	}
@@ -229,14 +227,12 @@ void __init timer64_init(void)
 		dscr_set_devstate(timer64_devstate_id, DSCR_DEVSTATE_ENABLED);
 	}
 
-	pr_debug("%pOF: Timer irq=%d.\n", np, cd->irq);
+	pr_debug("%s: Timer irq=%d.\n", np->full_name, cd->irq);
 
 	clockevents_calc_mult_shift(cd, c6x_core_freq / TIMER_DIVISOR, 5);
 
 	cd->max_delta_ns	= clockevent_delta2ns(0x7fffffff, cd);
-	cd->max_delta_ticks	= 0x7fffffff;
 	cd->min_delta_ns	= clockevent_delta2ns(250, cd);
-	cd->min_delta_ticks	= 250;
 
 	cd->cpumask		= cpumask_of(smp_processor_id());
 

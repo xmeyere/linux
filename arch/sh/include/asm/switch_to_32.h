@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_SH_SWITCH_TO_32_H
 #define __ASM_SH_SWITCH_TO_32_H
 
@@ -79,8 +78,6 @@ do {								\
 								\
 	if (is_dsp_enabled(prev))				\
 		__save_dsp(prev);				\
-	if (is_dsp_enabled(next))				\
-		__restore_dsp(next);				\
 								\
 	__ts1 = (u32 *)&prev->thread.sp;			\
 	__ts2 = (u32 *)&prev->thread.pc;			\
@@ -126,6 +123,12 @@ do {								\
 		: "r3", "t");					\
 								\
 	last = __last;						\
+} while (0)
+
+#define finish_arch_switch(prev)				\
+do {								\
+	if (is_dsp_enabled(prev))				\
+		__restore_dsp(prev);				\
 } while (0)
 
 #endif /* __ASM_SH_SWITCH_TO_32_H */

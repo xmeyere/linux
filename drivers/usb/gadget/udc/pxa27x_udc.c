@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Handles the Intel 27x USB Device Controller (UDC)
  *
  * Inspired by original driver by Frank Becker, David Brownell, and others.
  * Copyright (C) 2008 Robert Jarzmik
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 #include <linux/module.h>
 #include <linux/kernel.h>
@@ -29,7 +33,6 @@
 #include <linux/usb.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
-#include <linux/usb/phy.h>
 
 #include "pxa27x_udc.h"
 
@@ -90,134 +93,213 @@ static void handle_ep(struct pxa_ep *ep);
 static int state_dbg_show(struct seq_file *s, void *p)
 {
 	struct pxa_udc *udc = s->private;
+	int pos = 0, ret;
 	u32 tmp;
 
+	ret = -ENODEV;
 	if (!udc->driver)
-		return -ENODEV;
+		goto out;
 
 	/* basic device status */
-	seq_printf(s, DRIVER_DESC "\n"
-		   "%s version: %s\n"
-		   "Gadget driver: %s\n",
-		   driver_name, DRIVER_VERSION,
-		   udc->driver ? udc->driver->driver.name : "(none)");
+	pos += seq_printf(s, DRIVER_DESC "\n"
+			 "%s version: %s\nGadget driver: %s\n",
+			 driver_name, DRIVER_VERSION,
+			 udc->driver ? udc->driver->driver.name : "(none)");
 
 	tmp = udc_readl(udc, UDCCR);
-	seq_printf(s,
-		   "udccr=0x%0x(%s%s%s%s%s%s%s%s%s%s), con=%d,inter=%d,altinter=%d\n",
-		   tmp,
-		   (tmp & UDCCR_OEN) ? " oen":"",
-		   (tmp & UDCCR_AALTHNP) ? " aalthnp":"",
-		   (tmp & UDCCR_AHNP) ? " rem" : "",
-		   (tmp & UDCCR_BHNP) ? " rstir" : "",
-		   (tmp & UDCCR_DWRE) ? " dwre" : "",
-		   (tmp & UDCCR_SMAC) ? " smac" : "",
-		   (tmp & UDCCR_EMCE) ? " emce" : "",
-		   (tmp & UDCCR_UDR) ? " udr" : "",
-		   (tmp & UDCCR_UDA) ? " uda" : "",
-		   (tmp & UDCCR_UDE) ? " ude" : "",
-		   (tmp & UDCCR_ACN) >> UDCCR_ACN_S,
-		   (tmp & UDCCR_AIN) >> UDCCR_AIN_S,
-		   (tmp & UDCCR_AAISN) >> UDCCR_AAISN_S);
+	pos += seq_printf(s,
+			 "udccr=0x%0x(%s%s%s%s%s%s%s%s%s%s), "
+			 "con=%d,inter=%d,altinter=%d\n", tmp,
+			 (tmp & UDCCR_OEN) ? " oen":"",
+			 (tmp & UDCCR_AALTHNP) ? " aalthnp":"",
+			 (tmp & UDCCR_AHNP) ? " rem" : "",
+			 (tmp & UDCCR_BHNP) ? " rstir" : "",
+			 (tmp & UDCCR_DWRE) ? " dwre" : "",
+			 (tmp & UDCCR_SMAC) ? " smac" : "",
+			 (tmp & UDCCR_EMCE) ? " emce" : "",
+			 (tmp & UDCCR_UDR) ? " udr" : "",
+			 (tmp & UDCCR_UDA) ? " uda" : "",
+			 (tmp & UDCCR_UDE) ? " ude" : "",
+			 (tmp & UDCCR_ACN) >> UDCCR_ACN_S,
+			 (tmp & UDCCR_AIN) >> UDCCR_AIN_S,
+			 (tmp & UDCCR_AAISN) >> UDCCR_AAISN_S);
 	/* registers for device and ep0 */
-	seq_printf(s, "udcicr0=0x%08x udcicr1=0x%08x\n",
-		   udc_readl(udc, UDCICR0), udc_readl(udc, UDCICR1));
-	seq_printf(s, "udcisr0=0x%08x udcisr1=0x%08x\n",
-		   udc_readl(udc, UDCISR0), udc_readl(udc, UDCISR1));
-	seq_printf(s, "udcfnr=%d\n", udc_readl(udc, UDCFNR));
-	seq_printf(s, "irqs: reset=%lu, suspend=%lu, resume=%lu, reconfig=%lu\n",
-		   udc->stats.irqs_reset, udc->stats.irqs_suspend,
-		   udc->stats.irqs_resume, udc->stats.irqs_reconfig);
+	pos += seq_printf(s, "udcicr0=0x%08x udcicr1=0x%08x\n",
+			udc_readl(udc, UDCICR0), udc_readl(udc, UDCICR1));
+	pos += seq_printf(s, "udcisr0=0x%08x udcisr1=0x%08x\n",
+			udc_readl(udc, UDCISR0), udc_readl(udc, UDCISR1));
+	pos += seq_printf(s, "udcfnr=%d\n", udc_readl(udc, UDCFNR));
+	pos += seq_printf(s, "irqs: reset=%lu, suspend=%lu, resume=%lu, "
+			"reconfig=%lu\n",
+			udc->stats.irqs_reset, udc->stats.irqs_suspend,
+			udc->stats.irqs_resume, udc->stats.irqs_reconfig);
 
-	return 0;
+	ret = 0;
+out:
+	return ret;
 }
-DEFINE_SHOW_ATTRIBUTE(state_dbg);
 
 static int queues_dbg_show(struct seq_file *s, void *p)
 {
 	struct pxa_udc *udc = s->private;
 	struct pxa_ep *ep;
 	struct pxa27x_request *req;
-	int i, maxpkt;
+	int pos = 0, i, maxpkt, ret;
 
+	ret = -ENODEV;
 	if (!udc->driver)
-		return -ENODEV;
+		goto out;
 
 	/* dump endpoint queues */
 	for (i = 0; i < NR_PXA_ENDPOINTS; i++) {
 		ep = &udc->pxa_ep[i];
 		maxpkt = ep->fifo_size;
-		seq_printf(s,  "%-12s max_pkt=%d %s\n",
-			   EPNAME(ep), maxpkt, "pio");
+		pos += seq_printf(s,  "%-12s max_pkt=%d %s\n",
+				EPNAME(ep), maxpkt, "pio");
 
 		if (list_empty(&ep->queue)) {
-			seq_puts(s, "\t(nothing queued)\n");
+			pos += seq_printf(s, "\t(nothing queued)\n");
 			continue;
 		}
 
 		list_for_each_entry(req, &ep->queue, queue) {
-			seq_printf(s,  "\treq %p len %d/%d buf %p\n",
-				   &req->req, req->req.actual,
-				   req->req.length, req->req.buf);
+			pos += seq_printf(s,  "\treq %p len %d/%d buf %p\n",
+					&req->req, req->req.actual,
+					req->req.length, req->req.buf);
 		}
 	}
 
-	return 0;
+	ret = 0;
+out:
+	return ret;
 }
-DEFINE_SHOW_ATTRIBUTE(queues_dbg);
 
 static int eps_dbg_show(struct seq_file *s, void *p)
 {
 	struct pxa_udc *udc = s->private;
 	struct pxa_ep *ep;
-	int i;
+	int pos = 0, i, ret;
 	u32 tmp;
 
+	ret = -ENODEV;
 	if (!udc->driver)
-		return -ENODEV;
+		goto out;
 
 	ep = &udc->pxa_ep[0];
 	tmp = udc_ep_readl(ep, UDCCSR);
-	seq_printf(s, "udccsr0=0x%03x(%s%s%s%s%s%s%s)\n",
-		   tmp,
-		   (tmp & UDCCSR0_SA) ? " sa" : "",
-		   (tmp & UDCCSR0_RNE) ? " rne" : "",
-		   (tmp & UDCCSR0_FST) ? " fst" : "",
-		   (tmp & UDCCSR0_SST) ? " sst" : "",
-		   (tmp & UDCCSR0_DME) ? " dme" : "",
-		   (tmp & UDCCSR0_IPR) ? " ipr" : "",
-		   (tmp & UDCCSR0_OPC) ? " opc" : "");
+	pos += seq_printf(s, "udccsr0=0x%03x(%s%s%s%s%s%s%s)\n", tmp,
+			 (tmp & UDCCSR0_SA) ? " sa" : "",
+			 (tmp & UDCCSR0_RNE) ? " rne" : "",
+			 (tmp & UDCCSR0_FST) ? " fst" : "",
+			 (tmp & UDCCSR0_SST) ? " sst" : "",
+			 (tmp & UDCCSR0_DME) ? " dme" : "",
+			 (tmp & UDCCSR0_IPR) ? " ipr" : "",
+			 (tmp & UDCCSR0_OPC) ? " opc" : "");
 	for (i = 0; i < NR_PXA_ENDPOINTS; i++) {
 		ep = &udc->pxa_ep[i];
 		tmp = i? udc_ep_readl(ep, UDCCR) : udc_readl(udc, UDCCR);
-		seq_printf(s, "%-12s: IN %lu(%lu reqs), OUT %lu(%lu reqs), irqs=%lu, udccr=0x%08x, udccsr=0x%03x, udcbcr=%d\n",
-			   EPNAME(ep),
-			   ep->stats.in_bytes, ep->stats.in_ops,
-			   ep->stats.out_bytes, ep->stats.out_ops,
-			   ep->stats.irqs,
-			   tmp, udc_ep_readl(ep, UDCCSR),
-			   udc_ep_readl(ep, UDCBCR));
+		pos += seq_printf(s, "%-12s: "
+				"IN %lu(%lu reqs), OUT %lu(%lu reqs), "
+				"irqs=%lu, udccr=0x%08x, udccsr=0x%03x, "
+				"udcbcr=%d\n",
+				EPNAME(ep),
+				ep->stats.in_bytes, ep->stats.in_ops,
+				ep->stats.out_bytes, ep->stats.out_ops,
+				ep->stats.irqs,
+				tmp, udc_ep_readl(ep, UDCCSR),
+				udc_ep_readl(ep, UDCBCR));
 	}
 
-	return 0;
+	ret = 0;
+out:
+	return ret;
 }
-DEFINE_SHOW_ATTRIBUTE(eps_dbg);
+
+static int eps_dbg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, eps_dbg_show, inode->i_private);
+}
+
+static int queues_dbg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, queues_dbg_show, inode->i_private);
+}
+
+static int state_dbg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, state_dbg_show, inode->i_private);
+}
+
+static const struct file_operations state_dbg_fops = {
+	.owner		= THIS_MODULE,
+	.open		= state_dbg_open,
+	.llseek		= seq_lseek,
+	.read		= seq_read,
+	.release	= single_release,
+};
+
+static const struct file_operations queues_dbg_fops = {
+	.owner		= THIS_MODULE,
+	.open		= queues_dbg_open,
+	.llseek		= seq_lseek,
+	.read		= seq_read,
+	.release	= single_release,
+};
+
+static const struct file_operations eps_dbg_fops = {
+	.owner		= THIS_MODULE,
+	.open		= eps_dbg_open,
+	.llseek		= seq_lseek,
+	.read		= seq_read,
+	.release	= single_release,
+};
 
 static void pxa_init_debugfs(struct pxa_udc *udc)
 {
-	struct dentry *root;
+	struct dentry *root, *state, *queues, *eps;
 
 	root = debugfs_create_dir(udc->gadget.name, NULL);
-	udc->debugfs_root = root;
+	if (IS_ERR(root) || !root)
+		goto err_root;
 
-	debugfs_create_file("udcstate", 0400, root, udc, &state_dbg_fops);
-	debugfs_create_file("queues", 0400, root, udc, &queues_dbg_fops);
-	debugfs_create_file("epstate", 0400, root, udc, &eps_dbg_fops);
+	state = debugfs_create_file("udcstate", 0400, root, udc,
+			&state_dbg_fops);
+	if (!state)
+		goto err_state;
+	queues = debugfs_create_file("queues", 0400, root, udc,
+			&queues_dbg_fops);
+	if (!queues)
+		goto err_queues;
+	eps = debugfs_create_file("epstate", 0400, root, udc,
+			&eps_dbg_fops);
+	if (!eps)
+		goto err_eps;
+
+	udc->debugfs_root = root;
+	udc->debugfs_state = state;
+	udc->debugfs_queues = queues;
+	udc->debugfs_eps = eps;
+	return;
+err_eps:
+	debugfs_remove(eps);
+err_queues:
+	debugfs_remove(queues);
+err_state:
+	debugfs_remove(root);
+err_root:
+	dev_err(udc->dev, "debugfs is not available\n");
 }
 
 static void pxa_cleanup_debugfs(struct pxa_udc *udc)
 {
-	debugfs_remove_recursive(udc->debugfs_root);
+	debugfs_remove(udc->debugfs_eps);
+	debugfs_remove(udc->debugfs_queues);
+	debugfs_remove(udc->debugfs_state);
+	debugfs_remove(udc->debugfs_root);
+	udc->debugfs_eps = NULL;
+	udc->debugfs_queues = NULL;
+	udc->debugfs_state = NULL;
+	udc->debugfs_root = NULL;
 }
 
 #else
@@ -912,6 +994,8 @@ static int write_fifo(struct pxa_ep *ep, struct pxa27x_request *req)
 
 	max = ep->fifo_size;
 	do {
+		is_short = 0;
+
 		udccsr = udc_ep_readl(ep, UDCCSR);
 		if (udccsr & UDCCSR_PC) {
 			ep_vdbg(ep, "Clearing Transmit Complete, udccsr=%x\n",
@@ -1065,6 +1149,7 @@ static int pxa_ep_queue(struct usb_ep *_ep, struct usb_request *_req,
 	if (unlikely(!_ep))
 		return -EINVAL;
 
+	dev = udc_usb_ep->dev;
 	ep = udc_usb_ep->pxa_ep;
 	if (unlikely(!ep))
 		return -EINVAL;
@@ -1399,7 +1484,7 @@ static int pxa_ep_disable(struct usb_ep *_ep)
 	return 0;
 }
 
-static const struct usb_ep_ops pxa_ep_ops = {
+static struct usb_ep_ops pxa_ep_ops = {
 	.enable		= pxa_ep_enable,
 	.disable	= pxa_ep_disable,
 
@@ -1534,6 +1619,9 @@ static int pxa_udc_pullup(struct usb_gadget *_gadget, int is_active)
 	return 0;
 }
 
+static void udc_enable(struct pxa_udc *udc);
+static void udc_disable(struct pxa_udc *udc);
+
 /**
  * pxa_udc_vbus_session - Called by external transceiver to enable/disable udc
  * @_gadget: usb gadget
@@ -1578,37 +1666,6 @@ static int pxa_udc_vbus_draw(struct usb_gadget *_gadget, unsigned mA)
 		return usb_phy_set_power(udc->transceiver, mA);
 	return -EOPNOTSUPP;
 }
-
-/**
- * pxa_udc_phy_event - Called by phy upon VBus event
- * @nb: notifier block
- * @action: phy action, is vbus connect or disconnect
- * @data: the usb_gadget structure in pxa_udc
- *
- * Called by the USB Phy when a cable connect or disconnect is sensed.
- *
- * Returns 0
- */
-static int pxa_udc_phy_event(struct notifier_block *nb, unsigned long action,
-			     void *data)
-{
-	struct usb_gadget *gadget = data;
-
-	switch (action) {
-	case USB_EVENT_VBUS:
-		usb_gadget_vbus_connect(gadget);
-		return NOTIFY_OK;
-	case USB_EVENT_NONE:
-		usb_gadget_vbus_disconnect(gadget);
-		return NOTIFY_OK;
-	default:
-		return NOTIFY_DONE;
-	}
-}
-
-static struct notifier_block pxa27x_udc_phy = {
-	.notifier_call = pxa_udc_phy_event,
-};
 
 static int pxa27x_udc_start(struct usb_gadget *g,
 		struct usb_gadget_driver *driver);
@@ -1665,7 +1722,6 @@ static void udc_init_data(struct pxa_udc *dev)
 	INIT_LIST_HEAD(&dev->gadget.ep_list);
 	INIT_LIST_HEAD(&dev->gadget.ep0->ep_list);
 	dev->udc_usb_ep[0].pxa_ep = &dev->pxa_ep[0];
-	dev->gadget.quirk_altset_not_supp = 1;
 	ep0_idle(dev);
 
 	/* PXA endpoints init */
@@ -1780,10 +1836,13 @@ fail:
  * Disables all udc endpoints (even control endpoint), report disconnect to
  * the gadget user.
  */
-static void stop_activity(struct pxa_udc *udc)
+static void stop_activity(struct pxa_udc *udc, struct usb_gadget_driver *driver)
 {
 	int i;
 
+	/* don't disconnect drivers more than once */
+	if (udc->gadget.speed == USB_SPEED_UNKNOWN)
+		driver = NULL;
 	udc->gadget.speed = USB_SPEED_UNKNOWN;
 
 	for (i = 0; i < NR_USB_ENDPOINTS; i++)
@@ -1800,7 +1859,7 @@ static int pxa27x_udc_stop(struct usb_gadget *g)
 {
 	struct pxa_udc *udc = to_pxa(g);
 
-	stop_activity(udc);
+	stop_activity(udc, NULL);
 	udc_disable(udc);
 
 	udc->driver = NULL;
@@ -2248,7 +2307,7 @@ static void irq_udc_reset(struct pxa_udc *udc)
 
 	if ((udccr & UDCCR_UDA) == 0) {
 		dev_dbg(udc->dev, "USB reset start\n");
-		stop_activity(udc);
+		stop_activity(udc, udc->driver);
 	}
 	udc->gadget.speed = USB_SPEED_FULL;
 	memset(&udc->stats, 0, sizeof udc->stats);
@@ -2340,7 +2399,7 @@ static struct pxa_udc memory = {
 };
 
 #if defined(CONFIG_OF)
-static const struct of_device_id udc_pxa_dt_ids[] = {
+static struct of_device_id udc_pxa_dt_ids[] = {
 	{ .compatible = "marvell,pxa270-udc" },
 	{}
 };
@@ -2375,7 +2434,7 @@ static int pxa_udc_probe(struct platform_device *pdev)
 		}
 		udc->udc_command = mach->udc_command;
 	} else {
-		udc->gpiod = devm_gpiod_get(&pdev->dev, NULL, GPIOD_ASIS);
+		udc->gpiod = devm_gpiod_get(&pdev->dev, NULL);
 	}
 
 	regs = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -2387,14 +2446,7 @@ static int pxa_udc_probe(struct platform_device *pdev)
 		return udc->irq;
 
 	udc->dev = &pdev->dev;
-	if (of_have_populated_dt()) {
-		udc->transceiver =
-			devm_usb_get_phy_by_phandle(udc->dev, "phys", 0);
-		if (IS_ERR(udc->transceiver))
-			return PTR_ERR(udc->transceiver);
-	} else {
-		udc->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
-	}
+	udc->transceiver = usb_get_phy(USB_PHY_TYPE_USB2);
 
 	if (IS_ERR(udc->gpiod)) {
 		dev_err(&pdev->dev, "Couldn't find or request D+ gpio : %ld\n",
@@ -2427,20 +2479,14 @@ static int pxa_udc_probe(struct platform_device *pdev)
 		goto err;
 	}
 
-	if (!IS_ERR_OR_NULL(udc->transceiver))
-		usb_register_notifier(udc->transceiver, &pxa27x_udc_phy);
 	retval = usb_add_gadget_udc(&pdev->dev, &udc->gadget);
 	if (retval)
-		goto err_add_gadget;
+		goto err;
 
 	pxa_init_debugfs(udc);
 	if (should_enable_udc(udc))
 		udc_enable(udc);
 	return 0;
-
-err_add_gadget:
-	if (!IS_ERR_OR_NULL(udc->transceiver))
-		usb_unregister_notifier(udc->transceiver, &pxa27x_udc_phy);
 err:
 	clk_unprepare(udc->clk);
 	return retval;
@@ -2457,10 +2503,7 @@ static int pxa_udc_remove(struct platform_device *_dev)
 	usb_del_gadget_udc(&udc->gadget);
 	pxa_cleanup_debugfs(udc);
 
-	if (!IS_ERR_OR_NULL(udc->transceiver)) {
-		usb_unregister_notifier(udc->transceiver, &pxa27x_udc_phy);
-		usb_put_phy(udc->transceiver);
-	}
+	usb_put_phy(udc->transceiver);
 
 	udc->transceiver = NULL;
 	the_controller = NULL;
@@ -2503,9 +2546,6 @@ static int pxa_udc_suspend(struct platform_device *_dev, pm_message_t state)
 	udc_disable(udc);
 	udc->pullup_resume = udc->pullup_on;
 	dplus_pullup(udc, 0);
-
-	if (udc->driver)
-		udc->driver->disconnect(&udc->gadget);
 
 	return 0;
 }

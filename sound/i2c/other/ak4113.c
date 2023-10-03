@@ -73,7 +73,7 @@ int snd_ak4113_create(struct snd_card *card, ak4113_read_t *read,
 		void *private_data, struct ak4113 **r_ak4113)
 {
 	struct ak4113 *chip;
-	int err;
+	int err = 0;
 	unsigned char reg;
 	static struct snd_device_ops ops = {
 		.dev_free =     snd_ak4113_dev_free,
@@ -109,7 +109,7 @@ int snd_ak4113_create(struct snd_card *card, ak4113_read_t *read,
 
 __fail:
 	snd_ak4113_free(chip);
-	return err;
+	return err < 0 ? err : -EIO;
 }
 EXPORT_SYMBOL_GPL(snd_ak4113_create);
 
@@ -199,11 +199,12 @@ static int snd_ak4113_in_error_get(struct snd_kcontrol *kcontrol,
 				   struct snd_ctl_elem_value *ucontrol)
 {
 	struct ak4113 *chip = snd_kcontrol_chip(kcontrol);
+	long *ptr;
 
 	spin_lock_irq(&chip->lock);
-	ucontrol->value.integer.value[0] =
-		chip->errors[kcontrol->private_value];
-	chip->errors[kcontrol->private_value] = 0;
+	ptr = (long *)(((char *)chip) + kcontrol->private_value);
+	ucontrol->value.integer.value[0] = *ptr;
+	*ptr = 0;
 	spin_unlock_irq(&chip->lock);
 	return 0;
 }
@@ -372,7 +373,7 @@ static struct snd_kcontrol_new snd_ak4113_iec958_controls[] = {
 		SNDRV_CTL_ELEM_ACCESS_VOLATILE,
 	.info =		snd_ak4113_in_error_info,
 	.get =		snd_ak4113_in_error_get,
-	.private_value = AK4113_PARITY_ERRORS,
+	.private_value = offsetof(struct ak4113, parity_errors),
 },
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
@@ -381,7 +382,7 @@ static struct snd_kcontrol_new snd_ak4113_iec958_controls[] = {
 		SNDRV_CTL_ELEM_ACCESS_VOLATILE,
 	.info =		snd_ak4113_in_error_info,
 	.get =		snd_ak4113_in_error_get,
-	.private_value = AK4113_V_BIT_ERRORS,
+	.private_value = offsetof(struct ak4113, v_bit_errors),
 },
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
@@ -390,7 +391,7 @@ static struct snd_kcontrol_new snd_ak4113_iec958_controls[] = {
 		SNDRV_CTL_ELEM_ACCESS_VOLATILE,
 	.info =		snd_ak4113_in_error_info,
 	.get =		snd_ak4113_in_error_get,
-	.private_value = AK4113_CCRC_ERRORS,
+	.private_value = offsetof(struct ak4113, ccrc_errors),
 },
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
@@ -399,7 +400,7 @@ static struct snd_kcontrol_new snd_ak4113_iec958_controls[] = {
 		SNDRV_CTL_ELEM_ACCESS_VOLATILE,
 	.info =		snd_ak4113_in_error_info,
 	.get =		snd_ak4113_in_error_get,
-	.private_value = AK4113_QCRC_ERRORS,
+	.private_value = offsetof(struct ak4113, qcrc_errors),
 },
 {
 	.iface =	SNDRV_CTL_ELEM_IFACE_PCM,
@@ -550,13 +551,13 @@ int snd_ak4113_check_rate_and_errors(struct ak4113 *ak4113, unsigned int flags)
 	rcs2 = reg_read(ak4113, AK4113_REG_RCS2);
 	spin_lock_irqsave(&ak4113->lock, _flags);
 	if (rcs0 & AK4113_PAR)
-		ak4113->errors[AK4113_PARITY_ERRORS]++;
+		ak4113->parity_errors++;
 	if (rcs0 & AK4113_V)
-		ak4113->errors[AK4113_V_BIT_ERRORS]++;
+		ak4113->v_bit_errors++;
 	if (rcs2 & AK4113_CCRC)
-		ak4113->errors[AK4113_CCRC_ERRORS]++;
+		ak4113->ccrc_errors++;
 	if (rcs2 & AK4113_QCRC)
-		ak4113->errors[AK4113_QCRC_ERRORS]++;
+		ak4113->qcrc_errors++;
 	c0 = (ak4113->rcs0 & (AK4113_QINT | AK4113_CINT | AK4113_STC |
 				AK4113_AUDION | AK4113_AUTO | AK4113_UNLCK)) ^
 		(rcs0 & (AK4113_QINT | AK4113_CINT | AK4113_STC |

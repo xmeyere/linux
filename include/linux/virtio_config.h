@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_VIRTIO_CONFIG_H
 #define _LINUX_VIRTIO_CONFIG_H
 
@@ -7,8 +6,6 @@
 #include <linux/virtio.h>
 #include <linux/virtio_byteorder.h>
 #include <uapi/linux/virtio_config.h>
-
-struct irq_affinity;
 
 /**
  * virtio_config_ops - operations for configuring a virtio device
@@ -51,16 +48,14 @@ struct irq_affinity;
  *	Returns the first 32 feature bits (all we currently need).
  * @finalize_features: confirm what device features we'll be using.
  *	vdev: the virtio_device
- *	This sends the driver feature bits to the device: it can change
+ *	This gives the final feature bits for the device: it can change
  *	the dev->feature bits if it wants.
- * Note: despite the name this can be called any number of times.
  *	Returns 0 on success or error status
  * @bus_name: return the bus name associated with the device
  *	vdev: the virtio_device
  *      This returns a pointer to the bus name a la pci_name from which
  *      the caller can then copy.
  * @set_vq_affinity: set the affinity for a virtqueue.
- * @get_vq_affinity: get the affinity for a virtqueue (optional).
  */
 typedef void vq_callback_t(struct virtqueue *);
 struct virtio_config_ops {
@@ -73,17 +68,14 @@ struct virtio_config_ops {
 	void (*set_status)(struct virtio_device *vdev, u8 status);
 	void (*reset)(struct virtio_device *vdev);
 	int (*find_vqs)(struct virtio_device *, unsigned nvqs,
-			struct virtqueue *vqs[], vq_callback_t *callbacks[],
-			const char * const names[], const bool *ctx,
-			struct irq_affinity *desc);
+			struct virtqueue *vqs[],
+			vq_callback_t *callbacks[],
+			const char *names[]);
 	void (*del_vqs)(struct virtio_device *);
 	u64 (*get_features)(struct virtio_device *vdev);
 	int (*finalize_features)(struct virtio_device *vdev);
 	const char *(*bus_name)(struct virtio_device *vdev);
-	int (*set_vq_affinity)(struct virtqueue *vq,
-			       const struct cpumask *cpu_mask);
-	const struct cpumask *(*get_vq_affinity)(struct virtio_device *vdev,
-			int index);
+	int (*set_vq_affinity)(struct virtqueue *vq, int cpu);
 };
 
 /* If driver didn't advertise the feature, it will never appear. */
@@ -157,19 +149,6 @@ static inline bool virtio_has_feature(const struct virtio_device *vdev,
 	return __virtio_test_bit(vdev, fbit);
 }
 
-/**
- * virtio_has_iommu_quirk - determine whether this device has the iommu quirk
- * @vdev: the device
- */
-static inline bool virtio_has_iommu_quirk(const struct virtio_device *vdev)
-{
-	/*
-	 * Note the reverse polarity of the quirk feature (compared to most
-	 * other features), this is for compatibility with legacy systems.
-	 */
-	return !virtio_has_feature(vdev, VIRTIO_F_IOMMU_PLATFORM);
-}
-
 static inline
 struct virtqueue *virtio_find_single_vq(struct virtio_device *vdev,
 					vq_callback_t *c, const char *n)
@@ -177,30 +156,10 @@ struct virtqueue *virtio_find_single_vq(struct virtio_device *vdev,
 	vq_callback_t *callbacks[] = { c };
 	const char *names[] = { n };
 	struct virtqueue *vq;
-	int err = vdev->config->find_vqs(vdev, 1, &vq, callbacks, names, NULL,
-					 NULL);
+	int err = vdev->config->find_vqs(vdev, 1, &vq, callbacks, names);
 	if (err < 0)
 		return ERR_PTR(err);
 	return vq;
-}
-
-static inline
-int virtio_find_vqs(struct virtio_device *vdev, unsigned nvqs,
-			struct virtqueue *vqs[], vq_callback_t *callbacks[],
-			const char * const names[],
-			struct irq_affinity *desc)
-{
-	return vdev->config->find_vqs(vdev, nvqs, vqs, callbacks, names, NULL, desc);
-}
-
-static inline
-int virtio_find_vqs_ctx(struct virtio_device *vdev, unsigned nvqs,
-			struct virtqueue *vqs[], vq_callback_t *callbacks[],
-			const char * const names[], const bool *ctx,
-			struct irq_affinity *desc)
-{
-	return vdev->config->find_vqs(vdev, nvqs, vqs, callbacks, names, ctx,
-				      desc);
 }
 
 /**
@@ -238,49 +197,43 @@ const char *virtio_bus_name(struct virtio_device *vdev)
  *
  */
 static inline
-int virtqueue_set_affinity(struct virtqueue *vq, const struct cpumask *cpu_mask)
+int virtqueue_set_affinity(struct virtqueue *vq, int cpu)
 {
 	struct virtio_device *vdev = vq->vdev;
 	if (vdev->config->set_vq_affinity)
-		return vdev->config->set_vq_affinity(vq, cpu_mask);
+		return vdev->config->set_vq_affinity(vq, cpu);
 	return 0;
-}
-
-static inline bool virtio_is_little_endian(struct virtio_device *vdev)
-{
-	return virtio_has_feature(vdev, VIRTIO_F_VERSION_1) ||
-		virtio_legacy_is_little_endian();
 }
 
 /* Memory accessors */
 static inline u16 virtio16_to_cpu(struct virtio_device *vdev, __virtio16 val)
 {
-	return __virtio16_to_cpu(virtio_is_little_endian(vdev), val);
+	return __virtio16_to_cpu(virtio_has_feature(vdev, VIRTIO_F_VERSION_1), val);
 }
 
 static inline __virtio16 cpu_to_virtio16(struct virtio_device *vdev, u16 val)
 {
-	return __cpu_to_virtio16(virtio_is_little_endian(vdev), val);
+	return __cpu_to_virtio16(virtio_has_feature(vdev, VIRTIO_F_VERSION_1), val);
 }
 
 static inline u32 virtio32_to_cpu(struct virtio_device *vdev, __virtio32 val)
 {
-	return __virtio32_to_cpu(virtio_is_little_endian(vdev), val);
+	return __virtio32_to_cpu(virtio_has_feature(vdev, VIRTIO_F_VERSION_1), val);
 }
 
 static inline __virtio32 cpu_to_virtio32(struct virtio_device *vdev, u32 val)
 {
-	return __cpu_to_virtio32(virtio_is_little_endian(vdev), val);
+	return __cpu_to_virtio32(virtio_has_feature(vdev, VIRTIO_F_VERSION_1), val);
 }
 
 static inline u64 virtio64_to_cpu(struct virtio_device *vdev, __virtio64 val)
 {
-	return __virtio64_to_cpu(virtio_is_little_endian(vdev), val);
+	return __virtio64_to_cpu(virtio_has_feature(vdev, VIRTIO_F_VERSION_1), val);
 }
 
 static inline __virtio64 cpu_to_virtio64(struct virtio_device *vdev, u64 val)
 {
-	return __cpu_to_virtio64(virtio_is_little_endian(vdev), val);
+	return __cpu_to_virtio64(virtio_has_feature(vdev, VIRTIO_F_VERSION_1), val);
 }
 
 /* Config space accessors. */
@@ -345,6 +298,13 @@ static inline __virtio64 cpu_to_virtio64(struct virtio_device *vdev, u64 val)
 		}							\
 	} while(0)
 
+static inline u8 virtio_cread8(struct virtio_device *vdev, unsigned int offset)
+{
+	u8 ret;
+	vdev->config->get(vdev, offset, &ret, sizeof(ret));
+	return ret;
+}
+
 /* Read @count fields, @bytes each. */
 static inline void __virtio_cread_many(struct virtio_device *vdev,
 				       unsigned int offset,
@@ -366,18 +326,12 @@ static inline void __virtio_cread_many(struct virtio_device *vdev,
 	} while (gen != old);
 }
 
+
 static inline void virtio_cread_bytes(struct virtio_device *vdev,
 				      unsigned int offset,
 				      void *buf, size_t len)
 {
 	__virtio_cread_many(vdev, offset, buf, len, 1);
-}
-
-static inline u8 virtio_cread8(struct virtio_device *vdev, unsigned int offset)
-{
-	u8 ret;
-	vdev->config->get(vdev, offset, &ret, sizeof(ret));
-	return ret;
 }
 
 static inline void virtio_cwrite8(struct virtio_device *vdev,
@@ -420,6 +374,7 @@ static inline u64 virtio_cread64(struct virtio_device *vdev,
 				 unsigned int offset)
 {
 	u64 ret;
+	vdev->config->get(vdev, offset, &ret, sizeof(ret));
 	__virtio_cread_many(vdev, offset, &ret, 1, sizeof(ret));
 	return virtio64_to_cpu(vdev, (__force __virtio64)ret);
 }

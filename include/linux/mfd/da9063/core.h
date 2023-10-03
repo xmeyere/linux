@@ -3,8 +3,8 @@
  *
  * Copyright 2012 Dialog Semiconductor Ltd.
  *
- * Author: Michal Hajduk, Dialog Semiconductor
- * Author: Krystian Garbaciak, Dialog Semiconductor
+ * Author: Michal Hajduk <michal.hajduk@diasemi.com>
+ *	   Krystian Garbaciak <krystian.garbaciak@diasemi.com>
  *
  *  This program is free software; you can redistribute  it and/or modify it
  *  under  the terms of  the GNU General  Public License as published by the
@@ -29,11 +29,8 @@
 #define DA9063_DRVNAME_RTC		"da9063-rtc"
 #define DA9063_DRVNAME_VIBRATION	"da9063-vibration"
 
-#define PMIC_CHIP_ID_DA9063		0x61
-
-enum da9063_type {
-	PMIC_TYPE_DA9063 = 0,
-	PMIC_TYPE_DA9063L,
+enum da9063_models {
+	PMIC_DA9063 = 0x61,
 };
 
 enum da9063_variant_codes {
@@ -54,7 +51,6 @@ enum da9063_irqs {
 	DA9063_IRQ_COMP_1V2,
 	DA9063_IRQ_LDO_LIM,
 	DA9063_IRQ_REG_UVOV,
-	DA9063_IRQ_DVC_RDY,
 	DA9063_IRQ_VDD_MON,
 	DA9063_IRQ_WARN,
 	DA9063_IRQ_GPI0,
@@ -75,10 +71,13 @@ enum da9063_irqs {
 	DA9063_IRQ_GPI15,
 };
 
+#define DA9063_IRQ_BASE_OFFSET	0
+#define DA9063_NUM_IRQ		(DA9063_IRQ_GPI15 + 1 - DA9063_IRQ_BASE_OFFSET)
+
 struct da9063 {
 	/* Device */
 	struct device	*dev;
-	enum da9063_type type;
+	unsigned short	model;
 	unsigned char	variant_code;
 	unsigned int	flags;
 
@@ -93,5 +92,8 @@ struct da9063 {
 
 int da9063_device_init(struct da9063 *da9063, unsigned int irq);
 int da9063_irq_init(struct da9063 *da9063);
+
+void da9063_device_exit(struct da9063 *da9063);
+void da9063_irq_exit(struct da9063 *da9063);
 
 #endif /* __MFD_DA9063_CORE_H__ */

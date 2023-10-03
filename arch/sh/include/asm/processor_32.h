@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * include/asm-sh/processor.h
  *
@@ -57,7 +56,6 @@
 #define SR_FD		0x00008000
 #define SR_MD		0x40000000
 
-#define SR_USER_MASK	0x00000303	// M, Q, S, T bits
 /*
  * DSP structure and data
  */
@@ -137,6 +135,10 @@ extern void start_thread(struct pt_regs *regs, unsigned long new_pc, unsigned lo
 
 /* Free all resources held by a thread. */
 extern void release_thread(struct task_struct *);
+
+/* Copy and release all segment info associated with a VM */
+#define copy_segments(p, mm)	do { } while(0)
+#define release_segments(mm)	do { } while(0)
 
 /*
  * FPU lazy state save handling.

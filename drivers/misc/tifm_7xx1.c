@@ -194,7 +194,7 @@ static void tifm_7xx1_switch_media(struct work_struct *work)
 				spin_unlock_irqrestore(&fm->lock, flags);
 			}
 			if (sock)
-				put_device(&sock->dev);
+				tifm_free_device(&sock->dev);
 		}
 		spin_lock_irqsave(&fm->lock, flags);
 	}
@@ -236,15 +236,10 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 {
 	struct tifm_adapter *fm = pci_get_drvdata(dev);
 	int rc;
-	unsigned long timeout;
 	unsigned int good_sockets = 0, bad_sockets = 0;
 	unsigned long flags;
-	/* Maximum number of entries is 4 */
-	unsigned char new_ids[4];
+	unsigned char new_ids[fm->num_sockets];
 	DECLARE_COMPLETION_ONSTACK(finish_resume);
-
-	if (WARN_ON(fm->num_sockets > ARRAY_SIZE(new_ids)))
-		return -ENXIO;
 
 	pci_set_power_state(dev, PCI_D0);
 	pci_restore_state(dev);
@@ -277,8 +272,8 @@ static int tifm_7xx1_resume(struct pci_dev *dev)
 	if (good_sockets) {
 		fm->finish_me = &finish_resume;
 		spin_unlock_irqrestore(&fm->lock, flags);
-		timeout = wait_for_completion_timeout(&finish_resume, HZ);
-		dev_dbg(&dev->dev, "wait returned %lu\n", timeout);
+		rc = wait_for_completion_timeout(&finish_resume, HZ);
+		dev_dbg(&dev->dev, "wait returned %d\n", rc);
 		writel(TIFM_IRQ_FIFOMASK(good_sockets)
 		       | TIFM_IRQ_CARDMASK(good_sockets),
 		       fm->addr + FM_CLEAR_INTERRUPT_ENABLE);
@@ -419,7 +414,7 @@ static void tifm_7xx1_remove(struct pci_dev *dev)
 	tifm_free_adapter(fm);
 }
 
-static const struct pci_device_id tifm_7xx1_pci_tbl[] = {
+static struct pci_device_id tifm_7xx1_pci_tbl [] = {
 	{ PCI_VENDOR_ID_TI, PCI_DEVICE_ID_TI_XX21_XX11_FM, PCI_ANY_ID,
 	  PCI_ANY_ID, 0, 0, 0 }, /* xx21 - the one I have */
         { PCI_VENDOR_ID_TI, PCI_DEVICE_ID_TI_XX12_FM, PCI_ANY_ID,

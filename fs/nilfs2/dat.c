@@ -1,10 +1,23 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * dat.c - NILFS disk address translation.
  *
  * Copyright (C) 2006-2008 Nippon Telegraph and Telephone Corporation.
  *
- * Written by Koji Sato.
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
+ *
+ * Written by Koji Sato <koji@osrg.net>.
  */
 
 #include <linux/types.h>
@@ -111,13 +124,6 @@ static void nilfs_dat_commit_free(struct inode *dat,
 	kunmap_atomic(kaddr);
 
 	nilfs_dat_commit_entry(dat, req);
-
-	if (unlikely(req->pr_desc_bh == NULL || req->pr_bitmap_bh == NULL)) {
-		nilfs_error(dat->i_sb,
-			    "state inconsistency probably due to duplicate use of vblocknr = %llu",
-			    (unsigned long long)req->pr_entry_nr);
-		return;
-	}
 	nilfs_palloc_commit_free_entry(dat, req);
 }
 
@@ -149,6 +155,7 @@ void nilfs_dat_commit_start(struct inode *dat, struct nilfs_palloc_req *req,
 int nilfs_dat_prepare_end(struct inode *dat, struct nilfs_palloc_req *req)
 {
 	struct nilfs_dat_entry *entry;
+	__u64 start;
 	sector_t blocknr;
 	void *kaddr;
 	int ret;
@@ -162,6 +169,7 @@ int nilfs_dat_prepare_end(struct inode *dat, struct nilfs_palloc_req *req)
 	kaddr = kmap_atomic(req->pr_entry_bh->b_page);
 	entry = nilfs_palloc_block_get_entry(dat, req->pr_entry_nr,
 					     req->pr_entry_bh, kaddr);
+	start = le64_to_cpu(entry->de_start);
 	blocknr = le64_to_cpu(entry->de_blocknr);
 	kunmap_atomic(kaddr);
 
@@ -347,11 +355,10 @@ int nilfs_dat_move(struct inode *dat, __u64 vblocknr, sector_t blocknr)
 	kaddr = kmap_atomic(entry_bh->b_page);
 	entry = nilfs_palloc_block_get_entry(dat, vblocknr, entry_bh, kaddr);
 	if (unlikely(entry->de_blocknr == cpu_to_le64(0))) {
-		nilfs_msg(dat->i_sb, KERN_CRIT,
-			  "%s: invalid vblocknr = %llu, [%llu, %llu)",
-			  __func__, (unsigned long long)vblocknr,
-			  (unsigned long long)le64_to_cpu(entry->de_start),
-			  (unsigned long long)le64_to_cpu(entry->de_end));
+		printk(KERN_CRIT "%s: vbn = %llu, [%llu, %llu)\n", __func__,
+		       (unsigned long long)vblocknr,
+		       (unsigned long long)le64_to_cpu(entry->de_start),
+		       (unsigned long long)le64_to_cpu(entry->de_end));
 		kunmap_atomic(kaddr);
 		brelse(entry_bh);
 		return -EINVAL;
@@ -423,7 +430,7 @@ int nilfs_dat_translate(struct inode *dat, __u64 vblocknr, sector_t *blocknrp)
 	return ret;
 }
 
-ssize_t nilfs_dat_get_vinfo(struct inode *dat, void *buf, unsigned int visz,
+ssize_t nilfs_dat_get_vinfo(struct inode *dat, void *buf, unsigned visz,
 			    size_t nvi)
 {
 	struct buffer_head *entry_bh;
@@ -478,12 +485,14 @@ int nilfs_dat_read(struct super_block *sb, size_t entry_size,
 	int err;
 
 	if (entry_size > sb->s_blocksize) {
-		nilfs_msg(sb, KERN_ERR, "too large DAT entry size: %zu bytes",
-			  entry_size);
+		printk(KERN_ERR
+		       "NILFS: too large DAT entry size: %zu bytes.\n",
+		       entry_size);
 		return -EINVAL;
 	} else if (entry_size < NILFS_MIN_DAT_ENTRY_SIZE) {
-		nilfs_msg(sb, KERN_ERR, "too small DAT entry size: %zu bytes",
-			  entry_size);
+		printk(KERN_ERR
+		       "NILFS: too small DAT entry size: %zu bytes.\n",
+		       entry_size);
 		return -EINVAL;
 	}
 
@@ -504,9 +513,7 @@ int nilfs_dat_read(struct super_block *sb, size_t entry_size,
 	di = NILFS_DAT_I(dat);
 	lockdep_set_class(&di->mi.mi_sem, &dat_lock_key);
 	nilfs_palloc_setup_cache(dat, &di->palloc_cache);
-	err = nilfs_mdt_setup_shadow_map(dat, &di->shadow);
-	if (err)
-		goto failed;
+	nilfs_mdt_setup_shadow_map(dat, &di->shadow);
 
 	err = nilfs_read_inode_common(dat, raw_inode);
 	if (err)

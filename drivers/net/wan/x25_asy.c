@@ -124,6 +124,9 @@ static int x25_asy_change_mtu(struct net_device *dev, int newmtu)
 	unsigned char *xbuff, *rbuff;
 	int len;
 
+	if (newmtu > 65534)
+		return -EINVAL;
+
 	len = 2 * newmtu;
 	xbuff = kmalloc(len + 4, GFP_ATOMIC);
 	rbuff = kmalloc(len + 4, GFP_ATOMIC);
@@ -183,7 +186,7 @@ static inline void x25_asy_unlock(struct x25_asy *sl)
 	netif_wake_queue(sl->dev);
 }
 
-/* Send an LAPB frame to the LAPB module to process. */
+/* Send one completely decapsulated IP datagram to the IP layer. */
 
 static void x25_asy_bump(struct x25_asy *sl)
 {
@@ -195,19 +198,21 @@ static void x25_asy_bump(struct x25_asy *sl)
 	count = sl->rcount;
 	dev->stats.rx_bytes += count;
 
-	skb = dev_alloc_skb(count);
+	skb = dev_alloc_skb(count+1);
 	if (skb == NULL) {
 		netdev_warn(sl->dev, "memory squeeze, dropping packet\n");
 		dev->stats.rx_dropped++;
 		return;
 	}
-	skb_put_data(skb, sl->rbuff, count);
+	skb_push(skb, 1);	/* LAPB internal control */
+	memcpy(skb_put(skb, count), sl->rbuff, count);
 	skb->protocol = x25_type_trans(skb, sl->dev);
 	err = lapb_data_received(skb->dev, skb);
 	if (err != LAPB_OK) {
 		kfree_skb(skb);
 		printk(KERN_DEBUG "x25_asy: data received err - %d\n", err);
 	} else {
+		netif_rx(skb);
 		dev->stats.rx_packets++;
 	}
 }
@@ -322,7 +327,6 @@ static netdev_tx_t x25_asy_xmit(struct sk_buff *skb,
 		if (err != LAPB_OK)
 			netdev_err(dev, "lapb_disconnect_request error: %d\n",
 				   err);
-		/* fall through */
 	default:
 		kfree_skb(skb);
 		return NETDEV_TX_OK;
@@ -354,21 +358,12 @@ static netdev_tx_t x25_asy_xmit(struct sk_buff *skb,
  */
 
 /*
- *	Called when I frame data arrive. We add a pseudo header for upper
- *	layers and pass it to upper layers.
+ *	Called when I frame data arrives. We did the work above - throw it
+ *	at the net layer.
  */
 
 static int x25_asy_data_indication(struct net_device *dev, struct sk_buff *skb)
 {
-	if (skb_cow(skb, 1)) {
-		kfree_skb(skb);
-		return NET_RX_DROP;
-	}
-	skb_push(skb, 1);
-	skb->data[0] = X25_IFACE_DATA;
-
-	skb->protocol = x25_type_trans(skb, dev);
-
 	return netif_rx(skb);
 }
 
@@ -493,10 +488,8 @@ static int x25_asy_open(struct net_device *dev)
 
 	/* Cleanup */
 	kfree(sl->xbuff);
-	sl->xbuff = NULL;
 noxbuff:
 	kfree(sl->rbuff);
-	sl->rbuff = NULL;
 norbuff:
 	return -ENOMEM;
 }
@@ -556,11 +549,15 @@ static void x25_asy_receive_buf(struct tty_struct *tty,
 
 static int x25_asy_open_tty(struct tty_struct *tty)
 {
-	struct x25_asy *sl;
+	struct x25_asy *sl = tty->disc_data;
 	int err;
 
 	if (tty->ops->write == NULL)
 		return -EOPNOTSUPP;
+
+	/* First make sure we're not already connected. */
+	if (sl && sl->magic == X25_ASY_MAGIC)
+		return -EEXIST;
 
 	/* OK.  Find a free X.25 channel to use. */
 	sl = x25_asy_alloc();
@@ -578,10 +575,8 @@ static int x25_asy_open_tty(struct tty_struct *tty)
 
 	/* Perform the low-level X.25 async init */
 	err = x25_asy_open(sl->dev);
-	if (err) {
-		x25_asy_free(sl);
+	if (err)
 		return err;
-	}
 	/* Done.  We have linked the TTY line to a channel. */
 	return 0;
 }
@@ -664,7 +659,7 @@ static void x25_asy_unesc(struct x25_asy *sl, unsigned char s)
 	switch (s) {
 	case X25_END:
 		if (!test_and_clear_bit(SLF_ERROR, &sl->flags) &&
-		    sl->rcount >= 2)
+		    sl->rcount > 2)
 			x25_asy_bump(sl);
 		clear_bit(SLF_ESCAPE, &sl->flags);
 		sl->rcount = 0;
@@ -758,8 +753,6 @@ static void x25_asy_setup(struct net_device *dev)
 	 */
 
 	dev->mtu		= SL_MTU;
-	dev->min_mtu		= 0;
-	dev->max_mtu		= 65534;
 	dev->netdev_ops		= &x25_asy_netdev_ops;
 	dev->watchdog_timeo	= HZ*20;
 	dev->hard_header_len	= 0;

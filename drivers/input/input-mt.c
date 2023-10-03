@@ -49,7 +49,7 @@ int input_mt_init_slots(struct input_dev *dev, unsigned int num_slots,
 	if (mt)
 		return mt->num_slots != num_slots ? -EINVAL : 0;
 
-	mt = kzalloc(struct_size(mt, slots, num_slots), GFP_KERNEL);
+	mt = kzalloc(sizeof(*mt) + num_slots * sizeof(*mt->slots), GFP_KERNEL);
 	if (!mt)
 		goto err_mem;
 
@@ -88,12 +88,9 @@ int input_mt_init_slots(struct input_dev *dev, unsigned int num_slots,
 			goto err_mem;
 	}
 
-	/* Mark slots as 'inactive' */
+	/* Mark slots as 'unused' */
 	for (i = 0; i < num_slots; i++)
 		input_mt_set_value(&mt->slots[i], ABS_MT_TRACKING_ID, -1);
-
-	/* Mark slots as 'unused' */
-	mt->frame = 1;
 
 	dev->mt = mt;
 	return 0;
@@ -131,10 +128,8 @@ EXPORT_SYMBOL(input_mt_destroy_slots);
  * inactive, or if the tool type is changed, a new tracking id is
  * assigned to the slot. The tool type is only reported if the
  * corresponding absbit field is set.
- *
- * Returns true if contact is active.
  */
-bool input_mt_report_slot_state(struct input_dev *dev,
+void input_mt_report_slot_state(struct input_dev *dev,
 				unsigned int tool_type, bool active)
 {
 	struct input_mt *mt = dev->mt;
@@ -142,24 +137,22 @@ bool input_mt_report_slot_state(struct input_dev *dev,
 	int id;
 
 	if (!mt)
-		return false;
+		return;
 
 	slot = &mt->slots[mt->slot];
 	slot->frame = mt->frame;
 
 	if (!active) {
 		input_event(dev, EV_ABS, ABS_MT_TRACKING_ID, -1);
-		return false;
+		return;
 	}
 
 	id = input_mt_get_value(slot, ABS_MT_TRACKING_ID);
-	if (id < 0)
+	if (id < 0 || input_mt_get_value(slot, ABS_MT_TOOL_TYPE) != tool_type)
 		id = input_mt_new_trkid(mt);
 
 	input_event(dev, EV_ABS, ABS_MT_TRACKING_ID, id);
 	input_event(dev, EV_ABS, ABS_MT_TOOL_TYPE, tool_type);
-
-	return true;
 }
 EXPORT_SYMBOL(input_mt_report_slot_state);
 
@@ -222,23 +215,8 @@ void input_mt_report_pointer_emulation(struct input_dev *dev, bool use_count)
 	}
 
 	input_event(dev, EV_KEY, BTN_TOUCH, count > 0);
-
-	if (use_count) {
-		if (count == 0 &&
-		    !test_bit(ABS_MT_DISTANCE, dev->absbit) &&
-		    test_bit(ABS_DISTANCE, dev->absbit) &&
-		    input_abs_get_val(dev, ABS_DISTANCE) != 0) {
-			/*
-			 * Force reporting BTN_TOOL_FINGER for devices that
-			 * only report general hover (and not per-contact
-			 * distance) when contact is in proximity but not
-			 * on the surface.
-			 */
-			count = 1;
-		}
-
+	if (use_count)
 		input_mt_report_finger_count(dev, count);
-	}
 
 	if (oldest) {
 		int x = input_mt_get_value(oldest, ABS_MT_POSITION_X);
@@ -387,35 +365,27 @@ static void input_mt_set_slots(struct input_mt *mt,
 			       int *slots, int num_pos)
 {
 	struct input_mt_slot *s;
-	int *w = mt->red, j;
+	int *w = mt->red, *p;
 
-	for (j = 0; j != num_pos; j++)
-		slots[j] = -1;
+	for (p = slots; p != slots + num_pos; p++)
+		*p = -1;
 
 	for (s = mt->slots; s != mt->slots + mt->num_slots; s++) {
 		if (!input_mt_is_active(s))
 			continue;
-
-		for (j = 0; j != num_pos; j++) {
-			if (w[j] < 0) {
-				slots[j] = s - mt->slots;
-				break;
-			}
-		}
-
-		w += num_pos;
+		for (p = slots; p != slots + num_pos; p++)
+			if (*w++ < 0)
+				*p = s - mt->slots;
 	}
 
 	for (s = mt->slots; s != mt->slots + mt->num_slots; s++) {
 		if (input_mt_is_active(s))
 			continue;
-
-		for (j = 0; j != num_pos; j++) {
-			if (slots[j] < 0) {
-				slots[j] = s - mt->slots;
+		for (p = slots; p != slots + num_pos; p++)
+			if (*p < 0) {
+				*p = s - mt->slots;
 				break;
 			}
-		}
 	}
 }
 
@@ -469,8 +439,6 @@ EXPORT_SYMBOL(input_mt_assign_slots);
  * set the key on the first unused slot and return.
  *
  * If no available slot can be found, -1 is returned.
- * Note that for this function to work properly, input_mt_sync_frame() has
- * to be called at each frame.
  */
 int input_mt_get_slot_by_key(struct input_dev *dev, int key)
 {
@@ -485,7 +453,7 @@ int input_mt_get_slot_by_key(struct input_dev *dev, int key)
 			return s - mt->slots;
 
 	for (s = mt->slots; s != mt->slots + mt->num_slots; s++)
-		if (!input_mt_is_active(s) && !input_mt_is_used(mt, s)) {
+		if (!input_mt_is_active(s)) {
 			s->key = key;
 			return s - mt->slots;
 		}

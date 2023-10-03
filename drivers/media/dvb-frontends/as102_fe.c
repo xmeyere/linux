@@ -14,7 +14,7 @@
  * GNU General Public License for more details.
  */
 
-#include <media/dvb_frontend.h>
+#include <dvb_frontend.h>
 
 #include "as102_fe.h"
 
@@ -32,7 +32,7 @@ struct as102_state {
 	uint32_t ber;
 };
 
-static uint8_t as102_fe_get_code_rate(enum fe_code_rate arg)
+static uint8_t as102_fe_get_code_rate(fe_code_rate_t arg)
 {
 	uint8_t c;
 
@@ -190,10 +190,10 @@ static int as102_fe_set_frontend(struct dvb_frontend *fe)
 	return state->ops->set_tune(state->priv, &tune_args);
 }
 
-static int as102_fe_get_frontend(struct dvb_frontend *fe,
-				 struct dtv_frontend_properties *c)
+static int as102_fe_get_frontend(struct dvb_frontend *fe)
 {
 	struct as102_state *state = fe->demodulator_priv;
+	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	int ret = 0;
 	struct as10x_tps tps = { 0 };
 
@@ -306,7 +306,7 @@ static int as102_fe_get_tune_settings(struct dvb_frontend *fe,
 	return 0;
 }
 
-static int as102_fe_read_status(struct dvb_frontend *fe, enum fe_status *status)
+static int as102_fe_read_status(struct dvb_frontend *fe, fe_status_t *status)
 {
 	int ret = 0;
 	struct as102_state *state = fe->demodulator_priv;
@@ -415,13 +415,13 @@ static void as102_fe_release(struct dvb_frontend *fe)
 }
 
 
-static const struct dvb_frontend_ops as102_fe_ops = {
+static struct dvb_frontend_ops as102_fe_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		.name			= "Abilis AS102 DVB-T",
-		.frequency_min_hz	= 174 * MHz,
-		.frequency_max_hz	= 862 * MHz,
-		.frequency_stepsize_hz	= 166667,
+		.frequency_min		= 174000000,
+		.frequency_max		= 862000000,
+		.frequency_stepsize	= 166667,
 		.caps = FE_CAN_INVERSION_AUTO
 			| FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4
 			| FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO
@@ -455,10 +455,11 @@ struct dvb_frontend *as102_attach(const char *name,
 	struct as102_state *state;
 	struct dvb_frontend *fe;
 
-	state = kzalloc(sizeof(*state), GFP_KERNEL);
-	if (!state)
+	state = kzalloc(sizeof(struct as102_state), GFP_KERNEL);
+	if (state == NULL) {
+		pr_err("%s: unable to allocate memory for state\n", __func__);
 		return NULL;
-
+	}
 	fe = &state->frontend;
 	fe->demodulator_priv = state;
 	state->ops = ops;

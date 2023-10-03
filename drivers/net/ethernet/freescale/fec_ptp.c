@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Fast Ethernet Controller (ENET) PTP driver for MX6x.
  *
  * Copyright (C) 2012 Freescale Semiconductor, Inc.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms and conditions of the GNU General Public License,
+ * version 2, as published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
  */
 
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
@@ -99,8 +111,10 @@ static int fec_ptp_enable_pps(struct fec_enet_private *fep, uint enable)
 {
 	unsigned long flags;
 	u32 val, tempval;
-	struct timespec64 ts;
+	int inc;
+	struct timespec ts;
 	u64 ns;
+	u32 remainder;
 	val = 0;
 
 	if (!(fep->hwts_tx_en || fep->hwts_rx_en)) {
@@ -113,6 +127,7 @@ static int fec_ptp_enable_pps(struct fec_enet_private *fep, uint enable)
 
 	fep->pps_channel = DEFAULT_PPS_CHANNEL;
 	fep->reload_period = PPS_OUPUT_RELOAD_PERIOD;
+	inc = fep->ptp_inc;
 
 	spin_lock_irqsave(&fep->tmreg_lock, flags);
 
@@ -121,7 +136,7 @@ static int fec_ptp_enable_pps(struct fec_enet_private *fep, uint enable)
 		 */
 		writel(FEC_T_TF_MASK, fep->hwp + FEC_TCSR(fep->pps_channel));
 
-		/* It is recommended to double check the TMODE field in the
+		/* It is recommended to doulbe check the TMODE field in the
 		 * TCSR register to be cleared before the first compare counter
 		 * is written into TCCR register. Just add a double check.
 		 */
@@ -141,10 +156,15 @@ static int fec_ptp_enable_pps(struct fec_enet_private *fep, uint enable)
 		 * NSEC_PER_SEC - ts.tv_nsec. Add the remaining nanoseconds
 		 * to current timer would be next second.
 		 */
-		tempval = fep->cc.read(&fep->cc);
+		tempval = readl(fep->hwp + FEC_ATIME_CTRL);
+		tempval |= FEC_T_CTRL_CAPTURE;
+		writel(tempval, fep->hwp + FEC_ATIME_CTRL);
+
+		tempval = readl(fep->hwp + FEC_ATIME);
 		/* Convert the ptp local counter to 1588 timestamp */
 		ns = timecounter_cyc2time(&fep->tc, tempval);
-		ts = ns_to_timespec64(ns);
+		ts.tv_sec = div_u64_rem(ns, 1000000000ULL, &remainder);
+		ts.tv_nsec = remainder;
 
 		/* The tempval is  less than 3 seconds, and  so val is less than
 		 * 4 seconds. No overflow for 32bit calculation.
@@ -212,17 +232,19 @@ static int fec_ptp_enable_pps(struct fec_enet_private *fep, uint enable)
  * cyclecounter structure used to construct a ns counter from the
  * arbitrary fixed point registers
  */
-static u64 fec_ptp_read(const struct cyclecounter *cc)
+static cycle_t fec_ptp_read(const struct cyclecounter *cc)
 {
 	struct fec_enet_private *fep =
 		container_of(cc, struct fec_enet_private, cc);
+	const struct platform_device_id *id_entry =
+		platform_get_device_id(fep->pdev);
 	u32 tempval;
 
 	tempval = readl(fep->hwp + FEC_ATIME_CTRL);
 	tempval |= FEC_T_CTRL_CAPTURE;
 	writel(tempval, fep->hwp + FEC_ATIME_CTRL);
 
-	if (fep->quirks & FEC_QUIRK_BUG_CAPTURE)
+	if (id_entry->driver_data & FEC_QUIRK_BUG_CAPTURE)
 		udelay(1);
 
 	return readl(fep->hwp + FEC_ATIME);
@@ -331,7 +353,6 @@ static int fec_ptp_adjfreq(struct ptp_clock_info *ptp, s32 ppb)
 	tmp = readl(fep->hwp + FEC_ATIME_INC) & FEC_T_INC_MASK;
 	tmp |= corr_ns << FEC_T_INC_CORR_OFFSET;
 	writel(tmp, fep->hwp + FEC_ATIME_INC);
-	corr_period = corr_period > 1 ? corr_period - 1 : corr_period;
 	writel(corr_period, fep->hwp + FEC_ATIME_CORR);
 	/* dummy read to update the timer. */
 	timecounter_read(&fep->tc);
@@ -369,25 +390,20 @@ static int fec_ptp_adjtime(struct ptp_clock_info *ptp, s64 delta)
  * read the timecounter and return the correct value on ns,
  * after converting it into a struct timespec.
  */
-static int fec_ptp_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
+static int fec_ptp_gettime(struct ptp_clock_info *ptp, struct timespec *ts)
 {
 	struct fec_enet_private *adapter =
 	    container_of(ptp, struct fec_enet_private, ptp_caps);
 	u64 ns;
+	u32 remainder;
 	unsigned long flags;
 
-	mutex_lock(&adapter->ptp_clk_mutex);
-	/* Check the ptp clock */
-	if (!adapter->ptp_clk_on) {
-		mutex_unlock(&adapter->ptp_clk_mutex);
-		return -EINVAL;
-	}
 	spin_lock_irqsave(&adapter->tmreg_lock, flags);
 	ns = timecounter_read(&adapter->tc);
 	spin_unlock_irqrestore(&adapter->tmreg_lock, flags);
-	mutex_unlock(&adapter->ptp_clk_mutex);
 
-	*ts = ns_to_timespec64(ns);
+	ts->tv_sec = div_u64_rem(ns, 1000000000ULL, &remainder);
+	ts->tv_nsec = remainder;
 
 	return 0;
 }
@@ -401,7 +417,7 @@ static int fec_ptp_gettime(struct ptp_clock_info *ptp, struct timespec64 *ts)
  * wall timer value.
  */
 static int fec_ptp_settime(struct ptp_clock_info *ptp,
-			   const struct timespec64 *ts)
+			   const struct timespec *ts)
 {
 	struct fec_enet_private *fep =
 	    container_of(ptp, struct fec_enet_private, ptp_caps);
@@ -417,7 +433,8 @@ static int fec_ptp_settime(struct ptp_clock_info *ptp,
 		return -EINVAL;
 	}
 
-	ns = timespec64_to_ns(ts);
+	ns = ts->tv_sec * 1000000000ULL;
+	ns += ts->tv_nsec;
 	/* Get the timer value based on timestamp.
 	 * Update the counter with the masked value.
 	 */
@@ -453,6 +470,12 @@ static int fec_ptp_enable(struct ptp_clock_info *ptp,
 	return -EOPNOTSUPP;
 }
 
+/**
+ * fec_ptp_hwtstamp_ioctl - control hardware time stamping
+ * @ndev: pointer to net_device
+ * @ifreq: ioctl data
+ * @cmd: particular ioctl requested
+ */
 int fec_ptp_set(struct net_device *ndev, struct ifreq *ifr)
 {
 	struct fec_enet_private *fep = netdev_priv(ndev);
@@ -485,6 +508,12 @@ int fec_ptp_set(struct net_device *ndev, struct ifreq *ifr)
 		break;
 
 	default:
+		/*
+		 * register RXMTRL must be set in order to do V1 packets,
+		 * therefore it is not possible to time stamp both V1 Sync and
+		 * Delay_Req messages and hardware does not support
+		 * timestamping all packets => return error
+		 */
 		fep->hwts_rx_en = 1;
 		config.rx_filter = HWTSTAMP_FILTER_ALL;
 		break;
@@ -530,11 +559,61 @@ static void fec_time_keep(struct work_struct *work)
 	schedule_delayed_work(&fep->time_keep, HZ);
 }
 
-/* This function checks the pps event and reloads the timer compare counter. */
-static irqreturn_t fec_pps_interrupt(int irq, void *dev_id)
+/**
+ * fec_ptp_init
+ * @ndev: The FEC network adapter
+ *
+ * This function performs the required steps for enabling ptp
+ * support. If ptp support has already been loaded it simply calls the
+ * cyclecounter init routine and exits.
+ */
+
+void fec_ptp_init(struct platform_device *pdev)
 {
-	struct net_device *ndev = dev_id;
+	struct net_device *ndev = platform_get_drvdata(pdev);
 	struct fec_enet_private *fep = netdev_priv(ndev);
+
+	fep->ptp_caps.owner = THIS_MODULE;
+	snprintf(fep->ptp_caps.name, 16, "fec ptp");
+
+	fep->ptp_caps.max_adj = 250000000;
+	fep->ptp_caps.n_alarm = 0;
+	fep->ptp_caps.n_ext_ts = 0;
+	fep->ptp_caps.n_per_out = 0;
+	fep->ptp_caps.n_pins = 0;
+	fep->ptp_caps.pps = 1;
+	fep->ptp_caps.adjfreq = fec_ptp_adjfreq;
+	fep->ptp_caps.adjtime = fec_ptp_adjtime;
+	fep->ptp_caps.gettime = fec_ptp_gettime;
+	fep->ptp_caps.settime = fec_ptp_settime;
+	fep->ptp_caps.enable = fec_ptp_enable;
+
+	fep->cycle_speed = clk_get_rate(fep->clk_ptp);
+	fep->ptp_inc = NSEC_PER_SEC / fep->cycle_speed;
+
+	spin_lock_init(&fep->tmreg_lock);
+
+	fec_ptp_start_cyclecounter(ndev);
+
+	INIT_DELAYED_WORK(&fep->time_keep, fec_time_keep);
+
+	fep->ptp_clock = ptp_clock_register(&fep->ptp_caps, &pdev->dev);
+	if (IS_ERR(fep->ptp_clock)) {
+		fep->ptp_clock = NULL;
+		pr_err("ptp_clock_register failed\n");
+	}
+
+	schedule_delayed_work(&fep->time_keep, HZ);
+}
+
+/**
+ * fec_ptp_check_pps_event
+ * @fep: the fec_enet_private structure handle
+ *
+ * This function check the pps event and reload the timer compare counter.
+ */
+uint fec_ptp_check_pps_event(struct fec_enet_private *fep)
+{
 	u32 val;
 	u8 channel = fep->pps_channel;
 	struct ptp_clock_event event;
@@ -550,90 +629,12 @@ static irqreturn_t fec_pps_interrupt(int irq, void *dev_id)
 		} while (readl(fep->hwp + FEC_TCSR(channel)) & FEC_T_TF_MASK);
 
 		/* Update the counter; */
-		fep->next_counter = (fep->next_counter + fep->reload_period) &
-				fep->cc.mask;
+		fep->next_counter = (fep->next_counter + fep->reload_period) & fep->cc.mask;
 
 		event.type = PTP_CLOCK_PPS;
 		ptp_clock_event(fep->ptp_clock, &event);
-		return IRQ_HANDLED;
+		return 1;
 	}
 
-	return IRQ_NONE;
-}
-
-/**
- * fec_ptp_init
- * @ndev: The FEC network adapter
- *
- * This function performs the required steps for enabling ptp
- * support. If ptp support has already been loaded it simply calls the
- * cyclecounter init routine and exits.
- */
-
-void fec_ptp_init(struct platform_device *pdev, int irq_idx)
-{
-	struct net_device *ndev = platform_get_drvdata(pdev);
-	struct fec_enet_private *fep = netdev_priv(ndev);
-	int irq;
-	int ret;
-
-	fep->ptp_caps.owner = THIS_MODULE;
-	snprintf(fep->ptp_caps.name, 16, "fec ptp");
-
-	fep->ptp_caps.max_adj = 250000000;
-	fep->ptp_caps.n_alarm = 0;
-	fep->ptp_caps.n_ext_ts = 0;
-	fep->ptp_caps.n_per_out = 0;
-	fep->ptp_caps.n_pins = 0;
-	fep->ptp_caps.pps = 1;
-	fep->ptp_caps.adjfreq = fec_ptp_adjfreq;
-	fep->ptp_caps.adjtime = fec_ptp_adjtime;
-	fep->ptp_caps.gettime64 = fec_ptp_gettime;
-	fep->ptp_caps.settime64 = fec_ptp_settime;
-	fep->ptp_caps.enable = fec_ptp_enable;
-
-	fep->cycle_speed = clk_get_rate(fep->clk_ptp);
-	if (!fep->cycle_speed) {
-		fep->cycle_speed = NSEC_PER_SEC;
-		dev_err(&fep->pdev->dev, "clk_ptp clock rate is zero\n");
-	}
-	fep->ptp_inc = NSEC_PER_SEC / fep->cycle_speed;
-
-	spin_lock_init(&fep->tmreg_lock);
-
-	fec_ptp_start_cyclecounter(ndev);
-
-	INIT_DELAYED_WORK(&fep->time_keep, fec_time_keep);
-
-	irq = platform_get_irq_byname(pdev, "pps");
-	if (irq < 0)
-		irq = platform_get_irq(pdev, irq_idx);
-	/* Failure to get an irq is not fatal,
-	 * only the PTP_CLOCK_PPS clock events should stop
-	 */
-	if (irq >= 0) {
-		ret = devm_request_irq(&pdev->dev, irq, fec_pps_interrupt,
-				       0, pdev->name, ndev);
-		if (ret < 0)
-			dev_warn(&pdev->dev, "request for pps irq failed(%d)\n",
-				 ret);
-	}
-
-	fep->ptp_clock = ptp_clock_register(&fep->ptp_caps, &pdev->dev);
-	if (IS_ERR(fep->ptp_clock)) {
-		fep->ptp_clock = NULL;
-		pr_err("ptp_clock_register failed\n");
-	}
-
-	schedule_delayed_work(&fep->time_keep, HZ);
-}
-
-void fec_ptp_stop(struct platform_device *pdev)
-{
-	struct net_device *ndev = platform_get_drvdata(pdev);
-	struct fec_enet_private *fep = netdev_priv(ndev);
-
-	cancel_delayed_work_sync(&fep->time_keep);
-	if (fep->ptp_clock)
-		ptp_clock_unregister(fep->ptp_clock);
+	return 0;
 }

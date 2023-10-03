@@ -21,7 +21,6 @@
 #include <linux/init.h>
 #include <linux/ioport.h>
 #include <linux/platform_device.h>
-#include <linux/highmem.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
 #include <linux/blkdev.h>
@@ -282,7 +281,7 @@ static inline void buffer_swap32(u32 *buf, int len)
 	int i;
 
 	for (i = 0; i < ((len + 3) / 4); i++) {
-		*buf = swab32(*buf);
+		st_le32(buf, *buf);
 		buf++;
 	}
 }
@@ -307,6 +306,9 @@ static int mxcmci_setup_data(struct mxcmci_host *host, struct mmc_data *data)
 	struct scatterlist *sg;
 	enum dma_transfer_direction slave_dirn;
 	int i, nents;
+
+	if (data->flags & MMC_DATA_STREAM)
+		nob = 0xffff;
 
 	host->data = data;
 	data->bytes_xfered = 0;
@@ -603,7 +605,11 @@ static int mxcmci_push(struct mxcmci_host *host, void *_buf, int bytes)
 		mxcmci_writel(host, cpu_to_le32(tmp), MMC_REG_BUFFER_ACCESS);
 	}
 
-	return mxcmci_poll_status(host, STATUS_BUF_WRITE_RDY);
+	stat = mxcmci_poll_status(host, STATUS_BUF_WRITE_RDY);
+	if (stat)
+		return stat;
+
+	return 0;
 }
 
 static int mxcmci_transfer_data(struct mxcmci_host *host)
@@ -681,9 +687,6 @@ static void mxcmci_data_done(struct mxcmci_host *host, unsigned int stat)
 	data_error = mxcmci_finish_data(host, stat);
 
 	spin_unlock_irqrestore(&host->lock, flags);
-
-	if (data_error)
-		return;
 
 	mxcmci_read_response(host, stat);
 	host->cmd = NULL;
@@ -964,9 +967,10 @@ static bool filter(struct dma_chan *chan, void *param)
 	return true;
 }
 
-static void mxcmci_watchdog(struct timer_list *t)
+static void mxcmci_watchdog(unsigned long data)
 {
-	struct mxcmci_host *host = from_timer(host, t, watchdog);
+	struct mmc_host *mmc = (struct mmc_host *)data;
+	struct mxcmci_host *host = mmc_priv(mmc);
 	struct mmc_request *req = host->req;
 	unsigned int stat = mxcmci_readl(host, MMC_REG_STATUS);
 
@@ -1018,7 +1022,7 @@ static int mxcmci_probe(struct platform_device *pdev)
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0)
-		return irq;
+		return -EINVAL;
 
 	mmc = mmc_alloc_host(sizeof(*host), &pdev->dev);
 	if (!mmc)
@@ -1068,12 +1072,12 @@ static int mxcmci_probe(struct platform_device *pdev)
 
 	if (pdata)
 		dat3_card_detect = pdata->dat3_card_detect;
-	else if (mmc_card_is_removable(mmc)
+	else if (!(mmc->caps & MMC_CAP_NONREMOVABLE)
 			&& !of_property_read_bool(pdev->dev.of_node, "cd-gpios"))
 		dat3_card_detect = true;
 
 	ret = mmc_regulator_get_supply(mmc);
-	if (ret)
+	if (ret == -EPROBE_DEFER)
 		goto out_free;
 
 	if (!mmc->ocr_avail) {
@@ -1101,13 +1105,8 @@ static int mxcmci_probe(struct platform_device *pdev)
 		goto out_free;
 	}
 
-	ret = clk_prepare_enable(host->clk_per);
-	if (ret)
-		goto out_free;
-
-	ret = clk_prepare_enable(host->clk_ipg);
-	if (ret)
-		goto out_clk_per_put;
+	clk_prepare_enable(host->clk_per);
+	clk_prepare_enable(host->clk_ipg);
 
 	mxcmci_softreset(host);
 
@@ -1163,11 +1162,11 @@ static int mxcmci_probe(struct platform_device *pdev)
 			goto out_free_dma;
 	}
 
-	timer_setup(&host->watchdog, mxcmci_watchdog, 0);
+	init_timer(&host->watchdog);
+	host->watchdog.function = &mxcmci_watchdog;
+	host->watchdog.data = (unsigned long)mmc;
 
-	ret = mmc_add_host(mmc);
-	if (ret)
-		goto out_free_dma;
+	mmc_add_host(mmc);
 
 	return 0;
 
@@ -1176,9 +1175,8 @@ out_free_dma:
 		dma_release_channel(host->dma);
 
 out_clk_put:
-	clk_disable_unprepare(host->clk_ipg);
-out_clk_per_put:
 	clk_disable_unprepare(host->clk_per);
+	clk_disable_unprepare(host->clk_ipg);
 
 out_free:
 	mmc_free_host(mmc);
@@ -1207,8 +1205,7 @@ static int mxcmci_remove(struct platform_device *pdev)
 	return 0;
 }
 
-#ifdef CONFIG_PM_SLEEP
-static int mxcmci_suspend(struct device *dev)
+static int __maybe_unused mxcmci_suspend(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct mxcmci_host *host = mmc_priv(mmc);
@@ -1218,23 +1215,15 @@ static int mxcmci_suspend(struct device *dev)
 	return 0;
 }
 
-static int mxcmci_resume(struct device *dev)
+static int __maybe_unused mxcmci_resume(struct device *dev)
 {
 	struct mmc_host *mmc = dev_get_drvdata(dev);
 	struct mxcmci_host *host = mmc_priv(mmc);
-	int ret;
 
-	ret = clk_prepare_enable(host->clk_per);
-	if (ret)
-		return ret;
-
-	ret = clk_prepare_enable(host->clk_ipg);
-	if (ret)
-		clk_disable_unprepare(host->clk_per);
-
-	return ret;
+	clk_prepare_enable(host->clk_per);
+	clk_prepare_enable(host->clk_ipg);
+	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(mxcmci_pm_ops, mxcmci_suspend, mxcmci_resume);
 

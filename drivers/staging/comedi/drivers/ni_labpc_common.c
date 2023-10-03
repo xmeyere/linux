@@ -1,22 +1,31 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * comedi/drivers/ni_labpc_common.c
  *
  * Common support code for "ni_labpc", "ni_labpc_pci" and "ni_labpc_cs".
  *
  * Copyright (C) 2001-2003 Frank Mori Hess <fmhess@users.sourceforge.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
 #include <linux/io.h>
 #include <linux/delay.h>
-#include <linux/slab.h>
 
 #include "../comedidev.h"
 
-#include "comedi_8254.h"
+#include "8253.h"
 #include "8255.h"
+#include "comedi_fc.h"
 #include "ni_labpc.h"
 #include "ni_labpc_regs.h"
 #include "ni_labpc_isadma.h"
@@ -75,10 +84,8 @@ static const struct comedi_lrange range_labpc_ao = {
 	}
 };
 
-/*
- * functions that do inb/outb and readb/writeb so we can use
- * function pointers to decide which to use
- */
+/* functions that do inb/outb and readb/writeb so we can use
+ * function pointers to decide which to use */
 static unsigned int labpc_inb(struct comedi_device *dev, unsigned long reg)
 {
 	return inb(dev->iobase + reg);
@@ -99,6 +106,32 @@ static void labpc_writeb(struct comedi_device *dev,
 			 unsigned int byte, unsigned long reg)
 {
 	writeb(byte, dev->mmio + reg);
+}
+
+static void labpc_counter_load(struct comedi_device *dev,
+			       unsigned long reg,
+			       unsigned int counter_number,
+			       unsigned int count,
+			       unsigned int mode)
+{
+	if (dev->mmio) {
+		i8254_mm_set_mode(dev->mmio + reg, 0, counter_number, mode);
+		i8254_mm_write(dev->mmio + reg, 0, counter_number, count);
+	} else {
+		i8254_set_mode(dev->iobase + reg, 0, counter_number, mode);
+		i8254_write(dev->iobase + reg, 0, counter_number, count);
+	}
+}
+
+static void labpc_counter_set_mode(struct comedi_device *dev,
+				   unsigned long reg,
+				   unsigned int counter_number,
+				   unsigned int mode)
+{
+	if (dev->mmio)
+		i8254_mm_set_mode(dev->mmio + reg, 0, counter_number, mode);
+	else
+		i8254_set_mode(dev->iobase + reg, 0, counter_number, mode);
 }
 
 static int labpc_cancel(struct comedi_device *dev, struct comedi_subdevice *s)
@@ -251,7 +284,7 @@ static int labpc_ai_insn_read(struct comedi_device *dev,
 	devpriv->write_byte(dev, devpriv->cmd4, CMD4_REG);
 
 	/* initialize pacer counter to prevent any problems */
-	comedi_8254_set_mode(devpriv->counter, 0, I8254_MODE2 | I8254_BINARY);
+	labpc_counter_set_mode(dev, COUNTER_A_BASE_REG, 0, I8254_MODE2);
 
 	labpc_clear_adc_fifo(dev);
 
@@ -334,81 +367,83 @@ static void labpc_set_ai_scan_period(struct comedi_cmd *cmd,
 static void labpc_adc_timing(struct comedi_device *dev, struct comedi_cmd *cmd,
 			     enum scan_mode mode)
 {
-	struct comedi_8254 *pacer = dev->pacer;
-	unsigned int convert_period = labpc_ai_convert_period(cmd, mode);
-	unsigned int scan_period = labpc_ai_scan_period(cmd, mode);
+	struct labpc_private *devpriv = dev->private;
 	unsigned int base_period;
+	unsigned int scan_period;
+	unsigned int convert_period;
 
 	/*
-	 * If both convert and scan triggers are TRIG_TIMER, then they
-	 * both rely on counter b0. If only one TRIG_TIMER is used, we
-	 * can use the generic cascaded timing functions.
+	 * if both convert and scan triggers are TRIG_TIMER, then they
+	 * both rely on counter b0
 	 */
+	convert_period = labpc_ai_convert_period(cmd, mode);
+	scan_period = labpc_ai_scan_period(cmd, mode);
 	if (convert_period && scan_period) {
 		/*
-		 * pick the lowest divisor value we can (for maximum input
+		 * pick the lowest b0 divisor value we can (for maximum input
 		 * clock speed on convert and scan counters)
 		 */
-		pacer->next_div1 = (scan_period - 1) /
-				   (pacer->osc_base * I8254_MAX_COUNT) + 1;
+		devpriv->divisor_b0 = (scan_period - 1) /
+		    (I8254_OSC_BASE_2MHZ * 0x10000) + 1;
 
-		comedi_check_trigger_arg_min(&pacer->next_div1, 2);
-		comedi_check_trigger_arg_max(&pacer->next_div1,
-					     I8254_MAX_COUNT);
+		cfc_check_trigger_arg_min(&devpriv->divisor_b0, 2);
+		cfc_check_trigger_arg_max(&devpriv->divisor_b0, 0x10000);
 
-		base_period = pacer->osc_base * pacer->next_div1;
+		base_period = I8254_OSC_BASE_2MHZ * devpriv->divisor_b0;
 
 		/*  set a0 for conversion frequency and b1 for scan frequency */
 		switch (cmd->flags & CMDF_ROUND_MASK) {
 		default:
 		case CMDF_ROUND_NEAREST:
-			pacer->next_div = DIV_ROUND_CLOSEST(convert_period,
-							    base_period);
-			pacer->next_div2 = DIV_ROUND_CLOSEST(scan_period,
-							     base_period);
+			devpriv->divisor_a0 = DIV_ROUND_CLOSEST(convert_period,
+								base_period);
+			devpriv->divisor_b1 = DIV_ROUND_CLOSEST(scan_period,
+								base_period);
 			break;
 		case CMDF_ROUND_UP:
-			pacer->next_div = DIV_ROUND_UP(convert_period,
-						       base_period);
-			pacer->next_div2 = DIV_ROUND_UP(scan_period,
-							base_period);
+			devpriv->divisor_a0 = DIV_ROUND_UP(convert_period,
+							   base_period);
+			devpriv->divisor_b1 = DIV_ROUND_UP(scan_period,
+							   base_period);
 			break;
 		case CMDF_ROUND_DOWN:
-			pacer->next_div = convert_period / base_period;
-			pacer->next_div2 = scan_period / base_period;
+			devpriv->divisor_a0 = convert_period / base_period;
+			devpriv->divisor_b1 = scan_period / base_period;
 			break;
 		}
 		/*  make sure a0 and b1 values are acceptable */
-		comedi_check_trigger_arg_min(&pacer->next_div, 2);
-		comedi_check_trigger_arg_max(&pacer->next_div, I8254_MAX_COUNT);
-		comedi_check_trigger_arg_min(&pacer->next_div2, 2);
-		comedi_check_trigger_arg_max(&pacer->next_div2,
-					     I8254_MAX_COUNT);
-
+		cfc_check_trigger_arg_min(&devpriv->divisor_a0, 2);
+		cfc_check_trigger_arg_max(&devpriv->divisor_a0, 0x10000);
+		cfc_check_trigger_arg_min(&devpriv->divisor_b1, 2);
+		cfc_check_trigger_arg_max(&devpriv->divisor_b1, 0x10000);
 		/*  write corrected timings to command */
 		labpc_set_ai_convert_period(cmd, mode,
-					    base_period * pacer->next_div);
+					    base_period * devpriv->divisor_a0);
 		labpc_set_ai_scan_period(cmd, mode,
-					 base_period * pacer->next_div2);
+					 base_period * devpriv->divisor_b1);
+		/*
+		 * if only one TRIG_TIMER is used, we can employ the generic
+		 * cascaded timing functions
+		 */
 	} else if (scan_period) {
 		/*
 		 * calculate cascaded counter values
 		 * that give desired scan timing
-		 * (pacer->next_div2 / pacer->next_div1)
 		 */
-		comedi_8254_cascade_ns_to_timer(pacer, &scan_period,
-						cmd->flags);
+		i8253_cascade_ns_to_timer(I8254_OSC_BASE_2MHZ,
+					  &devpriv->divisor_b1,
+					  &devpriv->divisor_b0,
+					  &scan_period, cmd->flags);
 		labpc_set_ai_scan_period(cmd, mode, scan_period);
 	} else if (convert_period) {
 		/*
 		 * calculate cascaded counter values
 		 * that give desired conversion timing
-		 * (pacer->next_div / pacer->next_div1)
 		 */
-		comedi_8254_cascade_ns_to_timer(pacer, &convert_period,
-						cmd->flags);
-		/* transfer div2 value so correct timer gets updated */
-		pacer->next_div = pacer->next_div2;
+		i8253_cascade_ns_to_timer(I8254_OSC_BASE_2MHZ,
+					  &devpriv->divisor_a0,
+					  &devpriv->divisor_b0,
+					  &convert_period, cmd->flags);
 		labpc_set_ai_convert_period(cmd, mode, convert_period);
 	}
 }
@@ -422,7 +457,7 @@ static enum scan_mode labpc_ai_scan_mode(const struct comedi_cmd *cmd)
 		return MODE_SINGLE_CHAN;
 
 	/* chanlist may be NULL during cmdtest */
-	if (!cmd->chanlist)
+	if (cmd->chanlist == NULL)
 		return MODE_MULT_CHAN_UP;
 
 	chan0 = CR_CHAN(cmd->chanlist[0]);
@@ -446,6 +481,9 @@ static int labpc_ai_check_chanlist(struct comedi_device *dev,
 	unsigned int range0 = CR_RANGE(cmd->chanlist[0]);
 	unsigned int aref0 = CR_AREF(cmd->chanlist[0]);
 	int i;
+
+	if (mode == MODE_SINGLE_CHAN)
+		return 0;
 
 	for (i = 0; i < cmd->chanlist_len; i++) {
 		unsigned int chan = CR_CHAN(cmd->chanlist[i]);
@@ -505,27 +543,26 @@ static int labpc_ai_cmdtest(struct comedi_device *dev,
 
 	/* Step 1 : check if triggers are trivially valid */
 
-	err |= comedi_check_trigger_src(&cmd->start_src, TRIG_NOW | TRIG_EXT);
-	err |= comedi_check_trigger_src(&cmd->scan_begin_src,
+	err |= cfc_check_trigger_src(&cmd->start_src, TRIG_NOW | TRIG_EXT);
+	err |= cfc_check_trigger_src(&cmd->scan_begin_src,
 					TRIG_TIMER | TRIG_FOLLOW | TRIG_EXT);
-	err |= comedi_check_trigger_src(&cmd->convert_src,
-					TRIG_TIMER | TRIG_EXT);
-	err |= comedi_check_trigger_src(&cmd->scan_end_src, TRIG_COUNT);
+	err |= cfc_check_trigger_src(&cmd->convert_src, TRIG_TIMER | TRIG_EXT);
+	err |= cfc_check_trigger_src(&cmd->scan_end_src, TRIG_COUNT);
 
 	stop_mask = TRIG_COUNT | TRIG_NONE;
 	if (board->is_labpc1200)
 		stop_mask |= TRIG_EXT;
-	err |= comedi_check_trigger_src(&cmd->stop_src, stop_mask);
+	err |= cfc_check_trigger_src(&cmd->stop_src, stop_mask);
 
 	if (err)
 		return 1;
 
 	/* Step 2a : make sure trigger sources are unique */
 
-	err |= comedi_check_trigger_is_unique(cmd->start_src);
-	err |= comedi_check_trigger_is_unique(cmd->scan_begin_src);
-	err |= comedi_check_trigger_is_unique(cmd->convert_src);
-	err |= comedi_check_trigger_is_unique(cmd->stop_src);
+	err |= cfc_check_trigger_is_unique(cmd->start_src);
+	err |= cfc_check_trigger_is_unique(cmd->scan_begin_src);
+	err |= cfc_check_trigger_is_unique(cmd->convert_src);
+	err |= cfc_check_trigger_is_unique(cmd->stop_src);
 
 	/* Step 2b : and mutually compatible */
 
@@ -540,7 +577,7 @@ static int labpc_ai_cmdtest(struct comedi_device *dev,
 
 	switch (cmd->start_src) {
 	case TRIG_NOW:
-		err |= comedi_check_trigger_arg_is(&cmd->start_arg, 0);
+		err |= cfc_check_trigger_arg_is(&cmd->start_arg, 0);
 		break;
 	case TRIG_EXT:
 		/* start_arg value is ignored */
@@ -549,33 +586,27 @@ static int labpc_ai_cmdtest(struct comedi_device *dev,
 
 	if (!cmd->chanlist_len)
 		err |= -EINVAL;
-	err |= comedi_check_trigger_arg_is(&cmd->scan_end_arg,
-					   cmd->chanlist_len);
+	err |= cfc_check_trigger_arg_is(&cmd->scan_end_arg, cmd->chanlist_len);
 
-	if (cmd->convert_src == TRIG_TIMER) {
-		err |= comedi_check_trigger_arg_min(&cmd->convert_arg,
-						    board->ai_speed);
-	}
+	if (cmd->convert_src == TRIG_TIMER)
+		err |= cfc_check_trigger_arg_min(&cmd->convert_arg,
+						 board->ai_speed);
 
 	/* make sure scan timing is not too fast */
 	if (cmd->scan_begin_src == TRIG_TIMER) {
-		if (cmd->convert_src == TRIG_TIMER) {
-			err |= comedi_check_trigger_arg_min(&cmd->
-							    scan_begin_arg,
-							    cmd->convert_arg *
-							    cmd->chanlist_len);
-		}
-		err |= comedi_check_trigger_arg_min(&cmd->scan_begin_arg,
-						    board->ai_speed *
-						    cmd->chanlist_len);
+		if (cmd->convert_src == TRIG_TIMER)
+			err |= cfc_check_trigger_arg_min(&cmd->scan_begin_arg,
+					cmd->convert_arg * cmd->chanlist_len);
+		err |= cfc_check_trigger_arg_min(&cmd->scan_begin_arg,
+				board->ai_speed * cmd->chanlist_len);
 	}
 
 	switch (cmd->stop_src) {
 	case TRIG_COUNT:
-		err |= comedi_check_trigger_arg_min(&cmd->stop_arg, 1);
+		err |= cfc_check_trigger_arg_min(&cmd->stop_arg, 1);
 		break;
 	case TRIG_NONE:
-		err |= comedi_check_trigger_arg_is(&cmd->stop_arg, 0);
+		err |= cfc_check_trigger_arg_is(&cmd->stop_arg, 0);
 		break;
 		/*
 		 * TRIG_EXT doesn't care since it doesn't
@@ -639,34 +670,28 @@ static int labpc_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 		 * load counter a1 with count of 3
 		 * (pc+ manual says this is minimum allowed) using mode 0
 		 */
-		comedi_8254_load(devpriv->counter, 1,
-				 3, I8254_MODE0 | I8254_BINARY);
+		labpc_counter_load(dev, COUNTER_A_BASE_REG,
+				   1, 3, I8254_MODE0);
 	} else	{
 		/* just put counter a1 in mode 0 to set its output low */
-		comedi_8254_set_mode(devpriv->counter, 1,
-				     I8254_MODE0 | I8254_BINARY);
+		labpc_counter_set_mode(dev, COUNTER_A_BASE_REG, 1, I8254_MODE0);
 	}
 
 	/* figure out what method we will use to transfer data */
 	if (devpriv->dma &&
-	    (cmd->flags & (CMDF_WAKE_EOS | CMDF_PRIORITY)) == 0) {
-		/*
-		 * dma unsafe at RT priority,
-		 * and too much setup time for CMDF_WAKE_EOS
-		 */
+	    /* dma unsafe at RT priority,
+	     * and too much setup time for CMDF_WAKE_EOS */
+	    (cmd->flags & (CMDF_WAKE_EOS | CMDF_PRIORITY)) == 0)
 		xfer = isa_dma_transfer;
-	} else if (board->is_labpc1200 &&
-		   (cmd->flags & CMDF_WAKE_EOS) == 0 &&
-		   (cmd->stop_src != TRIG_COUNT || devpriv->count > 256)) {
-		/*
-		 * pc-plus has no fifo-half full interrupt
-		 * wake-end-of-scan should interrupt on fifo not empty
-		 * make sure we are taking more than just a few points
-		 */
+	else if (/* pc-plus has no fifo-half full interrupt */
+		 board->is_labpc1200 &&
+		 /* wake-end-of-scan should interrupt on fifo not empty */
+		 (cmd->flags & CMDF_WAKE_EOS) == 0 &&
+		 /* make sure we are taking more than just a few points */
+		 (cmd->stop_src != TRIG_COUNT || devpriv->count > 256))
 		xfer = fifo_half_full_transfer;
-	} else {
+	else
 		xfer = fifo_not_empty_transfer;
-	}
 	devpriv->current_transfer = xfer;
 
 	labpc_ai_set_chan_and_gain(dev, mode, chan, range, aref);
@@ -677,11 +702,9 @@ static int labpc_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	/* manual says to set scan enable bit on second pass */
 	if (mode == MODE_MULT_CHAN_UP || mode == MODE_MULT_CHAN_DOWN) {
 		devpriv->cmd1 |= CMD1_SCANEN;
-		/*
-		 * Need a brief delay before enabling scan, or scan
-		 * list will get screwed when you switch between
-		 * scan up to scan down mode - dunno why.
-		 */
+		/* need a brief delay before enabling scan, or scan
+		 * list will get screwed when you switch
+		 * between scan up to scan down mode - dunno why */
 		udelay(1);
 		devpriv->write_byte(dev, devpriv->cmd1, CMD1_REG);
 	}
@@ -692,24 +715,27 @@ static int labpc_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 
 	if (cmd->convert_src == TRIG_TIMER ||
 	    cmd->scan_begin_src == TRIG_TIMER) {
-		struct comedi_8254 *pacer = dev->pacer;
-		struct comedi_8254 *counter = devpriv->counter;
+		/*  set up pacing */
+		labpc_adc_timing(dev, cmd, mode);
+		/*  load counter b0 in mode 3 */
+		labpc_counter_load(dev, COUNTER_B_BASE_REG,
+				   0, devpriv->divisor_b0, I8254_MODE3);
+	}
+	/*  set up conversion pacing */
+	if (labpc_ai_convert_period(cmd, mode)) {
+		/*  load counter a0 in mode 2 */
+		labpc_counter_load(dev, COUNTER_A_BASE_REG,
+				   0, devpriv->divisor_a0, I8254_MODE2);
+	} else {
+		/* initialize pacer counter to prevent any problems */
+		labpc_counter_set_mode(dev, COUNTER_A_BASE_REG, 0, I8254_MODE2);
+	}
 
-		comedi_8254_update_divisors(pacer);
-
-		/* set up pacing */
-		comedi_8254_load(pacer, 0, pacer->divisor1,
-				 I8254_MODE3 | I8254_BINARY);
-
-		/* set up conversion pacing */
-		comedi_8254_set_mode(counter, 0, I8254_MODE2 | I8254_BINARY);
-		if (labpc_ai_convert_period(cmd, mode))
-			comedi_8254_write(counter, 0, pacer->divisor);
-
-		/* set up scan pacing */
-		if (labpc_ai_scan_period(cmd, mode))
-			comedi_8254_load(pacer, 1, pacer->divisor2,
-					 I8254_MODE2 | I8254_BINARY);
+	/*  set up scan pacing */
+	if (labpc_ai_scan_period(cmd, mode)) {
+		/*  load counter b1 in mode 2 */
+		labpc_counter_load(dev, COUNTER_B_BASE_REG,
+				   1, devpriv->divisor_b1, I8254_MODE2);
 	}
 
 	labpc_clear_adc_fifo(dev);
@@ -728,10 +754,8 @@ static int labpc_ai_cmd(struct comedi_device *dev, struct comedi_subdevice *s)
 	devpriv->cmd4 = 0;
 	if (cmd->convert_src != TRIG_EXT)
 		devpriv->cmd4 |= CMD4_ECLKRCV;
-	/*
-	 * XXX should discard first scan when using interval scanning
-	 * since manual says it is not synced with scan clock.
-	 */
+	/* XXX should discard first scan when using interval scanning
+	 * since manual says it is not synced with scan clock */
 	if (!labpc_use_continuous_mode(cmd, mode)) {
 		devpriv->cmd4 |= CMD4_INTSCAN;
 		if (cmd->scan_begin_src == TRIG_EXT)
@@ -797,10 +821,8 @@ static int labpc_drain_fifo(struct comedi_device *dev)
 	return 0;
 }
 
-/*
- * Makes sure all data acquired by board is transferred to comedi (used
- * when acquisition is terminated by stop_src == TRIG_EXT).
- */
+/* makes sure all data acquired by board is transferred to comedi (used
+ * when acquisition is terminated by stop_src == TRIG_EXT). */
 static void labpc_drain_dregs(struct comedi_device *dev)
 {
 	struct labpc_private *devpriv = dev->private;
@@ -911,11 +933,9 @@ static int labpc_ao_insn_write(struct comedi_device *dev,
 
 	channel = CR_CHAN(insn->chanspec);
 
-	/*
-	 * Turn off pacing of analog output channel.
-	 * NOTE: hardware bug in daqcard-1200 means pacing cannot
-	 * be independently enabled/disabled for its the two channels.
-	 */
+	/* turn off pacing of analog output channel */
+	/* note: hardware bug in daqcard-1200 means pacing cannot
+	 * be independently enabled/disabled for its the two channels */
 	spin_lock_irqsave(&dev->spinlock, flags);
 	devpriv->cmd2 &= ~CMD2_LDAC(channel);
 	devpriv->write_byte(dev, devpriv->cmd2, CMD2_REG);
@@ -1220,26 +1240,6 @@ int labpc_common_attach(struct comedi_device *dev,
 			dev->irq = irq;
 	}
 
-	if (dev->mmio) {
-		dev->pacer = comedi_8254_mm_init(dev->mmio + COUNTER_B_BASE_REG,
-						 I8254_OSC_BASE_2MHZ,
-						 I8254_IO8, 0);
-		devpriv->counter = comedi_8254_mm_init(dev->mmio +
-						       COUNTER_A_BASE_REG,
-						       I8254_OSC_BASE_2MHZ,
-						       I8254_IO8, 0);
-	} else {
-		dev->pacer = comedi_8254_init(dev->iobase + COUNTER_B_BASE_REG,
-					      I8254_OSC_BASE_2MHZ,
-					      I8254_IO8, 0);
-		devpriv->counter = comedi_8254_init(dev->iobase +
-						    COUNTER_A_BASE_REG,
-						    I8254_OSC_BASE_2MHZ,
-						    I8254_IO8, 0);
-	}
-	if (!dev->pacer || !devpriv->counter)
-		return -ENOMEM;
-
 	ret = comedi_alloc_subdevices(dev, 5);
 	if (ret)
 		return ret;
@@ -1267,7 +1267,7 @@ int labpc_common_attach(struct comedi_device *dev,
 	if (board->has_ao) {
 		s->type		= COMEDI_SUBD_AO;
 		s->subdev_flags	= SDF_READABLE | SDF_WRITABLE | SDF_GROUND;
-		s->n_chan	= 2;
+		s->n_chan	= NUM_AO_CHAN;
 		s->maxdata	= 0x0fff;
 		s->range_table	= &range_labpc_ao;
 		s->insn_write	= labpc_ao_insn_write;
@@ -1313,12 +1313,12 @@ int labpc_common_attach(struct comedi_device *dev,
 		s->type		= COMEDI_SUBD_UNUSED;
 	}
 
-	/* EEPROM (256 bytes) */
+	/* EEPROM */
 	s = &dev->subdevices[4];
 	if (board->is_labpc1200) {
 		s->type		= COMEDI_SUBD_MEMORY;
 		s->subdev_flags	= SDF_READABLE | SDF_WRITABLE | SDF_INTERNAL;
-		s->n_chan	= 256;
+		s->n_chan	= EEPROM_SIZE;
 		s->maxdata	= 0xff;
 		s->insn_write	= labpc_eeprom_insn_write;
 
@@ -1335,15 +1335,6 @@ int labpc_common_attach(struct comedi_device *dev,
 	return 0;
 }
 EXPORT_SYMBOL_GPL(labpc_common_attach);
-
-void labpc_common_detach(struct comedi_device *dev)
-{
-	struct labpc_private *devpriv = dev->private;
-
-	if (devpriv)
-		kfree(devpriv->counter);
-}
-EXPORT_SYMBOL_GPL(labpc_common_detach);
 
 static int __init labpc_common_init(void)
 {

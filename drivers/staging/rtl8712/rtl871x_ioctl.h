@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __IOCTL_H
 #define __IOCTL_H
 
@@ -69,8 +68,7 @@ struct oid_par_priv {
 
 struct oid_obj_priv {
 	unsigned char	dbg; /* 0: without OID debug message
-			      * 1: with OID debug message
-			      */
+			      * 1: with OID debug message */
 	uint (*oidfuns)(struct oid_par_priv *poid_par_priv);
 };
 
@@ -78,18 +76,22 @@ uint oid_null_function(struct oid_par_priv *poid_par_priv);
 
 extern struct iw_handler_def  r871x_handlers_def;
 
-uint drv_query_info(struct net_device *MiniportAdapterContext,
-		    uint Oid,
-		    void *InformationBuffer,
-		    u32 InformationBufferLength,
-		    u32 *BytesWritten,
-		    u32 *BytesNeeded);
+extern	uint drv_query_info(
+	struct  net_device *MiniportAdapterContext,
+	uint Oid,
+	void *InformationBuffer,
+	u32 InformationBufferLength,
+	u32 *BytesWritten,
+	u32 *BytesNeeded
+);
 
-uint drv_set_info(struct net_device *MiniportAdapterContext,
-		  uint Oid,
-		  void *InformationBuffer,
-		  u32 InformationBufferLength,
-		  u32 *BytesRead,
-		  u32 *BytesNeeded);
+extern	uint drv_set_info(
+	struct  net_device *MiniportAdapterContext,
+	uint Oid,
+	void *InformationBuffer,
+	u32 InformationBufferLength,
+	u32 *BytesRead,
+	u32 *BytesNeeded
+);
 
 #endif

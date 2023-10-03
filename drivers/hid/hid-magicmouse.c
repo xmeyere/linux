@@ -34,8 +34,7 @@ module_param(emulate_scroll_wheel, bool, 0644);
 MODULE_PARM_DESC(emulate_scroll_wheel, "Emulate a scroll wheel");
 
 static unsigned int scroll_speed = 32;
-static int param_set_scroll_speed(const char *val,
-				  const struct kernel_param *kp) {
+static int param_set_scroll_speed(const char *val, struct kernel_param *kp) {
 	unsigned long speed;
 	if (!val || kstrtoul(val, 0, &speed) || speed > 63)
 		return -EINVAL;
@@ -343,7 +342,7 @@ static int magicmouse_raw_event(struct hid_device *hdev,
 		magicmouse_raw_event(hdev, report, data + 2, data[1]);
 		magicmouse_raw_event(hdev, report, data + 2 + data[1],
 			size - 2 - data[1]);
-		return 0;
+		break;
 	default:
 		return 0;
 	}
@@ -452,12 +451,6 @@ static int magicmouse_setup_input(struct input_dev *input, struct hid_device *hd
 		__set_bit(MSC_RAW, input->mscbit);
 	}
 
-	/*
-	 * hid-input may mark device as using autorepeat, but neither
-	 * the trackpad, nor the mouse actually want it.
-	 */
-	__clear_bit(EV_REP, input->evbit);
-
 	return 0;
 }
 
@@ -478,30 +471,25 @@ static int magicmouse_input_mapping(struct hid_device *hdev,
 	return 0;
 }
 
-static int magicmouse_input_configured(struct hid_device *hdev,
+static void magicmouse_input_configured(struct hid_device *hdev,
 		struct hid_input *hi)
 
 {
 	struct magicmouse_sc *msc = hid_get_drvdata(hdev);
-	int ret;
 
-	ret = magicmouse_setup_input(msc->input, hdev);
+	int ret = magicmouse_setup_input(msc->input, hdev);
 	if (ret) {
 		hid_err(hdev, "magicmouse setup input failed (%d)\n", ret);
 		/* clean msc->input to notify probe() of the failure */
 		msc->input = NULL;
-		return ret;
 	}
-
-	return 0;
 }
 
 
 static int magicmouse_probe(struct hid_device *hdev,
 	const struct hid_device_id *id)
 {
-	const u8 feature[] = { 0xd7, 0x01 };
-	u8 *buf;
+	__u8 feature[] = { 0xd7, 0x01 };
 	struct magicmouse_sc *msc;
 	struct hid_report *report;
 	int ret;
@@ -537,12 +525,12 @@ static int magicmouse_probe(struct hid_device *hdev,
 
 	if (id->product == USB_DEVICE_ID_APPLE_MAGICMOUSE)
 		report = hid_register_report(hdev, HID_INPUT_REPORT,
-			MOUSE_REPORT_ID, 0);
+			MOUSE_REPORT_ID);
 	else { /* USB_DEVICE_ID_APPLE_MAGICTRACKPAD */
 		report = hid_register_report(hdev, HID_INPUT_REPORT,
-			TRACKPAD_REPORT_ID, 0);
+			TRACKPAD_REPORT_ID);
 		report = hid_register_report(hdev, HID_INPUT_REPORT,
-			DOUBLE_REPORT_ID, 0);
+			DOUBLE_REPORT_ID);
 	}
 
 	if (!report) {
@@ -552,12 +540,6 @@ static int magicmouse_probe(struct hid_device *hdev,
 	}
 	report->size = 6;
 
-	buf = kmemdup(feature, sizeof(feature), GFP_KERNEL);
-	if (!buf) {
-		ret = -ENOMEM;
-		goto err_stop_hw;
-	}
-
 	/*
 	 * Some devices repond with 'invalid report id' when feature
 	 * report switching it into multitouch mode is sent to it.
@@ -566,9 +548,8 @@ static int magicmouse_probe(struct hid_device *hdev,
 	 * but there seems to be no other way of switching the mode.
 	 * Thus the super-ugly hacky success check below.
 	 */
-	ret = hid_hw_raw_request(hdev, buf[0], buf, sizeof(feature),
+	ret = hid_hw_raw_request(hdev, feature[0], feature, sizeof(feature),
 				HID_FEATURE_REPORT, HID_REQ_SET_REPORT);
-	kfree(buf);
 	if (ret != -EIO && ret != sizeof(feature)) {
 		hid_err(hdev, "unable to request touch data (%d)\n", ret);
 		goto err_stop_hw;

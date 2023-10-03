@@ -46,44 +46,17 @@ struct tgec_mdio_controller {
 #define MDIO_DATA(x)		(x & 0xffff)
 #define MDIO_DATA_BSY		BIT(31)
 
-struct mdio_fsl_priv {
-	struct	tgec_mdio_controller __iomem *mdio_base;
-	bool	is_little_endian;
-	bool	has_a011043;
-};
-
-static u32 xgmac_read32(void __iomem *regs,
-			bool is_little_endian)
-{
-	if (is_little_endian)
-		return ioread32(regs);
-	else
-		return ioread32be(regs);
-}
-
-static void xgmac_write32(u32 value,
-			  void __iomem *regs,
-			  bool is_little_endian)
-{
-	if (is_little_endian)
-		iowrite32(value, regs);
-	else
-		iowrite32be(value, regs);
-}
-
 /*
  * Wait until the MDIO bus is free
  */
 static int xgmac_wait_until_free(struct device *dev,
-				 struct tgec_mdio_controller __iomem *regs,
-				 bool is_little_endian)
+				 struct tgec_mdio_controller __iomem *regs)
 {
 	unsigned int timeout;
 
 	/* Wait till the bus is free */
 	timeout = TIMEOUT;
-	while ((xgmac_read32(&regs->mdio_stat, is_little_endian) &
-		MDIO_STAT_BSY) && timeout) {
+	while ((ioread32be(&regs->mdio_stat) & MDIO_STAT_BSY) && timeout) {
 		cpu_relax();
 		timeout--;
 	}
@@ -100,15 +73,13 @@ static int xgmac_wait_until_free(struct device *dev,
  * Wait till the MDIO read or write operation is complete
  */
 static int xgmac_wait_until_done(struct device *dev,
-				 struct tgec_mdio_controller __iomem *regs,
-				 bool is_little_endian)
+				 struct tgec_mdio_controller __iomem *regs)
 {
 	unsigned int timeout;
 
 	/* Wait till the MDIO write is complete */
 	timeout = TIMEOUT;
-	while ((xgmac_read32(&regs->mdio_stat, is_little_endian) &
-		MDIO_STAT_BSY) && timeout) {
+	while ((ioread32be(&regs->mdio_data) & MDIO_DATA_BSY) && timeout) {
 		cpu_relax();
 		timeout--;
 	}
@@ -128,14 +99,12 @@ static int xgmac_wait_until_done(struct device *dev,
  */
 static int xgmac_mdio_write(struct mii_bus *bus, int phy_id, int regnum, u16 value)
 {
-	struct mdio_fsl_priv *priv = (struct mdio_fsl_priv *)bus->priv;
-	struct tgec_mdio_controller __iomem *regs = priv->mdio_base;
+	struct tgec_mdio_controller __iomem *regs = bus->priv;
 	uint16_t dev_addr;
 	u32 mdio_ctl, mdio_stat;
 	int ret;
-	bool endian = priv->is_little_endian;
 
-	mdio_stat = xgmac_read32(&regs->mdio_stat, endian);
+	mdio_stat = ioread32be(&regs->mdio_stat);
 	if (regnum & MII_ADDR_C45) {
 		/* Clause 45 (ie 10G) */
 		dev_addr = (regnum >> 16) & 0x1f;
@@ -146,29 +115,29 @@ static int xgmac_mdio_write(struct mii_bus *bus, int phy_id, int regnum, u16 val
 		mdio_stat &= ~MDIO_STAT_ENC;
 	}
 
-	xgmac_write32(mdio_stat, &regs->mdio_stat, endian);
+	iowrite32be(mdio_stat, &regs->mdio_stat);
 
-	ret = xgmac_wait_until_free(&bus->dev, regs, endian);
+	ret = xgmac_wait_until_free(&bus->dev, regs);
 	if (ret)
 		return ret;
 
 	/* Set the port and dev addr */
 	mdio_ctl = MDIO_CTL_PORT_ADDR(phy_id) | MDIO_CTL_DEV_ADDR(dev_addr);
-	xgmac_write32(mdio_ctl, &regs->mdio_ctl, endian);
+	iowrite32be(mdio_ctl, &regs->mdio_ctl);
 
 	/* Set the register address */
 	if (regnum & MII_ADDR_C45) {
-		xgmac_write32(regnum & 0xffff, &regs->mdio_addr, endian);
+		iowrite32be(regnum & 0xffff, &regs->mdio_addr);
 
-		ret = xgmac_wait_until_free(&bus->dev, regs, endian);
+		ret = xgmac_wait_until_free(&bus->dev, regs);
 		if (ret)
 			return ret;
 	}
 
 	/* Write the value to the register */
-	xgmac_write32(MDIO_DATA(value), &regs->mdio_data, endian);
+	iowrite32be(MDIO_DATA(value), &regs->mdio_data);
 
-	ret = xgmac_wait_until_done(&bus->dev, regs, endian);
+	ret = xgmac_wait_until_done(&bus->dev, regs);
 	if (ret)
 		return ret;
 
@@ -182,16 +151,14 @@ static int xgmac_mdio_write(struct mii_bus *bus, int phy_id, int regnum, u16 val
  */
 static int xgmac_mdio_read(struct mii_bus *bus, int phy_id, int regnum)
 {
-	struct mdio_fsl_priv *priv = (struct mdio_fsl_priv *)bus->priv;
-	struct tgec_mdio_controller __iomem *regs = priv->mdio_base;
+	struct tgec_mdio_controller __iomem *regs = bus->priv;
 	uint16_t dev_addr;
 	uint32_t mdio_stat;
 	uint32_t mdio_ctl;
 	uint16_t value;
 	int ret;
-	bool endian = priv->is_little_endian;
 
-	mdio_stat = xgmac_read32(&regs->mdio_stat, endian);
+	mdio_stat = ioread32be(&regs->mdio_stat);
 	if (regnum & MII_ADDR_C45) {
 		dev_addr = (regnum >> 16) & 0x1f;
 		mdio_stat |= MDIO_STAT_ENC;
@@ -200,42 +167,41 @@ static int xgmac_mdio_read(struct mii_bus *bus, int phy_id, int regnum)
 		mdio_stat &= ~MDIO_STAT_ENC;
 	}
 
-	xgmac_write32(mdio_stat, &regs->mdio_stat, endian);
+	iowrite32be(mdio_stat, &regs->mdio_stat);
 
-	ret = xgmac_wait_until_free(&bus->dev, regs, endian);
+	ret = xgmac_wait_until_free(&bus->dev, regs);
 	if (ret)
 		return ret;
 
 	/* Set the Port and Device Addrs */
 	mdio_ctl = MDIO_CTL_PORT_ADDR(phy_id) | MDIO_CTL_DEV_ADDR(dev_addr);
-	xgmac_write32(mdio_ctl, &regs->mdio_ctl, endian);
+	iowrite32be(mdio_ctl, &regs->mdio_ctl);
 
 	/* Set the register address */
 	if (regnum & MII_ADDR_C45) {
-		xgmac_write32(regnum & 0xffff, &regs->mdio_addr, endian);
+		iowrite32be(regnum & 0xffff, &regs->mdio_addr);
 
-		ret = xgmac_wait_until_free(&bus->dev, regs, endian);
+		ret = xgmac_wait_until_free(&bus->dev, regs);
 		if (ret)
 			return ret;
 	}
 
 	/* Initiate the read */
-	xgmac_write32(mdio_ctl | MDIO_CTL_READ, &regs->mdio_ctl, endian);
+	iowrite32be(mdio_ctl | MDIO_CTL_READ, &regs->mdio_ctl);
 
-	ret = xgmac_wait_until_done(&bus->dev, regs, endian);
+	ret = xgmac_wait_until_done(&bus->dev, regs);
 	if (ret)
 		return ret;
 
 	/* Return all Fs if nothing was there */
-	if ((xgmac_read32(&regs->mdio_stat, endian) & MDIO_STAT_RD_ER) &&
-	    !priv->has_a011043) {
+	if (ioread32be(&regs->mdio_stat) & MDIO_STAT_RD_ER) {
 		dev_err(&bus->dev,
 			"Error while reading PHY%d reg at %d.%hhu\n",
 			phy_id, dev_addr, regnum);
 		return 0xffff;
 	}
 
-	value = xgmac_read32(&regs->mdio_data, endian) & 0xffff;
+	value = ioread32be(&regs->mdio_data) & 0xffff;
 	dev_dbg(&bus->dev, "read %04x\n", value);
 
 	return value;
@@ -246,7 +212,6 @@ static int xgmac_mdio_probe(struct platform_device *pdev)
 	struct device_node *np = pdev->dev.of_node;
 	struct mii_bus *bus;
 	struct resource res;
-	struct mdio_fsl_priv *priv;
 	int ret;
 
 	ret = of_address_to_resource(np, 0, &res);
@@ -255,7 +220,7 @@ static int xgmac_mdio_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	bus = mdiobus_alloc_size(sizeof(struct mdio_fsl_priv));
+	bus = mdiobus_alloc();
 	if (!bus)
 		return -ENOMEM;
 
@@ -266,18 +231,11 @@ static int xgmac_mdio_probe(struct platform_device *pdev)
 	snprintf(bus->id, MII_BUS_ID_SIZE, "%llx", (unsigned long long)res.start);
 
 	/* Set the PHY base address */
-	priv = bus->priv;
-	priv->mdio_base = of_iomap(np, 0);
-	if (!priv->mdio_base) {
+	bus->priv = of_iomap(np, 0);
+	if (!bus->priv) {
 		ret = -ENOMEM;
 		goto err_ioremap;
 	}
-
-	priv->is_little_endian = of_property_read_bool(pdev->dev.of_node,
-						       "little-endian");
-
-	priv->has_a011043 = of_property_read_bool(pdev->dev.of_node,
-						  "fsl,erratum-a011043");
 
 	ret = of_mdiobus_register(bus, np);
 	if (ret) {
@@ -290,7 +248,7 @@ static int xgmac_mdio_probe(struct platform_device *pdev)
 	return 0;
 
 err_registration:
-	iounmap(priv->mdio_base);
+	iounmap(bus->priv);
 
 err_ioremap:
 	mdiobus_free(bus);
@@ -301,16 +259,15 @@ err_ioremap:
 static int xgmac_mdio_remove(struct platform_device *pdev)
 {
 	struct mii_bus *bus = platform_get_drvdata(pdev);
-	struct mdio_fsl_priv *priv = bus->priv;
 
 	mdiobus_unregister(bus);
-	iounmap(priv->mdio_base);
+	iounmap(bus->priv);
 	mdiobus_free(bus);
 
 	return 0;
 }
 
-static const struct of_device_id xgmac_mdio_match[] = {
+static struct of_device_id xgmac_mdio_match[] = {
 	{
 		.compatible = "fsl,fman-xmdio",
 	},

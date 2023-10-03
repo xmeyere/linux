@@ -40,16 +40,14 @@
 #include <sound/initval.h>
 #include <sound/soc.h>
 #include <sound/dmaengine_pcm.h>
+#include <sound/omap-pcm.h>
 
 #include "omap-dmic.h"
-#include "sdma-pcm.h"
 
 struct omap_dmic {
 	struct device *dev;
 	void __iomem *io_base;
 	struct clk *fclk;
-	struct pm_qos_request pm_qos_req;
-	int latency;
 	int fclk_freq;
 	int out_freq;
 	int clk_div;
@@ -125,8 +123,6 @@ static void omap_dmic_dai_shutdown(struct snd_pcm_substream *substream,
 	struct omap_dmic *dmic = snd_soc_dai_get_drvdata(dai);
 
 	mutex_lock(&dmic->mutex);
-
-	pm_qos_remove_request(&dmic->pm_qos_req);
 
 	if (!dai->active)
 		dmic->active = 0;
@@ -217,10 +213,8 @@ static int omap_dmic_dai_hw_params(struct snd_pcm_substream *substream,
 	switch (channels) {
 	case 6:
 		dmic->ch_enabled |= OMAP_DMIC_UP3_ENABLE;
-		/* fall through */
 	case 4:
 		dmic->ch_enabled |= OMAP_DMIC_UP2_ENABLE;
-		/* fall through */
 	case 2:
 		dmic->ch_enabled |= OMAP_DMIC_UP1_ENABLE;
 		break;
@@ -232,8 +226,6 @@ static int omap_dmic_dai_hw_params(struct snd_pcm_substream *substream,
 	/* packet size is threshold * channels */
 	dma_data = snd_soc_dai_get_dma_data(dai, substream);
 	dma_data->maxburst = dmic->threshold * channels;
-	dmic->latency = (OMAP_DMIC_THRES_MAX - dmic->threshold) * USEC_PER_SEC /
-			params_rate(params);
 
 	return 0;
 }
@@ -243,9 +235,6 @@ static int omap_dmic_dai_prepare(struct snd_pcm_substream *substream,
 {
 	struct omap_dmic *dmic = snd_soc_dai_get_drvdata(dai);
 	u32 ctrl;
-
-	if (pm_qos_request_active(&dmic->pm_qos_req))
-		pm_qos_update_request(&dmic->pm_qos_req, dmic->latency);
 
 	/* Configure uplink threshold */
 	omap_dmic_write(dmic, OMAP_DMIC_FIFO_CTRL_REG, dmic->threshold);
@@ -292,7 +281,7 @@ static int omap_dmic_dai_trigger(struct snd_pcm_substream *substream,
 static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 				 unsigned int freq)
 {
-	struct clk *parent_clk, *mux;
+	struct clk *parent_clk;
 	char *parent_clk_name;
 	int ret = 0;
 
@@ -340,21 +329,14 @@ static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 		return -ENODEV;
 	}
 
-	mux = clk_get_parent(dmic->fclk);
-	if (IS_ERR(mux)) {
-		dev_err(dmic->dev, "can't get fck mux parent\n");
-		clk_put(parent_clk);
-		return -ENODEV;
-	}
-
 	mutex_lock(&dmic->mutex);
 	if (dmic->active) {
 		/* disable clock while reparenting */
 		pm_runtime_put_sync(dmic->dev);
-		ret = clk_set_parent(mux, parent_clk);
+		ret = clk_set_parent(dmic->fclk, parent_clk);
 		pm_runtime_get_sync(dmic->dev);
 	} else {
-		ret = clk_set_parent(mux, parent_clk);
+		ret = clk_set_parent(dmic->fclk, parent_clk);
 	}
 	mutex_unlock(&dmic->mutex);
 
@@ -367,7 +349,6 @@ static int omap_dmic_select_fclk(struct omap_dmic *dmic, int clk_id,
 	dmic->fclk_freq = freq;
 
 err_busy:
-	clk_put(mux);
 	clk_put(parent_clk);
 
 	return ret;
@@ -512,7 +493,7 @@ static int asoc_dmic_probe(struct platform_device *pdev)
 	if (ret)
 		return ret;
 
-	ret = sdma_pcm_platform_register(&pdev->dev, NULL, "up_link");
+	ret = omap_pcm_platform_register(&pdev->dev);
 	if (ret)
 		return ret;
 

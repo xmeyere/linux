@@ -20,13 +20,7 @@
 #include <linux/compat.h>
 #include <linux/err.h>
 
-typedef long (*syscall_fn_t)(const struct pt_regs *regs);
-
-extern const syscall_fn_t sys_call_table[];
-
-#ifdef CONFIG_COMPAT
-extern const syscall_fn_t compat_sys_call_table[];
-#endif
+extern const void *sys_call_table[];
 
 static inline int syscall_get_nr(struct task_struct *task,
 				 struct pt_regs *regs)
@@ -45,10 +39,6 @@ static inline long syscall_get_error(struct task_struct *task,
 				     struct pt_regs *regs)
 {
 	unsigned long error = regs->regs[0];
-
-	if (is_compat_thread(task_thread_info(task)))
-		error = sign_extend64(error, 31);
-
 	return IS_ERR_VALUE(error) ? error : 0;
 }
 
@@ -62,13 +52,7 @@ static inline void syscall_set_return_value(struct task_struct *task,
 					    struct pt_regs *regs,
 					    int error, long val)
 {
-	if (error)
-		val = error;
-
-	if (is_compat_thread(task_thread_info(task)))
-		val = lower_32_bits(val);
-
-	regs->regs[0] = val;
+	regs->regs[0] = (long) error ? error : val;
 }
 
 #define SYSCALL_MAX_ARGS 6

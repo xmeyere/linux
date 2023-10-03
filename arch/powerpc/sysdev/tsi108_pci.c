@@ -30,7 +30,7 @@
 #include <asm/byteorder.h>
 #include <asm/io.h>
 #include <asm/irq.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/machdep.h>
 #include <asm/pci-bridge.h>
 #include <asm/tsi108.h>
@@ -137,8 +137,10 @@ void tsi108_clear_pci_error(u32 pci_cfg_base)
 		".section .fixup,\"ax\"\n"		\
 		"3:	li %0,-1\n"			\
 		"	b 2b\n"				\
-		".previous\n"				\
-		EX_TABLE(1b, 3b)			\
+		".section __ex_table,\"a\"\n"		\
+		"	.align 2\n"			\
+		"	.long 1b,3b\n"			\
+		".text"					\
 		: "=r"(x) : "r"(addr))
 
 int
@@ -213,8 +215,8 @@ int __init tsi108_setup_pci(struct device_node *dev, u32 cfg_phys, int primary)
 	/* Get bus range if any */
 	bus_range = of_get_property(dev, "bus-range", &len);
 	if (bus_range == NULL || len < 2 * sizeof(int)) {
-		printk(KERN_WARNING "Can't get bus-range for %pOF, assume"
-		       " bus 0\n", dev);
+		printk(KERN_WARNING "Can't get bus-range for %s, assume"
+		       " bus 0\n", dev->full_name);
 	}
 
 	hose = pcibios_alloc_controller(dev);
@@ -229,8 +231,9 @@ int __init tsi108_setup_pci(struct device_node *dev, u32 cfg_phys, int primary)
 
 	(hose)->ops = &tsi108_direct_pci_ops;
 
-	pr_info("Found tsi108 PCI host bridge at 0x%pa. Firmware bus number: %d->%d\n",
-		&rsrc.start, hose->first_busno, hose->last_busno);
+	printk(KERN_INFO "Found tsi108 PCI host bridge at 0x%08x. "
+	       "Firmware bus number: %d->%d\n",
+	       rsrc.start, hose->first_busno, hose->last_busno);
 
 	/* Interpret the "ranges" property */
 	/* This also maps the I/O region and sets isa_io/mem_base */
@@ -394,7 +397,7 @@ static int pci_irq_host_map(struct irq_domain *h, unsigned int virq,
 	return 0;
 }
 
-static const struct irq_domain_ops pci_irq_domain_ops = {
+static struct irq_domain_ops pci_irq_domain_ops = {
 	.map = pci_irq_host_map,
 	.xlate = pci_irq_host_xlate,
 };
@@ -425,12 +428,12 @@ void __init tsi108_pci_int_init(struct device_node *node)
 	init_pci_source();
 }
 
-void tsi108_irq_cascade(struct irq_desc *desc)
+void tsi108_irq_cascade(unsigned int irq, struct irq_desc *desc)
 {
 	struct irq_chip *chip = irq_desc_get_chip(desc);
 	unsigned int cascade_irq = get_pci_source();
 
-	if (cascade_irq)
+	if (cascade_irq != NO_IRQ)
 		generic_handle_irq(cascade_irq);
 
 	chip->irq_eoi(&desc->irq_data);

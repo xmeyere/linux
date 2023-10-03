@@ -70,41 +70,6 @@ void mic_send_intr(struct mic_device *mdev, int doorbell)
 		       (MIC_X100_SBOX_SDBIC0 + (4 * doorbell)));
 }
 
-/*
- * mic_x100_send_sbox_intr - Send an MIC_X100_SBOX interrupt to MIC.
- */
-static void mic_x100_send_sbox_intr(struct mic_mw *mw, int doorbell)
-{
-	u64 apic_icr_offset = MIC_X100_SBOX_APICICR0 + doorbell * 8;
-	u32 apicicr_low = mic_mmio_read(mw, MIC_X100_SBOX_BASE_ADDRESS +
-					apic_icr_offset);
-
-	/* for MIC we need to make sure we "hit" the send_icr bit (13) */
-	apicicr_low = (apicicr_low | (1 << 13));
-	/*
-	 * Ensure that the interrupt is ordered w.r.t. previous stores
-	 * to main memory. Fence instructions are not implemented in X100
-	 * since execution is in order but a compiler barrier is still
-	 * required.
-	 */
-	wmb();
-	mic_mmio_write(mw, apicicr_low,
-		       MIC_X100_SBOX_BASE_ADDRESS + apic_icr_offset);
-}
-
-static void mic_x100_send_rdmasr_intr(struct mic_mw *mw, int doorbell)
-{
-	int rdmasr_offset = MIC_X100_SBOX_RDMASR0 + (doorbell << 2);
-	/*
-	 * Ensure that the interrupt is ordered w.r.t. previous stores
-	 * to main memory. Fence instructions are not implemented in X100
-	 * since execution is in order but a compiler barrier is still
-	 * required.
-	 */
-	wmb();
-	mic_mmio_write(mw, 0, MIC_X100_SBOX_BASE_ADDRESS + rdmasr_offset);
-}
-
 /**
  * mic_ack_interrupt - Device specific interrupt handling.
  * @mdev: pointer to mic_device instance
@@ -124,18 +89,6 @@ static inline int mic_get_sbox_irq(int db)
 static inline int mic_get_rdmasr_irq(int index)
 {
 	return  MIC_X100_RDMASR_IRQ_BASE + index;
-}
-
-void mic_send_p2p_intr(int db, struct mic_mw *mw)
-{
-	int rdmasr_index;
-
-	if (db < MIC_X100_NUM_SBOX_IRQ) {
-		mic_x100_send_sbox_intr(mw, db);
-	} else {
-		rdmasr_index = db - MIC_X100_NUM_SBOX_IRQ;
-		mic_x100_send_rdmasr_intr(mw, rdmasr_index);
-	}
 }
 
 /**
@@ -160,15 +113,11 @@ void mic_hw_intr_init(struct mic_driver *mdrv)
 int mic_db_to_irq(struct mic_driver *mdrv, int db)
 {
 	int rdmasr_index;
-
-	/*
-	 * The total number of doorbell interrupts on the card are 16. Indices
-	 * 0-8 falls in the SBOX category and 8-15 fall in the RDMASR category.
-	 */
 	if (db < MIC_X100_NUM_SBOX_IRQ) {
 		return mic_get_sbox_irq(db);
 	} else {
-		rdmasr_index = db - MIC_X100_NUM_SBOX_IRQ;
+		rdmasr_index = db - MIC_X100_NUM_SBOX_IRQ +
+			MIC_X100_RDMASR_IRQ_BASE;
 		return mic_get_rdmasr_irq(rdmasr_index);
 	}
 }
@@ -249,9 +198,6 @@ static int __init mic_probe(struct platform_device *pdev)
 	mdrv->dev = &pdev->dev;
 	snprintf(mdrv->name, sizeof(mic_driver_name), mic_driver_name);
 
-	/* FIXME: use dma_set_mask_and_coherent() and check result */
-	dma_coerce_mask_and_coherent(&pdev->dev, DMA_BIT_MASK(64));
-
 	mdev->mmio.pa = MIC_X100_MMIO_BASE;
 	mdev->mmio.len = MIC_X100_MMIO_LEN;
 	mdev->mmio.va = devm_ioremap(&pdev->dev, MIC_X100_MMIO_BASE,
@@ -264,7 +210,7 @@ static int __init mic_probe(struct platform_device *pdev)
 	mic_hw_intr_init(mdrv);
 	platform_set_drvdata(pdev, mdrv);
 	mdrv->dma_mbdev = mbus_register_device(mdrv->dev, MBUS_DEV_DMA_MIC,
-					       NULL, &mbus_hw_ops, 0,
+					       NULL, &mbus_hw_ops,
 					       mdrv->mdev.mmio.va);
 	if (IS_ERR(mdrv->dma_mbdev)) {
 		rc = PTR_ERR(mdrv->dma_mbdev);
@@ -297,6 +243,12 @@ static void mic_platform_shutdown(struct platform_device *pdev)
 	mic_remove(pdev);
 }
 
+static struct platform_device mic_platform_dev = {
+	.name = mic_driver_name,
+	.id   = 0,
+	.num_resources = 0,
+};
+
 static struct platform_driver __refdata mic_platform_driver = {
 	.probe = mic_probe,
 	.remove = mic_remove,
@@ -305,8 +257,6 @@ static struct platform_driver __refdata mic_platform_driver = {
 		.name   = mic_driver_name,
 	},
 };
-
-static struct platform_device *mic_platform_dev;
 
 static int __init mic_init(void)
 {
@@ -319,14 +269,10 @@ static int __init mic_init(void)
 		goto done;
 	}
 
-	request_module("mic_x100_dma");
 	mic_init_card_debugfs();
-
-	mic_platform_dev = platform_device_register_simple(mic_driver_name,
-							   0, NULL, 0);
-	ret = PTR_ERR_OR_ZERO(mic_platform_dev);
+	ret = platform_device_register(&mic_platform_dev);
 	if (ret) {
-		pr_err("platform_device_register_full ret %d\n", ret);
+		pr_err("platform_device_register ret %d\n", ret);
 		goto cleanup_debugfs;
 	}
 	ret = platform_driver_register(&mic_platform_driver);
@@ -337,7 +283,7 @@ static int __init mic_init(void)
 	return ret;
 
 device_unregister:
-	platform_device_unregister(mic_platform_dev);
+	platform_device_unregister(&mic_platform_dev);
 cleanup_debugfs:
 	mic_exit_card_debugfs();
 done:
@@ -347,7 +293,7 @@ done:
 static void __exit mic_exit(void)
 {
 	platform_driver_unregister(&mic_platform_driver);
-	platform_device_unregister(mic_platform_dev);
+	platform_device_unregister(&mic_platform_dev);
 	mic_exit_card_debugfs();
 }
 

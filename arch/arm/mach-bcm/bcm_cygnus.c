@@ -13,7 +13,7 @@
 
 #include <asm/mach/arch.h>
 
-static const char * const bcm_cygnus_dt_compat[] __initconst = {
+static const char const *bcm_cygnus_dt_compat[] = {
 	"brcm,cygnus",
 	NULL,
 };

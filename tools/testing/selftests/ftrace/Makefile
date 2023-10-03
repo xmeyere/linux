@@ -1,8 +1,7 @@
-# SPDX-License-Identifier: GPL-2.0
 all:
 
-TEST_PROGS := ftracetest
-TEST_FILES := test.d
-EXTRA_CLEAN := $(OUTPUT)/logs/*
+run_tests:
+	@/bin/sh ./ftracetest || echo "ftrace selftests: [FAIL]"
 
-include ../lib.mk
+clean:
+	rm -rf logs/*

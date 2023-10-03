@@ -3,7 +3,7 @@
 
     Copyright (C) 1998-2006 Michael Hunold <michael@mihu.de>
 
-    Visit http://www.themm.net/~mihu/linux/saa7146/mxb.html
+    Visit http://www.themm.net/~mihu/linux/saa7146/mxb.html 
     for further details about this card.
 
     This program is free software; you can redistribute it and/or modify
@@ -25,12 +25,11 @@
 
 #define DEBUG_VARIABLE debug
 
-#include <media/drv-intf/saa7146_vv.h>
+#include <media/saa7146_vv.h>
 #include <media/tuner.h>
 #include <media/v4l2-common.h>
-#include <media/i2c/saa7115.h>
+#include <media/saa7115.h>
 #include <linux/module.h>
-#include <linux/kernel.h>
 
 #include "tea6415c.h"
 #include "tea6420.h"
@@ -152,8 +151,8 @@ static struct mxb_routing TEA6420_line[MXB_AUDIOS + 1][2] = {
 
 struct mxb
 {
-	struct video_device	video_dev;
-	struct video_device	vbi_dev;
+	struct video_device	*video_dev;
+	struct video_device	*vbi_dev;
 
 	struct i2c_adapter	i2c_adapter;
 
@@ -653,17 +652,16 @@ static int vidioc_s_audio(struct file *file, void *fh, const struct v4l2_audio *
 	struct mxb *mxb = (struct mxb *)dev->ext_priv;
 
 	DEB_D("VIDIOC_S_AUDIO %d\n", a->index);
-	if (a->index >= 32 ||
-	    !(mxb_inputs[mxb->cur_input].audioset & (1 << a->index)))
-		return -EINVAL;
-
-	if (mxb->cur_audinput != a->index) {
-		mxb->cur_audinput = a->index;
-		tea6420_route(mxb, a->index);
-		if (mxb->cur_audinput == 0)
-			mxb_update_audmode(mxb);
+	if (mxb_inputs[mxb->cur_input].audioset & (1 << a->index)) {
+		if (mxb->cur_audinput != a->index) {
+			mxb->cur_audinput = a->index;
+			tea6420_route(mxb, a->index);
+			if (mxb->cur_audinput == 0)
+				mxb_update_audmode(mxb);
+		}
+		return 0;
 	}
-	return 0;
+	return -EINVAL;
 }
 
 #ifdef CONFIG_VIDEO_ADV_DEBUG
@@ -695,16 +693,10 @@ static struct saa7146_ext_vv vv_data;
 static int mxb_attach(struct saa7146_dev *dev, struct saa7146_pci_extension_data *info)
 {
 	struct mxb *mxb;
-	int ret;
 
 	DEB_EE("dev:%p\n", dev);
 
-	ret = saa7146_vv_init(dev, &vv_data);
-	if (ret) {
-		ERR("Error in saa7146_vv_init()");
-		return ret;
-	}
-
+	saa7146_vv_init(dev, &vv_data);
 	if (mxb_probe(dev)) {
 		saa7146_vv_release(dev);
 		return -1;
@@ -800,24 +792,24 @@ static int std_callback(struct saa7146_dev *dev, struct saa7146_standard *standa
 
 static struct saa7146_standard standard[] = {
 	{
-		.name	= "PAL-BG",	.id	= V4L2_STD_PAL_BG,
-		.v_offset	= 0x17,	.v_field	= 288,
-		.h_offset	= 0x14,	.h_pixels	= 680,
+		.name	= "PAL-BG", 	.id	= V4L2_STD_PAL_BG,
+		.v_offset	= 0x17,	.v_field 	= 288,
+		.h_offset	= 0x14,	.h_pixels 	= 680,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}, {
-		.name	= "PAL-I",	.id	= V4L2_STD_PAL_I,
-		.v_offset	= 0x17,	.v_field	= 288,
-		.h_offset	= 0x14,	.h_pixels	= 680,
+		.name	= "PAL-I", 	.id	= V4L2_STD_PAL_I,
+		.v_offset	= 0x17,	.v_field 	= 288,
+		.h_offset	= 0x14,	.h_pixels 	= 680,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}, {
-		.name	= "NTSC",	.id	= V4L2_STD_NTSC,
-		.v_offset	= 0x16,	.v_field	= 240,
-		.h_offset	= 0x06,	.h_pixels	= 708,
+		.name	= "NTSC", 	.id	= V4L2_STD_NTSC,
+		.v_offset	= 0x16,	.v_field 	= 240,
+		.h_offset	= 0x06,	.h_pixels 	= 708,
 		.v_max_out	= 480,	.h_max_out	= 640,
 	}, {
-		.name	= "SECAM",	.id	= V4L2_STD_SECAM,
-		.v_offset	= 0x14,	.v_field	= 288,
-		.h_offset	= 0x14,	.h_pixels	= 720,
+		.name	= "SECAM", 	.id	= V4L2_STD_SECAM,
+		.v_offset	= 0x14,	.v_field 	= 288,
+		.h_offset	= 0x14,	.h_pixels 	= 720,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}
 };
@@ -827,7 +819,7 @@ static struct saa7146_pci_extension_data mxb = {
 	.ext = &extension,
 };
 
-static const struct pci_device_id pci_tbl[] = {
+static struct pci_device_id pci_tbl[] = {
 	{
 		.vendor    = PCI_VENDOR_ID_PHILIPS,
 		.device	   = PCI_DEVICE_ID_PHILIPS_SAA7146,
@@ -845,7 +837,7 @@ static struct saa7146_ext_vv vv_data = {
 	.inputs		= MXB_INPUTS,
 	.capabilities	= V4L2_CAP_TUNER | V4L2_CAP_VBI_CAPTURE | V4L2_CAP_AUDIO,
 	.stds		= &standard[0],
-	.num_stds	= ARRAY_SIZE(standard),
+	.num_stds	= sizeof(standard)/sizeof(struct saa7146_standard),
 	.std_callback	= &std_callback,
 };
 

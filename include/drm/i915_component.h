@@ -24,26 +24,15 @@
 #ifndef _I915_COMPONENT_H_
 #define _I915_COMPONENT_H_
 
-#include "drm_audio_component.h"
-
-/* MAX_PORT is the number of port
- * It must be sync with I915_MAX_PORTS defined i915_drv.h
- */
-#define MAX_PORTS 6
-
-/**
- * struct i915_audio_component - Used for direct communication between i915 and hda drivers
- */
 struct i915_audio_component {
-	/**
-	 * @base: the drm_audio_component base class
-	 */
-	struct drm_audio_component	base;
+	struct device *dev;
 
-	/**
-	 * @aud_sample_rate: the array of audio sample rate per port
-	 */
-	int aud_sample_rate[MAX_PORTS];
+	const struct i915_audio_component_ops {
+		struct module *owner;
+		void (*get_power)(struct device *);
+		void (*put_power)(struct device *);
+		int (*get_cdclk_freq)(struct device *);
+	} *ops;
 };
 
 #endif /* _I915_COMPONENT_H_ */

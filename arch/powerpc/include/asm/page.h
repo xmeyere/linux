@@ -12,11 +12,11 @@
 
 #ifndef __ASSEMBLY__
 #include <linux/types.h>
-#include <linux/kernel.h>
 #else
 #include <asm/types.h>
 #endif
-#include <asm/asm-const.h>
+#include <asm/asm-compat.h>
+#include <asm/kdump.h>
 
 /*
  * On regular PPC32 page size is 4K (but we support 4K/16K/64K/256K pages
@@ -38,7 +38,6 @@
 
 #ifndef __ASSEMBLY__
 #ifdef CONFIG_HUGETLB_PAGE
-extern bool hugetlb_disabled;
 extern unsigned int HPAGE_SHIFT;
 #else
 #define HPAGE_SHIFT PAGE_SHIFT
@@ -96,7 +95,7 @@ extern unsigned int HPAGE_SHIFT;
 extern phys_addr_t memstart_addr;
 extern phys_addr_t kernstart_addr;
 
-#if defined(CONFIG_RELOCATABLE) && defined(CONFIG_PPC32)
+#ifdef CONFIG_RELOCATABLE_PPC32
 extern long long virt_phys_offset;
 #endif
 
@@ -108,13 +107,12 @@ extern long long virt_phys_offset;
 #endif
 
 /* See Description below for VIRT_PHYS_OFFSET */
-#if defined(CONFIG_PPC32) && defined(CONFIG_BOOKE)
-#ifdef CONFIG_RELOCATABLE
+#ifdef CONFIG_RELOCATABLE_PPC32
 #define VIRT_PHYS_OFFSET virt_phys_offset
 #else
 #define VIRT_PHYS_OFFSET (KERNELBASE - PHYSICAL_START)
 #endif
-#endif
+
 
 #ifdef CONFIG_PPC64
 #define MEMORY_START	0UL
@@ -126,42 +124,21 @@ extern long long virt_phys_offset;
 
 #ifdef CONFIG_FLATMEM
 #define ARCH_PFN_OFFSET		((unsigned long)(MEMORY_START >> PAGE_SHIFT))
-#ifndef __ASSEMBLY__
-extern unsigned long max_mapnr;
-static inline bool pfn_valid(unsigned long pfn)
-{
-	unsigned long min_pfn = ARCH_PFN_OFFSET;
-
-	return pfn >= min_pfn && pfn < max_mapnr;
-}
-#endif
+#define pfn_valid(pfn)		((pfn) >= ARCH_PFN_OFFSET && (pfn) < max_mapnr)
 #endif
 
-#define virt_to_pfn(kaddr)	(__pa(kaddr) >> PAGE_SHIFT)
-#define virt_to_page(kaddr)	pfn_to_page(virt_to_pfn(kaddr))
+#define virt_to_page(kaddr)	pfn_to_page(__pa(kaddr) >> PAGE_SHIFT)
 #define pfn_to_kaddr(pfn)	__va((pfn) << PAGE_SHIFT)
-
-#ifdef CONFIG_PPC_BOOK3S_64
-/*
- * On hash the vmalloc and other regions alias to the kernel region when passed
- * through __pa(), which virt_to_pfn() uses. That means virt_addr_valid() can
- * return true for some vmalloc addresses, which is incorrect. So explicitly
- * check that the address is in the kernel region.
- */
-#define virt_addr_valid(kaddr) (REGION_ID(kaddr) == KERNEL_REGION_ID && \
-				pfn_valid(virt_to_pfn(kaddr)))
-#else
-#define virt_addr_valid(kaddr)	pfn_valid(virt_to_pfn(kaddr))
-#endif
+#define virt_addr_valid(kaddr)	pfn_valid(__pa(kaddr) >> PAGE_SHIFT)
 
 /*
  * On Book-E parts we need __va to parse the device tree and we can't
  * determine MEMORY_START until then.  However we can determine PHYSICAL_START
  * from information at hand (program counter, TLB lookup).
  *
- * On BookE with RELOCATABLE && PPC32
+ * On BookE with RELOCATABLE (RELOCATABLE_PPC32)
  *
- *   With RELOCATABLE && PPC32,  we support loading the kernel at any physical
+ *   With RELOCATABLE_PPC32,  we support loading the kernel at any physical 
  *   address without any restriction on the page alignment.
  *
  *   We find the runtime address of _stext and relocate ourselves based on 
@@ -227,7 +204,7 @@ static inline bool pfn_valid(unsigned long pfn)
  * On non-Book-E PPC64 PAGE_OFFSET and MEMORY_START are constants so use
  * the other definitions for __va & __pa.
  */
-#if defined(CONFIG_PPC32) && defined(CONFIG_BOOKE)
+#ifdef CONFIG_BOOKE
 #define __va(x) ((void *)(unsigned long)((phys_addr_t)(x) + VIRT_PHYS_OFFSET))
 #define __pa(x) ((unsigned long)(x) - VIRT_PHYS_OFFSET)
 #else
@@ -250,9 +227,7 @@ static inline bool pfn_valid(unsigned long pfn)
  * and needs to be executable.  This means the whole heap ends
  * up being executable.
  */
-#define VM_DATA_DEFAULT_FLAGS32 \
-	(((current->personality & READ_IMPLIES_EXEC) ? VM_EXEC : 0) | \
-				 VM_READ | VM_WRITE | \
+#define VM_DATA_DEFAULT_FLAGS32	(VM_READ | VM_WRITE | VM_EXEC | \
 				 VM_MAYREAD | VM_MAYWRITE | VM_MAYEXEC)
 
 #define VM_DATA_DEFAULT_FLAGS64	(VM_READ | VM_WRITE | \
@@ -265,8 +240,8 @@ static inline bool pfn_valid(unsigned long pfn)
 #endif
 
 /* align addr on a size boundary - adjust address up/down if needed */
-#define _ALIGN_UP(addr, size)   __ALIGN_KERNEL(addr, size)
-#define _ALIGN_DOWN(addr, size)	((addr)&(~((typeof(addr))(size)-1)))
+#define _ALIGN_UP(addr,size)	(((addr)+((size)-1))&(~((size)-1)))
+#define _ALIGN_DOWN(addr,size)	((addr)&(~((size)-1)))
 
 /* align addr on a size boundary - adjust address up if needed */
 #define _ALIGN(addr,size)     _ALIGN_UP(addr,size)
@@ -293,13 +268,6 @@ static inline bool pfn_valid(unsigned long pfn)
 #else
 #define PD_HUGE 0x80000000
 #endif
-
-#else	/* CONFIG_PPC_BOOK3S_64 */
-/*
- * Book3S 64 stores real addresses in the hugepd entries to
- * avoid overlaps with _PAGE_PRESENT and _PAGE_PTE.
- */
-#define HUGEPD_ADDR_MASK	(0x0ffffffffffffffful & ~HUGEPD_SHIFT_MASK)
 #endif /* CONFIG_PPC_BOOK3S_64 */
 
 /*
@@ -310,17 +278,115 @@ static inline bool pfn_valid(unsigned long pfn)
 
 #ifndef __ASSEMBLY__
 
-#ifdef CONFIG_PPC_BOOK3S_64
-#include <asm/pgtable-be-types.h>
+#undef STRICT_MM_TYPECHECKS
+
+#ifdef STRICT_MM_TYPECHECKS
+/* These are used to make use of C type-checking. */
+
+/* PTE level */
+typedef struct { pte_basic_t pte; } pte_t;
+#define pte_val(x)	((x).pte)
+#define __pte(x)	((pte_t) { (x) })
+
+/* 64k pages additionally define a bigger "real PTE" type that gathers
+ * the "second half" part of the PTE for pseudo 64k pages
+ */
+#if defined(CONFIG_PPC_64K_PAGES) && defined(CONFIG_PPC_STD_MMU_64)
+typedef struct { pte_t pte; unsigned long hidx; } real_pte_t;
 #else
-#include <asm/pgtable-types.h>
+typedef struct { pte_t pte; } real_pte_t;
+#endif
+
+/* PMD level */
+#ifdef CONFIG_PPC64
+typedef struct { unsigned long pmd; } pmd_t;
+#define pmd_val(x)	((x).pmd)
+#define __pmd(x)	((pmd_t) { (x) })
+
+/* PUD level exusts only on 4k pages */
+#ifndef CONFIG_PPC_64K_PAGES
+typedef struct { unsigned long pud; } pud_t;
+#define pud_val(x)	((x).pud)
+#define __pud(x)	((pud_t) { (x) })
+#endif /* !CONFIG_PPC_64K_PAGES */
+#endif /* CONFIG_PPC64 */
+
+/* PGD level */
+typedef struct { unsigned long pgd; } pgd_t;
+#define pgd_val(x)	((x).pgd)
+#define __pgd(x)	((pgd_t) { (x) })
+
+/* Page protection bits */
+typedef struct { unsigned long pgprot; } pgprot_t;
+#define pgprot_val(x)	((x).pgprot)
+#define __pgprot(x)	((pgprot_t) { (x) })
+
+#else
+
+/*
+ * .. while these make it easier on the compiler
+ */
+
+typedef pte_basic_t pte_t;
+#define pte_val(x)	(x)
+#define __pte(x)	(x)
+
+#if defined(CONFIG_PPC_64K_PAGES) && defined(CONFIG_PPC_STD_MMU_64)
+typedef struct { pte_t pte; unsigned long hidx; } real_pte_t;
+#else
+typedef pte_t real_pte_t;
 #endif
 
 
-#ifndef CONFIG_HUGETLB_PAGE
-#define is_hugepd(pdep)		(0)
-#define pgd_huge(pgd)		(0)
+#ifdef CONFIG_PPC64
+typedef unsigned long pmd_t;
+#define pmd_val(x)	(x)
+#define __pmd(x)	(x)
+
+#ifndef CONFIG_PPC_64K_PAGES
+typedef unsigned long pud_t;
+#define pud_val(x)	(x)
+#define __pud(x)	(x)
+#endif /* !CONFIG_PPC_64K_PAGES */
+#endif /* CONFIG_PPC64 */
+
+typedef unsigned long pgd_t;
+#define pgd_val(x)	(x)
+#define pgprot_val(x)	(x)
+
+typedef unsigned long pgprot_t;
+#define __pgd(x)	(x)
+#define __pgprot(x)	(x)
+
+#endif
+
+typedef struct { signed long pd; } hugepd_t;
+
+#ifdef CONFIG_HUGETLB_PAGE
+#ifdef CONFIG_PPC_BOOK3S_64
+static inline int hugepd_ok(hugepd_t hpd)
+{
+	/*
+	 * hugepd pointer, bottom two bits == 00 and next 4 bits
+	 * indicate size of table
+	 */
+	return (((hpd.pd & 0x3) == 0x0) && ((hpd.pd & HUGEPD_SHIFT_MASK) != 0));
+}
+#else
+static inline int hugepd_ok(hugepd_t hpd)
+{
+	return (hpd.pd > 0);
+}
+#endif
+
+#define is_hugepd(hpd)               (hugepd_ok(hpd))
+#define pgd_huge pgd_huge
+int pgd_huge(pgd_t pgd);
+#else /* CONFIG_HUGETLB_PAGE */
+#define is_hugepd(pdep)			0
+#define pgd_huge(pgd)			0
 #endif /* CONFIG_HUGETLB_PAGE */
+#define __hugepd(x) ((hugepd_t) { (x) })
 
 struct page;
 extern void clear_user_page(void *page, unsigned long vaddr, struct page *pg);
@@ -336,8 +402,13 @@ void arch_free_page(struct page *page, int order);
 
 struct vm_area_struct;
 
+#if defined(CONFIG_PPC_64K_PAGES) && defined(CONFIG_PPC64)
+typedef pte_t *pgtable_t;
+#else
+typedef struct page *pgtable_t;
+#endif
+
 #include <asm-generic/memory_model.h>
 #endif /* __ASSEMBLY__ */
-#include <asm/slice.h>
 
 #endif /* _ASM_POWERPC_PAGE_H */

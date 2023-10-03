@@ -92,35 +92,35 @@ exception_table:
 
 trap_table:
 	.word	handle_system_call	/* 0  */
-	.word	handle_trap_1		/* 1  */
-	.word	handle_trap_2		/* 2  */
-	.word	handle_trap_3		/* 3  */
-	.word	handle_trap_reserved	/* 4  */
-	.word	handle_trap_reserved	/* 5  */
-	.word	handle_trap_reserved	/* 6  */
-	.word	handle_trap_reserved	/* 7  */
-	.word	handle_trap_reserved	/* 8  */
-	.word	handle_trap_reserved	/* 9  */
-	.word	handle_trap_reserved	/* 10 */
-	.word	handle_trap_reserved	/* 11 */
-	.word	handle_trap_reserved	/* 12 */
-	.word	handle_trap_reserved	/* 13 */
-	.word	handle_trap_reserved	/* 14 */
-	.word	handle_trap_reserved	/* 15 */
-	.word	handle_trap_reserved	/* 16 */
-	.word	handle_trap_reserved	/* 17 */
-	.word	handle_trap_reserved	/* 18 */
-	.word	handle_trap_reserved	/* 19 */
-	.word	handle_trap_reserved	/* 20 */
-	.word	handle_trap_reserved	/* 21 */
-	.word	handle_trap_reserved	/* 22 */
-	.word	handle_trap_reserved	/* 23 */
-	.word	handle_trap_reserved	/* 24 */
-	.word	handle_trap_reserved	/* 25 */
-	.word	handle_trap_reserved	/* 26 */
-	.word	handle_trap_reserved	/* 27 */
-	.word	handle_trap_reserved	/* 28 */
-	.word	handle_trap_reserved	/* 29 */
+	.word	instruction_trap	/* 1  */
+	.word	instruction_trap	/* 2  */
+	.word	instruction_trap	/* 3  */
+	.word	instruction_trap	/* 4  */
+	.word	instruction_trap	/* 5  */
+	.word	instruction_trap	/* 6  */
+	.word	instruction_trap	/* 7  */
+	.word	instruction_trap	/* 8  */
+	.word	instruction_trap	/* 9  */
+	.word	instruction_trap	/* 10 */
+	.word	instruction_trap	/* 11 */
+	.word	instruction_trap	/* 12 */
+	.word	instruction_trap	/* 13 */
+	.word	instruction_trap	/* 14 */
+	.word	instruction_trap	/* 15 */
+	.word	instruction_trap	/* 16 */
+	.word	instruction_trap	/* 17 */
+	.word	instruction_trap	/* 18 */
+	.word	instruction_trap	/* 19 */
+	.word	instruction_trap	/* 20 */
+	.word	instruction_trap	/* 21 */
+	.word	instruction_trap	/* 22 */
+	.word	instruction_trap	/* 23 */
+	.word	instruction_trap	/* 24 */
+	.word	instruction_trap	/* 25 */
+	.word	instruction_trap	/* 26 */
+	.word	instruction_trap	/* 27 */
+	.word	instruction_trap	/* 28 */
+	.word	instruction_trap	/* 29 */
 #ifdef CONFIG_KGDB
 	.word	handle_kgdb_breakpoint	/* 30 KGDB breakpoint */
 #else
@@ -185,7 +185,6 @@ ENTRY(handle_system_call)
 	ldw	r5, PT_R5(sp)
 
 local_restart:
-	stw	r2, PT_ORIG_R2(sp)
 	/* Check that the requested system call is within limits */
 	movui	r1, __NR_syscalls
 	bgeu	r2, r1, ret_invsyscall
@@ -193,6 +192,7 @@ local_restart:
 	movhi	r11, %hiadj(sys_call_table)
 	add	r1, r1, r11
 	ldw	r1, %lo(sys_call_table)(r1)
+	beq	r1, r0, ret_invsyscall
 
 	/* Check if we are being traced */
 	GET_THREAD_INFO r11
@@ -213,9 +213,6 @@ local_restart:
 translate_rc_and_ret:
 	movi	r1, 0
 	bge	r2, zero, 3f
-	ldw	r1, PT_ORIG_R2(sp)
-	addi	r1, r1, 1
-	beq	r1, zero, 3f
 	sub	r2, zero, r2
 	movi	r1, 1
 3:
@@ -258,9 +255,9 @@ traced_system_call:
 	ldw	r6, PT_R6(sp)
 	ldw	r7, PT_R7(sp)
 
-	/* Fetch the syscall function. */
-	movui	r1, __NR_syscalls
-	bgeu	r2, r1, traced_invsyscall
+	/* Fetch the syscall function, we don't need to check the boundaries
+	 * since this is already done.
+	 */
 	slli	r1, r2, 2
 	movhi	r11,%hiadj(sys_call_table)
 	add	r1, r1, r11
@@ -279,9 +276,6 @@ traced_system_call:
 translate_rc_and_ret2:
 	movi	r1, 0
 	bge	r2, zero, 4f
-	ldw	r1, PT_ORIG_R2(sp)
-	addi	r1, r1, 1
-	beq	r1, zero, 4f
 	sub	r2, zero, r2
 	movi	r1, 1
 4:
@@ -292,11 +286,6 @@ end_translate_rc_and_ret2:
 	call	do_syscall_trace_exit
 	RESTORE_SWITCH_STACK
 	br	ret_from_exception
-
-	/* If the syscall number was invalid return ENOSYS */
-traced_invsyscall:
-	movi	r2, -ENOSYS
-	br	translate_rc_and_ret2
 
 Luser_return:
 	GET_THREAD_INFO	r11			/* get thread_info pointer */
@@ -346,6 +335,9 @@ external_interrupt:
 	and	r12, r12, r9
 	/* skip if no interrupt is pending */
 	beq	r12, r0, ret_from_interrupt
+
+	movi	r24, -1
+	stw	r24, PT_ORIG_R2(sp)
 
 	/*
 	 * Process an external hardware interrupt.
@@ -462,19 +454,6 @@ handle_kgdb_breakpoint:
 	call	kgdb_breakpoint_c
 	br	ret_from_exception
 #endif
-
-handle_trap_1:
-	call	handle_trap_1_c
-	br	ret_from_exception
-
-handle_trap_2:
-	call	handle_trap_2_c
-	br	ret_from_exception
-
-handle_trap_3:
-handle_trap_reserved:
-	call	handle_trap_3_c
-	br	ret_from_exception
 
 /*
  * Beware - when entering resume, prev (the current task) is

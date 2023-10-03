@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * kernel/workqueue_internal.h
  *
@@ -10,7 +9,6 @@
 
 #include <linux/workqueue.h>
 #include <linux/kthread.h>
-#include <linux/preempt.h>
 
 struct worker_pool;
 
@@ -31,12 +29,13 @@ struct worker {
 	struct work_struct	*current_work;	/* L: work being processed */
 	work_func_t		current_func;	/* L: current_work's fn */
 	struct pool_workqueue	*current_pwq; /* L: current_work's pwq */
+	bool			desc_valid;	/* ->desc is valid */
 	struct list_head	scheduled;	/* L: scheduled works */
 
 	/* 64 bytes boundary on 64bit, 32 on 32bit */
 
 	struct task_struct	*task;		/* I: worker task */
-	struct worker_pool	*pool;		/* A: the associated pool */
+	struct worker_pool	*pool;		/* I: the associated pool */
 						/* L: for rescuers */
 	struct list_head	node;		/* A: anchored at pool->workers */
 						/* A: runs through worker->node */
@@ -60,7 +59,7 @@ struct worker {
  */
 static inline struct worker *current_wq_worker(void)
 {
-	if (in_task() && (current->flags & PF_WQ_WORKER))
+	if (current->flags & PF_WQ_WORKER)
 		return kthread_data(current);
 	return NULL;
 }
@@ -70,6 +69,6 @@ static inline struct worker *current_wq_worker(void)
  * sched/core.c and workqueue.c.
  */
 void wq_worker_waking_up(struct task_struct *task, int cpu);
-struct task_struct *wq_worker_sleeping(struct task_struct *task);
+struct task_struct *wq_worker_sleeping(struct task_struct *task, int cpu);
 
 #endif /* _KERNEL_WORKQUEUE_INTERNAL_H */

@@ -67,11 +67,12 @@ static struct scsi_host_template qlogicfas_driver_template = {
 	.info			= qlogicfas408_info,
 	.queuecommand		= qlogicfas408_queuecommand,
 	.eh_abort_handler	= qlogicfas408_abort,
-	.eh_host_reset_handler	= qlogicfas408_host_reset,
+	.eh_bus_reset_handler	= qlogicfas408_bus_reset,
 	.bios_param		= qlogicfas408_biosparam,
 	.can_queue		= 1,
 	.this_id		= -1,
 	.sg_tablesize		= SG_ALL,
+	.cmd_per_lun		= 1,
 	.use_clustering		= DISABLE_CLUSTERING,
 };
 
@@ -264,7 +265,7 @@ static int qlogic_resume(struct pcmcia_device *link)
 		outb(0x04, link->resource[0]->start + 0xd);
 	}
 	/* Ugggglllyyyy!!! */
-	qlogicfas408_host_reset(NULL);
+	qlogicfas408_bus_reset(NULL);
 
 	return 0;
 }

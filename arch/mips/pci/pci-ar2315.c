@@ -149,13 +149,6 @@
 #define AR2315_PCI_HOST_SLOT	3
 #define AR2315_PCI_HOST_DEVID	((0xff18 << 16) | PCI_VENDOR_ID_ATHEROS)
 
-/*
- * We need some arbitrary non-zero value to be programmed to the BAR1 register
- * of PCI host controller to enable DMA. The same value should be used as the
- * offset to calculate the physical address of DMA buffer for PCI devices.
- */
-#define AR2315_PCI_HOST_SDRAM_BASEADDR	0x20000000
-
 /* ??? access BAR */
 #define AR2315_PCI_HOST_MBAR0		0x10000000
 /* RAM access BAR */
@@ -173,23 +166,6 @@ struct ar2315_pci_ctrl {
 	struct resource mem_res;
 	struct resource io_res;
 };
-
-static inline dma_addr_t ar2315_dev_offset(struct device *dev)
-{
-	if (dev && dev_is_pci(dev))
-		return AR2315_PCI_HOST_SDRAM_BASEADDR;
-	return 0;
-}
-
-dma_addr_t __phys_to_dma(struct device *dev, phys_addr_t paddr)
-{
-	return paddr + ar2315_dev_offset(dev);
-}
-
-phys_addr_t __dma_to_phys(struct device *dev, dma_addr_t dma_addr)
-{
-	return dma_addr - ar2315_dev_offset(dev);
-}
 
 static inline struct ar2315_pci_ctrl *ar2315_pci_bus_to_apc(struct pci_bus *bus)
 {
@@ -342,9 +318,9 @@ static int ar2315_pci_host_setup(struct ar2315_pci_ctrl *apc)
 	return 0;
 }
 
-static void ar2315_pci_irq_handler(struct irq_desc *desc)
+static void ar2315_pci_irq_handler(unsigned irq, struct irq_desc *desc)
 {
-	struct ar2315_pci_ctrl *apc = irq_desc_get_handler_data(desc);
+	struct ar2315_pci_ctrl *apc = irq_get_handler_data(irq);
 	u32 pending = ar2315_pci_reg_read(apc, AR2315_PCI_ISR) &
 		      ar2315_pci_reg_read(apc, AR2315_PCI_IMR);
 	unsigned pci_irq = 0;
@@ -408,8 +384,8 @@ static void ar2315_pci_irq_init(struct ar2315_pci_ctrl *apc)
 
 	apc->irq_ext = irq_create_mapping(apc->domain, AR2315_PCI_IRQ_EXT);
 
-	irq_set_chained_handler_and_data(apc->irq, ar2315_pci_irq_handler,
-					 apc);
+	irq_set_chained_handler(apc->irq, ar2315_pci_irq_handler);
+	irq_set_handler_data(apc->irq, apc);
 
 	/* Clear any pending Abort or external Interrupts
 	 * and enable interrupt processing */
@@ -512,6 +488,7 @@ static struct platform_driver ar2315_pci_driver = {
 	.probe = ar2315_pci_probe,
 	.driver = {
 		.name = "ar2315-pci",
+		.owner = THIS_MODULE,
 	},
 };
 

@@ -16,26 +16,53 @@
 #include <linux/pm_runtime.h>
 #include <linux/pm_clock.h>
 #include <linux/platform_device.h>
+#include <linux/clk-provider.h>
 #include <linux/of.h>
 
-#include "keystone.h"
+#ifdef CONFIG_PM
+static int keystone_pm_runtime_suspend(struct device *dev)
+{
+	int ret;
+
+	dev_dbg(dev, "%s\n", __func__);
+
+	ret = pm_generic_runtime_suspend(dev);
+	if (ret)
+		return ret;
+
+	ret = pm_clk_suspend(dev);
+	if (ret) {
+		pm_generic_runtime_resume(dev);
+		return ret;
+	}
+
+	return 0;
+}
+
+static int keystone_pm_runtime_resume(struct device *dev)
+{
+	dev_dbg(dev, "%s\n", __func__);
+
+	pm_clk_resume(dev);
+
+	return pm_generic_runtime_resume(dev);
+}
+#endif
 
 static struct dev_pm_domain keystone_pm_domain = {
 	.ops = {
-		USE_PM_CLK_RUNTIME_OPS
+		SET_RUNTIME_PM_OPS(keystone_pm_runtime_suspend,
+				   keystone_pm_runtime_resume, NULL)
 		USE_PLATFORM_PM_SLEEP_OPS
 	},
 };
 
 static struct pm_clk_notifier_block platform_domain_notifier = {
 	.pm_domain = &keystone_pm_domain,
-	.con_ids = { NULL },
 };
 
 static const struct of_device_id of_keystone_table[] = {
-	{.compatible = "ti,k2hk"},
-	{.compatible = "ti,k2e"},
-	{.compatible = "ti,k2l"},
+	{.compatible = "ti,keystone"},
 	{ /* end of list */ },
 };
 

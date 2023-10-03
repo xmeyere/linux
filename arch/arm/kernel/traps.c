@@ -19,21 +19,17 @@
 #include <linux/uaccess.h>
 #include <linux/hardirq.h>
 #include <linux/kdebug.h>
-#include <linux/kprobes.h>
 #include <linux/module.h>
 #include <linux/kexec.h>
 #include <linux/bug.h>
 #include <linux/delay.h>
 #include <linux/init.h>
-#include <linux/sched/signal.h>
-#include <linux/sched/debug.h>
-#include <linux/sched/task_stack.h>
+#include <linux/sched.h>
 #include <linux/irq.h>
 
 #include <linux/atomic.h>
 #include <asm/cacheflush.h>
 #include <asm/exception.h>
-#include <asm/spectre.h>
 #include <asm/unistd.h>
 #include <asm/traps.h>
 #include <asm/ptrace.h>
@@ -68,36 +64,14 @@ static void dump_mem(const char *, const char *, unsigned long, unsigned long);
 
 void dump_backtrace_entry(unsigned long where, unsigned long from, unsigned long frame)
 {
-	unsigned long end = frame + 4 + sizeof(struct pt_regs);
-
 #ifdef CONFIG_KALLSYMS
 	printk("[<%08lx>] (%ps) from [<%08lx>] (%pS)\n", where, (void *)where, from, (void *)from);
 #else
 	printk("Function entered at [<%08lx>] from [<%08lx>]\n", where, from);
 #endif
 
-	if (in_entry_text(from) && end <= ALIGN(frame, THREAD_SIZE))
-		dump_mem("", "Exception stack", frame + 4, end);
-}
-
-void dump_backtrace_stm(u32 *stack, u32 instruction)
-{
-	char str[80], *p;
-	unsigned int x;
-	int reg;
-
-	for (reg = 10, x = 0, p = str; reg >= 0; reg--) {
-		if (instruction & BIT(reg)) {
-			p += sprintf(p, " r%d:%08x", reg, *stack--);
-			if (++x == 6) {
-				x = 0;
-				p = str;
-				printk("%s\n", str);
-			}
-		}
-	}
-	if (p != str)
-		printk("%s\n", str);
+	if (in_exception_text(where))
+		dump_mem("", "Exception stack", frame + 4, frame + 4 + sizeof(struct pt_regs));
 }
 
 #ifndef CONFIG_ARM_UNWIND
@@ -158,26 +132,30 @@ static void dump_mem(const char *lvl, const char *str, unsigned long bottom,
 	set_fs(fs);
 }
 
-static void __dump_instr(const char *lvl, struct pt_regs *regs)
+static void dump_instr(const char *lvl, struct pt_regs *regs)
 {
 	unsigned long addr = instruction_pointer(regs);
 	const int thumb = thumb_mode(regs);
 	const int width = thumb ? 4 : 8;
+	mm_segment_t fs;
 	char str[sizeof("00000000 ") * 5 + 2 + 1], *p = str;
 	int i;
 
 	/*
-	 * Note that we now dump the code first, just in case the backtrace
-	 * kills us.
+	 * We need to switch to kernel mode so that we can use __get_user
+	 * to safely read from kernel space.  Note that we now dump the
+	 * code first, just in case the backtrace kills us.
 	 */
+	fs = get_fs();
+	set_fs(KERNEL_DS);
 
 	for (i = -4; i < 1 + !!thumb; i++) {
 		unsigned int val, bad;
 
 		if (thumb)
-			bad = get_user(val, &((u16 *)addr)[i]);
+			bad = __get_user(val, &((u16 *)addr)[i]);
 		else
-			bad = get_user(val, &((u32 *)addr)[i]);
+			bad = __get_user(val, &((u32 *)addr)[i]);
 
 		if (!bad)
 			p += sprintf(p, i == 0 ? "(%0*x) " : "%0*x ",
@@ -188,20 +166,8 @@ static void __dump_instr(const char *lvl, struct pt_regs *regs)
 		}
 	}
 	printk("%sCode: %s\n", lvl, str);
-}
 
-static void dump_instr(const char *lvl, struct pt_regs *regs)
-{
-	mm_segment_t fs;
-
-	if (!user_mode(regs)) {
-		fs = get_fs();
-		set_fs(KERNEL_DS);
-		__dump_instr(lvl, regs);
-		set_fs(fs);
-	} else {
-		__dump_instr(lvl, regs);
-	}
+	set_fs(fs);
 }
 
 #ifdef CONFIG_ARM_UNWIND
@@ -344,7 +310,7 @@ static void oops_end(unsigned long flags, struct pt_regs *regs, int signr)
 	if (panic_on_oops)
 		panic("Fatal exception");
 	if (signr)
-		make_task_dead(signr);
+		do_exit(signr);
 }
 
 /*
@@ -421,8 +387,7 @@ void unregister_undef_hook(struct undef_hook *hook)
 	raw_spin_unlock_irqrestore(&undef_lock, flags);
 }
 
-static nokprobe_inline
-int call_undef_hook(struct pt_regs *regs, unsigned int instr)
+static int call_undef_hook(struct pt_regs *regs, unsigned int instr)
 {
 	struct undef_hook *hook;
 	unsigned long flags;
@@ -438,13 +403,12 @@ int call_undef_hook(struct pt_regs *regs, unsigned int instr)
 	return fn ? fn(regs, instr) : 1;
 }
 
-asmlinkage void do_undefinstr(struct pt_regs *regs)
+asmlinkage void __exception do_undefinstr(struct pt_regs *regs)
 {
 	unsigned int instr;
 	siginfo_t info;
 	void __user *pc;
 
-	clear_siginfo(&info);
 	pc = (void __user *)instruction_pointer(regs);
 
 	if (processor_mode(regs) == SVC_MODE) {
@@ -496,7 +460,6 @@ die_sig:
 
 	arm_notify_die("Oops - undefined instruction", regs, &info, 0, 6);
 }
-NOKPROBE_SYMBOL(do_undefinstr)
 
 /*
  * Handle FIQ similarly to NMI on x86 systems.
@@ -542,11 +505,12 @@ asmlinkage void bad_mode(struct pt_regs *regs, int reason)
 
 static int bad_syscall(int n, struct pt_regs *regs)
 {
+	struct thread_info *thread = current_thread_info();
 	siginfo_t info;
 
-	clear_siginfo(&info);
-	if ((current->personality & PER_MASK) != PER_LINUX) {
-		send_sig(SIGSEGV, current, 1);
+	if ((current->personality & PER_MASK) != PER_LINUX &&
+	    thread->exec_domain->handler) {
+		thread->exec_domain->handler(n, regs);
 		return regs->ARM_r0;
 	}
 
@@ -612,7 +576,6 @@ asmlinkage int arm_syscall(int no, struct pt_regs *regs)
 {
 	siginfo_t info;
 
-	clear_siginfo(&info);
 	if ((no >> 16) != (__ARM_NR_BASE>> 16))
 		return bad_syscall(no, regs);
 
@@ -664,8 +627,57 @@ asmlinkage int arm_syscall(int no, struct pt_regs *regs)
 		set_tls(regs->ARM_r0);
 		return 0;
 
-	case NR(get_tls):
-		return current_thread_info()->tp_value[0];
+#ifdef CONFIG_NEEDS_SYSCALL_FOR_CMPXCHG
+	/*
+	 * Atomically store r1 in *r2 if *r2 is equal to r0 for user space.
+	 * Return zero in r0 if *MEM was changed or non-zero if no exchange
+	 * happened.  Also set the user C flag accordingly.
+	 * If access permissions have to be fixed up then non-zero is
+	 * returned and the operation has to be re-attempted.
+	 *
+	 * *NOTE*: This is a ghost syscall private to the kernel.  Only the
+	 * __kuser_cmpxchg code in entry-armv.S should be aware of its
+	 * existence.  Don't ever use this from user code.
+	 */
+	case NR(cmpxchg):
+	for (;;) {
+		extern void do_DataAbort(unsigned long addr, unsigned int fsr,
+					 struct pt_regs *regs);
+		unsigned long val;
+		unsigned long addr = regs->ARM_r2;
+		struct mm_struct *mm = current->mm;
+		pgd_t *pgd; pmd_t *pmd; pte_t *pte;
+		spinlock_t *ptl;
+
+		regs->ARM_cpsr &= ~PSR_C_BIT;
+		down_read(&mm->mmap_sem);
+		pgd = pgd_offset(mm, addr);
+		if (!pgd_present(*pgd))
+			goto bad_access;
+		pmd = pmd_offset(pgd, addr);
+		if (!pmd_present(*pmd))
+			goto bad_access;
+		pte = pte_offset_map_lock(mm, pmd, addr, &ptl);
+		if (!pte_present(*pte) || !pte_write(*pte) || !pte_dirty(*pte)) {
+			pte_unmap_unlock(pte, ptl);
+			goto bad_access;
+		}
+		val = *(unsigned long *)addr;
+		val -= regs->ARM_r0;
+		if (val == 0) {
+			*(unsigned long *)addr = regs->ARM_r1;
+			regs->ARM_cpsr |= PSR_C_BIT;
+		}
+		pte_unmap_unlock(pte, ptl);
+		up_read(&mm->mmap_sem);
+		return val;
+
+		bad_access:
+		up_read(&mm->mmap_sem);
+		/* simulate a write access fault */
+		do_DataAbort(addr, 15 + (1 << 11), regs);
+	}
+#endif
 
 	default:
 		/* Calls 9f00xx..9f07ff are defined to return -ENOSYS
@@ -739,6 +751,14 @@ late_initcall(arm_mrc_hook_init);
 
 #endif
 
+void __bad_xchg(volatile void *ptr, int size)
+{
+	pr_err("xchg: bad data size: pc 0x%p, ptr 0x%p, size %d\n",
+	       __builtin_return_address(0), ptr, size);
+	BUG();
+}
+EXPORT_SYMBOL(__bad_xchg);
+
 /*
  * A data abort trap was taken, but we did not handle the instruction.
  * Try to abort the user program, or panic if it was the kernel.
@@ -748,8 +768,6 @@ baddataabort(int code, unsigned long instr, struct pt_regs *regs)
 {
 	unsigned long addr = instruction_pointer(regs);
 	siginfo_t info;
-
-	clear_siginfo(&info);
 
 #ifdef CONFIG_DEBUG_USER
 	if (user_debug & UDBG_BADABORT) {
@@ -804,6 +822,7 @@ void abort(void)
 	/* if that doesn't kill us, halt */
 	panic("Oops failed to kill thread");
 }
+EXPORT_SYMBOL(abort);
 
 void __init trap_init(void)
 {
@@ -831,59 +850,10 @@ static inline void __init kuser_init(void *vectors)
 }
 #endif
 
-#ifndef CONFIG_CPU_V7M
-static void copy_from_lma(void *vma, void *lma_start, void *lma_end)
-{
-	memcpy(vma, lma_start, lma_end - lma_start);
-}
-
-static void flush_vectors(void *vma, size_t offset, size_t size)
-{
-	unsigned long start = (unsigned long)vma + offset;
-	unsigned long end = start + size;
-
-	flush_icache_range(start, end);
-}
-
-#ifdef CONFIG_HARDEN_BRANCH_HISTORY
-int spectre_bhb_update_vectors(unsigned int method)
-{
-	extern char __vectors_bhb_bpiall_start[], __vectors_bhb_bpiall_end[];
-	extern char __vectors_bhb_loop8_start[], __vectors_bhb_loop8_end[];
-	void *vec_start, *vec_end;
-
-	if (system_state > SYSTEM_SCHEDULING) {
-		pr_err("CPU%u: Spectre BHB workaround too late - system vulnerable\n",
-		       smp_processor_id());
-		return SPECTRE_VULNERABLE;
-	}
-
-	switch (method) {
-	case SPECTRE_V2_METHOD_LOOP8:
-		vec_start = __vectors_bhb_loop8_start;
-		vec_end = __vectors_bhb_loop8_end;
-		break;
-
-	case SPECTRE_V2_METHOD_BPIALL:
-		vec_start = __vectors_bhb_bpiall_start;
-		vec_end = __vectors_bhb_bpiall_end;
-		break;
-
-	default:
-		pr_err("CPU%u: unknown Spectre BHB state %d\n",
-		       smp_processor_id(), method);
-		return SPECTRE_VULNERABLE;
-	}
-
-	copy_from_lma(vectors_page, vec_start, vec_end);
-	flush_vectors(vectors_page, 0, vec_end - vec_start);
-
-	return SPECTRE_MITIGATED;
-}
-#endif
-
 void __init early_trap_init(void *vectors_base)
 {
+#ifndef CONFIG_CPU_V7M
+	unsigned long vectors = (unsigned long)vectors_base;
 	extern char __stubs_start[], __stubs_end[];
 	extern char __vectors_start[], __vectors_end[];
 	unsigned i;
@@ -904,20 +874,18 @@ void __init early_trap_init(void *vectors_base)
 	 * into the vector page, mapped at 0xffff0000, and ensure these
 	 * are visible to the instruction stream.
 	 */
-	copy_from_lma(vectors_base, __vectors_start, __vectors_end);
-	copy_from_lma(vectors_base + 0x1000, __stubs_start, __stubs_end);
+	memcpy((void *)vectors, __vectors_start, __vectors_end - __vectors_start);
+	memcpy((void *)vectors + 0x1000, __stubs_start, __stubs_end - __stubs_start);
 
 	kuser_init(vectors_base);
 
-	flush_vectors(vectors_base, 0, PAGE_SIZE * 2);
-}
+	flush_icache_range(vectors, vectors + PAGE_SIZE * 2);
+	modify_domain(DOMAIN_USER, DOMAIN_CLIENT);
 #else /* ifndef CONFIG_CPU_V7M */
-void __init early_trap_init(void *vectors_base)
-{
 	/*
 	 * on V7-M there is no need to copy the vector table to a dedicated
 	 * memory area. The address is configurable and so a table in the kernel
 	 * image can be used.
 	 */
-}
 #endif
+}

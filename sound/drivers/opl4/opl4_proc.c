@@ -22,6 +22,8 @@
 #include <linux/export.h>
 #include <sound/info.h>
 
+#ifdef CONFIG_PROC_FS
+
 static int snd_opl4_mem_proc_open(struct snd_info_entry *entry,
 				  unsigned short mode, void **file_private_data)
 {
@@ -104,7 +106,7 @@ int snd_opl4_create_proc(struct snd_opl4 *opl4)
 	if (entry) {
 		if (opl4->hardware < OPL3_HW_OPL4_ML) {
 			/* OPL4 can access 4 MB external ROM/SRAM */
-			entry->mode |= 0200;
+			entry->mode |= S_IWUSR;
 			entry->size = 4 * 1024 * 1024;
 		} else {
 			/* OPL4-ML has 1 MB internal ROM */
@@ -127,3 +129,5 @@ void snd_opl4_free_proc(struct snd_opl4 *opl4)
 {
 	snd_info_free_entry(opl4->proc_entry);
 }
+
+#endif /* CONFIG_PROC_FS */

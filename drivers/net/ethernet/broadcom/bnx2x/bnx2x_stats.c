@@ -1,8 +1,6 @@
-/* bnx2x_stats.c: QLogic Everest network driver.
+/* bnx2x_stats.c: Broadcom Everest network driver.
  *
  * Copyright (c) 2007-2013 Broadcom Corporation
- * Copyright (c) 2014 QLogic Corporation
- * All rights reserved
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License as published by
@@ -1374,23 +1372,19 @@ void bnx2x_stats_handle(struct bnx2x *bp, enum bnx2x_stats_event event)
 	 * that context in case someone is in the middle of a transition.
 	 * For other events, wait a bit until lock is taken.
 	 */
-	if (down_trylock(&bp->stats_lock)) {
+	if (!mutex_trylock(&bp->stats_lock)) {
 		if (event == STATS_EVENT_UPDATE)
 			return;
 
 		DP(BNX2X_MSG_STATS,
 		   "Unlikely stats' lock contention [event %d]\n", event);
-		if (unlikely(down_timeout(&bp->stats_lock, HZ / 10))) {
-			BNX2X_ERR("Failed to take stats lock [event %d]\n",
-				  event);
-			return;
-		}
+		mutex_lock(&bp->stats_lock);
 	}
 
 	bnx2x_stats_stm[state][event].action(bp);
 	bp->stats_state = bnx2x_stats_stm[state][event].next_state;
 
-	up(&bp->stats_lock);
+	mutex_unlock(&bp->stats_lock);
 
 	if ((event != STATS_EVENT_UPDATE) || netif_msg_timer(bp))
 		DP(BNX2X_MSG_STATS, "state %d -> event %d -> state %d\n",
@@ -1589,7 +1583,7 @@ void bnx2x_memset_stats(struct bnx2x *bp)
 	if (bp->port.pmf && bp->port.port_stx)
 		bnx2x_port_stats_base_init(bp);
 
-	/* mark the end of statistics initialization */
+	/* mark the end of statistics initializiation */
 	bp->stats_init = false;
 }
 
@@ -1976,11 +1970,7 @@ int bnx2x_stats_safe_exec(struct bnx2x *bp,
 	/* Wait for statistics to end [while blocking further requests],
 	 * then run supplied function 'safely'.
 	 */
-	rc = down_timeout(&bp->stats_lock, HZ / 10);
-	if (unlikely(rc)) {
-		BNX2X_ERR("Failed to take statistics lock for safe execution\n");
-		goto out_no_lock;
-	}
+	mutex_lock(&bp->stats_lock);
 
 	bnx2x_stats_comp(bp);
 	while (bp->stats_pending && cnt--)
@@ -1998,7 +1988,7 @@ out:
 	/* No need to restart statistics - if they're enabled, the timer
 	 * will restart the statistics.
 	 */
-	up(&bp->stats_lock);
-out_no_lock:
+	mutex_unlock(&bp->stats_lock);
+
 	return rc;
 }

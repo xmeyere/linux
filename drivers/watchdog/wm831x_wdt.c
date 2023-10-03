@@ -1,8 +1,11 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * Watchdog driver for the wm831x PMICs
  *
  * Copyright (C) 2009 Wolfson Microelectronics
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License
+ * as published by the Free Software Foundation
  */
 
 #include <linux/module.h>
@@ -191,7 +194,7 @@ static int wm831x_wdt_probe(struct platform_device *pdev)
 	if (ret < 0) {
 		dev_err(wm831x->dev, "Failed to read watchdog status: %d\n",
 			ret);
-		return ret;
+		goto err;
 	}
 	reg = ret;
 
@@ -200,8 +203,10 @@ static int wm831x_wdt_probe(struct platform_device *pdev)
 
 	driver_data = devm_kzalloc(&pdev->dev, sizeof(*driver_data),
 				   GFP_KERNEL);
-	if (!driver_data)
-		return -ENOMEM;
+	if (!driver_data) {
+		ret = -ENOMEM;
+		goto err;
+	}
 
 	mutex_init(&driver_data->lock);
 	driver_data->wm831x = wm831x;
@@ -210,7 +215,6 @@ static int wm831x_wdt_probe(struct platform_device *pdev)
 
 	wm831x_wdt->info = &wm831x_wdt_info;
 	wm831x_wdt->ops = &wm831x_wdt_ops;
-	wm831x_wdt->parent = &pdev->dev;
 	watchdog_set_nowayout(wm831x_wdt, nowayout);
 	watchdog_set_drvdata(wm831x_wdt, driver_data);
 
@@ -248,7 +252,7 @@ static int wm831x_wdt_probe(struct platform_device *pdev)
 				dev_err(wm831x->dev,
 					"Failed to request update GPIO: %d\n",
 					ret);
-				return ret;
+				goto err;
 			}
 
 			driver_data->update_gpio = pdata->update_gpio;
@@ -264,22 +268,37 @@ static int wm831x_wdt_probe(struct platform_device *pdev)
 		} else {
 			dev_err(wm831x->dev,
 				"Failed to unlock security key: %d\n", ret);
-			return ret;
+			goto err;
 		}
 	}
 
-	ret = devm_watchdog_register_device(&pdev->dev, &driver_data->wdt);
+	ret = watchdog_register_device(&driver_data->wdt);
 	if (ret != 0) {
 		dev_err(wm831x->dev, "watchdog_register_device() failed: %d\n",
 			ret);
-		return ret;
+		goto err;
 	}
+
+	platform_set_drvdata(pdev, driver_data);
+
+	return 0;
+
+err:
+	return ret;
+}
+
+static int wm831x_wdt_remove(struct platform_device *pdev)
+{
+	struct wm831x_wdt_drvdata *driver_data = platform_get_drvdata(pdev);
+
+	watchdog_unregister_device(&driver_data->wdt);
 
 	return 0;
 }
 
 static struct platform_driver wm831x_wdt_driver = {
 	.probe = wm831x_wdt_probe,
+	.remove = wm831x_wdt_remove,
 	.driver = {
 		.name = "wm831x-watchdog",
 	},

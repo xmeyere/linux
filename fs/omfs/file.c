@@ -220,7 +220,7 @@ static int omfs_get_block(struct inode *inode, sector_t block,
 	struct buffer_head *bh;
 	sector_t next, offset;
 	int ret;
-	u64 new_block;
+	u64 uninitialized_var(new_block);
 	u32 max_extents;
 	int extent_count;
 	struct omfs_extent *oe;
@@ -337,6 +337,8 @@ static sector_t omfs_bmap(struct address_space *mapping, sector_t block)
 
 const struct file_operations omfs_file_operations = {
 	.llseek = generic_file_llseek,
+	.read = new_sync_read,
+	.write = new_sync_write,
 	.read_iter = generic_file_read_iter,
 	.write_iter = generic_file_write_iter,
 	.mmap = generic_file_mmap,
@@ -346,10 +348,10 @@ const struct file_operations omfs_file_operations = {
 
 static int omfs_setattr(struct dentry *dentry, struct iattr *attr)
 {
-	struct inode *inode = d_inode(dentry);
+	struct inode *inode = dentry->d_inode;
 	int error;
 
-	error = setattr_prepare(dentry, attr);
+	error = inode_change_ok(inode, attr);
 	if (error)
 		return error;
 

@@ -204,7 +204,6 @@ static int bbc_beep_probe(struct platform_device *op)
 
 	info = &state->u.bbc;
 	info->clock_freq = of_getintprop_default(dp, "clock-frequency", 0);
-	of_node_put(dp);
 	if (!info->clock_freq)
 		goto out_free;
 
@@ -254,7 +253,6 @@ static const struct of_device_id bbc_beep_match[] = {
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, bbc_beep_match);
 
 static struct platform_driver bbc_beep_driver = {
 	.driver = {
@@ -334,7 +332,6 @@ static const struct of_device_id grover_beep_match[] = {
 	},
 	{},
 };
-MODULE_DEVICE_TABLE(of, grover_beep_match);
 
 static struct platform_driver grover_beep_driver = {
 	.driver = {
@@ -346,19 +343,23 @@ static struct platform_driver grover_beep_driver = {
 	.shutdown	= sparcspkr_shutdown,
 };
 
-static struct platform_driver * const drivers[] = {
-	&bbc_beep_driver,
-	&grover_beep_driver,
-};
-
 static int __init sparcspkr_init(void)
 {
-	return platform_register_drivers(drivers, ARRAY_SIZE(drivers));
+	int err = platform_driver_register(&bbc_beep_driver);
+
+	if (!err) {
+		err = platform_driver_register(&grover_beep_driver);
+		if (err)
+			platform_driver_unregister(&bbc_beep_driver);
+	}
+
+	return err;
 }
 
 static void __exit sparcspkr_exit(void)
 {
-	platform_unregister_drivers(drivers, ARRAY_SIZE(drivers));
+	platform_driver_unregister(&bbc_beep_driver);
+	platform_driver_unregister(&grover_beep_driver);
 }
 
 module_init(sparcspkr_init);

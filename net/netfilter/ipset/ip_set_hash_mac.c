@@ -52,12 +52,7 @@ hash_mac4_data_equal(const struct hash_mac4_elem *e1,
 static inline bool
 hash_mac4_data_list(struct sk_buff *skb, const struct hash_mac4_elem *e)
 {
-	if (nla_put(skb, IPSET_ATTR_ETHER, ETH_ALEN, e->ether))
-		goto nla_put_failure;
-	return false;
-
-nla_put_failure:
-	return true;
+	return nla_put(skb, IPSET_ATTR_ETHER, ETH_ALEN, e->ether);
 }
 
 static inline void
@@ -67,10 +62,14 @@ hash_mac4_data_next(struct hash_mac4_elem *next,
 }
 
 #define MTYPE		hash_mac4
+#define PF		4
 #define HOST_MASK	32
 #define IP_SET_EMIT_CREATE
 #define IP_SET_PROTO_UNDEF
 #include "ip_set_hash_gen.h"
+
+/* Zero valued element is not supported */
+static const unsigned char invalid_ether[ETH_ALEN] = { 0 };
 
 static int
 hash_mac4_kadt(struct ip_set *set, const struct sk_buff *skb,
@@ -81,16 +80,16 @@ hash_mac4_kadt(struct ip_set *set, const struct sk_buff *skb,
 	struct hash_mac4_elem e = { { .foo[0] = 0, .foo[1] = 0 } };
 	struct ip_set_ext ext = IP_SET_INIT_KEXT(skb, opt, set);
 
+	 /* MAC can be src only */
+	if (!(opt->flags & IPSET_DIM_ONE_SRC))
+		return 0;
+
 	if (skb_mac_header(skb) < skb->head ||
-	    (skb_mac_header(skb) + ETH_HLEN) > skb->data)
+	     (skb_mac_header(skb) + ETH_HLEN) > skb->data)
 		return -EINVAL;
 
-	if (opt->flags & IPSET_DIM_ONE_SRC)
-		ether_addr_copy(e.ether, eth_hdr(skb)->h_source);
-	else
-		ether_addr_copy(e.ether, eth_hdr(skb)->h_dest);
-
-	if (is_zero_ether_addr(e.ether))
+	memcpy(e.ether, eth_hdr(skb)->h_source, ETH_ALEN);
+	if (memcmp(e.ether, invalid_ether, ETH_ALEN) == 0)
 		return -EINVAL;
 	return adtfn(set, &e, &ext, &opt->ext, opt->cmdflags);
 }
@@ -104,18 +103,23 @@ hash_mac4_uadt(struct ip_set *set, struct nlattr *tb[],
 	struct ip_set_ext ext = IP_SET_INIT_UEXT(set);
 	int ret;
 
+	if (unlikely(!tb[IPSET_ATTR_ETHER] ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_TIMEOUT) ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_PACKETS) ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_BYTES)   ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_SKBMARK) ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_SKBPRIO) ||
+		     !ip_set_optattr_netorder(tb, IPSET_ATTR_SKBQUEUE)))
+		return -IPSET_ERR_PROTOCOL;
+
 	if (tb[IPSET_ATTR_LINENO])
 		*lineno = nla_get_u32(tb[IPSET_ATTR_LINENO]);
-
-	if (unlikely(!tb[IPSET_ATTR_ETHER] ||
-		     nla_len(tb[IPSET_ATTR_ETHER]) != ETH_ALEN))
-		return -IPSET_ERR_PROTOCOL;
 
 	ret = ip_set_get_extensions(set, tb, &ext);
 	if (ret)
 		return ret;
-	ether_addr_copy(e.ether, nla_data(tb[IPSET_ATTR_ETHER]));
-	if (is_zero_ether_addr(e.ether))
+	memcpy(e.ether, nla_data(tb[IPSET_ATTR_ETHER]), ETH_ALEN);
+	if (memcmp(e.ether, invalid_ether, ETH_ALEN) == 0)
 		return -IPSET_ERR_HASH_ELEM;
 
 	return adtfn(set, &e, &ext, &ext, flags);
@@ -145,8 +149,7 @@ static struct ip_set_type hash_mac_type __read_mostly = {
 		[IPSET_ATTR_LINENO]	= { .type = NLA_U32 },
 		[IPSET_ATTR_BYTES]	= { .type = NLA_U64 },
 		[IPSET_ATTR_PACKETS]	= { .type = NLA_U64 },
-		[IPSET_ATTR_COMMENT]	= { .type = NLA_NUL_STRING,
-					    .len  = IPSET_MAX_COMMENT_SIZE },
+		[IPSET_ATTR_COMMENT]	= { .type = NLA_NUL_STRING },
 		[IPSET_ATTR_SKBMARK]	= { .type = NLA_U64 },
 		[IPSET_ATTR_SKBPRIO]	= { .type = NLA_U32 },
 		[IPSET_ATTR_SKBQUEUE]	= { .type = NLA_U16 },
@@ -163,7 +166,6 @@ hash_mac_init(void)
 static void __exit
 hash_mac_fini(void)
 {
-	rcu_barrier();
 	ip_set_type_unregister(&hash_mac_type);
 }
 

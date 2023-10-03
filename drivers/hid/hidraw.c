@@ -33,8 +33,7 @@
 #include <linux/slab.h>
 #include <linux/hid.h>
 #include <linux/mutex.h>
-#include <linux/sched/signal.h>
-#include <linux/string.h>
+#include <linux/sched.h>
 
 #include <linux/hidraw.h>
 
@@ -124,6 +123,7 @@ static ssize_t hidraw_send_report(struct file *file, const char __user *buffer, 
 
 	dev = hidraw_table[minor]->hid;
 
+
 	if (count > HID_MAX_BUFFER_SIZE) {
 		hid_warn(dev, "pid %d passed too large report\n",
 			 task_pid_nr(current));
@@ -138,10 +138,15 @@ static ssize_t hidraw_send_report(struct file *file, const char __user *buffer, 
 		goto out;
 	}
 
-	buf = memdup_user(buffer, count);
-	if (IS_ERR(buf)) {
-		ret = PTR_ERR(buf);
+	buf = kmalloc(count * sizeof(__u8), GFP_KERNEL);
+	if (!buf) {
+		ret = -ENOMEM;
 		goto out;
+	}
+
+	if (copy_from_user(buf, buffer, count)) {
+		ret = -EFAULT;
+		goto out_free;
 	}
 
 	if ((report_type == HID_OUTPUT_REPORT) &&
@@ -192,11 +197,6 @@ static ssize_t hidraw_get_report(struct file *file, char __user *buffer, size_t 
 	int ret = 0, len;
 	unsigned char report_number;
 
-	if (!hidraw_table[minor] || !hidraw_table[minor]->exist) {
-		ret = -ENODEV;
-		goto out;
-	}
-
 	dev = hidraw_table[minor]->hid;
 
 	if (!dev->ll_driver->raw_request) {
@@ -218,7 +218,7 @@ static ssize_t hidraw_get_report(struct file *file, char __user *buffer, size_t 
 		goto out;
 	}
 
-	buf = kmalloc(count, GFP_KERNEL);
+	buf = kmalloc(count * sizeof(__u8), GFP_KERNEL);
 	if (!buf) {
 		ret = -ENOMEM;
 		goto out;
@@ -254,17 +254,16 @@ out:
 	return ret;
 }
 
-static __poll_t hidraw_poll(struct file *file, poll_table *wait)
+static unsigned int hidraw_poll(struct file *file, poll_table *wait)
 {
 	struct hidraw_list *list = file->private_data;
-	__poll_t mask = EPOLLOUT | EPOLLWRNORM; /* hidraw is always writable */
 
 	poll_wait(file, &list->hidraw->wait, wait);
 	if (list->head != list->tail)
-		mask |= EPOLLIN | EPOLLRDNORM;
+		return POLLIN | POLLRDNORM;
 	if (!list->hidraw->exist)
-		mask |= EPOLLERR | EPOLLHUP;
-	return mask;
+		return POLLERR | POLLHUP;
+	return 0;
 }
 
 static int hidraw_open(struct inode *inode, struct file *file)
@@ -343,8 +342,8 @@ static void drop_ref(struct hidraw *hidraw, int exists_bit)
 			kfree(hidraw);
 		} else {
 			/* close device for last reader */
-			hid_hw_close(hidraw->hid);
 			hid_hw_power(hidraw->hid, PM_HINT_NORMAL);
+			hid_hw_close(hidraw->hid);
 		}
 	}
 }
@@ -354,13 +353,10 @@ static int hidraw_release(struct inode * inode, struct file * file)
 	unsigned int minor = iminor(inode);
 	struct hidraw_list *list = file->private_data;
 	unsigned long flags;
-	int i;
 
 	mutex_lock(&minors_lock);
 
 	spin_lock_irqsave(&hidraw_table[minor]->list_lock, flags);
-	for (i = list->tail; i < list->head; i++)
-		kfree(list->buffer[i].value);
 	list_del(&list->node);
 	spin_unlock_irqrestore(&hidraw_table[minor]->list_lock, flags);
 	kfree(list);
@@ -382,7 +378,7 @@ static long hidraw_ioctl(struct file *file, unsigned int cmd,
 
 	mutex_lock(&minors_lock);
 	dev = hidraw_table[minor];
-	if (!dev || !dev->exist) {
+	if (!dev) {
 		ret = -ENODEV;
 		goto out;
 	}
@@ -591,12 +587,13 @@ int __init hidraw_init(void)
 
 	result = alloc_chrdev_region(&dev_id, HIDRAW_FIRST_MINOR,
 			HIDRAW_MAX_DEVICES, "hidraw");
+
+	hidraw_major = MAJOR(dev_id);
+
 	if (result < 0) {
 		pr_warn("can't get major number\n");
 		goto out;
 	}
-
-	hidraw_major = MAJOR(dev_id);
 
 	hidraw_class = class_create(THIS_MODULE, "hidraw");
 	if (IS_ERR(hidraw_class)) {

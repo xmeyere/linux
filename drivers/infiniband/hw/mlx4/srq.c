@@ -36,7 +36,7 @@
 #include <linux/slab.h>
 
 #include "mlx4_ib.h"
-#include <rdma/mlx4-abi.h>
+#include "user.h"
 
 static void *get_wqe(struct mlx4_ib_srq *srq, int n)
 {
@@ -121,7 +121,7 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 		}
 
 		err = mlx4_mtt_init(dev->dev, ib_umem_page_count(srq->umem),
-				    srq->umem->page_shift, &srq->mtt);
+				    ilog2(srq->umem->page_size), &srq->mtt);
 		if (err)
 			goto err_buf;
 
@@ -134,14 +134,14 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 		if (err)
 			goto err_mtt;
 	} else {
-		err = mlx4_db_alloc(dev->dev, &srq->db, 0);
+		err = mlx4_db_alloc(dev->dev, &srq->db, 0, GFP_KERNEL);
 		if (err)
 			goto err_srq;
 
 		*srq->db.db = 0;
 
-		if (mlx4_buf_alloc(dev->dev, buf_size, PAGE_SIZE * 2,
-				   &srq->buf)) {
+		if (mlx4_buf_alloc(dev->dev, buf_size, PAGE_SIZE * 2, &srq->buf,
+				   GFP_KERNEL)) {
 			err = -ENOMEM;
 			goto err_db;
 		}
@@ -166,20 +166,19 @@ struct ib_srq *mlx4_ib_create_srq(struct ib_pd *pd,
 		if (err)
 			goto err_buf;
 
-		err = mlx4_buf_write_mtt(dev->dev, &srq->mtt, &srq->buf);
+		err = mlx4_buf_write_mtt(dev->dev, &srq->mtt, &srq->buf, GFP_KERNEL);
 		if (err)
 			goto err_mtt;
 
-		srq->wrid = kvmalloc_array(srq->msrq.max,
-					   sizeof(u64), GFP_KERNEL);
+		srq->wrid = kmalloc(srq->msrq.max * sizeof (u64), GFP_KERNEL);
 		if (!srq->wrid) {
 			err = -ENOMEM;
 			goto err_mtt;
 		}
 	}
 
-	cqn = ib_srq_has_cq(init_attr->srq_type) ?
-		to_mcq(init_attr->ext.cq)->mcq.cqn : 0;
+	cqn = (init_attr->srq_type == IB_SRQT_XRC) ?
+		to_mcq(init_attr->ext.xrc.cq)->mcq.cqn : 0;
 	xrcdn = (init_attr->srq_type == IB_SRQT_XRC) ?
 		to_mxrcd(init_attr->ext.xrc.xrcd)->xrcdn :
 		(u16) dev->dev->caps.reserved_xrcds;
@@ -205,7 +204,7 @@ err_wrid:
 	if (pd->uobject)
 		mlx4_ib_db_unmap_user(to_mucontext(pd->uobject->context), &srq->db);
 	else
-		kvfree(srq->wrid);
+		kfree(srq->wrid);
 
 err_mtt:
 	mlx4_mtt_cleanup(dev->dev, &srq->mtt);
@@ -282,7 +281,7 @@ int mlx4_ib_destroy_srq(struct ib_srq *srq)
 		mlx4_ib_db_unmap_user(to_mucontext(srq->uobject->context), &msrq->db);
 		ib_umem_release(msrq->umem);
 	} else {
-		kvfree(msrq->wrid);
+		kfree(msrq->wrid);
 		mlx4_buf_free(dev->dev, msrq->msrq.max << msrq->msrq.wqe_shift,
 			      &msrq->buf);
 		mlx4_db_free(dev->dev, &msrq->db);
@@ -307,8 +306,8 @@ void mlx4_ib_free_srq_wqe(struct mlx4_ib_srq *srq, int wqe_index)
 	spin_unlock(&srq->lock);
 }
 
-int mlx4_ib_post_srq_recv(struct ib_srq *ibsrq, const struct ib_recv_wr *wr,
-			  const struct ib_recv_wr **bad_wr)
+int mlx4_ib_post_srq_recv(struct ib_srq *ibsrq, struct ib_recv_wr *wr,
+			  struct ib_recv_wr **bad_wr)
 {
 	struct mlx4_ib_srq *srq = to_msrq(ibsrq);
 	struct mlx4_wqe_srq_next_seg *next;

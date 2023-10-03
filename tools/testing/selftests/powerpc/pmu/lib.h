@@ -19,6 +19,7 @@ union pipe {
 	int fds[2];
 };
 
+extern int pick_online_cpu(void);
 extern int bind_to_cpu(int cpu);
 extern int kill_child_and_wait(pid_t child_pid);
 extern int wait_for_child(pid_t child_pid);
@@ -28,6 +29,7 @@ extern int notify_parent(union pipe write_pipe);
 extern int notify_parent_of_error(union pipe write_pipe);
 extern pid_t eat_cpu(int (test_function)(void));
 extern bool require_paranoia_below(int level);
+extern void *get_auxv_entry(int type);
 
 struct addr_range {
 	uint64_t first, last;

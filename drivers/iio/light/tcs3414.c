@@ -53,14 +53,11 @@
 
 struct tcs3414_data {
 	struct i2c_client *client;
+	struct mutex lock;
 	u8 control;
 	u8 gain;
 	u8 timing;
-	/* Ensure timestamp is naturally aligned */
-	struct {
-		u16 chans[4];
-		s64 timestamp __aligned(8);
-	} scan;
+	u16 buffer[8]; /* 4x 16-bit + 8 bytes timestamp */
 };
 
 #define TCS3414_CHANNEL(_color, _si, _addr) { \
@@ -137,16 +134,16 @@ static int tcs3414_read_raw(struct iio_dev *indio_dev,
 
 	switch (mask) {
 	case IIO_CHAN_INFO_RAW:
-		ret = iio_device_claim_direct_mode(indio_dev);
-		if (ret)
-			return ret;
+		if (iio_buffer_enabled(indio_dev))
+			return -EBUSY;
+		mutex_lock(&data->lock);
 		ret = tcs3414_req_data(data);
 		if (ret < 0) {
-			iio_device_release_direct_mode(indio_dev);
+			mutex_unlock(&data->lock);
 			return ret;
 		}
 		ret = i2c_smbus_read_word_data(data->client, chan->address);
-		iio_device_release_direct_mode(indio_dev);
+		mutex_unlock(&data->lock);
 		if (ret < 0)
 			return ret;
 		*val = ret;
@@ -188,7 +185,7 @@ static int tcs3414_write_raw(struct iio_dev *indio_dev,
 		if (val != 0)
 			return -EINVAL;
 		for (i = 0; i < ARRAY_SIZE(tcs3414_times); i++) {
-			if (val2 == tcs3414_times[i] * 1000) {
+			if (val == tcs3414_times[i] * 1000) {
 				data->timing &= ~TCS3414_INTEG_MASK;
 				data->timing |= i;
 				return i2c_smbus_write_byte_data(
@@ -216,11 +213,11 @@ static irqreturn_t tcs3414_trigger_handler(int irq, void *p)
 		if (ret < 0)
 			goto done;
 
-		data->scan.chans[j++] = ret;
+		data->buffer[j++] = ret;
 	}
 
-	iio_push_to_buffers_with_timestamp(indio_dev, &data->scan,
-		iio_get_time_ns(indio_dev));
+	iio_push_to_buffers_with_timestamp(indio_dev, data->buffer,
+		iio_get_time_ns());
 
 done:
 	iio_trigger_notify_done(indio_dev->trig);
@@ -245,6 +242,7 @@ static const struct iio_info tcs3414_info = {
 	.read_raw = tcs3414_read_raw,
 	.write_raw = tcs3414_write_raw,
 	.attrs = &tcs3414_attribute_group,
+	.driver_module = THIS_MODULE,
 };
 
 static int tcs3414_buffer_preenable(struct iio_dev *indio_dev)
@@ -290,6 +288,7 @@ static int tcs3414_probe(struct i2c_client *client,
 	data = iio_priv(indio_dev);
 	i2c_set_clientdata(client, indio_dev);
 	data->client = client;
+	mutex_init(&data->lock);
 
 	indio_dev->dev.parent = &client->dev;
 	indio_dev->info = &tcs3414_info;
@@ -393,6 +392,7 @@ static struct i2c_driver tcs3414_driver = {
 	.driver = {
 		.name	= TCS3414_DRV_NAME,
 		.pm	= &tcs3414_pm_ops,
+		.owner	= THIS_MODULE,
 	},
 	.probe		= tcs3414_probe,
 	.remove		= tcs3414_remove,

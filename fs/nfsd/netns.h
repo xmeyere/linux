@@ -85,30 +85,23 @@ struct nfsd_net {
 	struct list_head close_lru;
 	struct list_head del_recall_lru;
 
-	/* protected by blocked_locks_lock */
-	struct list_head blocked_locks_lru;
-
 	struct delayed_work laundromat_work;
 
 	/* client_lock protects the client lru list and session hash table */
 	spinlock_t client_lock;
 
-	/* protects blocked_locks_lru */
-	spinlock_t blocked_locks_lock;
-
 	struct file *rec_file;
 	bool in_grace;
-	const struct nfsd4_client_tracking_ops *client_tracking_ops;
+	struct nfsd4_client_tracking_ops *client_tracking_ops;
 
 	time_t nfsd4_lease;
 	time_t nfsd4_grace;
-	bool somebody_reclaimed;
 
 	bool nfsd_net_up;
 	bool lockd_up;
 
 	/* Time of server startup */
-	struct timespec64 nfssvc_boot;
+	struct timeval nfssvc_boot;
 
 	/*
 	 * Max number of connections this nfsd container will allow. Defaults
@@ -117,16 +110,12 @@ struct nfsd_net {
 	unsigned int max_connections;
 
 	u32 clientid_counter;
-	u32 clverifier_counter;
 
 	struct svc_serv *nfsd_serv;
-
-	wait_queue_head_t ntf_wq;
-	atomic_t ntf_refcnt;
 };
 
 /* Simple check to find out if a given net was properly initialized */
 #define nfsd_netns_ready(nn) ((nn)->sessionid_hashtbl)
 
-extern unsigned int nfsd_net_id;
+extern int nfsd_net_id;
 #endif /* __NFSD_NETNS_H__ */

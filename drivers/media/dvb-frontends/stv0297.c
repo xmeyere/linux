@@ -27,7 +27,7 @@
 #include <linux/jiffies.h>
 #include <linux/slab.h>
 
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 #include "stv0297.h"
 
 struct stv0297_state {
@@ -57,8 +57,8 @@ static int stv0297_writereg(struct stv0297_state *state, u8 reg, u8 data)
 	ret = i2c_transfer(state->i2c, &msg, 1);
 
 	if (ret != 1)
-		dprintk("%s: writereg error (reg == 0x%02x, val == 0x%02x, ret == %i)\n",
-			__func__, reg, data, ret);
+		dprintk("%s: writereg error (reg == 0x%02x, val == 0x%02x, "
+			"ret == %i)\n", __func__, reg, data, ret);
 
 	return (ret != 1) ? -1 : 0;
 }
@@ -136,10 +136,10 @@ static u32 stv0297_get_symbolrate(struct stv0297_state *state)
 {
 	u64 tmp;
 
-	tmp = (u64)(stv0297_readreg(state, 0x55)
-		    | (stv0297_readreg(state, 0x56) << 8)
-		    | (stv0297_readreg(state, 0x57) << 16)
-		    | (stv0297_readreg(state, 0x58) << 24));
+	tmp = stv0297_readreg(state, 0x55);
+	tmp |= stv0297_readreg(state, 0x56) << 8;
+	tmp |= stv0297_readreg(state, 0x57) << 16;
+	tmp |= stv0297_readreg(state, 0x58) << 24;
 
 	tmp *= STV0297_CLOCK_KHZ;
 	tmp >>= 32;
@@ -233,8 +233,7 @@ static void stv0297_set_initialdemodfreq(struct stv0297_state *state, long freq)
 	stv0297_writereg(state, 0x20, tmp);
 }
 
-static int stv0297_set_qam(struct stv0297_state *state,
-			   enum fe_modulation modulation)
+static int stv0297_set_qam(struct stv0297_state *state, fe_modulation_t modulation)
 {
 	int val = 0;
 
@@ -268,8 +267,7 @@ static int stv0297_set_qam(struct stv0297_state *state,
 	return 0;
 }
 
-static int stv0297_set_inversion(struct stv0297_state *state,
-				 enum fe_spectral_inversion inversion)
+static int stv0297_set_inversion(struct stv0297_state *state, fe_spectral_inversion_t inversion)
 {
 	int val = 0;
 
@@ -327,8 +325,7 @@ static int stv0297_sleep(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int stv0297_read_status(struct dvb_frontend *fe,
-			       enum fe_status *status)
+static int stv0297_read_status(struct dvb_frontend *fe, fe_status_t * status)
 {
 	struct stv0297_state *state = fe->demodulator_priv;
 
@@ -418,7 +415,7 @@ static int stv0297_set_frontend(struct dvb_frontend *fe)
 	int sweeprate;
 	int carrieroffset;
 	unsigned long timeout;
-	enum fe_spectral_inversion inversion;
+	fe_spectral_inversion_t inversion;
 
 	switch (p->modulation) {
 	case QAM_16:
@@ -615,9 +612,9 @@ timeout:
 	return 0;
 }
 
-static int stv0297_get_frontend(struct dvb_frontend *fe,
-				struct dtv_frontend_properties *p)
+static int stv0297_get_frontend(struct dvb_frontend *fe)
 {
+	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct stv0297_state *state = fe->demodulator_priv;
 	int reg_00, reg_83;
 
@@ -658,7 +655,7 @@ static void stv0297_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static const struct dvb_frontend_ops stv0297_ops;
+static struct dvb_frontend_ops stv0297_ops;
 
 struct dvb_frontend *stv0297_attach(const struct stv0297_config *config,
 				    struct i2c_adapter *i2c)
@@ -690,13 +687,13 @@ error:
 	return NULL;
 }
 
-static const struct dvb_frontend_ops stv0297_ops = {
+static struct dvb_frontend_ops stv0297_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A },
 	.info = {
 		 .name = "ST STV0297 DVB-C",
-		 .frequency_min_hz = 47 * MHz,
-		 .frequency_max_hz = 862 * MHz,
-		 .frequency_stepsize_hz = 62500,
+		 .frequency_min = 47000000,
+		 .frequency_max = 862000000,
+		 .frequency_stepsize = 62500,
 		 .symbol_rate_min = 870000,
 		 .symbol_rate_max = 11700000,
 		 .caps = FE_CAN_QAM_16 | FE_CAN_QAM_32 | FE_CAN_QAM_64 |
@@ -722,4 +719,4 @@ MODULE_DESCRIPTION("ST STV0297 DVB-C Demodulator driver");
 MODULE_AUTHOR("Dennis Noermann and Andrew de Quincey");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL_GPL(stv0297_attach);
+EXPORT_SYMBOL(stv0297_attach);

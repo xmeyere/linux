@@ -137,6 +137,7 @@ static const struct iio_chan_spec adis16130_channels[] = {
 
 static const struct iio_info adis16130_info = {
 	.read_raw = &adis16130_read_raw,
+	.driver_module = THIS_MODULE,
 };
 
 static int adis16130_probe(struct spi_device *spi)
@@ -166,6 +167,7 @@ static int adis16130_probe(struct spi_device *spi)
 static struct spi_driver adis16130_driver = {
 	.driver = {
 		.name = "adis16130",
+		.owner = THIS_MODULE,
 	},
 	.probe = adis16130_probe,
 };

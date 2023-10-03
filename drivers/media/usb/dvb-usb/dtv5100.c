@@ -15,6 +15,10 @@
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
 #include "dtv5100.h"
@@ -27,15 +31,9 @@ module_param_named(debug, dvb_usb_dtv5100_debug, int, 0644);
 MODULE_PARM_DESC(debug, "set debugging level" DVB_USB_DEBUG_STATUS);
 DVB_DEFINE_MOD_OPT_ADAPTER_NR(adapter_nr);
 
-struct dtv5100_state {
-	unsigned char data[80];
-};
-
 static int dtv5100_i2c_msg(struct dvb_usb_device *d, u8 addr,
 			   u8 *wbuf, u16 wlen, u8 *rbuf, u16 rlen)
 {
-	struct dtv5100_state *st = d->priv;
-	unsigned int pipe;
 	u8 request;
 	u8 type;
 	u16 value;
@@ -44,7 +42,6 @@ static int dtv5100_i2c_msg(struct dvb_usb_device *d, u8 addr,
 	switch (wlen) {
 	case 1:
 		/* write { reg }, read { value } */
-		pipe = usb_rcvctrlpipe(d->udev, 0);
 		request = (addr == DTV5100_DEMOD_ADDR ? DTV5100_DEMOD_READ :
 							DTV5100_TUNER_READ);
 		type = USB_TYPE_VENDOR | USB_DIR_IN;
@@ -52,7 +49,6 @@ static int dtv5100_i2c_msg(struct dvb_usb_device *d, u8 addr,
 		break;
 	case 2:
 		/* write { reg, value } */
-		pipe = usb_sndctrlpipe(d->udev, 0);
 		request = (addr == DTV5100_DEMOD_ADDR ? DTV5100_DEMOD_WRITE :
 							DTV5100_TUNER_WRITE);
 		type = USB_TYPE_VENDOR | USB_DIR_OUT;
@@ -64,10 +60,9 @@ static int dtv5100_i2c_msg(struct dvb_usb_device *d, u8 addr,
 	}
 	index = (addr << 8) + wbuf[0];
 
-	memcpy(st->data, rbuf, rlen);
 	msleep(1); /* avoid I2C errors */
-	return usb_control_msg(d->udev, pipe, request,
-			       type, value, index, st->data, rlen,
+	return usb_control_msg(d->udev, usb_rcvctrlpipe(d->udev, 0), request,
+			       type, value, index, rbuf, rlen,
 			       DTV5100_USB_TIMEOUT);
 }
 
@@ -153,7 +148,7 @@ static int dtv5100_probe(struct usb_interface *intf,
 
 	/* initialize non qt1010/zl10353 part? */
 	for (i = 0; dtv5100_init[i].request; i++) {
-		ret = usb_control_msg(udev, usb_sndctrlpipe(udev, 0),
+		ret = usb_control_msg(udev, usb_rcvctrlpipe(udev, 0),
 				      dtv5100_init[i].request,
 				      USB_TYPE_VENDOR | USB_DIR_OUT,
 				      dtv5100_init[i].value,
@@ -181,7 +176,7 @@ static struct dvb_usb_device_properties dtv5100_properties = {
 	.caps = DVB_USB_IS_AN_I2C_ADAPTER,
 	.usb_ctrl = DEVICE_SPECIFIC,
 
-	.size_of_priv = sizeof(struct dtv5100_state),
+	.size_of_priv = 0,
 
 	.num_adapters = 1,
 	.adapter = {{

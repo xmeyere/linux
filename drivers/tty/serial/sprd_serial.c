@@ -1,6 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2012-2015 Spreadtrum Communications Inc.
+ *
+ * This software is licensed under the terms of the GNU General Public
+ * License version 2, as published by the Free Software Foundation, and
+ * may be copied, distributed, and modified under those terms.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 #if defined(CONFIG_SERIAL_SPRD_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
@@ -28,7 +36,7 @@
 #define SPRD_FIFO_SIZE		128
 #define SPRD_DEF_RATE		26000000
 #define SPRD_BAUD_IO_LIMIT	3000000
-#define SPRD_TIMEOUT		256000
+#define SPRD_TIMEOUT		256
 
 /* the offset of serial registers and BITs for them */
 /* data registers */
@@ -55,7 +63,6 @@
 
 /* interrupt clear register */
 #define SPRD_ICLR		0x0014
-#define SPRD_ICLR_TIMEOUT	BIT(13)
 
 /* line control register */
 #define SPRD_LCR		0x0018
@@ -232,7 +239,7 @@ static inline void sprd_rx(struct uart_port *port)
 
 		if (lsr & (SPRD_LSR_BI | SPRD_LSR_PE |
 			SPRD_LSR_FE | SPRD_LSR_OE))
-			if (handle_lsr_errors(port, &flag, &lsr))
+			if (handle_lsr_errors(port, &lsr, &flag))
 				continue;
 		if (uart_handle_sysrq_char(port, ch))
 			continue;
@@ -291,8 +298,7 @@ static irqreturn_t sprd_handle_irq(int irq, void *dev_id)
 		return IRQ_NONE;
 	}
 
-	if (ims & SPRD_IMSR_TIMEOUT)
-		serial_out(port, SPRD_ICLR, SPRD_ICLR_TIMEOUT);
+	serial_out(port, SPRD_ICLR, ~0);
 
 	if (ims & (SPRD_IMSR_RX_FIFO_FULL |
 		SPRD_IMSR_BREAK_DETECT | SPRD_IMSR_TIMEOUT))
@@ -487,12 +493,10 @@ static int sprd_verify_port(struct uart_port *port,
 		return -EINVAL;
 	if (port->irq != ser->irq)
 		return -EINVAL;
-	if (port->iotype != ser->io_type)
-		return -EINVAL;
 	return 0;
 }
 
-static const struct uart_ops serial_sprd_ops = {
+static struct uart_ops serial_sprd_ops = {
 	.tx_empty = sprd_tx_empty,
 	.get_mctrl = sprd_get_mctrl,
 	.set_mctrl = sprd_set_mctrl,
@@ -511,7 +515,7 @@ static const struct uart_ops serial_sprd_ops = {
 };
 
 #ifdef CONFIG_SERIAL_SPRD_CONSOLE
-static void wait_for_xmitr(struct uart_port *port)
+static inline void wait_for_xmitr(struct uart_port *port)
 {
 	unsigned int status, tmout = 10000;
 
@@ -618,6 +622,8 @@ static int __init sprd_early_console_setup(
 	device->con->write = sprd_early_write;
 	return 0;
 }
+
+EARLYCON_DECLARE(sprd_serial, sprd_early_console_setup);
 OF_EARLYCON_DECLARE(sprd_serial, "sprd,sc9836-uart",
 		    sprd_early_console_setup);
 
@@ -648,7 +654,7 @@ static int sprd_probe_dt_alias(int index, struct device *dev)
 		return ret;
 
 	ret = of_alias_get_id(np, "serial");
-	if (ret < 0)
+	if (IS_ERR_VALUE(ret))
 		ret = index;
 	else if (ret >= ARRAY_SIZE(sprd_port) || sprd_port[ret] != NULL) {
 		dev_warn(dev, "requested serial port %d not available.\n", ret);
@@ -701,14 +707,14 @@ static int sprd_probe(struct platform_device *pdev)
 	up->dev = &pdev->dev;
 	up->line = index;
 	up->type = PORT_SPRD;
-	up->iotype = UPIO_MEM;
+	up->iotype = SERIAL_IO_PORT;
 	up->uartclk = SPRD_DEF_RATE;
 	up->fifosize = SPRD_FIFO_SIZE;
 	up->ops = &serial_sprd_ops;
 	up->flags = UPF_BOOT_AUTOCONF;
 
 	clk = devm_clk_get(&pdev->dev, NULL);
-	if (!IS_ERR_OR_NULL(clk))
+	if (!IS_ERR(clk))
 		up->uartclk = clk_get_rate(clk);
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
@@ -723,8 +729,8 @@ static int sprd_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		dev_err(&pdev->dev, "not provide irq resource: %d\n", irq);
-		return irq;
+		dev_err(&pdev->dev, "not provide irq resource\n");
+		return -ENODEV;
 	}
 	up->irq = irq;
 
@@ -748,7 +754,6 @@ static int sprd_probe(struct platform_device *pdev)
 	return ret;
 }
 
-#ifdef CONFIG_PM_SLEEP
 static int sprd_suspend(struct device *dev)
 {
 	struct sprd_uart_port *sup = dev_get_drvdata(dev);
@@ -766,7 +771,6 @@ static int sprd_resume(struct device *dev)
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(sprd_pm_ops, sprd_suspend, sprd_resume);
 
@@ -774,7 +778,6 @@ static const struct of_device_id serial_ids[] = {
 	{.compatible = "sprd,sc9836-uart",},
 	{}
 };
-MODULE_DEVICE_TABLE(of, serial_ids);
 
 static struct platform_driver sprd_platform_driver = {
 	.probe		= sprd_probe,

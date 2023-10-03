@@ -345,6 +345,13 @@ VELOCITY_PARAM(flow_control, "Enable flow control ability");
 */
 VELOCITY_PARAM(speed_duplex, "Setting the speed and duplex mode");
 
+#define VAL_PKT_LEN_DEF     0
+/* ValPktLen[] is used for setting the checksum offload ability of NIC.
+   0: Receive frame with invalid layer 2 length (Default)
+   1: Drop frame with invalid layer 2 length
+*/
+VELOCITY_PARAM(ValPktLen, "Receiving or Drop invalid 802.3 frame");
+
 #define WOL_OPT_DEF     0
 #define WOL_OPT_MIN     0
 #define WOL_OPT_MAX     7
@@ -385,7 +392,7 @@ MODULE_DEVICE_TABLE(pci, velocity_pci_id_table);
  *	Describe the OF device identifiers that we support in this
  *	device driver. Used for devicetree nodes.
  */
-static const struct of_device_id velocity_of_ids[] = {
+static struct of_device_id velocity_of_ids[] = {
 	{ .compatible = "via,velocity-vt6110", .data = &chip_info_table[0] },
 	{ /* Sentinel */ },
 };
@@ -487,6 +494,7 @@ static void velocity_get_options(struct velocity_opt *opts, int index,
 
 	velocity_set_int_opt(&opts->flow_cntl, flow_control[index], FLOW_CNTL_MIN, FLOW_CNTL_MAX, FLOW_CNTL_DEF, "flow_control", devname);
 	velocity_set_bool_opt(&opts->flags, IP_byte_align[index], IP_ALIG_DEF, VELOCITY_FLAGS_IP_ALIGN, "IP_byte_align", devname);
+	velocity_set_bool_opt(&opts->flags, ValPktLen[index], VAL_PKT_LEN_DEF, VELOCITY_FLAGS_VAL_PKT_LEN, "ValPktLen", devname);
 	velocity_set_int_opt((int *) &opts->spd_dpx, speed_duplex[index], MED_LNK_MIN, MED_LNK_MAX, MED_LNK_DEF, "Media link mode", devname);
 	velocity_set_int_opt(&opts->wol_opts, wol_opts[index], WOL_OPT_MIN, WOL_OPT_MAX, WOL_OPT_DEF, "Wake On Lan options", devname);
 	opts->numrx = (opts->numrx & ~3);
@@ -875,12 +883,25 @@ static u32 check_connection_type(struct mac_regs __iomem *regs)
  */
 static int velocity_set_media_mode(struct velocity_info *vptr, u32 mii_status)
 {
+	u32 curr_status;
 	struct mac_regs __iomem *regs = vptr->mac_regs;
 
 	vptr->mii_status = mii_check_media_mode(vptr->mac_regs);
+	curr_status = vptr->mii_status & (~VELOCITY_LINK_FAIL);
 
 	/* Set mii link status */
 	set_mii_flow_control(vptr);
+
+	/*
+	   Check if new status is consistent with current status
+	   if (((mii_status & curr_status) & VELOCITY_AUTONEG_ENABLE) ||
+	       (mii_status==curr_status)) {
+	   vptr->mii_status=mii_check_media_mode(vptr->mac_regs);
+	   vptr->mii_status=check_connection_type(vptr->mac_regs);
+	   VELOCITY_PRT(MSG_LEVEL_INFO, "Velocity link no change\n");
+	   return 0;
+	   }
+	 */
 
 	if (PHYID_GET_PHY_ID(vptr->phy_id) == PHYID_CICADA_CS8201)
 		MII_REG_BITS_ON(AUXCR_MDPPS, MII_NCONFIG, vptr->mac_regs);
@@ -1711,21 +1732,24 @@ static void velocity_free_tx_buf(struct velocity_info *vptr,
 		struct velocity_td_info *tdinfo, struct tx_desc *td)
 {
 	struct sk_buff *skb = tdinfo->skb;
-	int i;
 
 	/*
 	 *	Don't unmap the pre-allocated tx_bufs
 	 */
-	for (i = 0; i < tdinfo->nskb_dma; i++) {
-		size_t pktlen = max_t(size_t, skb->len, ETH_ZLEN);
+	if (tdinfo->skb_dma) {
+		int i;
 
-		/* For scatter-gather */
-		if (skb_shinfo(skb)->nr_frags > 0)
-			pktlen = max_t(size_t, pktlen,
-				       td->td_buf[i].size & ~TD_QUEUE);
+		for (i = 0; i < tdinfo->nskb_dma; i++) {
+			size_t pktlen = max_t(size_t, skb->len, ETH_ZLEN);
 
-		dma_unmap_single(vptr->dev, tdinfo->skb_dma[i],
-				 le16_to_cpu(pktlen), DMA_TO_DEVICE);
+			/* For scatter-gather */
+			if (skb_shinfo(skb)->nr_frags > 0)
+				pktlen = max_t(size_t, pktlen,
+						td->td_buf[i].size & ~TD_QUEUE);
+
+			dma_unmap_single(vptr->dev, tdinfo->skb_dma[i],
+					le16_to_cpu(pktlen), DMA_TO_DEVICE);
+		}
 	}
 	dev_kfree_skb_irq(skb);
 	tdinfo->skb = NULL;
@@ -2031,9 +2055,8 @@ static int velocity_receive_frame(struct velocity_info *vptr, int idx)
 	int pkt_len = le16_to_cpu(rd->rdesc0.len) & 0x3fff;
 	struct sk_buff *skb;
 
-	if (unlikely(rd->rdesc0.RSR & (RSR_STP | RSR_EDP | RSR_RL))) {
-		if (rd->rdesc0.RSR & (RSR_STP | RSR_EDP))
-			VELOCITY_PRT(MSG_LEVEL_VERBOSE, KERN_ERR " %s : the received frame spans multiple RDs.\n", vptr->netdev->name);
+	if (rd->rdesc0.RSR & (RSR_STP | RSR_EDP)) {
+		VELOCITY_PRT(MSG_LEVEL_VERBOSE, KERN_ERR " %s : the received frame spans multiple RDs.\n", vptr->netdev->name);
 		stats->rx_length_errors++;
 		return -EINVAL;
 	}
@@ -2045,6 +2068,17 @@ static int velocity_receive_frame(struct velocity_info *vptr, int idx)
 
 	dma_sync_single_for_cpu(vptr->dev, rd_info->skb_dma,
 				    vptr->rx.buf_sz, DMA_FROM_DEVICE);
+
+	/*
+	 *	Drop frame not meeting IEEE 802.3
+	 */
+
+	if (vptr->flags & VELOCITY_FLAGS_VAL_PKT_LEN) {
+		if (rd->rdesc0.RSR & RSR_RL) {
+			stats->rx_length_errors++;
+			return -EINVAL;
+		}
+	}
 
 	velocity_rx_csum(rd, skb);
 
@@ -2147,7 +2181,7 @@ static int velocity_poll(struct napi_struct *napi, int budget)
 	velocity_tx_srv(vptr);
 	/* If budget not fully consumed, exit the polling mode */
 	if (rx_done < budget) {
-		napi_complete_done(napi, rx_done);
+		napi_complete(napi);
 		mac_enable_int(vptr->mac_regs);
 	}
 	spin_unlock_irqrestore(&vptr->lock, flags);
@@ -2270,6 +2304,13 @@ static int velocity_change_mtu(struct net_device *dev, int new_mtu)
 {
 	struct velocity_info *vptr = netdev_priv(dev);
 	int ret = 0;
+
+	if ((new_mtu < VELOCITY_MIN_MTU) || new_mtu > (VELOCITY_MAX_MTU)) {
+		VELOCITY_PRT(MSG_LEVEL_ERR, KERN_NOTICE "%s: Invalid MTU.\n",
+				vptr->netdev->name);
+		ret = -EINVAL;
+		goto out_0;
+	}
 
 	if (!netif_running(dev)) {
 		dev->mtu = new_mtu;
@@ -2844,10 +2885,6 @@ static int velocity_probe(struct device *dev, int irq,
 			NETIF_F_HW_VLAN_CTAG_FILTER | NETIF_F_HW_VLAN_CTAG_RX |
 			NETIF_F_IP_CSUM;
 
-	/* MTU range: 64 - 9000 */
-	netdev->min_mtu = VELOCITY_MIN_MTU;
-	netdev->max_mtu = VELOCITY_MAX_MTU;
-
 	ret = register_netdev(netdev);
 	if (ret < 0)
 		goto err_iounmap;
@@ -3278,17 +3315,15 @@ static void velocity_ethtool_down(struct net_device *dev)
 		velocity_set_power_state(vptr, PCI_D3hot);
 }
 
-static int velocity_get_link_ksettings(struct net_device *dev,
-				       struct ethtool_link_ksettings *cmd)
+static int velocity_get_settings(struct net_device *dev,
+				 struct ethtool_cmd *cmd)
 {
 	struct velocity_info *vptr = netdev_priv(dev);
 	struct mac_regs __iomem *regs = vptr->mac_regs;
 	u32 status;
-	u32 supported, advertising;
-
 	status = check_connection_type(vptr->mac_regs);
 
-	supported = SUPPORTED_TP |
+	cmd->supported = SUPPORTED_TP |
 			SUPPORTED_Autoneg |
 			SUPPORTED_10baseT_Half |
 			SUPPORTED_10baseT_Full |
@@ -3297,9 +3332,9 @@ static int velocity_get_link_ksettings(struct net_device *dev,
 			SUPPORTED_1000baseT_Half |
 			SUPPORTED_1000baseT_Full;
 
-	advertising = ADVERTISED_TP | ADVERTISED_Autoneg;
+	cmd->advertising = ADVERTISED_TP | ADVERTISED_Autoneg;
 	if (vptr->options.spd_dpx == SPD_DPX_AUTO) {
-		advertising |=
+		cmd->advertising |=
 			ADVERTISED_10baseT_Half |
 			ADVERTISED_10baseT_Full |
 			ADVERTISED_100baseT_Half |
@@ -3309,19 +3344,19 @@ static int velocity_get_link_ksettings(struct net_device *dev,
 	} else {
 		switch (vptr->options.spd_dpx) {
 		case SPD_DPX_1000_FULL:
-			advertising |= ADVERTISED_1000baseT_Full;
+			cmd->advertising |= ADVERTISED_1000baseT_Full;
 			break;
 		case SPD_DPX_100_HALF:
-			advertising |= ADVERTISED_100baseT_Half;
+			cmd->advertising |= ADVERTISED_100baseT_Half;
 			break;
 		case SPD_DPX_100_FULL:
-			advertising |= ADVERTISED_100baseT_Full;
+			cmd->advertising |= ADVERTISED_100baseT_Full;
 			break;
 		case SPD_DPX_10_HALF:
-			advertising |= ADVERTISED_10baseT_Half;
+			cmd->advertising |= ADVERTISED_10baseT_Half;
 			break;
 		case SPD_DPX_10_FULL:
-			advertising |= ADVERTISED_10baseT_Full;
+			cmd->advertising |= ADVERTISED_10baseT_Full;
 			break;
 		default:
 			break;
@@ -3329,35 +3364,30 @@ static int velocity_get_link_ksettings(struct net_device *dev,
 	}
 
 	if (status & VELOCITY_SPEED_1000)
-		cmd->base.speed = SPEED_1000;
+		ethtool_cmd_speed_set(cmd, SPEED_1000);
 	else if (status & VELOCITY_SPEED_100)
-		cmd->base.speed = SPEED_100;
+		ethtool_cmd_speed_set(cmd, SPEED_100);
 	else
-		cmd->base.speed = SPEED_10;
+		ethtool_cmd_speed_set(cmd, SPEED_10);
 
-	cmd->base.autoneg = (status & VELOCITY_AUTONEG_ENABLE) ?
-		AUTONEG_ENABLE : AUTONEG_DISABLE;
-	cmd->base.port = PORT_TP;
-	cmd->base.phy_address = readb(&regs->MIIADR) & 0x1F;
+	cmd->autoneg = (status & VELOCITY_AUTONEG_ENABLE) ? AUTONEG_ENABLE : AUTONEG_DISABLE;
+	cmd->port = PORT_TP;
+	cmd->transceiver = XCVR_INTERNAL;
+	cmd->phy_address = readb(&regs->MIIADR) & 0x1F;
 
 	if (status & VELOCITY_DUPLEX_FULL)
-		cmd->base.duplex = DUPLEX_FULL;
+		cmd->duplex = DUPLEX_FULL;
 	else
-		cmd->base.duplex = DUPLEX_HALF;
-
-	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.supported,
-						supported);
-	ethtool_convert_legacy_u32_to_link_mode(cmd->link_modes.advertising,
-						advertising);
+		cmd->duplex = DUPLEX_HALF;
 
 	return 0;
 }
 
-static int velocity_set_link_ksettings(struct net_device *dev,
-				       const struct ethtool_link_ksettings *cmd)
+static int velocity_set_settings(struct net_device *dev,
+				 struct ethtool_cmd *cmd)
 {
 	struct velocity_info *vptr = netdev_priv(dev);
-	u32 speed = cmd->base.speed;
+	u32 speed = ethtool_cmd_speed(cmd);
 	u32 curr_status;
 	u32 new_status = 0;
 	int ret = 0;
@@ -3365,12 +3395,11 @@ static int velocity_set_link_ksettings(struct net_device *dev,
 	curr_status = check_connection_type(vptr->mac_regs);
 	curr_status &= (~VELOCITY_LINK_FAIL);
 
-	new_status |= ((cmd->base.autoneg) ? VELOCITY_AUTONEG_ENABLE : 0);
+	new_status |= ((cmd->autoneg) ? VELOCITY_AUTONEG_ENABLE : 0);
 	new_status |= ((speed == SPEED_1000) ? VELOCITY_SPEED_1000 : 0);
 	new_status |= ((speed == SPEED_100) ? VELOCITY_SPEED_100 : 0);
 	new_status |= ((speed == SPEED_10) ? VELOCITY_SPEED_10 : 0);
-	new_status |= ((cmd->base.duplex == DUPLEX_FULL) ?
-		       VELOCITY_DUPLEX_FULL : 0);
+	new_status |= ((cmd->duplex == DUPLEX_FULL) ? VELOCITY_DUPLEX_FULL : 0);
 
 	if ((new_status & VELOCITY_AUTONEG_ENABLE) &&
 	    (new_status != (curr_status | VELOCITY_AUTONEG_ENABLE))) {
@@ -3639,6 +3668,8 @@ static void velocity_get_ethtool_stats(struct net_device *dev,
 }
 
 static const struct ethtool_ops velocity_ethtool_ops = {
+	.get_settings		= velocity_get_settings,
+	.set_settings		= velocity_set_settings,
 	.get_drvinfo		= velocity_get_drvinfo,
 	.get_wol		= velocity_ethtool_get_wol,
 	.set_wol		= velocity_ethtool_set_wol,
@@ -3651,9 +3682,7 @@ static const struct ethtool_ops velocity_ethtool_ops = {
 	.get_coalesce		= velocity_get_coalesce,
 	.set_coalesce		= velocity_set_coalesce,
 	.begin			= velocity_ethtool_up,
-	.complete		= velocity_ethtool_down,
-	.get_link_ksettings	= velocity_get_link_ksettings,
-	.set_link_ksettings	= velocity_set_link_ksettings,
+	.complete		= velocity_ethtool_down
 };
 
 #if defined(CONFIG_PM) && defined(CONFIG_INET)

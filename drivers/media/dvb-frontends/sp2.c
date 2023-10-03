@@ -357,14 +357,14 @@ static int sp2_exit(struct i2c_client *client)
 
 	dev_dbg(&client->dev, "\n");
 
-	if (!client)
+	if (client == NULL)
 		return 0;
 
 	s = i2c_get_clientdata(client);
-	if (!s)
+	if (s == NULL)
 		return 0;
 
-	if (!s->ca.data)
+	if (s->ca.data == NULL)
 		return 0;
 
 	dvb_ca_en50221_release(&s->ca);
@@ -381,9 +381,10 @@ static int sp2_probe(struct i2c_client *client,
 
 	dev_dbg(&client->dev, "\n");
 
-	s = kzalloc(sizeof(*s), GFP_KERNEL);
+	s = kzalloc(sizeof(struct sp2), GFP_KERNEL);
 	if (!s) {
 		ret = -ENOMEM;
+		dev_err(&client->dev, "kzalloc() failed\n");
 		goto err;
 	}
 
@@ -412,8 +413,11 @@ static int sp2_remove(struct i2c_client *client)
 	struct sp2 *s = i2c_get_clientdata(client);
 
 	dev_dbg(&client->dev, "\n");
+
 	sp2_exit(client);
-	kfree(s);
+	if (s != NULL)
+		kfree(s);
+
 	return 0;
 }
 
@@ -425,6 +429,7 @@ MODULE_DEVICE_TABLE(i2c, sp2_id);
 
 static struct i2c_driver sp2_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= "sp2",
 	},
 	.probe		= sp2_probe,

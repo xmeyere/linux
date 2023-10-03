@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * trace_export.c - export basic ftrace utilities to user space
  *
@@ -13,13 +12,6 @@
 #include <linux/init.h>
 
 #include "trace_output.h"
-
-/* Stub function for events with triggers */
-static int ftrace_event_register(struct trace_event_call *call,
-				 enum trace_reg type, void *data)
-{
-	return 0;
-}
 
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM	ftrace
@@ -124,7 +116,7 @@ static void __always_unused ____ftrace_check_##name(void)		\
 
 #undef __dynamic_array
 #define __dynamic_array(type, item)					\
-	ret = trace_define_field(event_call, #type "[]", #item,  \
+	ret = trace_define_field(event_call, #type, #item,		\
 				 offsetof(typeof(field), item),		\
 				 0, is_signed_type(type), filter_type);\
 	if (ret)							\
@@ -133,7 +125,7 @@ static void __always_unused ____ftrace_check_##name(void)		\
 #undef FTRACE_ENTRY
 #define FTRACE_ENTRY(name, struct_name, id, tstruct, print, filter)	\
 static int __init							\
-ftrace_define_fields_##name(struct trace_event_call *event_call)	\
+ftrace_define_fields_##name(struct ftrace_event_call *event_call)	\
 {									\
 	struct struct_name field;					\
 	int ret;							\
@@ -171,23 +163,23 @@ ftrace_define_fields_##name(struct trace_event_call *event_call)	\
 #define FTRACE_ENTRY_REG(call, struct_name, etype, tstruct, print, filter,\
 			 regfn)						\
 									\
-struct trace_event_class __refdata event_class_ftrace_##call = {	\
+struct ftrace_event_class __refdata event_class_ftrace_##call = {	\
 	.system			= __stringify(TRACE_SYSTEM),		\
 	.define_fields		= ftrace_define_fields_##call,		\
 	.fields			= LIST_HEAD_INIT(event_class_ftrace_##call.fields),\
 	.reg			= regfn,				\
 };									\
 									\
-struct trace_event_call __used event_##call = {				\
+struct ftrace_event_call __used event_##call = {			\
 	.class			= &event_class_ftrace_##call,		\
 	{								\
 		.name			= #call,			\
 	},								\
 	.event.type		= etype,				\
 	.print_fmt		= print,				\
-	.flags			= TRACE_EVENT_FL_IGNORE_ENABLE,		\
+	.flags			= TRACE_EVENT_FL_IGNORE_ENABLE | TRACE_EVENT_FL_USE_CALL_FILTER, \
 };									\
-struct trace_event_call __used						\
+struct ftrace_event_call __used						\
 __attribute__((section("_ftrace_events"))) *__event_##call = &event_##call;
 
 #undef FTRACE_ENTRY
@@ -195,7 +187,7 @@ __attribute__((section("_ftrace_events"))) *__event_##call = &event_##call;
 	FTRACE_ENTRY_REG(call, struct_name, etype,			\
 			 PARAMS(tstruct), PARAMS(print), filter, NULL)
 
-bool ftrace_event_is_function(struct trace_event_call *call)
+int ftrace_event_is_function(struct ftrace_event_call *call)
 {
 	return call == &event_function;
 }

@@ -24,7 +24,9 @@
 #include <linux/mii.h>
 #include <linux/timer.h>
 #include <linux/irq.h>
+
 #include <linux/vmalloc.h>
+
 #include <linux/io.h>
 #include <asm/byteorder.h>
 #include <linux/bitops.h>
@@ -37,8 +39,8 @@
 
 #define _QLCNIC_LINUX_MAJOR 5
 #define _QLCNIC_LINUX_MINOR 3
-#define _QLCNIC_LINUX_SUBVERSION 66
-#define QLCNIC_LINUX_VERSIONID  "5.3.66"
+#define _QLCNIC_LINUX_SUBVERSION 62
+#define QLCNIC_LINUX_VERSIONID  "5.3.62"
 #define QLCNIC_DRV_IDC_VER  0x01
 #define QLCNIC_DRIVER_VERSION  ((_QLCNIC_LINUX_MAJOR << 16) |\
 		 (_QLCNIC_LINUX_MINOR << 8) | (_QLCNIC_LINUX_SUBVERSION))
@@ -536,7 +538,6 @@ struct qlcnic_hardware_context {
 	u8 extend_lb_time;
 	u8 phys_port_id[ETH_ALEN];
 	u8 lb_mode;
-	u8 vxlan_port_count;
 	u16 vxlan_port;
 	struct device *hwmon_dev;
 	u32 post_mode;
@@ -566,7 +567,6 @@ struct qlcnic_adapter_stats {
 	u64  tx_dma_map_error;
 	u64  spurious_intr;
 	u64  mac_filter_limit_overrun;
-	u64  mbx_spurious_intr;
 };
 
 /*
@@ -926,7 +926,6 @@ struct qlcnic_mac_vlan_list {
 #define QLCNIC_FW_CAPABILITY_SET_DRV_VER	BIT_5
 #define QLCNIC_FW_CAPABILITY_2_BEACON		BIT_7
 #define QLCNIC_FW_CAPABILITY_2_PER_PORT_ESWITCH_CFG	BIT_9
-#define QLCNIC_FW_CAPABILITY_2_EXT_ISCSI_DUMP	BIT_13
 
 #define QLCNIC_83XX_FW_CAPAB_ENCAP_RX_OFFLOAD	BIT_0
 #define QLCNIC_83XX_FW_CAPAB_ENCAP_TX_OFFLOAD	BIT_1
@@ -1026,8 +1025,10 @@ struct qlcnic_ipaddr {
 #define QLCNIC_HAS_PHYS_PORT_ID		0x40000
 #define QLCNIC_TSS_RSS			0x80000
 
+#ifdef CONFIG_QLCNIC_VXLAN
 #define QLCNIC_ADD_VXLAN_PORT		0x100000
 #define QLCNIC_DEL_VXLAN_PORT		0x200000
+#endif
 
 #define QLCNIC_VLAN_FILTERING		0x800000
 
@@ -1091,14 +1092,14 @@ struct qlcnic_filter_hash {
 struct qlcnic_mailbox {
 	struct workqueue_struct	*work_q;
 	struct qlcnic_adapter	*adapter;
-	const struct qlcnic_mbx_ops *ops;
+	struct qlcnic_mbx_ops	*ops;
 	struct work_struct	work;
 	struct completion	completion;
 	struct list_head	cmd_q;
 	unsigned long		status;
 	spinlock_t		queue_lock;	/* Mailbox queue lock */
 	spinlock_t		aen_lock;	/* Mailbox response/AEN lock */
-	u32			rsp_status;
+	atomic_t		rsp_status;
 	u32			num_cmds;
 };
 
@@ -1324,6 +1325,9 @@ struct qlcnic_eswitch {
 #define QLCNIC_SWITCH_PORT_MIRRORING	BIT_4
 };
 
+
+/* Return codes for Error handling */
+#define QL_STATUS_INVALID_PARAM	-1
 
 #define MAX_BW			100	/* % of link speed */
 #define MIN_BW			1	/* % of link speed */
@@ -1800,8 +1804,7 @@ struct qlcnic_hardware_ops {
 	int (*config_loopback) (struct qlcnic_adapter *, u8);
 	int (*clear_loopback) (struct qlcnic_adapter *, u8);
 	int (*config_promisc_mode) (struct qlcnic_adapter *, u32);
-	void (*change_l2_filter)(struct qlcnic_adapter *adapter, u64 *addr,
-				 u16 vlan, struct qlcnic_host_tx_ring *tx_ring);
+	void (*change_l2_filter) (struct qlcnic_adapter *, u64 *, u16);
 	int (*get_board_info) (struct qlcnic_adapter *);
 	void (*set_mac_filter_count) (struct qlcnic_adapter *);
 	void (*free_mac_list) (struct qlcnic_adapter *);
@@ -1825,42 +1828,20 @@ struct qlcnic_hardware_ops {
 	u32 (*get_cap_size)(void *, int);
 	void (*set_sys_info)(void *, int, u32);
 	void (*store_cap_mask)(void *, u32);
-	bool (*encap_rx_offload) (struct qlcnic_adapter *adapter);
-	bool (*encap_tx_offload) (struct qlcnic_adapter *adapter);
 };
 
 extern struct qlcnic_nic_template qlcnic_vf_ops;
 
-static inline bool qlcnic_83xx_encap_tx_offload(struct qlcnic_adapter *adapter)
+static inline bool qlcnic_encap_tx_offload(struct qlcnic_adapter *adapter)
 {
 	return adapter->ahw->extra_capability[0] &
 	       QLCNIC_83XX_FW_CAPAB_ENCAP_TX_OFFLOAD;
 }
 
-static inline bool qlcnic_83xx_encap_rx_offload(struct qlcnic_adapter *adapter)
+static inline bool qlcnic_encap_rx_offload(struct qlcnic_adapter *adapter)
 {
 	return adapter->ahw->extra_capability[0] &
 	       QLCNIC_83XX_FW_CAPAB_ENCAP_RX_OFFLOAD;
-}
-
-static inline bool qlcnic_82xx_encap_tx_offload(struct qlcnic_adapter *adapter)
-{
-	return false;
-}
-
-static inline bool qlcnic_82xx_encap_rx_offload(struct qlcnic_adapter *adapter)
-{
-        return false;
-}
-
-static inline bool qlcnic_encap_rx_offload(struct qlcnic_adapter *adapter)
-{
-        return adapter->ahw->hw_ops->encap_rx_offload(adapter);
-}
-
-static inline bool qlcnic_encap_tx_offload(struct qlcnic_adapter *adapter)
-{
-        return adapter->ahw->hw_ops->encap_tx_offload(adapter);
 }
 
 static inline int qlcnic_start_firmware(struct qlcnic_adapter *adapter)
@@ -2065,10 +2046,9 @@ static inline int qlcnic_nic_set_promisc(struct qlcnic_adapter *adapter,
 }
 
 static inline void qlcnic_change_filter(struct qlcnic_adapter *adapter,
-					u64 *addr, u16 vlan,
-					struct qlcnic_host_tx_ring *tx_ring)
+					u64 *addr, u16 id)
 {
-	adapter->ahw->hw_ops->change_l2_filter(adapter, addr, vlan, tx_ring);
+	adapter->ahw->hw_ops->change_l2_filter(adapter, addr, id);
 }
 
 static inline int qlcnic_get_board_info(struct qlcnic_adapter *adapter)
@@ -2314,9 +2294,8 @@ extern const struct ethtool_ops qlcnic_ethtool_failed_ops;
 
 #define PCI_DEVICE_ID_QLOGIC_QLE824X		0x8020
 #define PCI_DEVICE_ID_QLOGIC_QLE834X		0x8030
-#define PCI_DEVICE_ID_QLOGIC_VF_QLE834X	0x8430
 #define PCI_DEVICE_ID_QLOGIC_QLE8830		0x8830
-#define PCI_DEVICE_ID_QLOGIC_VF_QLE8C30		0x8C30
+#define PCI_DEVICE_ID_QLOGIC_VF_QLE834X	0x8430
 #define PCI_DEVICE_ID_QLOGIC_QLE844X		0x8040
 #define PCI_DEVICE_ID_QLOGIC_VF_QLE844X	0x8440
 
@@ -2343,8 +2322,7 @@ static inline bool qlcnic_83xx_check(struct qlcnic_adapter *adapter)
 		  (device == PCI_DEVICE_ID_QLOGIC_QLE8830) ||
 		  (device == PCI_DEVICE_ID_QLOGIC_QLE844X) ||
 		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE844X) ||
-		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE834X) ||
-		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE8C30)) ? true : false;
+		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE834X)) ? true : false;
 
 	return status;
 }
@@ -2360,8 +2338,7 @@ static inline bool qlcnic_sriov_vf_check(struct qlcnic_adapter *adapter)
 	bool status;
 
 	status = ((device == PCI_DEVICE_ID_QLOGIC_VF_QLE834X) ||
-		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE844X) ||
-		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE8C30)) ? true : false;
+		  (device == PCI_DEVICE_ID_QLOGIC_VF_QLE844X)) ? true : false;
 
 	return status;
 }
@@ -2377,8 +2354,7 @@ static inline bool qlcnic_83xx_vf_check(struct qlcnic_adapter *adapter)
 {
 	unsigned short device = adapter->pdev->device;
 
-	return ((device == PCI_DEVICE_ID_QLOGIC_VF_QLE834X) ||
-		(device == PCI_DEVICE_ID_QLOGIC_VF_QLE8C30)) ? true : false;
+	return (device == PCI_DEVICE_ID_QLOGIC_VF_QLE834X) ? true : false;
 }
 
 static inline bool qlcnic_sriov_check(struct qlcnic_adapter *adapter)

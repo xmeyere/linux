@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	linux/arch/alpha/kernel/sys_eiger.c
  *
@@ -23,6 +22,7 @@
 #include <asm/irq.h>
 #include <asm/mmu_context.h>
 #include <asm/io.h>
+#include <asm/pci.h>
 #include <asm/pgtable.h>
 #include <asm/core_tsunami.h>
 #include <asm/hwrpb.h>
@@ -142,7 +142,7 @@ eiger_init_irq(void)
 	}
 }
 
-static int
+static int __init
 eiger_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 {
 	u8 irq_orig;
@@ -159,7 +159,7 @@ eiger_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)
 	return irq_orig - 0x80;
 }
 
-static u8
+static u8 __init
 eiger_swizzle(struct pci_dev *dev, u8 *pinp)
 {
 	struct pci_controller *hose = dev->sysdata;

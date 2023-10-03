@@ -10,7 +10,6 @@
  */
 
 #include <linux/linkage.h>
-#include <asm/assembler.h>
 #include <asm/ftrace.h>
 #include <asm/insn.h>
 
@@ -79,6 +78,7 @@
 	.macro mcount_get_lr reg
 	ldr	\reg, [x29]
 	ldr	\reg, [\reg, #8]
+	mcount_adjust_addr	\reg, \reg
 	.endm
 
 	.macro mcount_get_lr_addr reg
@@ -98,7 +98,8 @@
 ENTRY(_mcount)
 	mcount_enter
 
-	ldr_l	x2, ftrace_trace_function
+	adrp	x0, ftrace_trace_function
+	ldr	x2, [x0, #:lo12:ftrace_trace_function]
 	adr	x0, ftrace_stub
 	cmp	x0, x2			// if (ftrace_trace_function
 	b.eq	skip_ftrace_call	//     != ftrace_stub) {
@@ -107,18 +108,27 @@ ENTRY(_mcount)
 	mcount_get_lr	x1		//       function's lr (= parent's pc)
 	blr	x2			//   (*ftrace_trace_function)(pc, lr);
 
-skip_ftrace_call:			// }
-#ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	ldr_l	x2, ftrace_graph_return
+#ifndef CONFIG_FUNCTION_GRAPH_TRACER
+skip_ftrace_call:			//   return;
+	mcount_exit			// }
+#else
+	mcount_exit			//   return;
+					// }
+skip_ftrace_call:
+	adrp	x1, ftrace_graph_return
+	ldr	x2, [x1, #:lo12:ftrace_graph_return]
 	cmp	x0, x2			//   if ((ftrace_graph_return
 	b.ne	ftrace_graph_caller	//        != ftrace_stub)
 
-	ldr_l	x2, ftrace_graph_entry	//     || (ftrace_graph_entry
-	adr_l	x0, ftrace_graph_entry_stub //     != ftrace_graph_entry_stub))
+	adrp	x1, ftrace_graph_entry	//     || (ftrace_graph_entry
+	adrp	x0, ftrace_graph_entry_stub //     != ftrace_graph_entry_stub))
+	ldr	x2, [x1, #:lo12:ftrace_graph_entry]
+	add	x0, x0, #:lo12:ftrace_graph_entry_stub
 	cmp	x0, x2
 	b.ne	ftrace_graph_caller	//     ftrace_graph_caller();
-#endif /* CONFIG_FUNCTION_GRAPH_TRACER */
+
 	mcount_exit
+#endif /* CONFIG_FUNCTION_GRAPH_TRACER */
 ENDPROC(_mcount)
 
 #else /* CONFIG_DYNAMIC_FTRACE */
@@ -168,24 +178,6 @@ ENTRY(ftrace_stub)
 ENDPROC(ftrace_stub)
 
 #ifdef CONFIG_FUNCTION_GRAPH_TRACER
-	/* save return value regs*/
-	.macro save_return_regs
-	sub sp, sp, #64
-	stp x0, x1, [sp]
-	stp x2, x3, [sp, #16]
-	stp x4, x5, [sp, #32]
-	stp x6, x7, [sp, #48]
-	.endm
-
-	/* restore return value regs*/
-	.macro restore_return_regs
-	ldp x0, x1, [sp]
-	ldp x2, x3, [sp, #16]
-	ldp x4, x5, [sp, #32]
-	ldp x6, x7, [sp, #48]
-	add sp, sp, #64
-	.endm
-
 /*
  * void ftrace_graph_caller(void)
  *
@@ -209,14 +201,14 @@ ENDPROC(ftrace_graph_caller)
  *
  * Run ftrace_return_to_handler() before going back to parent.
  * @fp is checked against the value passed by ftrace_graph_caller()
- * only when HAVE_FUNCTION_GRAPH_FP_TEST is enabled.
+ * only when CONFIG_HAVE_FUNCTION_GRAPH_FP_TEST is enabled.
  */
 ENTRY(return_to_handler)
-	save_return_regs
+	str	x0, [sp, #-16]!
 	mov	x0, x29			//     parent's fp
 	bl	ftrace_return_to_handler// addr = ftrace_return_to_hander(fp);
 	mov	x30, x0			// restore the original return address
-	restore_return_regs
+	ldr	x0, [sp], #16
 	ret
 END(return_to_handler)
 #endif /* CONFIG_FUNCTION_GRAPH_TRACER */

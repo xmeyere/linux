@@ -77,7 +77,7 @@ struct teql_sched_data {
 /* "teql*" qdisc routines */
 
 static int
-teql_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
+teql_enqueue(struct sk_buff *skb, struct Qdisc *sch)
 {
 	struct net_device *dev = qdisc_dev(sch);
 	struct teql_sched_data *q = qdisc_priv(sch);
@@ -87,7 +87,7 @@ teql_enqueue(struct sk_buff *skb, struct Qdisc *sch, struct sk_buff **to_free)
 		return NET_XMIT_SUCCESS;
 	}
 
-	return qdisc_drop(skb, sch, to_free);
+	return qdisc_drop(skb, sch);
 }
 
 static struct sk_buff *
@@ -138,9 +138,6 @@ teql_destroy(struct Qdisc *sch)
 	struct teql_sched_data *dat = qdisc_priv(sch);
 	struct teql_master *master = dat->m;
 
-	if (!master)
-		return;
-
 	prev = master->slaves;
 	if (prev) {
 		do {
@@ -170,8 +167,7 @@ teql_destroy(struct Qdisc *sch)
 	}
 }
 
-static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt,
-			   struct netlink_ext_ack *extack)
+static int teql_qdisc_init(struct Qdisc *sch, struct nlattr *opt)
 {
 	struct net_device *dev = qdisc_dev(sch);
 	struct teql_master *m = (struct teql_master *)sch->ops;
@@ -246,7 +242,7 @@ __teql_resolve(struct sk_buff *skb, struct sk_buff *skb_res,
 		char haddr[MAX_ADDR_LEN];
 
 		neigh_ha_snapshot(haddr, n, dev);
-		err = dev_hard_header(skb, dev, ntohs(skb_protocol(skb, false)),
+		err = dev_hard_header(skb, dev, ntohs(tc_skb_protocol(skb)),
 				      haddr, NULL, skb->len);
 
 		if (err < 0)
@@ -405,8 +401,8 @@ static int teql_master_close(struct net_device *dev)
 	return 0;
 }
 
-static void teql_master_stats64(struct net_device *dev,
-				struct rtnl_link_stats64 *stats)
+static struct rtnl_link_stats64 *teql_master_stats64(struct net_device *dev,
+						     struct rtnl_link_stats64 *stats)
 {
 	struct teql_master *m = netdev_priv(dev);
 
@@ -414,12 +410,16 @@ static void teql_master_stats64(struct net_device *dev,
 	stats->tx_bytes		= m->tx_bytes;
 	stats->tx_errors	= m->tx_errors;
 	stats->tx_dropped	= m->tx_dropped;
+	return stats;
 }
 
 static int teql_master_mtu(struct net_device *dev, int new_mtu)
 {
 	struct teql_master *m = netdev_priv(dev);
 	struct Qdisc *q;
+
+	if (new_mtu < 68)
+		return -EINVAL;
 
 	q = m->slaves;
 	if (q) {
@@ -460,8 +460,6 @@ static __init void teql_master_setup(struct net_device *dev)
 	dev->netdev_ops =       &teql_netdev_ops;
 	dev->type		= ARPHRD_VOID;
 	dev->mtu		= 1500;
-	dev->min_mtu		= 68;
-	dev->max_mtu		= 65535;
 	dev->tx_queue_len	= 100;
 	dev->flags		= IFF_NOARP;
 	dev->hard_header_len	= LL_MAX_HEADER;

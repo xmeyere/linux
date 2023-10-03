@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * drivers/usb/musb/ux500_dma.c
  *
@@ -10,6 +9,19 @@
  *	Mian Yousaf Kaukab <mian.yousaf.kaukab@stericsson.com>
  *	Praveena Nadahally <praveen.nadahally@stericsson.com>
  *	Rajaram Regupathy <ragupathy.rajaram@stericsson.com>
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
 #include <linux/device.h>
@@ -195,6 +207,9 @@ static int ux500_dma_channel_program(struct dma_channel *channel,
 	BUG_ON(channel->status == MUSB_DMA_STATUS_UNKNOWN ||
 		channel->status == MUSB_DMA_STATUS_BUSY);
 
+	if (!ux500_dma_is_compatible(channel, packet_sz, (void *)dma_addr, len))
+		return false;
+
 	channel->status = MUSB_DMA_STATUS_BUSY;
 	channel->actual_len = 0;
 	ret = ux500_configure_channel(channel, packet_sz, mode, dma_addr, len);
@@ -344,7 +359,7 @@ static int ux500_dma_controller_start(struct ux500_dma_controller *controller)
 	return 0;
 }
 
-void ux500_dma_controller_destroy(struct dma_controller *c)
+void dma_controller_destroy(struct dma_controller *c)
 {
 	struct ux500_dma_controller *controller = container_of(c,
 			struct ux500_dma_controller, controller);
@@ -352,10 +367,9 @@ void ux500_dma_controller_destroy(struct dma_controller *c)
 	ux500_dma_controller_stop(controller);
 	kfree(controller);
 }
-EXPORT_SYMBOL_GPL(ux500_dma_controller_destroy);
 
-struct dma_controller *
-ux500_dma_controller_create(struct musb *musb, void __iomem *base)
+struct dma_controller *dma_controller_create(struct musb *musb,
+					void __iomem *base)
 {
 	struct ux500_dma_controller *controller;
 	struct platform_device *pdev = to_platform_device(musb->controller);
@@ -393,4 +407,3 @@ plat_get_fail:
 kzalloc_fail:
 	return NULL;
 }
-EXPORT_SYMBOL_GPL(ux500_dma_controller_create);

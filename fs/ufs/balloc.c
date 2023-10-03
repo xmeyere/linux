@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ufs/balloc.c
  *
@@ -16,7 +15,6 @@
 #include <linux/buffer_head.h>
 #include <linux/capability.h>
 #include <linux/bitops.h>
-#include <linux/bio.h>
 #include <asm/byteorder.h>
 
 #include "ufs_fs.h"
@@ -53,8 +51,8 @@ void ufs_free_fragments(struct inode *inode, u64 fragment, unsigned count)
 	
 	if (ufs_fragnum(fragment) + count > uspi->s_fpg)
 		ufs_error (sb, "ufs_free_fragments", "internal error");
-
-	mutex_lock(&UFS_SB(sb)->s_lock);
+	
+	lock_ufs(sb);
 	
 	cgno = ufs_dtog(uspi, fragment);
 	bit = ufs_dtogd(uspi, fragment);
@@ -83,8 +81,7 @@ void ufs_free_fragments(struct inode *inode, u64 fragment, unsigned count)
 			ufs_error (sb, "ufs_free_fragments",
 				   "bit already cleared for fragment %u", i);
 	}
-
-	inode_sub_bytes(inode, count << uspi->s_fshift);
+	
 	fs32_add(sb, &ucg->cg_cs.cs_nffree, count);
 	uspi->cs_total.cs_nffree += count;
 	fs32_add(sb, &UFS_SB(sb)->fs_cs(cgno).cs_nffree, count);
@@ -115,16 +112,16 @@ void ufs_free_fragments(struct inode *inode, u64 fragment, unsigned count)
 	
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	ufs_mark_sb_dirty(sb);
-
-	mutex_unlock(&UFS_SB(sb)->s_lock);
+	
+	unlock_ufs(sb);
 	UFSD("EXIT\n");
 	return;
 
 failed:
-	mutex_unlock(&UFS_SB(sb)->s_lock);
+	unlock_ufs(sb);
 	UFSD("EXIT (FAILED)\n");
 	return;
 }
@@ -154,7 +151,7 @@ void ufs_free_blocks(struct inode *inode, u64 fragment, unsigned count)
 		goto failed;
 	}
 
-	mutex_lock(&UFS_SB(sb)->s_lock);
+	lock_ufs(sb);
 	
 do_more:
 	overflow = 0;
@@ -186,7 +183,6 @@ do_more:
 			ufs_error(sb, "ufs_free_blocks", "freeing free fragment");
 		}
 		ubh_setblock(UCPI_UBH(ucpi), ucpi->c_freeoff, blkno);
-		inode_sub_bytes(inode, uspi->s_fpb << uspi->s_fshift);
 		if ((UFS_SB(sb)->s_flags & UFS_CG_MASK) == UFS_CG_44BSD)
 			ufs_clusteracct (sb, ucpi, blkno, 1);
 
@@ -205,7 +201,7 @@ do_more:
 
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 
 	if (overflow) {
@@ -215,12 +211,12 @@ do_more:
 	}
 
 	ufs_mark_sb_dirty(sb);
-	mutex_unlock(&UFS_SB(sb)->s_lock);
+	unlock_ufs(sb);
 	UFSD("EXIT\n");
 	return;
 
 failed_unlock:
-	mutex_unlock(&UFS_SB(sb)->s_lock);
+	unlock_ufs(sb);
 failed:
 	UFSD("EXIT (FAILED)\n");
 	return;
@@ -241,7 +237,7 @@ static void ufs_change_blocknr(struct inode *inode, sector_t beg,
 			       sector_t newb, struct page *locked_page)
 {
 	const unsigned blks_per_page =
-		1 << (PAGE_SHIFT - inode->i_blkbits);
+		1 << (PAGE_CACHE_SHIFT - inode->i_blkbits);
 	const unsigned mask = blks_per_page - 1;
 	struct address_space * const mapping = inode->i_mapping;
 	pgoff_t index, cur_index, last_index;
@@ -259,9 +255,9 @@ static void ufs_change_blocknr(struct inode *inode, sector_t beg,
 
 	cur_index = locked_page->index;
 	end = count + beg;
-	last_index = end >> (PAGE_SHIFT - inode->i_blkbits);
+	last_index = end >> (PAGE_CACHE_SHIFT - inode->i_blkbits);
 	for (i = beg; i < end; i = (i | mask) + 1) {
-		index = i >> (PAGE_SHIFT - inode->i_blkbits);
+		index = i >> (PAGE_CACHE_SHIFT - inode->i_blkbits);
 
 		if (likely(cur_index != index)) {
 			page = ufs_get_locked_page(mapping, index);
@@ -296,7 +292,7 @@ static void ufs_change_blocknr(struct inode *inode, sector_t beg,
 			if (!buffer_mapped(bh))
 					map_bh(bh, inode->i_sb, oldb + pos);
 			if (!buffer_uptodate(bh)) {
-				ll_rw_block(REQ_OP_READ, 0, 1, &bh);
+				ll_rw_block(READ, 1, &bh);
 				wait_on_buffer(bh);
 				if (!buffer_uptodate(bh)) {
 					ufs_error(inode->i_sb, __func__,
@@ -310,7 +306,8 @@ static void ufs_change_blocknr(struct inode *inode, sector_t beg,
 			     (unsigned long long)(pos + newb), pos);
 
 			bh->b_blocknr = newb + pos;
-			clean_bdev_bh_alias(bh);
+			unmap_underlying_metadata(bh->b_bdev,
+						  bh->b_blocknr);
 			mark_buffer_dirty(bh);
 			++j;
 			bh = bh->b_this_page;
@@ -360,7 +357,7 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 	usb1 = ubh_get_usb_first(uspi);
 	*err = -ENOSPC;
 
-	mutex_lock(&UFS_SB(sb)->s_lock);
+	lock_ufs(sb);
 	tmp = ufs_data_ptr_to_cpu(sb, p);
 
 	if (count + ufs_fragnum(fragment) > uspi->s_fpb) {
@@ -381,19 +378,19 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 				  "fragment %llu, tmp %llu\n",
 				  (unsigned long long)fragment,
 				  (unsigned long long)tmp);
-			mutex_unlock(&UFS_SB(sb)->s_lock);
+			unlock_ufs(sb);
 			return INVBLOCK;
 		}
 		if (fragment < UFS_I(inode)->i_lastfrag) {
 			UFSD("EXIT (ALREADY ALLOCATED)\n");
-			mutex_unlock(&UFS_SB(sb)->s_lock);
+			unlock_ufs(sb);
 			return 0;
 		}
 	}
 	else {
 		if (tmp) {
 			UFSD("EXIT (ALREADY ALLOCATED)\n");
-			mutex_unlock(&UFS_SB(sb)->s_lock);
+			unlock_ufs(sb);
 			return 0;
 		}
 	}
@@ -401,12 +398,10 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 	/*
 	 * There is not enough space for user on the device
 	 */
-	if (unlikely(ufs_freefrags(uspi) <= uspi->s_root_blocks)) {
-		if (!capable(CAP_SYS_RESOURCE)) {
-			mutex_unlock(&UFS_SB(sb)->s_lock);
-			UFSD("EXIT (FAILED)\n");
-			return 0;
-		}
+	if (!capable(CAP_SYS_RESOURCE) && ufs_freespace(uspi, UFS_MINFREE) <= 0) {
+		unlock_ufs(sb);
+		UFSD("EXIT (FAILED)\n");
+		return 0;
 	}
 
 	if (goal >= uspi->s_size) 
@@ -422,16 +417,14 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 	if (oldcount == 0) {
 		result = ufs_alloc_fragments (inode, cgno, goal, count, err);
 		if (result) {
-			ufs_clear_frags(inode, result + oldcount,
-					newcount - oldcount, locked_page != NULL);
-			*err = 0;
-			write_seqlock(&UFS_I(inode)->meta_lock);
 			ufs_cpu_to_data_ptr(sb, p, result);
+			*err = 0;
 			UFS_I(inode)->i_lastfrag =
 				max(UFS_I(inode)->i_lastfrag, fragment + count);
-			write_sequnlock(&UFS_I(inode)->meta_lock);
+			ufs_clear_frags(inode, result + oldcount,
+					newcount - oldcount, locked_page != NULL);
 		}
-		mutex_unlock(&UFS_SB(sb)->s_lock);
+		unlock_ufs(sb);
 		UFSD("EXIT, result %llu\n", (unsigned long long)result);
 		return result;
 	}
@@ -442,13 +435,11 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 	result = ufs_add_fragments(inode, tmp, oldcount, newcount);
 	if (result) {
 		*err = 0;
-		read_seqlock_excl(&UFS_I(inode)->meta_lock);
 		UFS_I(inode)->i_lastfrag = max(UFS_I(inode)->i_lastfrag,
 						fragment + count);
-		read_sequnlock_excl(&UFS_I(inode)->meta_lock);
 		ufs_clear_frags(inode, result + oldcount, newcount - oldcount,
 				locked_page != NULL);
-		mutex_unlock(&UFS_SB(sb)->s_lock);
+		unlock_ufs(sb);
 		UFSD("EXIT, result %llu\n", (unsigned long long)result);
 		return result;
 	}
@@ -456,29 +447,37 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 	/*
 	 * allocate new block and move data
 	 */
-	if (fs32_to_cpu(sb, usb1->fs_optim) == UFS_OPTSPACE) {
+	switch (fs32_to_cpu(sb, usb1->fs_optim)) {
+	    case UFS_OPTSPACE:
 		request = newcount;
-		if (uspi->cs_total.cs_nffree < uspi->s_space_to_time)
-			usb1->fs_optim = cpu_to_fs32(sb, UFS_OPTTIME);
-	} else {
+		if (uspi->s_minfree < 5 || uspi->cs_total.cs_nffree
+		    > uspi->s_dsize * uspi->s_minfree / (2 * 100))
+			break;
+		usb1->fs_optim = cpu_to_fs32(sb, UFS_OPTTIME);
+		break;
+	    default:
+		usb1->fs_optim = cpu_to_fs32(sb, UFS_OPTTIME);
+	
+	    case UFS_OPTTIME:
 		request = uspi->s_fpb;
-		if (uspi->cs_total.cs_nffree > uspi->s_time_to_space)
-			usb1->fs_optim = cpu_to_fs32(sb, UFS_OPTSPACE);
+		if (uspi->cs_total.cs_nffree < uspi->s_dsize *
+		    (uspi->s_minfree - 2) / 100)
+			break;
+		usb1->fs_optim = cpu_to_fs32(sb, UFS_OPTTIME);
+		break;
 	}
 	result = ufs_alloc_fragments (inode, cgno, goal, request, err);
 	if (result) {
 		ufs_clear_frags(inode, result + oldcount, newcount - oldcount,
 				locked_page != NULL);
-		mutex_unlock(&UFS_SB(sb)->s_lock);
 		ufs_change_blocknr(inode, fragment - oldcount, oldcount,
 				   uspi->s_sbbase + tmp,
 				   uspi->s_sbbase + result, locked_page);
-		*err = 0;
-		write_seqlock(&UFS_I(inode)->meta_lock);
 		ufs_cpu_to_data_ptr(sb, p, result);
+		*err = 0;
 		UFS_I(inode)->i_lastfrag = max(UFS_I(inode)->i_lastfrag,
 						fragment + count);
-		write_sequnlock(&UFS_I(inode)->meta_lock);
+		unlock_ufs(sb);
 		if (newcount < request)
 			ufs_free_fragments (inode, result + newcount, request - newcount);
 		ufs_free_fragments (inode, tmp, oldcount);
@@ -486,24 +485,10 @@ u64 ufs_new_fragments(struct inode *inode, void *p, u64 fragment,
 		return result;
 	}
 
-	mutex_unlock(&UFS_SB(sb)->s_lock);
+	unlock_ufs(sb);
 	UFSD("EXIT (FAILED)\n");
 	return 0;
 }		
-
-static bool try_add_frags(struct inode *inode, unsigned frags)
-{
-	unsigned size = frags * i_blocksize(inode);
-	spin_lock(&inode->i_lock);
-	__inode_add_bytes(inode, size);
-	if (unlikely((u32)inode->i_blocks != inode->i_blocks)) {
-		__inode_sub_bytes(inode, size);
-		spin_unlock(&inode->i_lock);
-		return false;
-	}
-	spin_unlock(&inode->i_lock);
-	return true;
-}
 
 static u64 ufs_add_fragments(struct inode *inode, u64 fragment,
 			     unsigned oldcount, unsigned newcount)
@@ -541,13 +526,10 @@ static u64 ufs_add_fragments(struct inode *inode, u64 fragment,
 	for (i = oldcount; i < newcount; i++)
 		if (ubh_isclr (UCPI_UBH(ucpi), ucpi->c_freeoff, fragno + i))
 			return 0;
-
-	if (!try_add_frags(inode, count))
-		return 0;
 	/*
 	 * Block can be extended
 	 */
-	ucg->cg_time = ufs_get_seconds(sb);
+	ucg->cg_time = cpu_to_fs32(sb, get_seconds());
 	for (i = newcount; i < (uspi->s_fpb - fragoff); i++)
 		if (ubh_isclr (UCPI_UBH(ucpi), ucpi->c_freeoff, fragno + i))
 			break;
@@ -567,7 +549,7 @@ static u64 ufs_add_fragments(struct inode *inode, u64 fragment,
 	
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	ufs_mark_sb_dirty(sb);
 
@@ -639,7 +621,7 @@ cg_found:
 	if (!ufs_cg_chkmagic(sb, ucg)) 
 		ufs_panic (sb, "ufs_alloc_fragments",
 			"internal error, bad magic number on cg %u", cgno);
-	ucg->cg_time = ufs_get_seconds(sb);
+	ucg->cg_time = cpu_to_fs32(sb, get_seconds());
 
 	if (count == uspi->s_fpb) {
 		result = ufs_alloccg_block (inode, ucpi, goal, err);
@@ -661,7 +643,6 @@ cg_found:
 			ubh_setbit (UCPI_UBH(ucpi), ucpi->c_freeoff, goal + i);
 		i = uspi->s_fpb - count;
 
-		inode_sub_bytes(inode, i << uspi->s_fshift);
 		fs32_add(sb, &ucg->cg_cs.cs_nffree, i);
 		uspi->cs_total.cs_nffree += i;
 		fs32_add(sb, &UFS_SB(sb)->fs_cs(cgno).cs_nffree, i);
@@ -671,8 +652,6 @@ cg_found:
 
 	result = ufs_bitmap_search (sb, ucpi, goal, allocsize);
 	if (result == INVBLOCK)
-		return 0;
-	if (!try_add_frags(inode, count))
 		return 0;
 	for (i = 0; i < count; i++)
 		ubh_clrbit (UCPI_UBH(ucpi), ucpi->c_freeoff, result + i);
@@ -688,7 +667,7 @@ cg_found:
 succed:
 	ubh_mark_buffer_dirty (USPI_UBH(uspi));
 	ubh_mark_buffer_dirty (UCPI_UBH(ucpi));
-	if (sb->s_flags & SB_SYNCHRONOUS)
+	if (sb->s_flags & MS_SYNCHRONOUS)
 		ubh_sync_block(UCPI_UBH(ucpi));
 	ufs_mark_sb_dirty(sb);
 
@@ -733,8 +712,6 @@ norot:
 		return INVBLOCK;
 	ucpi->c_rotor = result;
 gotit:
-	if (!try_add_frags(inode, uspi->s_fpb))
-		return 0;
 	blkno = ufs_fragstoblks(result);
 	ubh_clrblock (UCPI_UBH(ucpi), ucpi->c_freeoff, blkno);
 	if ((UFS_SB(sb)->s_flags & UFS_CG_MASK) == UFS_CG_44BSD)

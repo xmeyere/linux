@@ -26,68 +26,105 @@
 #include <nvif/driver.h>
 #include <nvif/ioctl.h>
 
-#include <nvif/class.h>
-#include <nvif/if0000.h>
-
 int
 nvif_client_ioctl(struct nvif_client *client, void *data, u32 size)
 {
-	return client->driver->ioctl(client->object.priv, client->super, data, size, NULL);
+	return client->driver->ioctl(client->base.priv, client->super, data, size, NULL);
 }
 
 int
 nvif_client_suspend(struct nvif_client *client)
 {
-	return client->driver->suspend(client->object.priv);
+	return client->driver->suspend(client->base.priv);
 }
 
 int
 nvif_client_resume(struct nvif_client *client)
 {
-	return client->driver->resume(client->object.priv);
+	return client->driver->resume(client->base.priv);
 }
 
 void
 nvif_client_fini(struct nvif_client *client)
 {
-	nvif_object_fini(&client->object);
 	if (client->driver) {
-		if (client->driver->fini)
-			client->driver->fini(client->object.priv);
+		client->driver->fini(client->base.priv);
 		client->driver = NULL;
+		client->base.parent = NULL;
+		nvif_object_fini(&client->base);
 	}
 }
 
+const struct nvif_driver *
+nvif_drivers[] = {
+#ifdef __KERNEL__
+	&nvif_driver_nvkm,
+#else
+	&nvif_driver_drm,
+	&nvif_driver_lib,
+	&nvif_driver_null,
+#endif
+	NULL
+};
+
 int
-nvif_client_init(struct nvif_client *parent, const char *name, u64 device,
+nvif_client_init(void (*dtor)(struct nvif_client *), const char *driver,
+		 const char *name, u64 device, const char *cfg, const char *dbg,
 		 struct nvif_client *client)
 {
-	struct nvif_client_v0 args = { .device = device };
-	struct {
-		struct nvif_ioctl_v0 ioctl;
-		struct nvif_ioctl_nop_v0 nop;
-	} nop = {};
-	int ret;
+	int ret, i;
 
-	strncpy(args.name, name, sizeof(args.name));
-	ret = nvif_object_init(parent != client ? &parent->object : NULL,
-			       0, NVIF_CLASS_CLIENT, &args, sizeof(args),
-			       &client->object);
+	ret = nvif_object_init(NULL, (void*)dtor, 0, 0, NULL, 0, &client->base);
 	if (ret)
 		return ret;
 
-	client->object.client = client;
-	client->object.handle = ~0;
-	client->route = NVIF_IOCTL_V0_ROUTE_NVIF;
+	client->base.parent = &client->base;
+	client->base.handle = ~0;
+	client->object = &client->base;
 	client->super = true;
-	client->driver = parent->driver;
 
-	if (ret == 0) {
-		ret = nvif_client_ioctl(client, &nop, sizeof(nop));
-		client->version = nop.nop.version;
+	for (i = 0, ret = -EINVAL; (client->driver = nvif_drivers[i]); i++) {
+		if (!driver || !strcmp(client->driver->name, driver)) {
+			ret = client->driver->init(name, device, cfg, dbg,
+						  &client->base.priv);
+			if (!ret || driver)
+				break;
+		}
 	}
 
 	if (ret)
 		nvif_client_fini(client);
 	return ret;
+}
+
+static void
+nvif_client_del(struct nvif_client *client)
+{
+	nvif_client_fini(client);
+	kfree(client);
+}
+
+int
+nvif_client_new(const char *driver, const char *name, u64 device,
+		const char *cfg, const char *dbg,
+		struct nvif_client **pclient)
+{
+	struct nvif_client *client = kzalloc(sizeof(*client), GFP_KERNEL);
+	if (client) {
+		int ret = nvif_client_init(nvif_client_del, driver, name,
+					   device, cfg, dbg, client);
+		if (ret) {
+			kfree(client);
+			client = NULL;
+		}
+		*pclient = client;
+		return ret;
+	}
+	return -ENOMEM;
+}
+
+void
+nvif_client_ref(struct nvif_client *client, struct nvif_client **pclient)
+{
+	nvif_object_ref(&client->base, (struct nvif_object **)pclient);
 }

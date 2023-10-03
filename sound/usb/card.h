@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __USBAUDIO_CARD_H
 #define __USBAUDIO_CARD_H
 
@@ -22,7 +21,7 @@ struct audioformat {
 	unsigned char endpoint;		/* endpoint */
 	unsigned char ep_attr;		/* endpoint attributes */
 	unsigned char datainterval;	/* log_2 of data packet interval */
-	unsigned char protocol;		/* UAC_VERSION_1/2/3 */
+	unsigned char protocol;		/* UAC_VERSION_1/2 */
 	unsigned int maxpacksize;	/* max. packet size */
 	unsigned int rates;		/* rate bitmasks */
 	unsigned int rate_min, rate_max;	/* min/max rates */
@@ -32,12 +31,10 @@ struct audioformat {
 	struct snd_pcm_chmap_elem *chmap; /* (optional) channel map */
 	bool dsd_dop;			/* add DOP headers in case of DSD samples */
 	bool dsd_bitrev;		/* reverse the bits of each DSD sample */
-	bool dsd_raw;			/* altsetting is raw DSD */
 };
 
 struct snd_usb_substream;
 struct snd_usb_endpoint;
-struct snd_usb_power_domain;
 
 struct snd_urb_ctx {
 	struct urb *urb;
@@ -95,7 +92,7 @@ struct snd_usb_endpoint {
 	unsigned int curframesize;      /* current packet size in frames (for capture) */
 	unsigned int syncmaxsize;	/* sync endpoint packet size */
 	unsigned int fill_max:1;	/* fill max packet size always */
-	unsigned int tenor_fb_quirk:1;	/* corrupted feedback data */
+	unsigned int udh01_fb_quirk:1;	/* corrupted feedback data */
 	unsigned int datainterval;      /* log_2 of data packet interval */
 	unsigned int syncinterval;	/* P for adaptive mode, 0 otherwise */
 	unsigned char silence_value;
@@ -116,7 +113,6 @@ struct snd_usb_substream {
 	int interface;	/* current interface */
 	int endpoint;	/* assigned endpoint */
 	struct audioformat *cur_audiofmt;	/* current audioformat pointer (for hw_params callback) */
-	struct snd_usb_power_domain *str_pd;	/* UAC3 Power Domain for streaming path */
 	snd_pcm_format_t pcm_format;	/* current audio format (for hw_params callback) */
 	unsigned int channels;		/* current number of channels (for hw_params callback) */
 	unsigned int channels_max;	/* max channels in the all audiofmts */
@@ -126,10 +122,8 @@ struct snd_usb_substream {
 	unsigned int buffer_periods;	/* current periods per buffer */
 	unsigned int altset_idx;     /* USB data format: index of alternate setting */
 	unsigned int txfr_quirk:1;	/* allow sub-frame alignment */
-	unsigned int tx_length_quirk:1;	/* add length specifier to transfers */
 	unsigned int fmt_type;		/* USB audio format type (1-3) */
 	unsigned int pkt_offset_adj;	/* Bytes to drop from beginning of packets (for non-compliant devices) */
-	unsigned int stream_offset_adj;	/* Bytes to drop from beginning of stream (for non-compliant devices) */
 
 	unsigned int running: 1;	/* running status */
 
@@ -143,7 +137,6 @@ struct snd_usb_substream {
 	struct snd_usb_endpoint *sync_endpoint;
 	unsigned long flags;
 	bool need_setup_ep;		/* (re)configure EP at prepare? */
-	bool need_setup_fmt;		/* (re)configure fmt after resume? */
 	unsigned int speed;		/* USB_SPEED_XXX */
 
 	u64 formats;			/* format bitmasks (all or'ed) */

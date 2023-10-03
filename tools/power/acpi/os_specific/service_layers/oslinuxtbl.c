@@ -1,11 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: oslinuxtbl - Linux OSL for obtaining ACPI tables
  *
- * Copyright (C) 2000 - 2018, Intel Corp.
- *
  *****************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2015, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #include "acpidump.h"
 
@@ -57,7 +91,7 @@ osl_get_customized_table(char *pathname,
 			 char *signature,
 			 u32 instance,
 			 struct acpi_table_header **table,
-			 acpi_physical_address *address);
+			 acpi_physical_address * address);
 
 static acpi_status osl_list_bios_tables(void);
 
@@ -65,7 +99,7 @@ static acpi_status
 osl_get_bios_table(char *signature,
 		   u32 instance,
 		   struct acpi_table_header **table,
-		   acpi_physical_address *address);
+		   acpi_physical_address * address);
 
 static acpi_status osl_get_last_status(acpi_status default_status);
 
@@ -153,7 +187,7 @@ static acpi_status osl_get_last_status(acpi_status default_status)
 
 acpi_status
 acpi_os_get_table_by_address(acpi_physical_address address,
-			     struct acpi_table_header **table)
+			     struct acpi_table_header ** table)
 {
 	u32 table_length;
 	struct acpi_table_header *mapped_table;
@@ -188,7 +222,7 @@ acpi_os_get_table_by_address(acpi_physical_address address,
 		goto exit;
 	}
 
-	memcpy(local_table, mapped_table, table_length);
+	ACPI_MEMCPY(local_table, mapped_table, table_length);
 
 exit:
 	osl_unmap_table(mapped_table);
@@ -218,8 +252,8 @@ exit:
 acpi_status
 acpi_os_get_table_by_name(char *signature,
 			  u32 instance,
-			  struct acpi_table_header **table,
-			  acpi_physical_address *address)
+			  struct acpi_table_header ** table,
+			  acpi_physical_address * address)
 {
 	acpi_status status;
 
@@ -346,8 +380,8 @@ static acpi_status osl_add_table_to_list(char *signature, u32 instance)
 
 acpi_status
 acpi_os_get_table_by_index(u32 index,
-			   struct acpi_table_header **table,
-			   u32 *instance, acpi_physical_address *address)
+			   struct acpi_table_header ** table,
+			   u32 *instance, acpi_physical_address * address)
 {
 	struct osl_table_info *info;
 	acpi_status status;
@@ -413,7 +447,7 @@ osl_find_rsdp_via_efi_by_keyword(FILE * file, const char *keyword)
 		}
 	}
 
-	return ((acpi_physical_address)(address));
+	return ((acpi_physical_address) (address));
 }
 
 /******************************************************************************
@@ -497,7 +531,7 @@ static acpi_status osl_load_rsdp(void)
 	gbl_rsdp_address =
 	    rsdp_base + (ACPI_CAST8(mapped_table) - rsdp_address);
 
-	memcpy(&gbl_rsdp, mapped_table, sizeof(struct acpi_table_rsdp));
+	ACPI_MEMCPY(&gbl_rsdp, mapped_table, sizeof(struct acpi_table_rsdp));
 	acpi_os_unmap_memory(rsdp_address, rsdp_size);
 
 	return (AE_OK);
@@ -548,67 +582,64 @@ static acpi_status osl_table_initialize(void)
 		return (AE_OK);
 	}
 
-	if (!gbl_dump_customized_tables) {
+	/* Get RSDP from memory */
 
-		/* Get RSDP from memory */
+	status = osl_load_rsdp();
+	if (ACPI_FAILURE(status)) {
+		return (status);
+	}
 
-		status = osl_load_rsdp();
-		if (ACPI_FAILURE(status)) {
-			return (status);
+	/* Get XSDT from memory */
+
+	if (gbl_rsdp.revision && !gbl_do_not_dump_xsdt) {
+		if (gbl_xsdt) {
+			free(gbl_xsdt);
+			gbl_xsdt = NULL;
 		}
 
-		/* Get XSDT from memory */
-
-		if (gbl_rsdp.revision && !gbl_do_not_dump_xsdt) {
-			if (gbl_xsdt) {
-				free(gbl_xsdt);
-				gbl_xsdt = NULL;
-			}
-
-			gbl_revision = 2;
-			status = osl_get_bios_table(ACPI_SIG_XSDT, 0,
-						    ACPI_CAST_PTR(struct
-								  acpi_table_header
-								  *, &gbl_xsdt),
-						    &address);
-			if (ACPI_FAILURE(status)) {
-				return (status);
-			}
-		}
-
-		/* Get RSDT from memory */
-
-		if (gbl_rsdp.rsdt_physical_address) {
-			if (gbl_rsdt) {
-				free(gbl_rsdt);
-				gbl_rsdt = NULL;
-			}
-
-			status = osl_get_bios_table(ACPI_SIG_RSDT, 0,
-						    ACPI_CAST_PTR(struct
-								  acpi_table_header
-								  *, &gbl_rsdt),
-						    &address);
-			if (ACPI_FAILURE(status)) {
-				return (status);
-			}
-		}
-
-		/* Get FADT from memory */
-
-		if (gbl_fadt) {
-			free(gbl_fadt);
-			gbl_fadt = NULL;
-		}
-
-		status = osl_get_bios_table(ACPI_SIG_FADT, 0,
+		gbl_revision = 2;
+		status = osl_get_bios_table(ACPI_SIG_XSDT, 0,
 					    ACPI_CAST_PTR(struct
 							  acpi_table_header *,
-							  &gbl_fadt),
-					    &gbl_fadt_address);
+							  &gbl_xsdt), &address);
 		if (ACPI_FAILURE(status)) {
 			return (status);
 		}
+	}
+
+	/* Get RSDT from memory */
+
+	if (gbl_rsdp.rsdt_physical_address) {
+		if (gbl_rsdt) {
+			free(gbl_rsdt);
+			gbl_rsdt = NULL;
+		}
+
+		status = osl_get_bios_table(ACPI_SIG_RSDT, 0,
+					    ACPI_CAST_PTR(struct
+							  acpi_table_header *,
+							  &gbl_rsdt), &address);
+		if (ACPI_FAILURE(status)) {
+			return (status);
+		}
+	}
+
+	/* Get FADT from memory */
+
+	if (gbl_fadt) {
+		free(gbl_fadt);
+		gbl_fadt = NULL;
+	}
+
+	status = osl_get_bios_table(ACPI_SIG_FADT, 0,
+				    ACPI_CAST_PTR(struct acpi_table_header *,
+						  &gbl_fadt),
+				    &gbl_fadt_address);
+	if (ACPI_FAILURE(status)) {
+		return (status);
+	}
+
+	if (!gbl_dump_customized_tables) {
 
 		/* Add mandatory tables to global table list first */
 
@@ -717,15 +748,15 @@ static acpi_status osl_list_bios_tables(void)
 	for (i = 0; i < number_of_tables; ++i, table_data += item_size) {
 		if (osl_can_use_xsdt()) {
 			table_address =
-			    (acpi_physical_address)(*ACPI_CAST64(table_data));
+			    (acpi_physical_address) (*ACPI_CAST64(table_data));
 		} else {
 			table_address =
-			    (acpi_physical_address)(*ACPI_CAST32(table_data));
+			    (acpi_physical_address) (*ACPI_CAST32(table_data));
 		}
 
 		/* Skip NULL entries in RSDT/XSDT */
 
-		if (table_address == 0) {
+		if (!table_address) {
 			continue;
 		}
 
@@ -766,7 +797,7 @@ static acpi_status
 osl_get_bios_table(char *signature,
 		   u32 instance,
 		   struct acpi_table_header **table,
-		   acpi_physical_address *address)
+		   acpi_physical_address * address)
 {
 	struct acpi_table_header *local_table = NULL;
 	struct acpi_table_header *mapped_table = NULL;
@@ -774,8 +805,7 @@ osl_get_bios_table(char *signature,
 	u8 number_of_tables;
 	u8 item_size;
 	u32 current_instance = 0;
-	acpi_physical_address table_address;
-	acpi_physical_address first_table_address = 0;
+	acpi_physical_address table_address = 0;
 	u32 table_length = 0;
 	acpi_status status = AE_OK;
 	u32 i;
@@ -787,10 +817,9 @@ osl_get_bios_table(char *signature,
 	    ACPI_COMPARE_NAME(signature, ACPI_SIG_XSDT) ||
 	    ACPI_COMPARE_NAME(signature, ACPI_SIG_DSDT) ||
 	    ACPI_COMPARE_NAME(signature, ACPI_SIG_FACS)) {
-
-find_next_instance:
-
-		table_address = 0;
+		if (instance > 0) {
+			return (AE_LIMIT);
+		}
 
 		/*
 		 * Get the appropriate address, either 32-bit or 64-bit. Be very
@@ -798,66 +827,42 @@ find_next_instance:
 		 * Note: The 64-bit addresses have priority.
 		 */
 		if (ACPI_COMPARE_NAME(signature, ACPI_SIG_DSDT)) {
-			if (current_instance < 2) {
-				if ((gbl_fadt->header.length >=
-				     MIN_FADT_FOR_XDSDT) && gbl_fadt->Xdsdt
-				    && current_instance == 0) {
-					table_address =
-					    (acpi_physical_address)gbl_fadt->
-					    Xdsdt;
-				} else
-				    if ((gbl_fadt->header.length >=
-					 MIN_FADT_FOR_DSDT)
-					&& gbl_fadt->dsdt !=
-					first_table_address) {
-					table_address =
-					    (acpi_physical_address)gbl_fadt->
-					    dsdt;
-				}
+			if ((gbl_fadt->header.length >= MIN_FADT_FOR_XDSDT) &&
+			    gbl_fadt->Xdsdt) {
+				table_address =
+				    (acpi_physical_address) gbl_fadt->Xdsdt;
+			} else
+			    if ((gbl_fadt->header.length >= MIN_FADT_FOR_DSDT)
+				&& gbl_fadt->dsdt) {
+				table_address =
+				    (acpi_physical_address) gbl_fadt->dsdt;
 			}
 		} else if (ACPI_COMPARE_NAME(signature, ACPI_SIG_FACS)) {
-			if (current_instance < 2) {
-				if ((gbl_fadt->header.length >=
-				     MIN_FADT_FOR_XFACS) && gbl_fadt->Xfacs
-				    && current_instance == 0) {
-					table_address =
-					    (acpi_physical_address)gbl_fadt->
-					    Xfacs;
-				} else
-				    if ((gbl_fadt->header.length >=
-					 MIN_FADT_FOR_FACS)
-					&& gbl_fadt->facs !=
-					first_table_address) {
-					table_address =
-					    (acpi_physical_address)gbl_fadt->
-					    facs;
-				}
+			if ((gbl_fadt->header.length >= MIN_FADT_FOR_XFACS) &&
+			    gbl_fadt->Xfacs) {
+				table_address =
+				    (acpi_physical_address) gbl_fadt->Xfacs;
+			} else
+			    if ((gbl_fadt->header.length >= MIN_FADT_FOR_FACS)
+				&& gbl_fadt->facs) {
+				table_address =
+				    (acpi_physical_address) gbl_fadt->facs;
 			}
 		} else if (ACPI_COMPARE_NAME(signature, ACPI_SIG_XSDT)) {
 			if (!gbl_revision) {
 				return (AE_BAD_SIGNATURE);
 			}
-			if (current_instance == 0) {
-				table_address =
-				    (acpi_physical_address)gbl_rsdp.
-				    xsdt_physical_address;
-			}
+			table_address =
+			    (acpi_physical_address) gbl_rsdp.
+			    xsdt_physical_address;
 		} else if (ACPI_COMPARE_NAME(signature, ACPI_SIG_RSDT)) {
-			if (current_instance == 0) {
-				table_address =
-				    (acpi_physical_address)gbl_rsdp.
-				    rsdt_physical_address;
-			}
+			table_address =
+			    (acpi_physical_address) gbl_rsdp.
+			    rsdt_physical_address;
 		} else {
-			if (current_instance == 0) {
-				table_address =
-				    (acpi_physical_address)gbl_rsdp_address;
-				signature = ACPI_SIG_RSDP;
-			}
-		}
-
-		if (table_address == 0) {
-			goto exit_find_table;
+			table_address =
+			    (acpi_physical_address) gbl_rsdp_address;
+			signature = ACPI_SIG_RSDP;
 		}
 
 		/* Now we can get the requested special table */
@@ -868,18 +873,6 @@ find_next_instance:
 		}
 
 		table_length = ap_get_table_length(mapped_table);
-		if (first_table_address == 0) {
-			first_table_address = table_address;
-		}
-
-		/* Match table instance */
-
-		if (current_instance != instance) {
-			osl_unmap_table(mapped_table);
-			mapped_table = NULL;
-			current_instance++;
-			goto find_next_instance;
-		}
 	} else {		/* Case for a normal ACPI table */
 
 		if (osl_can_use_xsdt()) {
@@ -908,17 +901,17 @@ find_next_instance:
 		for (i = 0; i < number_of_tables; ++i, table_data += item_size) {
 			if (osl_can_use_xsdt()) {
 				table_address =
-				    (acpi_physical_address)(*ACPI_CAST64
-							    (table_data));
+				    (acpi_physical_address) (*ACPI_CAST64
+							     (table_data));
 			} else {
 				table_address =
-				    (acpi_physical_address)(*ACPI_CAST32
-							    (table_data));
+				    (acpi_physical_address) (*ACPI_CAST32
+							     (table_data));
 			}
 
 			/* Skip NULL entries in RSDT/XSDT */
 
-			if (table_address == 0) {
+			if (!table_address) {
 				continue;
 			}
 
@@ -951,8 +944,6 @@ find_next_instance:
 		}
 	}
 
-exit_find_table:
-
 	if (!mapped_table) {
 		return (AE_LIMIT);
 	}
@@ -970,7 +961,7 @@ exit_find_table:
 		goto exit;
 	}
 
-	memcpy(local_table, mapped_table, table_length);
+	ACPI_MEMCPY(local_table, mapped_table, table_length);
 	*address = table_address;
 	*table = local_table;
 
@@ -1165,7 +1156,7 @@ osl_table_name_from_file(char *filename, char *signature, u32 *instance)
 	/* Extract instance number */
 
 	if (isdigit((int)filename[ACPI_NAME_SIZE])) {
-		sscanf(&filename[ACPI_NAME_SIZE], "%u", instance);
+		sscanf(&filename[ACPI_NAME_SIZE], "%d", instance);
 	} else if (strlen(filename) != ACPI_NAME_SIZE) {
 		return (AE_BAD_SIGNATURE);
 	} else {
@@ -1307,7 +1298,7 @@ osl_get_customized_table(char *pathname,
 			 char *signature,
 			 u32 instance,
 			 struct acpi_table_header **table,
-			 acpi_physical_address *address)
+			 acpi_physical_address * address)
 {
 	void *table_dir;
 	u32 current_instance = 0;

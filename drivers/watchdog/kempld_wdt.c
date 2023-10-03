@@ -140,13 +140,11 @@ static int kempld_wdt_set_stage_timeout(struct kempld_wdt_data *wdt_data,
 					unsigned int timeout)
 {
 	struct kempld_device_data *pld = wdt_data->pld;
-	u32 prescaler;
+	u32 prescaler = kempld_prescaler[PRESCALER_21];
 	u64 stage_timeout64;
 	u32 stage_timeout;
 	u32 remainder;
 	u8 stage_cfg;
-
-	prescaler = kempld_prescaler[PRESCALER_21];
 
 	if (!stage)
 		return -EINVAL;
@@ -424,7 +422,7 @@ static int kempld_wdt_probe_stages(struct watchdog_device *wdd)
 	return 0;
 }
 
-static const struct watchdog_info kempld_wdt_info = {
+static struct watchdog_info kempld_wdt_info = {
 	.identity	= "KEMPLD Watchdog",
 	.options	= WDIOF_SETTIMEOUT |
 			WDIOF_KEEPALIVEPING |
@@ -432,7 +430,7 @@ static const struct watchdog_info kempld_wdt_info = {
 			WDIOF_PRETIMEOUT
 };
 
-static const struct watchdog_ops kempld_wdt_ops = {
+static struct watchdog_ops kempld_wdt_ops = {
 	.owner		= THIS_MODULE,
 	.start		= kempld_wdt_start,
 	.stop		= kempld_wdt_stop,

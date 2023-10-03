@@ -14,13 +14,12 @@
 #include <linux/moduleparam.h>
 #include <linux/compiler.h>
 #include <linux/kernel.h>
-#include <linux/sched/debug.h>
 #include <linux/errno.h>
 #include <linux/string.h>
 #include <linux/proc_fs.h>
 #include <linux/seq_file.h>
 #include <linux/init.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/uaccess.h>
 
 #include <asm/cp15.h>
@@ -202,7 +201,7 @@ union offset_union {
  THUMB(	"1:	"ins"	%1, [%2]\n"	)		\
  THUMB(	"	add	%2, %2, #1\n"	)		\
 	"2:\n"						\
-	"	.pushsection .text.fixup,\"ax\"\n"	\
+	"	.pushsection .fixup,\"ax\"\n"		\
 	"	.align	2\n"				\
 	"3:	mov	%0, #1\n"			\
 	"	b	2b\n"				\
@@ -262,7 +261,7 @@ union offset_union {
 		"	mov	%1, %1, "NEXT_BYTE"\n"		\
 		"2:	"ins"	%1, [%2]\n"			\
 		"3:\n"						\
-		"	.pushsection .text.fixup,\"ax\"\n"	\
+		"	.pushsection .fixup,\"ax\"\n"		\
 		"	.align	2\n"				\
 		"4:	mov	%0, #1\n"			\
 		"	b	3b\n"				\
@@ -302,7 +301,7 @@ union offset_union {
 		"	mov	%1, %1, "NEXT_BYTE"\n"		\
 		"4:	"ins"	%1, [%2]\n"			\
 		"5:\n"						\
-		"	.pushsection .text.fixup,\"ax\"\n"	\
+		"	.pushsection .fixup,\"ax\"\n"		\
 		"	.align	2\n"				\
 		"6:	mov	%0, #1\n"			\
 		"	b	5b\n"				\
@@ -366,21 +365,15 @@ do_alignment_ldrhstrh(unsigned long addr, unsigned long instr, struct pt_regs *r
  user:
 	if (LDST_L_BIT(instr)) {
 		unsigned long val;
-		unsigned int __ua_flags = uaccess_save_and_enable();
-
 		get16t_unaligned_check(val, addr);
-		uaccess_restore(__ua_flags);
 
 		/* signed half-word? */
 		if (instr & 0x40)
 			val = (signed long)((signed short) val);
 
 		regs->uregs[rd] = val;
-	} else {
-		unsigned int __ua_flags = uaccess_save_and_enable();
+	} else
 		put16t_unaligned_check(regs->uregs[rd], addr);
-		uaccess_restore(__ua_flags);
-	}
 
 	return TYPE_LDST;
 
@@ -427,21 +420,14 @@ do_alignment_ldrdstrd(unsigned long addr, unsigned long instr,
 
  user:
 	if (load) {
-		unsigned long val, val2;
-		unsigned int __ua_flags = uaccess_save_and_enable();
-
+		unsigned long val;
 		get32t_unaligned_check(val, addr);
-		get32t_unaligned_check(val2, addr + 4);
-
-		uaccess_restore(__ua_flags);
-
 		regs->uregs[rd] = val;
-		regs->uregs[rd2] = val2;
+		get32t_unaligned_check(val, addr + 4);
+		regs->uregs[rd2] = val;
 	} else {
-		unsigned int __ua_flags = uaccess_save_and_enable();
 		put32t_unaligned_check(regs->uregs[rd], addr);
 		put32t_unaligned_check(regs->uregs[rd2], addr + 4);
-		uaccess_restore(__ua_flags);
 	}
 
 	return TYPE_LDST;
@@ -472,15 +458,10 @@ do_alignment_ldrstr(unsigned long addr, unsigned long instr, struct pt_regs *reg
  trans:
 	if (LDST_L_BIT(instr)) {
 		unsigned int val;
-		unsigned int __ua_flags = uaccess_save_and_enable();
 		get32t_unaligned_check(val, addr);
-		uaccess_restore(__ua_flags);
 		regs->uregs[rd] = val;
-	} else {
-		unsigned int __ua_flags = uaccess_save_and_enable();
+	} else
 		put32t_unaligned_check(regs->uregs[rd], addr);
-		uaccess_restore(__ua_flags);
-	}
 	return TYPE_LDST;
 
  fault:
@@ -550,7 +531,6 @@ do_alignment_ldmstm(unsigned long addr, unsigned long instr, struct pt_regs *reg
 #endif
 
 	if (user_mode(regs)) {
-		unsigned int __ua_flags = uaccess_save_and_enable();
 		for (regbits = REGMASK_BITS(instr), rd = 0; regbits;
 		     regbits >>= 1, rd += 1)
 			if (regbits & 1) {
@@ -562,7 +542,6 @@ do_alignment_ldmstm(unsigned long addr, unsigned long instr, struct pt_regs *reg
 					put32t_unaligned_check(regs->uregs[rd], eaddr);
 				eaddr += 4;
 			}
-		uaccess_restore(__ua_flags);
 	} else {
 		for (regbits = REGMASK_BITS(instr), rd = 0; regbits;
 		     regbits >>= 1, rd += 1)
@@ -768,36 +747,6 @@ do_alignment_t32_to_handler(unsigned long *pinstr, struct pt_regs *regs,
 	return NULL;
 }
 
-static int alignment_get_arm(struct pt_regs *regs, u32 *ip, unsigned long *inst)
-{
-	u32 instr = 0;
-	int fault;
-
-	if (user_mode(regs))
-		fault = get_user(instr, ip);
-	else
-		fault = probe_kernel_address(ip, instr);
-
-	*inst = __mem_to_opcode_arm(instr);
-
-	return fault;
-}
-
-static int alignment_get_thumb(struct pt_regs *regs, u16 *ip, u16 *inst)
-{
-	u16 instr = 0;
-	int fault;
-
-	if (user_mode(regs))
-		fault = get_user(instr, ip);
-	else
-		fault = probe_kernel_address(ip, instr);
-
-	*inst = __mem_to_opcode_thumb16(instr);
-
-	return fault;
-}
-
 static int
 do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 {
@@ -805,10 +754,10 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	unsigned long instr = 0, instrptr;
 	int (*handler)(unsigned long addr, unsigned long instr, struct pt_regs *regs);
 	unsigned int type;
+	unsigned int fault;
 	u16 tinstr = 0;
 	int isize = 4;
 	int thumb2_32b = 0;
-	int fault;
 
 	if (interrupts_enabled(regs))
 		local_irq_enable();
@@ -817,14 +766,15 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 
 	if (thumb_mode(regs)) {
 		u16 *ptr = (u16 *)(instrptr & ~1);
-
-		fault = alignment_get_thumb(regs, ptr, &tinstr);
+		fault = probe_kernel_address(ptr, tinstr);
+		tinstr = __mem_to_opcode_thumb16(tinstr);
 		if (!fault) {
 			if (cpu_architecture() >= CPU_ARCH_ARMv7 &&
 			    IS_T32(tinstr)) {
 				/* Thumb-2 32-bit */
-				u16 tinst2;
-				fault = alignment_get_thumb(regs, ptr + 1, &tinst2);
+				u16 tinst2 = 0;
+				fault = probe_kernel_address(ptr + 1, tinst2);
+				tinst2 = __mem_to_opcode_thumb16(tinst2);
 				instr = __opcode_thumb32_compose(tinstr, tinst2);
 				thumb2_32b = 1;
 			} else {
@@ -833,7 +783,8 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 			}
 		}
 	} else {
-		fault = alignment_get_arm(regs, (void *)instrptr, &instr);
+		fault = probe_kernel_address(instrptr, instr);
+		instr = __mem_to_opcode_arm(instr);
 	}
 
 	if (fault) {
@@ -936,9 +887,6 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	if (type == TYPE_LDST)
 		do_alignment_finish_ldst(addr, instr, regs, offset);
 
-	if (thumb_mode(regs))
-		regs->ARM_cpsr = it_advance(regs->ARM_cpsr);
-
 	return 0;
 
  bad_or_fault:
@@ -981,7 +929,6 @@ do_alignment(unsigned long addr, unsigned int fsr, struct pt_regs *regs)
 	if (ai_usermode & UM_SIGNAL) {
 		siginfo_t si;
 
-		clear_siginfo(&si);
 		si.si_signo = SIGBUS;
 		si.si_errno = 0;
 		si.si_code = BUS_ADRALN;

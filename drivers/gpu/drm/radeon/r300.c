@@ -50,31 +50,6 @@
  */
 
 /*
- * Indirect registers accessor
- */
-uint32_t rv370_pcie_rreg(struct radeon_device *rdev, uint32_t reg)
-{
-	unsigned long flags;
-	uint32_t r;
-
-	spin_lock_irqsave(&rdev->pcie_idx_lock, flags);
-	WREG32(RADEON_PCIE_INDEX, ((reg) & rdev->pcie_reg_mask));
-	r = RREG32(RADEON_PCIE_DATA);
-	spin_unlock_irqrestore(&rdev->pcie_idx_lock, flags);
-	return r;
-}
-
-void rv370_pcie_wreg(struct radeon_device *rdev, uint32_t reg, uint32_t v)
-{
-	unsigned long flags;
-
-	spin_lock_irqsave(&rdev->pcie_idx_lock, flags);
-	WREG32(RADEON_PCIE_INDEX, ((reg) & rdev->pcie_reg_mask));
-	WREG32(RADEON_PCIE_DATA, (v));
-	spin_unlock_irqrestore(&rdev->pcie_idx_lock, flags);
-}
-
-/*
  * rv370,rv380 PCIE GART
  */
 static int rv370_debugfs_pcie_gart_info_init(struct radeon_device *rdev);
@@ -387,7 +362,8 @@ static void r300_gpu_init(struct radeon_device *rdev)
 	WREG32(R300_GB_TILE_CONFIG, gb_tile_config);
 
 	if (r100_gui_wait_for_idle(rdev)) {
-		pr_warn("Failed to wait GUI idle while programming pipes. Bad things might happen.\n");
+		printk(KERN_WARNING "Failed to wait GUI idle while "
+		       "programming pipes. Bad things might happen.\n");
 	}
 
 	tmp = RREG32(R300_DST_PIPE_CONFIG);
@@ -398,16 +374,18 @@ static void r300_gpu_init(struct radeon_device *rdev)
 	       R300_DC_DC_DISABLE_IGNORE_PE);
 
 	if (r100_gui_wait_for_idle(rdev)) {
-		pr_warn("Failed to wait GUI idle while programming pipes. Bad things might happen.\n");
+		printk(KERN_WARNING "Failed to wait GUI idle while "
+		       "programming pipes. Bad things might happen.\n");
 	}
 	if (r300_mc_wait_for_idle(rdev)) {
-		pr_warn("Failed to wait MC idle while programming pipes. Bad things might happen.\n");
+		printk(KERN_WARNING "Failed to wait MC idle while "
+		       "programming pipes. Bad things might happen.\n");
 	}
-	DRM_INFO("radeon: %d quad pipes, %d Z pipes initialized\n",
+	DRM_INFO("radeon: %d quad pipes, %d Z pipes initialized.\n",
 		 rdev->num_gb_pipes, rdev->num_z_pipes);
 }
 
-int r300_asic_reset(struct radeon_device *rdev, bool hard)
+int r300_asic_reset(struct radeon_device *rdev)
 {
 	struct r100_mc_save save;
 	u32 status, tmp;
@@ -1162,7 +1140,7 @@ static int r300_packet0_check(struct radeon_cs_parser *p,
 	}
 	return 0;
 fail:
-	pr_err("Forbidden register 0x%04X in cs at %d (val=%08x)\n",
+	printk(KERN_ERR "Forbidden register 0x%04X in cs at %d (val=%08x)\n",
 	       reg, idx, idx_value);
 	return -EINVAL;
 }

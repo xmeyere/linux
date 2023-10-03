@@ -7,7 +7,7 @@
  * licenses.  You may choose to be licensed under the terms of the GNU
  * General Public License (GPL) Version 2, available from the file
  * COPYING in the main directory of this source tree, or the
- * BSD license below:
+ * OpenIB.org BSD license below:
  *
  *     Redistribution and use in source and binary forms, with or
  *     without modification, are permitted provided that the following
@@ -34,14 +34,13 @@
 
 #include <linux/mm.h>
 #include <linux/dma-mapping.h>
-#include <linux/sched/signal.h>
-#include <linux/sched/mm.h>
+#include <linux/sched.h>
 #include <linux/hugetlb.h>
+#include <linux/dma-attrs.h>
 #include <linux/iommu.h>
 #include <linux/workqueue.h>
 #include <linux/list.h>
 #include <linux/pci.h>
-#include <rdma/ib_verbs.h>
 
 #include "usnic_log.h"
 #include "usnic_uiom.h"
@@ -89,7 +88,7 @@ static void usnic_uiom_put_pages(struct list_head *chunk_list, int dirty)
 		for_each_sg(chunk->page_list, sg, chunk->nents, i) {
 			page = sg_page(sg);
 			pa = sg_phys(sg);
-			if (!PageDirty(page) && dirty)
+			if (dirty)
 				set_page_dirty_lock(page);
 			put_page(page);
 			usnic_dbg("pa: %pa\n", &pa);
@@ -113,17 +112,10 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 	int i;
 	int flags;
 	dma_addr_t pa;
-	unsigned int gup_flags;
+	DEFINE_DMA_ATTRS(attrs);
 
-	/*
-	 * If the combination of the addr and size requested for this memory
-	 * region causes an integer overflow, return error.
-	 */
-	if (((addr + size) < addr) || PAGE_ALIGN(addr + size) < (addr + size))
-		return -EINVAL;
-
-	if (!size)
-		return -EINVAL;
+	if (dmasync)
+		dma_set_attr(DMA_ATTR_WRITE_BARRIER, &attrs);
 
 	if (!can_do_mlock())
 		return -EPERM;
@@ -138,7 +130,7 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 
 	down_write(&current->mm->mmap_sem);
 
-	locked = npages + current->mm->pinned_vm;
+	locked = npages + current->mm->locked_vm;
 	lock_limit = rlimit(RLIMIT_MEMLOCK) >> PAGE_SHIFT;
 
 	if ((locked > lock_limit) && !capable(CAP_IPC_LOCK)) {
@@ -148,16 +140,14 @@ static int usnic_uiom_get_pages(unsigned long addr, size_t size, int writable,
 
 	flags = IOMMU_READ | IOMMU_CACHE;
 	flags |= (writable) ? IOMMU_WRITE : 0;
-	gup_flags = FOLL_WRITE;
-	gup_flags |= (writable) ? 0 : FOLL_FORCE;
 	cur_base = addr & PAGE_MASK;
 	ret = 0;
 
 	while (npages) {
-		ret = get_user_pages_longterm(cur_base,
+		ret = get_user_pages(current, current->mm, cur_base,
 					min_t(unsigned long, npages,
 					PAGE_SIZE / sizeof(struct page *)),
-					gup_flags, page_list, NULL);
+					1, !writable, page_list, NULL);
 
 		if (ret < 0)
 			goto out;
@@ -197,7 +187,7 @@ out:
 	if (ret < 0)
 		usnic_uiom_put_pages(chunk_list, 0);
 	else
-		current->mm->pinned_vm = locked;
+		current->mm->locked_vm = locked;
 
 	up_write(&current->mm->mmap_sem);
 	free_page((unsigned long) page_list);
@@ -238,7 +228,7 @@ static void __usnic_uiom_reg_release(struct usnic_uiom_pd *pd,
 	vpn_last = vpn_start + npages - 1;
 
 	spin_lock(&pd->lock);
-	usnic_uiom_remove_interval(&pd->root, vpn_start,
+	usnic_uiom_remove_interval(&pd->rb_root, vpn_start,
 					vpn_last, &rm_intervals);
 	usnic_uiom_unmap_sorted_intervals(&rm_intervals, pd);
 
@@ -390,7 +380,7 @@ struct usnic_uiom_reg *usnic_uiom_reg_get(struct usnic_uiom_pd *pd,
 	err = usnic_uiom_get_intervals_diff(vpn_start, vpn_last,
 						(writable) ? IOMMU_WRITE : 0,
 						IOMMU_WRITE,
-						&pd->root,
+						&pd->rb_root,
 						&sorted_diff_intervals);
 	if (err) {
 		usnic_err("Failed disjoint interval vpn [0x%lx,0x%lx] err %d\n",
@@ -406,7 +396,7 @@ struct usnic_uiom_reg *usnic_uiom_reg_get(struct usnic_uiom_pd *pd,
 
 	}
 
-	err = usnic_uiom_insert_interval(&pd->root, vpn_start, vpn_last,
+	err = usnic_uiom_insert_interval(&pd->rb_root, vpn_start, vpn_last,
 					(writable) ? IOMMU_WRITE : 0);
 	if (err) {
 		usnic_err("Failed insert interval vpn [0x%lx,0x%lx] err %d\n",
@@ -431,22 +421,18 @@ out_free_uiomr:
 	return ERR_PTR(err);
 }
 
-void usnic_uiom_reg_release(struct usnic_uiom_reg *uiomr,
-			    struct ib_ucontext *ucontext)
+void usnic_uiom_reg_release(struct usnic_uiom_reg *uiomr, int closing)
 {
-	struct task_struct *task;
 	struct mm_struct *mm;
 	unsigned long diff;
 
 	__usnic_uiom_reg_release(uiomr->pd, uiomr, 1);
 
-	task = get_pid_task(ucontext->tgid, PIDTYPE_PID);
-	if (!task)
-		goto out;
-	mm = get_task_mm(task);
-	put_task_struct(task);
-	if (!mm)
-		goto out;
+	mm = get_task_mm(current);
+	if (!mm) {
+		kfree(uiomr);
+		return;
+	}
 
 	diff = PAGE_ALIGN(uiomr->length + uiomr->offset) >> PAGE_SHIFT;
 
@@ -458,7 +444,7 @@ void usnic_uiom_reg_release(struct usnic_uiom_reg *uiomr,
 	 * up here and not be able to take the mmap_sem.  In that case
 	 * we defer the vm_locked accounting to the system workqueue.
 	 */
-	if (ucontext->closing) {
+	if (closing) {
 		if (!down_write_trylock(&mm->mmap_sem)) {
 			INIT_WORK(&uiomr->work, usnic_uiom_reg_account);
 			uiomr->mm = mm;
@@ -470,10 +456,9 @@ void usnic_uiom_reg_release(struct usnic_uiom_reg *uiomr,
 	} else
 		down_write(&mm->mmap_sem);
 
-	mm->pinned_vm -= diff;
+	current->mm->locked_vm -= diff;
 	up_write(&mm->mmap_sem);
 	mmput(mm);
-out:
 	kfree(uiomr);
 }
 
@@ -487,10 +472,11 @@ struct usnic_uiom_pd *usnic_uiom_alloc_pd(void)
 		return ERR_PTR(-ENOMEM);
 
 	pd->domain = domain = iommu_domain_alloc(&pci_bus_type);
-	if (!domain) {
-		usnic_err("Failed to allocate IOMMU domain");
+	if (IS_ERR_OR_NULL(domain)) {
+		usnic_err("Failed to allocate IOMMU domain with err %ld\n",
+				PTR_ERR(pd->domain));
 		kfree(pd);
-		return ERR_PTR(-ENOMEM);
+		return ERR_PTR(domain ? PTR_ERR(domain) : -ENOMEM);
 	}
 
 	iommu_set_fault_handler(pd->domain, usnic_uiom_dma_fault, NULL);

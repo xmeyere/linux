@@ -98,10 +98,11 @@ static int wm831x_auxadc_read_irq(struct wm831x *wm831x,
 	wait_for_completion_timeout(&req->done, msecs_to_jiffies(500));
 
 	mutex_lock(&wm831x->auxadc_lock);
+
+	list_del(&req->list);
 	ret = req->val;
 
 out:
-	list_del(&req->list);
 	mutex_unlock(&wm831x->auxadc_lock);
 
 	kfree(req);
@@ -284,8 +285,7 @@ void wm831x_auxadc_init(struct wm831x *wm831x)
 
 		ret = request_threaded_irq(wm831x_irq(wm831x,
 						      WM831X_IRQ_AUXADC_DATA),
-					   NULL, wm831x_auxadc_irq,
-					   IRQF_ONESHOT,
+					   NULL, wm831x_auxadc_irq, 0,
 					   "auxadc", wm831x);
 		if (ret < 0) {
 			dev_err(wm831x->dev, "AUXADC IRQ request failed: %d\n",

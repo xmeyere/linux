@@ -8,6 +8,15 @@
  * Public License ("GPL") version 2 as distributed in the 'COPYING'
  * file from the main directory of the linux kernel source.
  *
+ *
+ * Your platform definition file should specify something like:
+ *
+ * static struct at91_can_data ek_can_data = {
+ *	transceiver_switch = sam9263ek_transceiver_switch,
+ * };
+ *
+ * at91_add_device_can(&ek_can_data);
+ *
  */
 
 #include <linux/clk.h>
@@ -24,6 +33,7 @@
 #include <linux/spinlock.h>
 #include <linux/string.h>
 #include <linux/types.h>
+#include <linux/platform_data/atmel.h>
 
 #include <linux/can/dev.h>
 #include <linux/can/error.h>
@@ -281,13 +291,13 @@ static inline unsigned int get_tx_echo_mb(const struct at91_priv *priv)
 
 static inline u32 at91_read(const struct at91_priv *priv, enum at91_reg reg)
 {
-	return readl_relaxed(priv->reg_base + reg);
+	return __raw_readl(priv->reg_base + reg);
 }
 
 static inline void at91_write(const struct at91_priv *priv, enum at91_reg reg,
 		u32 value)
 {
-	writel_relaxed(value, priv->reg_base + reg);
+	__raw_writel(value, priv->reg_base + reg);
 }
 
 static inline void set_mb_mode_prio(const struct at91_priv *priv,
@@ -312,6 +322,15 @@ static inline u32 at91_can_id_to_reg_mid(canid_t can_id)
 		reg_mid = (can_id & CAN_SFF_MASK) << 18;
 
 	return reg_mid;
+}
+
+/*
+ * Swtich transceiver on or off
+ */
+static void at91_transceiver_switch(const struct at91_priv *priv, int on)
+{
+	if (priv->pdata && priv->pdata->transceiver_switch)
+		priv->pdata->transceiver_switch(on);
 }
 
 static void at91_setup_mailboxes(struct net_device *dev)
@@ -397,6 +416,7 @@ static void at91_chip_start(struct net_device *dev)
 
 	at91_set_bittiming(dev);
 	at91_setup_mailboxes(dev);
+	at91_transceiver_switch(priv, 1);
 
 	/* enable chip */
 	if (priv->can.ctrlmode & CAN_CTRLMODE_LISTENONLY)
@@ -424,6 +444,7 @@ static void at91_chip_stop(struct net_device *dev, enum can_state state)
 	reg_mr = at91_read(priv, AT91_MR);
 	at91_write(priv, AT91_MR, reg_mr & ~AT91_MR_CANEN);
 
+	at91_transceiver_switch(priv, 0);
 	priv->can.state = state;
 }
 
@@ -556,10 +577,10 @@ static void at91_rx_overflow_err(struct net_device *dev)
 
 	cf->can_id |= CAN_ERR_CRTL;
 	cf->data[1] = CAN_ERR_CRTL_RX_OVERFLOW;
+	netif_receive_skb(skb);
 
 	stats->rx_packets++;
 	stats->rx_bytes += cf->can_dlc;
-	netif_receive_skb(skb);
 }
 
 /**
@@ -621,10 +642,10 @@ static void at91_read_msg(struct net_device *dev, unsigned int mb)
 	}
 
 	at91_read_mb(dev, mb, cf);
+	netif_receive_skb(skb);
 
 	stats->rx_packets++;
 	stats->rx_bytes += cf->can_dlc;
-	netif_receive_skb(skb);
 
 	can_led_event(dev, CAN_LED_EVENT_RX);
 }
@@ -712,10 +733,9 @@ static int at91_poll_rx(struct net_device *dev, int quota)
 
 	/* upper group completed, look again in lower */
 	if (priv->rx_next > get_mb_rx_low_last(priv) &&
-	    mb > get_mb_rx_last(priv)) {
+	    quota > 0 && mb > get_mb_rx_last(priv)) {
 		priv->rx_next = get_mb_rx_first(priv);
-		if (quota > 0)
-			goto again;
+		goto again;
 	}
 
 	return received;
@@ -782,10 +802,10 @@ static int at91_poll_err(struct net_device *dev, int quota, u32 reg_sr)
 		return 0;
 
 	at91_poll_err_frame(dev, cf, reg_sr);
+	netif_receive_skb(skb);
 
 	dev->stats.rx_packets++;
 	dev->stats.rx_bytes += cf->can_dlc;
-	netif_receive_skb(skb);
 
 	return 1;
 }
@@ -813,7 +833,7 @@ static int at91_poll(struct napi_struct *napi, int quota)
 		u32 reg_ier = AT91_IRQ_ERR_FRAME;
 		reg_ier |= get_irq_mb_rx(priv) & ~AT91_MB_MASK(priv->rx_next);
 
-		napi_complete_done(napi, work_done);
+		napi_complete(napi);
 		at91_write(priv, AT91_IER, reg_ier);
 	}
 
@@ -1047,10 +1067,10 @@ static void at91_irq_err(struct net_device *dev)
 		return;
 
 	at91_irq_err_state(dev, cf, new_state);
+	netif_rx(skb);
 
 	dev->stats.rx_packets++;
 	dev->stats.rx_bytes += cf->can_dlc;
-	netif_rx(skb);
 
 	priv->can.state = new_state;
 }
@@ -1224,14 +1244,15 @@ static ssize_t at91_sysfs_set_mb0_id(struct device *dev,
 	return ret;
 }
 
-static DEVICE_ATTR(mb0_id, 0644, at91_sysfs_show_mb0_id, at91_sysfs_set_mb0_id);
+static DEVICE_ATTR(mb0_id, S_IWUSR | S_IRUGO,
+	at91_sysfs_show_mb0_id, at91_sysfs_set_mb0_id);
 
 static struct attribute *at91_sysfs_attrs[] = {
 	&dev_attr_mb0_id.attr,
 	NULL,
 };
 
-static const struct attribute_group at91_sysfs_attr_group = {
+static struct attribute_group at91_sysfs_attr_group = {
 	.attrs = at91_sysfs_attrs,
 };
 

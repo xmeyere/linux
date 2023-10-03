@@ -345,16 +345,13 @@ static int elo_connect(struct serio *serio, struct serio_driver *drv)
 	switch (elo->id) {
 
 	case 0: /* 10-byte protocol */
-		if (elo_setup_10(elo)) {
-			err = -EIO;
+		if (elo_setup_10(elo))
 			goto fail3;
-		}
 
 		break;
 
 	case 1: /* 6-byte protocol */
 		input_set_abs_params(input_dev, ABS_PRESSURE, 0, 15, 0, 0);
-		/* fall through */
 
 	case 2: /* 4-byte protocol */
 		input_set_abs_params(input_dev, ABS_X, 96, 4000, 0, 0);
@@ -384,7 +381,7 @@ static int elo_connect(struct serio *serio, struct serio_driver *drv)
  * The serio driver structure.
  */
 
-static const struct serio_device_id elo_serio_ids[] = {
+static struct serio_device_id elo_serio_ids[] = {
 	{
 		.type	= SERIO_RS232,
 		.proto	= SERIO_ELO,

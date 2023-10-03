@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * addi_apci_1032.c
  * Copyright (C) 2004,2005  ADDI-DATA GmbH for the source code of this module.
@@ -11,6 +10,16 @@
  *	Fax: +49(0)7223/9493-92
  *	http://www.addi-data.com
  *	info@addi-data.com
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the
+ * Free Software Foundation; either version 2 of the License, or (at your
+ * option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
  */
 
 /*
@@ -62,9 +71,11 @@
  */
 
 #include <linux/module.h>
+#include <linux/pci.h>
 #include <linux/interrupt.h>
 
-#include "../comedi_pci.h"
+#include "../comedidev.h"
+#include "comedi_fc.h"
 #include "amcc_s5933.h"
 
 /*
@@ -75,10 +86,9 @@
 #define APCI1032_MODE2_REG		0x08
 #define APCI1032_STATUS_REG		0x0c
 #define APCI1032_CTRL_REG		0x10
-#define APCI1032_CTRL_INT_MODE(x)	(((x) & 0x1) << 1)
-#define APCI1032_CTRL_INT_OR		APCI1032_CTRL_INT_MODE(0)
-#define APCI1032_CTRL_INT_AND		APCI1032_CTRL_INT_MODE(1)
-#define APCI1032_CTRL_INT_ENA		BIT(2)
+#define APCI1032_CTRL_INT_OR		(0 << 1)
+#define APCI1032_CTRL_INT_AND		(1 << 1)
+#define APCI1032_CTRL_INT_ENA		(1 << 2)
 
 struct apci1032_private {
 	unsigned long amcc_iobase;	/* base of AMCC I/O registers */
@@ -106,22 +116,14 @@ static int apci1032_cos_insn_config(struct comedi_device *dev,
 				    unsigned int *data)
 {
 	struct apci1032_private *devpriv = dev->private;
-	unsigned int shift, oldmask, himask, lomask;
+	unsigned int shift, oldmask;
 
 	switch (data[0]) {
 	case INSN_CONFIG_DIGITAL_TRIG:
 		if (data[1] != 0)
 			return -EINVAL;
 		shift = data[3];
-		if (shift < 32) {
-			oldmask = (1U << shift) - 1;
-			himask = data[4] << shift;
-			lomask = data[5] << shift;
-		} else {
-			oldmask = 0xffffffffu;
-			himask = 0;
-			lomask = 0;
-		}
+		oldmask = (1U << shift) - 1;
 		switch (data[2]) {
 		case COMEDI_DIGITAL_TRIG_DISABLE:
 			devpriv->ctrl = 0;
@@ -144,8 +146,8 @@ static int apci1032_cos_insn_config(struct comedi_device *dev,
 				devpriv->mode2 &= oldmask;
 			}
 			/* configure specified channels */
-			devpriv->mode1 |= himask;
-			devpriv->mode2 |= lomask;
+			devpriv->mode1 |= data[4] << shift;
+			devpriv->mode2 |= data[5] << shift;
 			break;
 		case COMEDI_DIGITAL_TRIG_ENABLE_LEVELS:
 			if (devpriv->ctrl != (APCI1032_CTRL_INT_ENA |
@@ -162,8 +164,8 @@ static int apci1032_cos_insn_config(struct comedi_device *dev,
 				devpriv->mode2 &= oldmask;
 			}
 			/* configure specified channels */
-			devpriv->mode1 |= himask;
-			devpriv->mode2 |= lomask;
+			devpriv->mode1 |= data[4] << shift;
+			devpriv->mode2 |= data[5] << shift;
 			break;
 		default:
 			return -EINVAL;
@@ -194,11 +196,11 @@ static int apci1032_cos_cmdtest(struct comedi_device *dev,
 
 	/* Step 1 : check if triggers are trivially valid */
 
-	err |= comedi_check_trigger_src(&cmd->start_src, TRIG_NOW);
-	err |= comedi_check_trigger_src(&cmd->scan_begin_src, TRIG_EXT);
-	err |= comedi_check_trigger_src(&cmd->convert_src, TRIG_FOLLOW);
-	err |= comedi_check_trigger_src(&cmd->scan_end_src, TRIG_COUNT);
-	err |= comedi_check_trigger_src(&cmd->stop_src, TRIG_NONE);
+	err |= cfc_check_trigger_src(&cmd->start_src, TRIG_NOW);
+	err |= cfc_check_trigger_src(&cmd->scan_begin_src, TRIG_EXT);
+	err |= cfc_check_trigger_src(&cmd->convert_src, TRIG_FOLLOW);
+	err |= cfc_check_trigger_src(&cmd->scan_end_src, TRIG_COUNT);
+	err |= cfc_check_trigger_src(&cmd->stop_src, TRIG_NONE);
 
 	if (err)
 		return 1;
@@ -208,12 +210,11 @@ static int apci1032_cos_cmdtest(struct comedi_device *dev,
 
 	/* Step 3: check if arguments are trivially valid */
 
-	err |= comedi_check_trigger_arg_is(&cmd->start_arg, 0);
-	err |= comedi_check_trigger_arg_is(&cmd->scan_begin_arg, 0);
-	err |= comedi_check_trigger_arg_is(&cmd->convert_arg, 0);
-	err |= comedi_check_trigger_arg_is(&cmd->scan_end_arg,
-					   cmd->chanlist_len);
-	err |= comedi_check_trigger_arg_is(&cmd->stop_arg, 0);
+	err |= cfc_check_trigger_arg_is(&cmd->start_arg, 0);
+	err |= cfc_check_trigger_arg_is(&cmd->scan_begin_arg, 0);
+	err |= cfc_check_trigger_arg_is(&cmd->convert_arg, 0);
+	err |= cfc_check_trigger_arg_is(&cmd->scan_end_arg, cmd->chanlist_len);
+	err |= cfc_check_trigger_arg_is(&cmd->stop_arg, 0);
 
 	if (err)
 		return 3;
@@ -237,7 +238,7 @@ static int apci1032_cos_cmd(struct comedi_device *dev,
 
 	if (!devpriv->ctrl) {
 		dev_warn(dev->class_dev,
-			 "Interrupts disabled due to mode configuration!\n");
+			"Interrupts disabled due to mode configuration!\n");
 		return -EINVAL;
 	}
 
@@ -260,7 +261,6 @@ static irqreturn_t apci1032_interrupt(int irq, void *d)
 	struct apci1032_private *devpriv = dev->private;
 	struct comedi_subdevice *s = dev->read_subdev;
 	unsigned int ctrl;
-	unsigned short val;
 
 	/* check interrupt is from this device */
 	if ((inl(devpriv->amcc_iobase + AMCC_OP_REG_INTCSR) &
@@ -276,8 +276,7 @@ static irqreturn_t apci1032_interrupt(int irq, void *d)
 	outl(ctrl & ~APCI1032_CTRL_INT_ENA, dev->iobase + APCI1032_CTRL_REG);
 
 	s->state = inl(dev->iobase + APCI1032_STATUS_REG) & 0xffff;
-	val = s->state;
-	comedi_buf_write_samples(s, &val, 1);
+	comedi_buf_write_samples(s, &s->state, 1);
 	comedi_handle_events(dev, s);
 
 	/* enable the interrupt */
@@ -297,7 +296,7 @@ static int apci1032_di_insn_bits(struct comedi_device *dev,
 }
 
 static int apci1032_auto_attach(struct comedi_device *dev,
-				unsigned long context_unused)
+					  unsigned long context_unused)
 {
 	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
 	struct apci1032_private *devpriv;

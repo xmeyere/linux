@@ -9,10 +9,8 @@
 
 #include <linux/types.h>
 #include <linux/ctype.h>
-#include <linux/errno.h>
 #include <linux/kernel.h>
 #include <linux/export.h>
-#include <asm/unaligned.h>
 
 const char hex_asc[] = "0123456789abcdef";
 EXPORT_SYMBOL(hex_asc);
@@ -25,33 +23,15 @@ EXPORT_SYMBOL(hex_asc_upper);
  *
  * hex_to_bin() converts one hex digit to its actual value or -1 in case of bad
  * input.
- *
- * This function is used to load cryptographic keys, so it is coded in such a
- * way that there are no conditions or memory accesses that depend on data.
- *
- * Explanation of the logic:
- * (ch - '9' - 1) is negative if ch <= '9'
- * ('0' - 1 - ch) is negative if ch >= '0'
- * we "and" these two values, so the result is negative if ch is in the range
- *	'0' ... '9'
- * we are only interested in the sign, so we do a shift ">> 8"; note that right
- *	shift of a negative value is implementation-defined, so we cast the
- *	value to (unsigned) before the shift --- we have 0xffffff if ch is in
- *	the range '0' ... '9', 0 otherwise
- * we "and" this value with (ch - '0' + 1) --- we have a value 1 ... 10 if ch is
- *	in the range '0' ... '9', 0 otherwise
- * we add this value to -1 --- we have a value 0 ... 9 if ch is in the range '0'
- *	... '9', -1 otherwise
- * the next line is similar to the previous one, but we need to decode both
- *	uppercase and lowercase letters, so we use (ch & 0xdf), which converts
- *	lowercase to uppercase
  */
-int hex_to_bin(unsigned char ch)
+int hex_to_bin(char ch)
 {
-	unsigned char cu = ch & 0xdf;
-	return -1 +
-		((ch - '0' +  1) & (unsigned)((ch - '9' - 1) & ('0' - 1 - ch)) >> 8) +
-		((cu - 'A' + 11) & (unsigned)((cu - 'F' - 1) & ('A' - 1 - cu)) >> 8);
+	if ((ch >= '0') && (ch <= '9'))
+		return ch - '0';
+	ch = tolower(ch);
+	if ((ch >= 'a') && (ch <= 'f'))
+		return ch - 'a' + 10;
+	return -1;
 }
 EXPORT_SYMBOL(hex_to_bin);
 
@@ -61,19 +41,16 @@ EXPORT_SYMBOL(hex_to_bin);
  * @src: ascii hexadecimal string
  * @count: result length
  *
- * Return 0 on success, -EINVAL in case of bad input.
+ * Return 0 on success, -1 in case of bad input.
  */
 int hex2bin(u8 *dst, const char *src, size_t count)
 {
 	while (count--) {
-		int hi, lo;
+		int hi = hex_to_bin(*src++);
+		int lo = hex_to_bin(*src++);
 
-		hi = hex_to_bin(*src++);
-		if (unlikely(hi < 0))
-			return -EINVAL;
-		lo = hex_to_bin(*src++);
-		if (unlikely(lo < 0))
-			return -EINVAL;
+		if ((hi < 0) || (lo < 0))
+			return -1;
 
 		*dst++ = (hi << 4) | lo;
 	}
@@ -162,7 +139,7 @@ int hex_dump_to_buffer(const void *buf, size_t len, int rowsize, int groupsize,
 		for (j = 0; j < ngroups; j++) {
 			ret = snprintf(linebuf + lx, linebuflen - lx,
 				       "%s%16.16llx", j ? " " : "",
-				       get_unaligned(ptr8 + j));
+				       (unsigned long long)*(ptr8 + j));
 			if (ret >= linebuflen - lx)
 				goto overflow1;
 			lx += ret;
@@ -173,7 +150,7 @@ int hex_dump_to_buffer(const void *buf, size_t len, int rowsize, int groupsize,
 		for (j = 0; j < ngroups; j++) {
 			ret = snprintf(linebuf + lx, linebuflen - lx,
 				       "%s%8.8x", j ? " " : "",
-				       get_unaligned(ptr4 + j));
+				       *(ptr4 + j));
 			if (ret >= linebuflen - lx)
 				goto overflow1;
 			lx += ret;
@@ -184,22 +161,18 @@ int hex_dump_to_buffer(const void *buf, size_t len, int rowsize, int groupsize,
 		for (j = 0; j < ngroups; j++) {
 			ret = snprintf(linebuf + lx, linebuflen - lx,
 				       "%s%4.4x", j ? " " : "",
-				       get_unaligned(ptr2 + j));
+				       *(ptr2 + j));
 			if (ret >= linebuflen - lx)
 				goto overflow1;
 			lx += ret;
 		}
 	} else {
 		for (j = 0; j < len; j++) {
-			if (linebuflen < lx + 2)
+			if (linebuflen < lx + 3)
 				goto overflow2;
 			ch = ptr[j];
 			linebuf[lx++] = hex_asc_hi(ch);
-			if (linebuflen < lx + 2)
-				goto overflow2;
 			linebuf[lx++] = hex_asc_lo(ch);
-			if (linebuflen < lx + 2)
-				goto overflow2;
 			linebuf[lx++] = ' ';
 		}
 		if (j)

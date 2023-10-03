@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/arch/sh/kernel/irq.c
  *
@@ -17,7 +16,7 @@
 #include <linux/ratelimit.h>
 #include <asm/processor.h>
 #include <asm/machvec.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/thread_info.h>
 #include <cpu/mmu_context.h>
 
@@ -44,7 +43,7 @@ int arch_show_interrupts(struct seq_file *p, int prec)
 
 	seq_printf(p, "%*s: ", prec, "NMI");
 	for_each_online_cpu(j)
-		seq_printf(p, "%10u ", nmi_count(j));
+		seq_printf(p, "%10u ", irq_stat[j].__nmi_count);
 	seq_printf(p, "  Non-maskable interrupts\n");
 
 	seq_printf(p, "%*s: %10u\n", prec, "ERR", atomic_read(&irq_err_count));
@@ -100,7 +99,7 @@ static inline void handle_one_irq(unsigned int irq)
 			"mov	%0, r4		\n"
 			"mov	r15, r8		\n"
 			"jsr	@%1		\n"
-			/* switch to the irq stack */
+			/* swith to the irq stack */
 			" mov	%2, r15		\n"
 			/* restore the stack (ring zero) */
 			"mov	r8, r15		\n"
@@ -125,6 +124,7 @@ void irq_ctx_init(int cpu)
 
 	irqctx = (union irq_ctx *)&hardirq_stack[cpu * THREAD_SIZE];
 	irqctx->tinfo.task		= NULL;
+	irqctx->tinfo.exec_domain	= NULL;
 	irqctx->tinfo.cpu		= cpu;
 	irqctx->tinfo.preempt_count	= HARDIRQ_OFFSET;
 	irqctx->tinfo.addr_limit	= MAKE_MM_SEG(0);
@@ -133,6 +133,7 @@ void irq_ctx_init(int cpu)
 
 	irqctx = (union irq_ctx *)&softirq_stack[cpu * THREAD_SIZE];
 	irqctx->tinfo.task		= NULL;
+	irqctx->tinfo.exec_domain	= NULL;
 	irqctx->tinfo.cpu		= cpu;
 	irqctx->tinfo.preempt_count	= 0;
 	irqctx->tinfo.addr_limit	= MAKE_MM_SEG(0);
@@ -228,17 +229,16 @@ void migrate_irqs(void)
 	for_each_active_irq(irq) {
 		struct irq_data *data = irq_get_irq_data(irq);
 
-		if (irq_data_get_node(data) == cpu) {
-			struct cpumask *mask = irq_data_get_affinity_mask(data);
-			unsigned int newcpu = cpumask_any_and(mask,
+		if (data->node == cpu) {
+			unsigned int newcpu = cpumask_any_and(data->affinity,
 							      cpu_online_mask);
 			if (newcpu >= nr_cpu_ids) {
 				pr_info_ratelimited("IRQ%u no longer affine to CPU%u\n",
 						    irq, cpu);
 
-				cpumask_setall(mask);
+				cpumask_setall(data->affinity);
 			}
-			irq_set_affinity(irq, mask);
+			irq_set_affinity(irq, data->affinity);
 		}
 	}
 }

@@ -158,7 +158,7 @@ static unsigned int ad5380_info_to_reg(struct iio_chan_spec const *chan,
 	long info)
 {
 	switch (info) {
-	case IIO_CHAN_INFO_RAW:
+	case 0:
 		return AD5380_REG_DATA(chan->address);
 	case IIO_CHAN_INFO_CALIBBIAS:
 		return AD5380_REG_OFFSET(chan->address);
@@ -221,7 +221,7 @@ static int ad5380_read_raw(struct iio_dev *indio_dev,
 		if (ret)
 			return ret;
 		*val >>= chan->scan_type.shift;
-		*val -= (1 << chan->scan_type.realbits) / 2;
+		val -= (1 << chan->scan_type.realbits) / 2;
 		return IIO_VAL_INT;
 	case IIO_CHAN_INFO_SCALE:
 		*val = 2 * st->vref;
@@ -237,6 +237,7 @@ static int ad5380_read_raw(struct iio_dev *indio_dev,
 static const struct iio_info ad5380_info = {
 	.read_raw = ad5380_read_raw,
 	.write_raw = ad5380_write_raw,
+	.driver_module = THIS_MODULE,
 };
 
 static struct iio_chan_spec_ext_info ad5380_ext_info[] = {
@@ -518,6 +519,7 @@ MODULE_DEVICE_TABLE(spi, ad5380_spi_ids);
 static struct spi_driver ad5380_spi_driver = {
 	.driver = {
 		   .name = "ad5380",
+		   .owner = THIS_MODULE,
 	},
 	.probe = ad5380_spi_probe,
 	.remove = ad5380_spi_remove,
@@ -591,6 +593,7 @@ MODULE_DEVICE_TABLE(i2c, ad5380_i2c_ids);
 static struct i2c_driver ad5380_i2c_driver = {
 	.driver = {
 		   .name = "ad5380",
+		   .owner = THIS_MODULE,
 	},
 	.probe = ad5380_i2c_probe,
 	.remove = ad5380_i2c_remove,

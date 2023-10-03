@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (c) 2010-2011, The Linux Foundation. All rights reserved.
  *
@@ -19,6 +18,8 @@
 
 #ifndef _ASM_SIGNAL_H
 #define _ASM_SIGNAL_H
+
+#include <uapi/asm/registers.h>
 
 extern unsigned long __rt_sigtramp_template[2];
 

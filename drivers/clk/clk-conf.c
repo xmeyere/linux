@@ -13,6 +13,7 @@
 #include <linux/device.h>
 #include <linux/of.h>
 #include <linux/printk.h>
+#include "clk.h"
 
 static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 {
@@ -23,8 +24,8 @@ static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 	num_parents = of_count_phandle_with_args(node, "assigned-clock-parents",
 						 "#clock-cells");
 	if (num_parents == -EINVAL)
-		pr_err("clk: invalid value of clock-parents property at %pOF\n",
-		       node);
+		pr_err("clk: invalid value of clock-parents property at %s\n",
+		       node->full_name);
 
 	for (index = 0; index < num_parents; index++) {
 		rc = of_parse_phandle_with_args(node, "assigned-clock-parents",
@@ -36,16 +37,12 @@ static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 			else
 				return rc;
 		}
-		if (clkspec.np == node && !clk_supplier) {
-			of_node_put(clkspec.np);
+		if (clkspec.np == node && !clk_supplier)
 			return 0;
-		}
-		pclk = of_clk_get_from_provider(&clkspec);
-		of_node_put(clkspec.np);
+		pclk = of_clk_get_by_clkspec(&clkspec);
 		if (IS_ERR(pclk)) {
-			if (PTR_ERR(pclk) != -EPROBE_DEFER)
-				pr_warn("clk: couldn't get parent clock %d for %pOF\n",
-					index, node);
+			pr_warn("clk: couldn't get parent clock %d for %s\n",
+				index, node->full_name);
 			return PTR_ERR(pclk);
 		}
 
@@ -54,16 +51,13 @@ static int __set_clk_parents(struct device_node *node, bool clk_supplier)
 		if (rc < 0)
 			goto err;
 		if (clkspec.np == node && !clk_supplier) {
-			of_node_put(clkspec.np);
 			rc = 0;
 			goto err;
 		}
-		clk = of_clk_get_from_provider(&clkspec);
-		of_node_put(clkspec.np);
+		clk = of_clk_get_by_clkspec(&clkspec);
 		if (IS_ERR(clk)) {
-			if (PTR_ERR(clk) != -EPROBE_DEFER)
-				pr_warn("clk: couldn't get assigned clock %d for %pOF\n",
-					index, node);
+			pr_warn("clk: couldn't get parent clock %d for %s\n",
+				index, node->full_name);
 			rc = PTR_ERR(clk);
 			goto err;
 		}
@@ -101,25 +95,20 @@ static int __set_clk_rates(struct device_node *node, bool clk_supplier)
 				else
 					return rc;
 			}
-			if (clkspec.np == node && !clk_supplier) {
-				of_node_put(clkspec.np);
+			if (clkspec.np == node && !clk_supplier)
 				return 0;
-			}
 
-			clk = of_clk_get_from_provider(&clkspec);
-			of_node_put(clkspec.np);
+			clk = of_clk_get_by_clkspec(&clkspec);
 			if (IS_ERR(clk)) {
-				if (PTR_ERR(clk) != -EPROBE_DEFER)
-					pr_warn("clk: couldn't get clock %d for %pOF\n",
-						index, node);
+				pr_warn("clk: couldn't get clock %d for %s\n",
+					index, node->full_name);
 				return PTR_ERR(clk);
 			}
 
 			rc = clk_set_rate(clk, rate);
 			if (rc < 0)
-				pr_err("clk: couldn't set %s clk rate to %u (%d), current rate: %lu\n",
-				       __clk_get_name(clk), rate, rc,
-				       clk_get_rate(clk));
+				pr_err("clk: couldn't set %s clock rate: %d\n",
+				       __clk_get_name(clk), rc);
 			clk_put(clk);
 		}
 		index++;
@@ -136,7 +125,7 @@ static int __set_clk_rates(struct device_node *node, bool clk_supplier)
  * and sets any specified clock parents and rates. The @clk_supplier argument
  * should be set to true if @node may be also a clock supplier of any clock
  * listed in its 'assigned-clocks' or 'assigned-clock-parents' properties.
- * If @clk_supplier is false the function exits returning 0 as soon as it
+ * If @clk_supplier is false the function exits returnning 0 as soon as it
  * determines the @node is also a supplier of any of the clocks.
  */
 int of_clk_set_defaults(struct device_node *node, bool clk_supplier)

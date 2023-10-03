@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ARCH_S390_PERCPU__
 #define __ARCH_S390_PERCPU__
 
@@ -10,6 +9,8 @@
  * the cpu local data area is cached in the cpu's lowcore memory.
  */
 #define __my_cpu_offset S390_lowcore.percpu_offset
+
+#ifdef CONFIG_64BIT
 
 /*
  * For 64 bit module code, the module may be more than 4G above the
@@ -29,15 +30,15 @@
 	typedef typeof(pcp) pcp_op_T__;					\
 	pcp_op_T__ old__, new__, prev__;				\
 	pcp_op_T__ *ptr__;						\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	ptr__ = raw_cpu_ptr(&(pcp));					\
-	prev__ = READ_ONCE(*ptr__);					\
+	prev__ = *ptr__;						\
 	do {								\
 		old__ = prev__;						\
 		new__ = old__ op (val);					\
 		prev__ = cmpxchg(ptr__, old__, new__);			\
 	} while (prev__ != old__);					\
-	preempt_enable_notrace();					\
+	preempt_enable();						\
 	new__;								\
 })
 
@@ -68,7 +69,7 @@
 	typedef typeof(pcp) pcp_op_T__; 				\
 	pcp_op_T__ val__ = (val);					\
 	pcp_op_T__ old__, *ptr__;					\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	ptr__ = raw_cpu_ptr(&(pcp)); 				\
 	if (__builtin_constant_p(val__) &&				\
 	    ((szcast)val__ > -129) && ((szcast)val__ < 128)) {		\
@@ -84,7 +85,7 @@
 			: [val__] "d" (val__)				\
 			: "cc");					\
 	}								\
-	preempt_enable_notrace();					\
+	preempt_enable();						\
 }
 
 #define this_cpu_add_4(pcp, val) arch_this_cpu_add(pcp, val, "laa", "asi", int)
@@ -95,14 +96,14 @@
 	typedef typeof(pcp) pcp_op_T__; 				\
 	pcp_op_T__ val__ = (val);					\
 	pcp_op_T__ old__, *ptr__;					\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	ptr__ = raw_cpu_ptr(&(pcp));	 				\
 	asm volatile(							\
 		op "    %[old__],%[val__],%[ptr__]\n"			\
 		: [old__] "=d" (old__), [ptr__] "+Q" (*ptr__)		\
 		: [val__] "d" (val__)					\
 		: "cc");						\
-	preempt_enable_notrace();						\
+	preempt_enable();						\
 	old__ + val__;							\
 })
 
@@ -114,14 +115,14 @@
 	typedef typeof(pcp) pcp_op_T__; 				\
 	pcp_op_T__ val__ = (val);					\
 	pcp_op_T__ old__, *ptr__;					\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	ptr__ = raw_cpu_ptr(&(pcp));	 				\
 	asm volatile(							\
 		op "    %[old__],%[val__],%[ptr__]\n"			\
 		: [old__] "=d" (old__), [ptr__] "+Q" (*ptr__)		\
 		: [val__] "d" (val__)					\
 		: "cc");						\
-	preempt_enable_notrace();					\
+	preempt_enable();						\
 }
 
 #define this_cpu_and_4(pcp, val)	arch_this_cpu_to_op(pcp, val, "lan")
@@ -136,10 +137,10 @@
 	typedef typeof(pcp) pcp_op_T__;					\
 	pcp_op_T__ ret__;						\
 	pcp_op_T__ *ptr__;						\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	ptr__ = raw_cpu_ptr(&(pcp));					\
 	ret__ = cmpxchg(ptr__, oval, nval);				\
-	preempt_enable_notrace();					\
+	preempt_enable();						\
 	ret__;								\
 })
 
@@ -152,10 +153,10 @@
 ({									\
 	typeof(pcp) *ptr__;						\
 	typeof(pcp) ret__;						\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	ptr__ = raw_cpu_ptr(&(pcp));					\
 	ret__ = xchg(ptr__, nval);					\
-	preempt_enable_notrace();					\
+	preempt_enable();						\
 	ret__;								\
 })
 
@@ -171,15 +172,18 @@
 	typeof(pcp1) *p1__;						\
 	typeof(pcp2) *p2__;						\
 	int ret__;							\
-	preempt_disable_notrace();					\
+	preempt_disable();						\
 	p1__ = raw_cpu_ptr(&(pcp1));					\
 	p2__ = raw_cpu_ptr(&(pcp2));					\
 	ret__ = __cmpxchg_double(p1__, p2__, o1__, o2__, n1__, n2__);	\
-	preempt_enable_notrace();					\
+	preempt_enable();						\
 	ret__;								\
 })
 
+#define this_cpu_cmpxchg_double_4 arch_this_cpu_cmpxchg_double
 #define this_cpu_cmpxchg_double_8 arch_this_cpu_cmpxchg_double
+
+#endif /* CONFIG_64BIT */
 
 #include <asm-generic/percpu.h>
 

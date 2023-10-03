@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/init.h>
 #include <linux/pci.h>
 #include <linux/range.h>
@@ -51,9 +50,18 @@ void x86_pci_root_bus_resources(int bus, struct list_head *resources)
 	if (!found)
 		pci_add_resource(resources, &info->busn);
 
-	list_for_each_entry(root_res, &info->resources, list)
-		pci_add_resource(resources, &root_res->res);
+	list_for_each_entry(root_res, &info->resources, list) {
+		struct resource *res;
+		struct resource *root;
 
+		res = &root_res->res;
+		pci_add_resource(resources, res);
+		if (res->flags & IORESOURCE_IO)
+			root = &ioport_resource;
+		else
+			root = &iomem_resource;
+		insert_resource(root, res);
+	}
 	return;
 
 default_resources:

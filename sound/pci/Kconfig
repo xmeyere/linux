@@ -25,7 +25,7 @@ config SND_ALS300
 	select SND_PCM
 	select SND_AC97_CODEC
 	select SND_OPL3_LIB
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say 'Y' or 'M' to include support for Avance Logic ALS300/ALS300+
 
@@ -50,7 +50,7 @@ config SND_ALI5451
 	tristate "ALi M5451 PCI Audio Controller"
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for the integrated AC97 sound
 	  device on motherboards using the ALi M5451 Audio Controller
@@ -155,8 +155,7 @@ config SND_AZT3328
 	select SND_PCM
 	select SND_RAWMIDI
 	select SND_AC97_CODEC
-	select SND_TIMER
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for Aztech AZF3328 (PCI168)
 	  soundcards.
@@ -175,7 +174,7 @@ config SND_BT87X
 	help
 	  If you want to record audio from TV cards based on
 	  Brooktree Bt878/Bt879 chips, say Y here and read
-	  <file:Documentation/sound/cards/bt87x.rst>.
+	  <file:Documentation/sound/alsa/Bt87x.txt>.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-bt87x.
@@ -210,7 +209,7 @@ config SND_CMIPCI
 	help
 	  If you want to use soundcards based on C-Media CMI8338, CMI8738,
 	  CMI8768 or CMI8770 chips, say Y here and read
-	  <file:Documentation/sound/cards/cmipci.rst>.
+	  <file:Documentation/sound/alsa/CMIPCI.txt>.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-cmipci.
@@ -278,7 +277,6 @@ config SND_CS46XX_NEW_DSP
 config SND_CS5530
 	tristate "CS5530 Audio"
 	depends on ISA_DMA_API && (X86_32 || COMPILE_TEST)
-	depends on !M68K
 	select SND_SB16_DSP
 	help
 	  Say Y here to include support for audio on Cyrix/NatSemi CS5530 chips.
@@ -465,32 +463,23 @@ config SND_EMU10K1
 	select SND_HWDEP
 	select SND_RAWMIDI
 	select SND_AC97_CODEC
-	select SND_TIMER
-	select SND_SEQ_DEVICE if SND_SEQUENCER != n
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y to include support for Sound Blaster PCI 512, Live!,
 	  Audigy and E-mu APS (partially supported) soundcards.
 
 	  The confusing multitude of mixer controls is documented in
-	  <file:Documentation/sound/cards/sb-live-mixer.rst> and
-	  <file:Documentation/sound/cards/audigy-mixer.rst>.
+	  <file:Documentation/sound/alsa/SB-Live-mixer.txt> and
+	  <file:Documentation/sound/alsa/Audigy-mixer.txt>.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-emu10k1.
-
-# select SEQ stuff to min(SND_SEQUENCER,SND_XXX)
-config SND_EMU10K1_SEQ
-	def_tristate SND_SEQUENCER && SND_EMU10K1
-	select SND_SEQ_MIDI_EMUL
-	select SND_SEQ_VIRMIDI
-	select SND_SYNTH_EMUX
 
 config SND_EMU10K1X
 	tristate "Emu10k1X (Dell OEM Version)"
 	select SND_AC97_CODEC
 	select SND_RAWMIDI
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for the Dell OEM version of the
 	  Sound Blaster Live!.
@@ -524,7 +513,7 @@ config SND_ES1938
 	select SND_OPL3_LIB
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for soundcards based on ESS Solo-1
 	  (ES1938, ES1946, ES1969) chips.
@@ -536,7 +525,7 @@ config SND_ES1968
 	tristate "ESS ES1968/1978 (Maestro-1/2/2E)"
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for soundcards based on ESS Maestro
 	  1/2/2E chips.
@@ -623,7 +612,7 @@ config SND_ICE1712
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
 	select BITREVERSE
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for soundcards based on the
 	  ICE1712 (Envy24) chip.
@@ -711,7 +700,7 @@ config SND_LX6464ES
 config SND_MAESTRO3
 	tristate "ESS Allegro/Maestro3"
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for soundcards based on ESS Maestro 3
 	  (Allegro) chips.
@@ -736,7 +725,7 @@ config SND_MIXART
 	select SND_PCM
 	help
 	  If you want to use Digigram miXart soundcards, say Y here and
-	  read <file:Documentation/sound/cards/mixart.rst>.
+	  read <file:Documentation/sound/alsa/MIXART.txt>.
 
 	  To compile this driver as a module, choose M here: the module
 	  will be called snd-mixart.
@@ -817,7 +806,7 @@ config SND_SIS7019
 	tristate "SiS 7019 Audio Accelerator"
 	depends on X86_32
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for the SiS 7019 Audio Accelerator.
 
@@ -829,7 +818,7 @@ config SND_SONICVIBES
 	select SND_OPL3_LIB
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for soundcards based on the S3
 	  SonicVibes chip.
@@ -841,7 +830,7 @@ config SND_TRIDENT
 	tristate "Trident 4D-Wave DX/NX; SiS 7018"
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
-	depends on ZONE_DMA
+	select ZONE_DMA
 	help
 	  Say Y here to include support for soundcards based on Trident
 	  4D-Wave DX/NX or SiS 7018 chips.
@@ -875,7 +864,7 @@ config SND_VIRTUOSO
 	select SND_OXYGEN_LIB
 	select SND_PCM
 	select SND_MPU401_UART
-	select SND_JACK
+	select SND_JACK if INPUT=y || INPUT=SND
 	help
 	  Say Y here to include support for sound cards based on the
 	  Asus AV66/AV100/AV200 chips, i.e., Xonar D1, DX, D2, D2X, DS, DSX,
@@ -900,7 +889,6 @@ config SND_YMFPCI
 	select SND_OPL3_LIB
 	select SND_MPU401_UART
 	select SND_AC97_CODEC
-	select SND_TIMER
 	help
 	  Say Y here to include support for Yamaha PCI audio chips -
 	  YMF724, YMF724F, YMF740, YMF740C, YMF744, YMF754.

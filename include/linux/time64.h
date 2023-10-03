@@ -1,31 +1,22 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TIME64_H
 #define _LINUX_TIME64_H
 
-#include <linux/math64.h>
-
-typedef __s64 time64_t;
-typedef __u64 timeu64_t;
-
-/* CONFIG_64BIT_TIME enables new 64 bit time_t syscalls in the compat path
- * and 32-bit emulation.
- */
-#ifndef CONFIG_64BIT_TIME
-#define __kernel_timespec timespec
-#define __kernel_itimerspec itimerspec
-#endif
-
 #include <uapi/linux/time.h>
 
+typedef __s64 time64_t;
+
+/*
+ * This wants to go into uapi/linux/time.h once we agreed about the
+ * userspace interfaces.
+ */
+#if __BITS_PER_LONG == 64
+# define timespec64 timespec
+#else
 struct timespec64 {
 	time64_t	tv_sec;			/* seconds */
 	long		tv_nsec;		/* nanoseconds */
 };
-
-struct itimerspec64 {
-	struct timespec64 it_interval;
-	struct timespec64 it_value;
-};
+#endif
 
 /* Parameters used to convert the timespec values: */
 #define MSEC_PER_SEC	1000L
@@ -37,20 +28,52 @@ struct itimerspec64 {
 #define FSEC_PER_SEC	1000000000000000LL
 
 /* Located here for timespec[64]_valid_strict */
-#define TIME64_MAX			((s64)~((u64)1 << 63))
 #define KTIME_MAX			((s64)~((u64)1 << 63))
 #define KTIME_SEC_MAX			(KTIME_MAX / NSEC_PER_SEC)
 
-/*
- * Limits for settimeofday():
- *
- * To prevent setting the time close to the wraparound point time setting
- * is limited so a reasonable uptime can be accomodated. Uptime of 30 years
- * should be really sufficient, which means the cutoff is 2232. At that
- * point the cutoff is just a small part of the larger problem.
- */
-#define TIME_UPTIME_SEC_MAX		(30LL * 365 * 24 *3600)
-#define TIME_SETTOD_SEC_MAX		(KTIME_SEC_MAX - TIME_UPTIME_SEC_MAX)
+#if __BITS_PER_LONG == 64
+
+static inline struct timespec timespec64_to_timespec(const struct timespec64 ts64)
+{
+	return ts64;
+}
+
+static inline struct timespec64 timespec_to_timespec64(const struct timespec ts)
+{
+	return ts;
+}
+
+# define timespec64_equal		timespec_equal
+# define timespec64_compare		timespec_compare
+# define set_normalized_timespec64	set_normalized_timespec
+# define timespec64_add_safe		timespec_add_safe
+# define timespec64_add			timespec_add
+# define timespec64_sub			timespec_sub
+# define timespec64_valid		timespec_valid
+# define timespec64_valid_strict	timespec_valid_strict
+# define timespec64_to_ns		timespec_to_ns
+# define ns_to_timespec64		ns_to_timespec
+# define timespec64_add_ns		timespec_add_ns
+
+#else
+
+static inline struct timespec timespec64_to_timespec(const struct timespec64 ts64)
+{
+	struct timespec ret;
+
+	ret.tv_sec = (time_t)ts64.tv_sec;
+	ret.tv_nsec = ts64.tv_nsec;
+	return ret;
+}
+
+static inline struct timespec64 timespec_to_timespec64(const struct timespec ts)
+{
+	struct timespec64 ret;
+
+	ret.tv_sec = ts.tv_sec;
+	ret.tv_nsec = ts.tv_nsec;
+	return ret;
+}
 
 static inline int timespec64_equal(const struct timespec64 *a,
 				   const struct timespec64 *b)
@@ -73,6 +96,15 @@ static inline int timespec64_compare(const struct timespec64 *lhs, const struct 
 }
 
 extern void set_normalized_timespec64(struct timespec64 *ts, time64_t sec, s64 nsec);
+
+/*
+ * timespec64_add_safe assumes both values are positive and checks for
+ * overflow. It will return TIME_T_MAX if the returned value would be
+ * smaller then either of the arguments.
+ */
+extern struct timespec64 timespec64_add_safe(const struct timespec64 lhs,
+					 const struct timespec64 rhs);
+
 
 static inline struct timespec64 timespec64_add(struct timespec64 lhs,
 						struct timespec64 rhs)
@@ -119,16 +151,6 @@ static inline bool timespec64_valid_strict(const struct timespec64 *ts)
 	return true;
 }
 
-static inline bool timespec64_valid_settod(const struct timespec64 *ts)
-{
-	if (!timespec64_valid(ts))
-		return false;
-	/* Disallow values which cause overflow issues vs. CLOCK_REALTIME */
-	if ((unsigned long long)ts->tv_sec >= TIME_SETTOD_SEC_MAX)
-		return false;
-	return true;
-}
-
 /**
  * timespec64_to_ns - Convert timespec64 to nanoseconds
  * @ts:		pointer to the timespec64 variable to be converted
@@ -138,10 +160,6 @@ static inline bool timespec64_valid_settod(const struct timespec64 *ts)
  */
 static inline s64 timespec64_to_ns(const struct timespec64 *ts)
 {
-	/* Prevent multiplication overflow */
-	if ((unsigned long long)ts->tv_sec >= KTIME_SEC_MAX)
-		return KTIME_MAX;
-
 	return ((s64) ts->tv_sec * NSEC_PER_SEC) + ts->tv_nsec;
 }
 
@@ -167,11 +185,6 @@ static __always_inline void timespec64_add_ns(struct timespec64 *a, u64 ns)
 	a->tv_nsec = ns;
 }
 
-/*
- * timespec64_add_safe assumes both values are positive and checks for
- * overflow. It will return TIME64_MAX in case of overflow.
- */
-extern struct timespec64 timespec64_add_safe(const struct timespec64 lhs,
-					 const struct timespec64 rhs);
+#endif
 
 #endif /* _LINUX_TIME64_H */

@@ -1,18 +1,25 @@
-// SPDX-License-Identifier: GPL-2.0
-//
-// Samsung's S3C64XX flattened device tree enabled machine
-//
-// Copyright (c) 2013 Tomasz Figa <tomasz.figa@gmail.com>
+/*
+ * Samsung's S3C64XX flattened device tree enabled machine
+ *
+ * Copyright (c) 2013 Tomasz Figa <tomasz.figa@gmail.com>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License version 2 as
+ * published by the Free Software Foundation.
+*/
+
+#include <linux/of_platform.h>
 
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 #include <asm/system_misc.h>
 
 #include <plat/cpu.h>
+#include <plat/watchdog-reset.h>
+
 #include <mach/map.h>
 
 #include "common.h"
-#include "watchdog-reset.h"
 
 /*
  * IO mapping for shared system controller IP.
@@ -42,6 +49,7 @@ static void __init s3c64xx_dt_map_io(void)
 static void __init s3c64xx_dt_init_machine(void)
 {
 	samsung_wdt_reset_of_init();
+	of_platform_populate(NULL, of_default_bus_match_table, NULL, NULL);
 }
 
 static void s3c64xx_dt_restart(enum reboot_mode mode, const char *cmd)
@@ -53,7 +61,7 @@ static void s3c64xx_dt_restart(enum reboot_mode mode, const char *cmd)
 	soft_restart(0);
 }
 
-static const char *const s3c64xx_dt_compat[] __initconst = {
+static char const *s3c64xx_dt_compat[] __initdata = {
 	"samsung,s3c6400",
 	"samsung,s3c6410",
 	NULL

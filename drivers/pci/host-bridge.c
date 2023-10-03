@@ -1,6 +1,5 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
- * Host bridge related code
+ * host bridge related code
  */
 
 #include <linux/kernel.h>
@@ -17,25 +16,11 @@ static struct pci_bus *find_pci_root_bus(struct pci_bus *bus)
 	return bus;
 }
 
-struct pci_host_bridge *pci_find_host_bridge(struct pci_bus *bus)
+static struct pci_host_bridge *find_pci_host_bridge(struct pci_bus *bus)
 {
 	struct pci_bus *root_bus = find_pci_root_bus(bus);
 
 	return to_pci_host_bridge(root_bus->bridge);
-}
-
-struct device *pci_get_host_bridge_device(struct pci_dev *dev)
-{
-	struct pci_bus *root_bus = find_pci_root_bus(dev->bus);
-	struct device *bridge = root_bus->bridge;
-
-	kobject_get(&bridge->kobj);
-	return bridge;
-}
-
-void  pci_put_host_bridge_device(struct device *dev)
-{
-	kobject_put(&dev->kobj);
 }
 
 void pci_set_host_bridge_release(struct pci_host_bridge *bridge,
@@ -45,12 +30,11 @@ void pci_set_host_bridge_release(struct pci_host_bridge *bridge,
 	bridge->release_fn = release_fn;
 	bridge->release_data = release_data;
 }
-EXPORT_SYMBOL_GPL(pci_set_host_bridge_release);
 
 void pcibios_resource_to_bus(struct pci_bus *bus, struct pci_bus_region *region,
 			     struct resource *res)
 {
-	struct pci_host_bridge *bridge = pci_find_host_bridge(bus);
+	struct pci_host_bridge *bridge = find_pci_host_bridge(bus);
 	struct resource_entry *window;
 	resource_size_t offset = 0;
 
@@ -75,7 +59,7 @@ static bool region_contains(struct pci_bus_region *region1,
 void pcibios_bus_to_resource(struct pci_bus *bus, struct resource *res,
 			     struct pci_bus_region *region)
 {
-	struct pci_host_bridge *bridge = pci_find_host_bridge(bus);
+	struct pci_host_bridge *bridge = find_pci_host_bridge(bus);
 	struct resource_entry *window;
 	resource_size_t offset = 0;
 

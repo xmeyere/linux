@@ -1,7 +1,7 @@
 /*
  * Driver for the PCM512x CODECs
  *
- * Author:	Mark Brown <broonie@kernel.org>
+ * Author:	Mark Brown <broonie@linaro.org>
  *		Copyright 2014 Linaro Ltd
  *
  * This program is free software; you can redistribute it and/or
@@ -64,13 +64,10 @@ static struct spi_driver pcm512x_spi_driver = {
 	.id_table	= pcm512x_spi_id,
 	.driver = {
 		.name	= "pcm512x",
+		.owner	= THIS_MODULE,
 		.of_match_table = pcm512x_of_match,
 		.pm     = &pcm512x_pm_ops,
 	},
 };
 
 module_spi_driver(pcm512x_spi_driver);
-
-MODULE_DESCRIPTION("ASoC PCM512x codec driver - SPI");
-MODULE_AUTHOR("Mark Brown <broonie@kernel.org>");
-MODULE_LICENSE("GPL v2");

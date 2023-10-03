@@ -59,10 +59,10 @@ struct mce_regs {
 
 static struct mce_regs mce_regs[MAX_MCE_REGS];
 static int num_mce_regs;
-static int nmi_virq = 0;
+static int nmi_virq = NO_IRQ;
 
 
-static void __noreturn pas_restart(char *cmd)
+static void pas_restart(char *cmd)
 {
 	/* Need to put others cpu in hold loop so they're not sleeping */
 	smp_send_stop();
@@ -105,7 +105,7 @@ static void pas_take_timebase(void)
 	arch_spin_unlock(&timebase_lock);
 }
 
-static struct smp_ops_t pas_smp_ops = {
+struct smp_ops_t pas_smp_ops = {
 	.probe		= smp_mpic_probe,
 	.message_pass	= smp_mpic_message_pass,
 	.kick_cpu	= smp_generic_kick_cpu,
@@ -115,7 +115,7 @@ static struct smp_ops_t pas_smp_ops = {
 };
 #endif /* CONFIG_SMP */
 
-static void __init pas_setup_arch(void)
+void __init pas_setup_arch(void)
 {
 #ifdef CONFIG_SMP
 	/* Setup SMP callback */
@@ -207,7 +207,8 @@ static __init void pas_init_IRQ(void)
 			break;
 		}
 	if (!mpic_node) {
-		pr_err("Failed to locate the MPIC interrupt controller\n");
+		printk(KERN_ERR
+			"Failed to locate the MPIC interrupt controller\n");
 		return;
 	}
 
@@ -216,12 +217,12 @@ static __init void pas_init_IRQ(void)
 	naddr = of_n_addr_cells(root);
 	opprop = of_get_property(root, "platform-open-pic", &opplen);
 	if (!opprop) {
-		pr_err("No platform-open-pic property.\n");
+		printk(KERN_ERR "No platform-open-pic property.\n");
 		of_node_put(root);
 		return;
 	}
 	openpic_addr = of_read_number(opprop, naddr);
-	pr_debug("OpenPIC addr: %lx\n", openpic_addr);
+	printk(KERN_DEBUG "OpenPIC addr: %lx\n", openpic_addr);
 
 	mpic_flags = MPIC_LARGE_VECTORS | MPIC_NO_BIAS | MPIC_NO_RESET;
 
@@ -263,79 +264,84 @@ static int pas_machine_check_handler(struct pt_regs *regs)
 	srr0 = regs->nip;
 	srr1 = regs->msr;
 
-	if (nmi_virq && mpic_get_mcirq() == nmi_virq) {
-		pr_err("NMI delivered\n");
+	if (nmi_virq != NO_IRQ && mpic_get_mcirq() == nmi_virq) {
+		printk(KERN_ERR "NMI delivered\n");
 		debugger(regs);
 		mpic_end_irq(irq_get_irq_data(nmi_virq));
 		goto out;
 	}
 
 	dsisr = mfspr(SPRN_DSISR);
-	pr_err("Machine Check on CPU %d\n", cpu);
-	pr_err("SRR0  0x%016lx SRR1 0x%016lx\n", srr0, srr1);
-	pr_err("DSISR 0x%016lx DAR  0x%016lx\n", dsisr, regs->dar);
-	pr_err("BER   0x%016lx MER  0x%016lx\n", mfspr(SPRN_PA6T_BER),
+	printk(KERN_ERR "Machine Check on CPU %d\n", cpu);
+	printk(KERN_ERR "SRR0  0x%016lx SRR1 0x%016lx\n", srr0, srr1);
+	printk(KERN_ERR "DSISR 0x%016lx DAR  0x%016lx\n", dsisr, regs->dar);
+	printk(KERN_ERR "BER   0x%016lx MER  0x%016lx\n", mfspr(SPRN_PA6T_BER),
 		mfspr(SPRN_PA6T_MER));
-	pr_err("IER   0x%016lx DER  0x%016lx\n", mfspr(SPRN_PA6T_IER),
+	printk(KERN_ERR "IER   0x%016lx DER  0x%016lx\n", mfspr(SPRN_PA6T_IER),
 		mfspr(SPRN_PA6T_DER));
-	pr_err("Cause:\n");
+	printk(KERN_ERR "Cause:\n");
 
 	if (srr1 & 0x200000)
-		pr_err("Signalled by SDC\n");
+		printk(KERN_ERR "Signalled by SDC\n");
 
 	if (srr1 & 0x100000) {
-		pr_err("Load/Store detected error:\n");
+		printk(KERN_ERR "Load/Store detected error:\n");
 		if (dsisr & 0x8000)
-			pr_err("D-cache ECC double-bit error or bus error\n");
+			printk(KERN_ERR "D-cache ECC double-bit error or bus error\n");
 		if (dsisr & 0x4000)
-			pr_err("LSU snoop response error\n");
+			printk(KERN_ERR "LSU snoop response error\n");
 		if (dsisr & 0x2000) {
-			pr_err("MMU SLB multi-hit or invalid B field\n");
+			printk(KERN_ERR "MMU SLB multi-hit or invalid B field\n");
 			dump_slb = 1;
 		}
 		if (dsisr & 0x1000)
-			pr_err("Recoverable Duptags\n");
+			printk(KERN_ERR "Recoverable Duptags\n");
 		if (dsisr & 0x800)
-			pr_err("Recoverable D-cache parity error count overflow\n");
+			printk(KERN_ERR "Recoverable D-cache parity error count overflow\n");
 		if (dsisr & 0x400)
-			pr_err("TLB parity error count overflow\n");
+			printk(KERN_ERR "TLB parity error count overflow\n");
 	}
 
 	if (srr1 & 0x80000)
-		pr_err("Bus Error\n");
+		printk(KERN_ERR "Bus Error\n");
 
 	if (srr1 & 0x40000) {
-		pr_err("I-side SLB multiple hit\n");
+		printk(KERN_ERR "I-side SLB multiple hit\n");
 		dump_slb = 1;
 	}
 
 	if (srr1 & 0x20000)
-		pr_err("I-cache parity error hit\n");
+		printk(KERN_ERR "I-cache parity error hit\n");
 
 	if (num_mce_regs == 0)
-		pr_err("No MCE registers mapped yet, can't dump\n");
+		printk(KERN_ERR "No MCE registers mapped yet, can't dump\n");
 	else
-		pr_err("SoC debug registers:\n");
+		printk(KERN_ERR "SoC debug registers:\n");
 
 	for (i = 0; i < num_mce_regs; i++)
-		pr_err("%s: 0x%08x\n", mce_regs[i].name,
+		printk(KERN_ERR "%s: 0x%08x\n", mce_regs[i].name,
 			in_le32(mce_regs[i].addr));
 
 	if (dump_slb) {
 		unsigned long e, v;
 		int i;
 
-		pr_err("slb contents:\n");
+		printk(KERN_ERR "slb contents:\n");
 		for (i = 0; i < mmu_slb_size; i++) {
 			asm volatile("slbmfee  %0,%1" : "=r" (e) : "r" (i));
 			asm volatile("slbmfev  %0,%1" : "=r" (v) : "r" (i));
-			pr_err("%02d %016lx %016lx\n", i, e, v);
+			printk(KERN_ERR "%02d %016lx %016lx\n", i, e, v);
 		}
 	}
 
 out:
 	/* SRR1[62] is from MSR[62] if recoverable, so pass that back */
 	return !!(srr1 & 0x2);
+}
+
+static void __init pas_init_early(void)
+{
+	iommu_init_early_pasemi();
 }
 
 #ifdef CONFIG_PCMCIA
@@ -362,7 +368,7 @@ static int pcmcia_notify(struct notifier_block *nb, unsigned long action,
 		return 0;
 
 	/* We use the direct ops for localbus */
-	dev->dma_ops = &dma_nommu_ops;
+	dev->archdata.dma_ops = &dma_direct_ops;
 
 	return 0;
 }
@@ -414,11 +420,15 @@ machine_device_initcall(pasemi, pasemi_publish_devices);
  */
 static int __init pas_probe(void)
 {
-	if (!of_machine_is_compatible("PA6T-1682M") &&
-	    !of_machine_is_compatible("pasemi,pwrficient"))
+	unsigned long root = of_get_flat_dt_root();
+
+	if (!of_flat_dt_is_compatible(root, "PA6T-1682M") &&
+	    !of_flat_dt_is_compatible(root, "pasemi,pwrficient"))
 		return 0;
 
-	iommu_init_early_pasemi();
+	hpte_init_native();
+
+	alloc_iobmap_l2();
 
 	return 1;
 }
@@ -427,6 +437,7 @@ define_machine(pasemi) {
 	.name			= "PA Semi PWRficient",
 	.probe			= pas_probe,
 	.setup_arch		= pas_setup_arch,
+	.init_early		= pas_init_early,
 	.init_IRQ		= pas_init_IRQ,
 	.get_irq		= mpic_get_irq,
 	.restart		= pas_restart,

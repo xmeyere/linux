@@ -46,7 +46,7 @@ struct efx_loopback_payload {
 	struct iphdr ip;
 	struct udphdr udp;
 	__be16 iteration;
-	char msg[64];
+	const char msg[64];
 } __packed;
 
 /* Loopback test source MAC address */
@@ -114,10 +114,7 @@ static int efx_test_nvram(struct efx_nic *efx, struct efx_self_tests *tests)
 
 	if (efx->type->test_nvram) {
 		rc = efx->type->test_nvram(efx);
-		if (rc == -EPERM)
-			rc = 0;
-		else
-			tests->nvram = rc ? -1 : 1;
+		tests->nvram = rc ? -1 : 1;
 	}
 
 	return rc;
@@ -135,19 +132,11 @@ static int efx_test_interrupts(struct efx_nic *efx,
 {
 	unsigned long timeout, wait;
 	int cpu;
-	int rc;
 
 	netif_dbg(efx, drv, efx->net_dev, "testing interrupts\n");
 	tests->interrupt = -1;
 
-	rc = efx_nic_irq_test_start(efx);
-	if (rc == -ENOTSUPP) {
-		netif_dbg(efx, drv, efx->net_dev,
-			  "direct interrupt testing not supported\n");
-		tests->interrupt = 0;
-		return 0;
-	}
-
+	efx_nic_irq_test_start(efx);
 	timeout = jiffies + IRQ_TIMEOUT;
 	wait = 1;
 
@@ -264,12 +253,6 @@ static int efx_test_phy(struct efx_nic *efx, struct efx_self_tests *tests,
 	mutex_lock(&efx->mac_lock);
 	rc = efx->phy_op->run_tests(efx, tests->phy_ext, flags);
 	mutex_unlock(&efx->mac_lock);
-	if (rc == -EPERM)
-		rc = 0;
-	else
-		netif_info(efx, drv, efx->net_dev,
-			   "%s phy selftest\n", rc ? "Failed" : "Passed");
-
 	return rc;
 }
 
@@ -431,7 +414,8 @@ static int efx_begin_loopback(struct efx_tx_queue *tx_queue)
 
 		/* Copy the payload in, incrementing the source address to
 		 * exercise the rss vectors */
-		payload = skb_put(skb, sizeof(state->payload));
+		payload = ((struct efx_loopback_payload *)
+			   skb_put(skb, sizeof(state->payload)));
 		memcpy(payload, &state->payload, sizeof(state->payload));
 		payload->ip.saddr = htonl(INADDR_LOOPBACK | (i << 2));
 
@@ -677,9 +661,6 @@ static int efx_test_loopbacks(struct efx_nic *efx, struct efx_self_tests *tests,
 	wmb();
 	kfree(state);
 
-	if (rc == -EPERM)
-		rc = 0;
-
 	return rc;
 }
 
@@ -767,7 +748,7 @@ int efx_selftest(struct efx_nic *efx, struct efx_self_tests *tests,
 	__efx_reconfigure_port(efx);
 	mutex_unlock(&efx->mac_lock);
 
-	efx_device_attach_if_not_resetting(efx);
+	netif_device_attach(efx->net_dev);
 
 	return rc_test;
 }

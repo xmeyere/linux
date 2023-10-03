@@ -365,8 +365,9 @@ static struct scsi_host_template cumanascsi2_template = {
 	.eh_abort_handler		= fas216_eh_abort,
 	.can_queue			= 1,
 	.this_id			= 7,
-	.sg_tablesize			= SG_MAX_SEGMENTS,
+	.sg_tablesize			= SCSI_MAX_SG_CHAIN_SEGMENTS,
 	.dma_boundary			= IOMD_DMA_BOUNDARY,
+	.cmd_per_lun			= 1,
 	.use_clustering			= DISABLE_CLUSTERING,
 	.proc_name			= "cumanascsi2",
 };
@@ -454,7 +455,7 @@ static int cumanascsi2_probe(struct expansion_card *ec,
 
 	if (info->info.scsi.dma != NO_DMA)
 		free_dma(info->info.scsi.dma);
-	free_irq(ec->irq, info);
+	free_irq(ec->irq, host);
 
  out_release:
 	fas216_release(host);

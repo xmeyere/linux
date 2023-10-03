@@ -19,7 +19,6 @@
 #include <linux/init.h>
 #include <linux/interrupt.h>
 #include <linux/irq.h>
-#include <linux/leds.h>
 #include <linux/platform_device.h>
 #include <linux/fb.h>
 
@@ -32,8 +31,8 @@
 #include <asm/mach/arch.h>
 #include <asm/mach/map.h>
 
-#include "pxa25x.h"
-#include "idp.h"
+#include <mach/pxa25x.h>
+#include <mach/idp.h>
 #include <linux/platform_data/video-pxafb.h>
 #include <mach/bitfield.h>
 #include <linux/platform_data/mmc-pxamci.h>
@@ -84,9 +83,7 @@ static struct resource smc91x_resources[] = {
 };
 
 static struct smc91x_platdata smc91x_platdata = {
-	.flags = SMC91X_USE_8BIT | SMC91X_USE_16BIT | SMC91X_USE_32BIT |
-		 SMC91X_USE_DMA | SMC91X_NOWAIT,
-	.pxa_u16_align4 = true,
+	.flags = SMC91X_USE_32BIT | SMC91X_USE_DMA | SMC91X_NOWAIT,
 };
 
 static struct platform_device smc91x_device = {

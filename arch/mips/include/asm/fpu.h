@@ -11,8 +11,6 @@
 #define _ASM_FPU_H
 
 #include <linux/sched.h>
-#include <linux/sched/task_stack.h>
-#include <linux/ptrace.h>
 #include <linux/thread_info.h>
 #include <linux/bitops.h>
 
@@ -21,7 +19,6 @@
 #include <asm/cpu-features.h>
 #include <asm/fpu_emulator.h>
 #include <asm/hazards.h>
-#include <asm/ptrace.h>
 #include <asm/processor.h>
 #include <asm/current.h>
 #include <asm/msa.h>
@@ -33,7 +30,7 @@
 struct sigcontext;
 struct sigcontext32;
 
-extern void _init_fpu(unsigned int);
+extern void _init_fpu(void);
 extern void _save_fp(struct task_struct *);
 extern void _restore_fp(struct task_struct *);
 
@@ -50,12 +47,6 @@ enum fpu_mode {
 
 #define FPU_FR_MASK		0x1
 };
-
-#define __disable_fpu()							\
-do {									\
-	clear_c0_status(ST0_CU1);					\
-	disable_fpu_hazard();						\
-} while (0)
 
 static inline int __enable_fpu(enum fpu_mode mode)
 {
@@ -77,7 +68,7 @@ static inline int __enable_fpu(enum fpu_mode mode)
 		goto fr_common;
 
 	case FPU_64BIT:
-#if !(defined(CONFIG_CPU_MIPSR2) || defined(CONFIG_CPU_MIPSR6) \
+#if !(defined(CONFIG_CPU_MIPS32_R2) || defined(CONFIG_CPU_MIPS32_R6) \
       || defined(CONFIG_64BIT))
 		/* we only have a 32-bit FPU */
 		return SIGFPE;
@@ -95,12 +86,7 @@ fr_common:
 		enable_fpu_hazard();
 
 		/* check FR has the desired value */
-		if (!!(read_c0_status() & ST0_FR) == !!fr)
-			return 0;
-
-		/* unsupported FR value */
-		__disable_fpu();
-		return SIGFPE;
+		return (!!(read_c0_status() & ST0_FR) == !!fr) ? 0 : SIGFPE;
 
 	default:
 		BUG();
@@ -108,6 +94,12 @@ fr_common:
 
 	return SIGFPE;
 }
+
+#define __disable_fpu()							\
+do {									\
+	clear_c0_status(ST0_CU1);					\
+	disable_fpu_hazard();						\
+} while (0)
 
 #define clear_fpu_owner()	clear_thread_flag(TIF_USEDFPU)
 
@@ -167,40 +159,29 @@ static inline int own_fpu(int restore)
 	return ret;
 }
 
-static inline void lose_fpu_inatomic(int save, struct task_struct *tsk)
-{
-	if (is_msa_enabled()) {
-		if (save) {
-			save_msa(tsk);
-			tsk->thread.fpu.fcr31 =
-					read_32bit_cp1_register(CP1_STATUS);
-		}
-		disable_msa();
-		clear_tsk_thread_flag(tsk, TIF_USEDMSA);
-		__disable_fpu();
-	} else if (is_fpu_owner()) {
-		if (save)
-			_save_fp(tsk);
-		__disable_fpu();
-	} else {
-		/* FPU should not have been left enabled with no owner */
-		WARN(read_c0_status() & ST0_CU1,
-		     "Orphaned FPU left enabled");
-	}
-	KSTK_STATUS(tsk) &= ~ST0_CU1;
-	clear_tsk_thread_flag(tsk, TIF_USEDFPU);
-}
-
 static inline void lose_fpu(int save)
 {
 	preempt_disable();
-	lose_fpu_inatomic(save, current);
+	if (is_msa_enabled()) {
+		if (save) {
+			save_msa(current);
+			current->thread.fpu.fcr31 =
+					read_32bit_cp1_register(CP1_STATUS);
+		}
+		disable_msa();
+		clear_thread_flag(TIF_USEDMSA);
+	} else if (is_fpu_owner()) {
+		if (save)
+			_save_fp(current);
+		__disable_fpu();
+	}
+	KSTK_STATUS(current) &= ~ST0_CU1;
+	clear_thread_flag(TIF_USEDFPU);
 	preempt_enable();
 }
 
 static inline int init_fpu(void)
 {
-	unsigned int fcr31 = current->thread.fpu.fcr31;
 	int ret = 0;
 
 	if (cpu_has_fpu) {
@@ -211,7 +192,7 @@ static inline int init_fpu(void)
 			return ret;
 
 		if (!cpu_has_fre) {
-			_init_fpu(fcr31);
+			_init_fpu();
 
 			return 0;
 		}
@@ -225,7 +206,7 @@ static inline int init_fpu(void)
 		config5 = clear_c0_config5(MIPS_CONF5_FRE);
 		enable_fpu_hazard();
 
-		_init_fpu(fcr31);
+		_init_fpu();
 
 		/* Restore FRE */
 		write_c0_config5(config5);

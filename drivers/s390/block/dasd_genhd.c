@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Author(s)......: Holger Smolinski <Holger.Smolinski@de.ibm.com>
  *		    Horst Hummel <Horst.Hummel@de.ibm.com>
@@ -17,7 +16,7 @@
 #include <linux/fs.h>
 #include <linux/blkpg.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 /* This is ugly... */
 #define PRINTK_HEADER "dasd_gendisk:"
@@ -46,6 +45,7 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 	gdp->major = DASD_MAJOR;
 	gdp->first_minor = base->devindex << DASD_PARTN_BITS;
 	gdp->fops = &dasd_device_operations;
+	gdp->driverfs_dev = &base->cdev->dev;
 
 	/*
 	 * Set device name.
@@ -76,7 +76,7 @@ int dasd_gendisk_alloc(struct dasd_block *block)
 	gdp->queue = block->request_queue;
 	block->gdp = gdp;
 	set_capacity(block->gdp, 0);
-	device_add_disk(&base->cdev->dev, block->gdp, NULL);
+	add_disk(block->gdp);
 	return 0;
 }
 
@@ -99,8 +99,9 @@ void dasd_gendisk_free(struct dasd_block *block)
 int dasd_scan_partitions(struct dasd_block *block)
 {
 	struct block_device *bdev;
-	int rc;
+	int retry, rc;
 
+	retry = 5;
 	bdev = bdget_disk(block->gdp, 0);
 	if (!bdev) {
 		DBF_DEV_EVENT(DBF_ERR, block->base, "%s",
@@ -115,11 +116,19 @@ int dasd_scan_partitions(struct dasd_block *block)
 			      rc);
 		return -ENODEV;
 	}
-
-	rc = blkdev_reread_part(bdev);
-	if (rc)
+	/*
+	 * See fs/partition/check.c:register_disk,rescan_partitions
+	 * Can't call rescan_partitions directly. Use ioctl.
+	 */
+	rc = ioctl_by_bdev(bdev, BLKRRPART, 0);
+	while (rc == -EBUSY && retry > 0) {
+		schedule();
+		rc = ioctl_by_bdev(bdev, BLKRRPART, 0);
+		retry--;
 		DBF_DEV_EVENT(DBF_ERR, block->base,
-				"scan partitions error, rc %d", rc);
+			      "scan partitions error, retry %d rc %d",
+			      retry, rc);
+	}
 
 	/*
 	 * Since the matching blkdev_put call to the blkdev_get in
@@ -178,8 +187,8 @@ int dasd_gendisk_init(void)
 	/* Register to static dasd major 94 */
 	rc = register_blkdev(DASD_MAJOR, "dasd");
 	if (rc != 0) {
-		pr_warn("Registering the device driver with major number %d failed\n",
-			DASD_MAJOR);
+		pr_warning("Registering the device driver with major number "
+			   "%d failed\n", DASD_MAJOR);
 		return rc;
 	}
 	return 0;

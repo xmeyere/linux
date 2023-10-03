@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * NFS protocol definitions
  *
@@ -8,11 +7,8 @@
 #ifndef _UAPI_LINUX_NFS_H
 #define _UAPI_LINUX_NFS_H
 
-#include <linux/types.h>
-
 #define NFS_PROGRAM	100003
 #define NFS_PORT	2049
-#define NFS_RDMA_PORT	20049
 #define NFS_MAXDATA	8192
 #define NFS_MAXPATHLEN	1024
 #define NFS_MAXNAMLEN	255

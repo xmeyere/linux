@@ -233,7 +233,6 @@ static const struct bios_settings bios_tbl[] = {
 	{"Gateway", "LT31",   "v1.3201",  0x55, 0x58, {0x9e, 0x00}, 0},
 	{"Gateway", "LT31",   "v1.3302",  0x55, 0x58, {0x9e, 0x00}, 0},
 	{"Gateway", "LT31",   "v1.3303t", 0x55, 0x58, {0x9e, 0x00}, 0},
-	{"Gateway", "LT31",   "v1.3307",  0x55, 0x58, {0x9e, 0x00}, 0},
 	/* Packard Bell */
 	{"Packard Bell", "DOA150",  "v0.3104",  0x55, 0x58, {0x21, 0x00}, 0},
 	{"Packard Bell", "DOA150",  "v0.3105",  0x55, 0x58, {0x20, 0x00}, 0},
@@ -347,7 +346,8 @@ static void acerhdf_check_param(struct thermal_zone_device *thermal)
  * as late as the polling interval is since we can't do that in the respective
  * accessors of the module parameters.
  */
-static int acerhdf_get_ec_temp(struct thermal_zone_device *thermal, int *t)
+static int acerhdf_get_ec_temp(struct thermal_zone_device *thermal,
+			       unsigned long *t)
 {
 	int temp, err = 0;
 
@@ -372,8 +372,7 @@ static int acerhdf_bind(struct thermal_zone_device *thermal,
 		return 0;
 
 	if (thermal_zone_bind_cooling_device(thermal, 0, cdev,
-			THERMAL_NO_LIMIT, THERMAL_NO_LIMIT,
-			THERMAL_WEIGHT_DEFAULT)) {
+			THERMAL_NO_LIMIT, THERMAL_NO_LIMIT)) {
 		pr_err("error binding cooling dev\n");
 		return -EINVAL;
 	}
@@ -406,7 +405,7 @@ static inline void acerhdf_enable_kernelmode(void)
 	kernelmode = 1;
 
 	thz_dev->polling_delay = interval*1000;
-	thermal_zone_device_update(thz_dev, THERMAL_EVENT_UNSPECIFIED);
+	thermal_zone_device_update(thz_dev);
 	pr_notice("kernel mode fan control ON\n");
 }
 
@@ -453,7 +452,7 @@ static int acerhdf_get_trip_type(struct thermal_zone_device *thermal, int trip,
 }
 
 static int acerhdf_get_trip_hyst(struct thermal_zone_device *thermal, int trip,
-				 int *temp)
+				 unsigned long *temp)
 {
 	if (trip != 0)
 		return -EINVAL;
@@ -464,7 +463,7 @@ static int acerhdf_get_trip_hyst(struct thermal_zone_device *thermal, int trip,
 }
 
 static int acerhdf_get_trip_temp(struct thermal_zone_device *thermal, int trip,
-				 int *temp)
+				 unsigned long *temp)
 {
 	if (trip == 0)
 		*temp = fanon;
@@ -477,7 +476,7 @@ static int acerhdf_get_trip_temp(struct thermal_zone_device *thermal, int trip,
 }
 
 static int acerhdf_get_crit_temp(struct thermal_zone_device *thermal,
-				 int *temperature)
+				 unsigned long *temperature)
 {
 	*temperature = ACERHDF_TEMP_CRIT;
 	return 0;
@@ -558,7 +557,7 @@ err_out:
 }
 
 /* bind fan callbacks to fan device */
-static const struct thermal_cooling_device_ops acerhdf_cooling_ops = {
+static struct thermal_cooling_device_ops acerhdf_cooling_ops = {
 	.get_max_state = acerhdf_get_max_state,
 	.get_cur_state = acerhdf_get_cur_state,
 	.set_cur_state = acerhdf_set_cur_state,

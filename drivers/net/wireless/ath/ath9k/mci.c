@@ -453,7 +453,7 @@ int ath_mci_setup(struct ath_softc *sc)
 	mci->sched_buf.bf_len = ATH_MCI_SCHED_BUF_SIZE;
 
 	mci->gpm_buf.bf_len = ATH_MCI_GPM_BUF_SIZE;
-	mci->gpm_buf.bf_addr = mci->sched_buf.bf_addr + mci->sched_buf.bf_len;
+	mci->gpm_buf.bf_addr = (u8 *)mci->sched_buf.bf_addr + mci->sched_buf.bf_len;
 	mci->gpm_buf.bf_paddr = mci->sched_buf.bf_paddr + mci->sched_buf.bf_len;
 
 	ret = ar9003_mci_setup(sc->sc_ah, mci->gpm_buf.bf_paddr,
@@ -495,7 +495,7 @@ void ath_mci_intr(struct ath_softc *sc)
 	ar9003_mci_get_interrupt(sc->sc_ah, &mci_int, &mci_int_rxmsg);
 
 	if (ar9003_mci_state(ah, MCI_STATE_ENABLE) == 0) {
-		ar9003_mci_state(ah, MCI_STATE_INIT_GPM_OFFSET);
+		ar9003_mci_get_next_gpm_offset(ah, true, NULL);
 		return;
 	}
 
@@ -548,7 +548,7 @@ void ath_mci_intr(struct ath_softc *sc)
 
 	if (mci_int_rxmsg & AR_MCI_INTERRUPT_RX_MSG_SCHD_INFO) {
 		mci_int_rxmsg &= ~AR_MCI_INTERRUPT_RX_MSG_SCHD_INFO;
-		ar9003_mci_state(ah, MCI_STATE_LAST_SCHD_MSG_OFFSET);
+		offset = ar9003_mci_state(ah, MCI_STATE_LAST_SCHD_MSG_OFFSET);
 	}
 
 	if (mci_int_rxmsg & AR_MCI_INTERRUPT_RX_MSG_GPM) {
@@ -559,7 +559,8 @@ void ath_mci_intr(struct ath_softc *sc)
 				return;
 
 			pgpm = mci->gpm_buf.bf_addr;
-			offset = ar9003_mci_get_next_gpm_offset(ah, &more_data);
+			offset = ar9003_mci_get_next_gpm_offset(ah, false,
+								&more_data);
 
 			if (offset == MCI_GPM_INVALID)
 				break;

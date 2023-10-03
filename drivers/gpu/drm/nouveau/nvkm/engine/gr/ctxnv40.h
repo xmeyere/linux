@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __NVKM_GRCTX_H__
 #define __NVKM_GRCTX_H__
 #include <core/gpuobj.h>
@@ -10,8 +9,7 @@ struct nvkm_grctx {
 		NVKM_GRCTX_PROG,
 		NVKM_GRCTX_VALS
 	} mode;
-	u32 *ucode;
-	struct nvkm_gpuobj *data;
+	void *data;
 
 	u32 ctxprog_max;
 	u32 ctxprog_len;
@@ -24,7 +22,7 @@ struct nvkm_grctx {
 static inline void
 cp_out(struct nvkm_grctx *ctx, u32 inst)
 {
-	u32 *ctxprog = ctx->ucode;
+	u32 *ctxprog = ctx->data;
 
 	if (ctx->mode != NVKM_GRCTX_PROG)
 		return;
@@ -58,7 +56,7 @@ cp_ctx(struct nvkm_grctx *ctx, u32 reg, u32 length)
 static inline void
 cp_name(struct nvkm_grctx *ctx, int name)
 {
-	u32 *ctxprog = ctx->ucode;
+	u32 *ctxprog = ctx->data;
 	int i;
 
 	if (ctx->mode != NVKM_GRCTX_PROG)
@@ -126,6 +124,6 @@ gr_def(struct nvkm_grctx *ctx, u32 reg, u32 val)
 	reg = (reg - 0x00400000) / 4;
 	reg = (reg - ctx->ctxprog_reg) + ctx->ctxvals_base;
 
-	nvkm_wo32(ctx->data, reg * 4, val);
+	nv_wo32(ctx->data, reg * 4, val);
 }
 #endif

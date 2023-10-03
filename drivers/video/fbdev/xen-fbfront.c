@@ -18,8 +18,6 @@
  * frame buffer.
  */
 
-#define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
-
 #include <linux/console.h>
 #include <linux/kernel.h>
 #include <linux/errno.h>
@@ -48,7 +46,7 @@ struct xenfb_info {
 	int			nr_pages;
 	int			irq;
 	struct xenfb_page	*page;
-	unsigned long 		*gfns;
+	unsigned long 		*mfns;
 	int			update_wanted; /* XENFB_TYPE_UPDATE wanted */
 	int			feature_resize; /* XENFB_TYPE_RESIZE ok */
 	struct xenfb_resize	resize;		/* protected by resize_lock */
@@ -382,18 +380,10 @@ static int xenfb_probe(struct xenbus_device *dev,
 			video[KPARAM_MEM] = val;
 	}
 
-	video[KPARAM_WIDTH] = xenbus_read_unsigned(dev->otherend, "width",
-						   video[KPARAM_WIDTH]);
-	video[KPARAM_HEIGHT] = xenbus_read_unsigned(dev->otherend, "height",
-						    video[KPARAM_HEIGHT]);
-
 	/* If requested res does not fit in available memory, use default */
 	fb_size = video[KPARAM_MEM] * 1024 * 1024;
 	if (video[KPARAM_WIDTH] * video[KPARAM_HEIGHT] * XENFB_DEPTH / 8
 	    > fb_size) {
-		pr_warn("display parameters %d,%d,%d invalid, use defaults\n",
-			video[KPARAM_MEM], video[KPARAM_WIDTH],
-			video[KPARAM_HEIGHT]);
 		video[KPARAM_WIDTH] = XENFB_WIDTH;
 		video[KPARAM_HEIGHT] = XENFB_HEIGHT;
 		fb_size = XENFB_DEFAULT_FB_LEN;
@@ -412,8 +402,8 @@ static int xenfb_probe(struct xenbus_device *dev,
 
 	info->nr_pages = (fb_size + PAGE_SIZE - 1) >> PAGE_SHIFT;
 
-	info->gfns = vmalloc(array_size(sizeof(unsigned long), info->nr_pages));
-	if (!info->gfns)
+	info->mfns = vmalloc(sizeof(unsigned long) * info->nr_pages);
+	if (!info->mfns)
 		goto error_nomem;
 
 	/* set up shared page */
@@ -540,29 +530,29 @@ static int xenfb_remove(struct xenbus_device *dev)
 		framebuffer_release(info->fb_info);
 	}
 	free_page((unsigned long)info->page);
-	vfree(info->gfns);
+	vfree(info->mfns);
 	vfree(info->fb);
 	kfree(info);
 
 	return 0;
 }
 
-static unsigned long vmalloc_to_gfn(void *address)
+static unsigned long vmalloc_to_mfn(void *address)
 {
-	return xen_page_to_gfn(vmalloc_to_page(address));
+	return pfn_to_mfn(vmalloc_to_pfn(address));
 }
 
 static void xenfb_init_shared_page(struct xenfb_info *info,
 				   struct fb_info *fb_info)
 {
 	int i;
-	int epd = PAGE_SIZE / sizeof(info->gfns[0]);
+	int epd = PAGE_SIZE / sizeof(info->mfns[0]);
 
 	for (i = 0; i < info->nr_pages; i++)
-		info->gfns[i] = vmalloc_to_gfn(info->fb + i * PAGE_SIZE);
+		info->mfns[i] = vmalloc_to_mfn(info->fb + i * PAGE_SIZE);
 
 	for (i = 0; i * epd < info->nr_pages; i++)
-		info->page->pd[i] = vmalloc_to_gfn(&info->gfns[i * epd]);
+		info->page->pd[i] = vmalloc_to_mfn(&info->mfns[i * epd]);
 
 	info->page->width = fb_info->var.xres;
 	info->page->height = fb_info->var.yres;
@@ -596,7 +586,7 @@ static int xenfb_connect_backend(struct xenbus_device *dev,
 		goto unbind_irq;
 	}
 	ret = xenbus_printf(xbt, dev->nodename, "page-ref", "%lu",
-			    virt_to_gfn(info->page));
+			    virt_to_mfn(info->page));
 	if (ret)
 		goto error_xenbus;
 	ret = xenbus_printf(xbt, dev->nodename, "event-channel", "%u",
@@ -643,6 +633,7 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 				  enum xenbus_state backend_state)
 {
 	struct xenfb_info *info = dev_get_drvdata(&dev->dev);
+	int val;
 
 	switch (backend_state) {
 	case XenbusStateInitialising:
@@ -653,6 +644,7 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 		break;
 
 	case XenbusStateInitWait:
+InitWait:
 		xenbus_switch_state(dev, XenbusStateConnected);
 		break;
 
@@ -663,15 +655,18 @@ static void xenfb_backend_changed(struct xenbus_device *dev,
 		 * get Connected twice here.
 		 */
 		if (dev->state != XenbusStateConnected)
-			/* no InitWait seen yet, fudge it */
-			xenbus_switch_state(dev, XenbusStateConnected);
+			goto InitWait; /* no InitWait seen yet, fudge it */
 
-		if (xenbus_read_unsigned(info->xbdev->otherend,
-					 "request-update", 0))
+		if (xenbus_scanf(XBT_NIL, info->xbdev->otherend,
+				 "request-update", "%d", &val) < 0)
+			val = 0;
+		if (val)
 			info->update_wanted = 1;
 
-		info->feature_resize = xenbus_read_unsigned(dev->otherend,
-							"feature-resize", 0);
+		if (xenbus_scanf(XBT_NIL, dev->otherend,
+				 "feature-resize", "%d", &val) < 0)
+			val = 0;
+		info->feature_resize = val;
 		break;
 
 	case XenbusStateClosed:

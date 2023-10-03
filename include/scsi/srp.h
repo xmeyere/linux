@@ -42,7 +42,6 @@
  */
 
 #include <linux/types.h>
-#include <scsi/scsi.h>
 
 enum {
 	SRP_LOGIN_REQ	= 0x00,
@@ -129,23 +128,6 @@ struct srp_login_req {
 	u8	target_port_id[16];
 };
 
-/**
- * struct srp_login_req_rdma - RDMA/CM login parameters.
- *
- * RDMA/CM over InfiniBand can only carry 92 - 36 = 56 bytes of private
- * data. The %srp_login_req_rdma structure contains the same information as
- * %srp_login_req but with the reserved data removed.
- */
-struct srp_login_req_rdma {
-	u64	tag;
-	__be16	req_buf_fmt;
-	u8	req_flags;
-	u8	opcode;
-	__be32	req_it_iu_len;
-	u8	initiator_port_id[16];
-	u8	target_port_id[16];
-};
-
 /*
  * The SRP spec defines the size of the LOGIN_RSP structure to be 52
  * bytes, so it needs to be packed to avoid having it padded to 56
@@ -197,7 +179,7 @@ struct srp_tsk_mgmt {
 	u8	reserved1[6];
 	u64	tag;
 	u8	reserved2[4];
-	struct scsi_lun	lun;
+	__be64	lun __attribute__((packed));
 	u8	reserved3[2];
 	u8	tsk_mgmt_func;
 	u8	reserved4;
@@ -218,7 +200,7 @@ struct srp_cmd {
 	u8	data_in_desc_cnt;
 	u64	tag;
 	u8	reserved2[4];
-	struct scsi_lun	lun;
+	__be64	lun __attribute__((packed));
 	u8	reserved3;
 	u8	task_attr;
 	u8	reserved4;
@@ -283,7 +265,7 @@ struct srp_aer_req {
 	__be32	req_lim_delta;
 	u64	tag;
 	u32	reserved2;
-	struct scsi_lun	lun;
+	__be64	lun;
 	__be32	sense_data_len;
 	u32	reserved3;
 	u8	sense_data[0];

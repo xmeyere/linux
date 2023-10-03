@@ -1,13 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0+
-//
-// drivers/dma/imx-dma.c
-//
-// This file contains a driver for the Freescale i.MX DMA engine
-// found on i.MX1/21/27
-//
-// Copyright 2010 Sascha Hauer, Pengutronix <s.hauer@pengutronix.de>
-// Copyright 2012 Javier Martin, Vista Silicon <javier.martin@vista-silicon.com>
-
+/*
+ * drivers/dma/imx-dma.c
+ *
+ * This file contains a driver for the Freescale i.MX DMA engine
+ * found on i.MX1/21/27
+ *
+ * Copyright 2010 Sascha Hauer, Pengutronix <s.hauer@pengutronix.de>
+ * Copyright 2012 Javier Martin, Vista Silicon <javier.martin@vista-silicon.com>
+ *
+ * The code contained herein is licensed under the GNU General Public
+ * License. You may obtain a copy of the GNU General Public License
+ * Version 2 or later at the following locations:
+ *
+ * http://www.opensource.org/licenses/gpl-license.html
+ * http://www.gnu.org/copyleft/gpl.html
+ */
 #include <linux/err.h>
 #include <linux/init.h>
 #include <linux/types.h>
@@ -161,7 +167,6 @@ struct imxdma_channel {
 	u32				ccr_to_device;
 	bool				enabled_2d;
 	int				slot_2d;
-	unsigned int			irq;
 };
 
 enum imx_dma_type {
@@ -181,9 +186,6 @@ struct imxdma_engine {
 	struct imx_dma_2d_config	slots_2d[IMX_DMA_2D_SLOTS];
 	struct imxdma_channel		channel[IMX_DMA_CHANNELS];
 	enum imx_dma_type		devtype;
-	unsigned int			irq;
-	unsigned int			irq_err;
-
 };
 
 struct imxdma_filter_data {
@@ -191,7 +193,7 @@ struct imxdma_filter_data {
 	int			 request;
 };
 
-static const struct platform_device_id imx_dma_devtype[] = {
+static struct platform_device_id imx_dma_devtype[] = {
 	{
 		.name = "imx1-dma",
 		.driver_data = IMX1_DMA,
@@ -284,7 +286,7 @@ static inline int imxdma_sg_next(struct imxdma_desc *d)
 	struct scatterlist *sg = d->sg;
 	unsigned long now;
 
-	now = min_t(size_t, d->len, sg_dma_len(sg));
+	now = min(d->len, sg_dma_len(sg));
 	if (d->len != IMX_DMA_LENGTH_LOOP)
 		d->len -= now;
 
@@ -358,9 +360,9 @@ static void imxdma_disable_hw(struct imxdma_channel *imxdmac)
 	local_irq_restore(flags);
 }
 
-static void imxdma_watchdog(struct timer_list *t)
+static void imxdma_watchdog(unsigned long data)
 {
-	struct imxdma_channel *imxdmac = from_timer(imxdmac, t, watchdog);
+	struct imxdma_channel *imxdmac = (struct imxdma_channel *)data;
 	struct imxdma_engine *imxdma = imxdmac->imxdma;
 	int channel = imxdmac->channel;
 
@@ -617,7 +619,7 @@ static void imxdma_tasklet(unsigned long data)
 {
 	struct imxdma_channel *imxdmac = (void *)data;
 	struct imxdma_engine *imxdma = imxdmac->imxdma;
-	struct imxdma_desc *desc, *next_desc;
+	struct imxdma_desc *desc;
 	unsigned long flags;
 
 	spin_lock_irqsave(&imxdma->lock, flags);
@@ -647,17 +649,19 @@ static void imxdma_tasklet(unsigned long data)
 	list_move_tail(imxdmac->ld_active.next, &imxdmac->ld_free);
 
 	if (!list_empty(&imxdmac->ld_queue)) {
-		next_desc = list_first_entry(&imxdmac->ld_queue,
-					     struct imxdma_desc, node);
+		desc = list_first_entry(&imxdmac->ld_queue, struct imxdma_desc,
+					node);
 		list_move_tail(imxdmac->ld_queue.next, &imxdmac->ld_active);
-		if (imxdma_xfer_desc(next_desc) < 0)
+		if (imxdma_xfer_desc(desc) < 0)
 			dev_warn(imxdma->dev, "%s: channel: %d couldn't xfer desc\n",
 				 __func__, imxdmac->channel);
 	}
 out:
 	spin_unlock_irqrestore(&imxdma->lock, flags);
 
-	dmaengine_desc_get_callback_invoke(&desc->desc, NULL);
+	if (desc->desc.callback)
+		desc->desc.callback(desc->desc.callback_param);
+
 }
 
 static int imxdma_terminate_all(struct dma_chan *chan)
@@ -759,7 +763,7 @@ static int imxdma_alloc_chan_resources(struct dma_chan *chan)
 		desc = kzalloc(sizeof(*desc), GFP_KERNEL);
 		if (!desc)
 			break;
-		memset(&desc->desc, 0, sizeof(struct dma_async_tx_descriptor));
+		__memzero(&desc->desc, sizeof(struct dma_async_tx_descriptor));
 		dma_async_tx_descriptor_init(&desc->desc, chan);
 		desc->desc.tx_submit = imxdma_tx_submit;
 		/* txd.flags will be overwritten in prep funcs */
@@ -882,7 +886,7 @@ static struct dma_async_tx_descriptor *imxdma_prep_dma_cyclic(
 	sg_init_table(imxdmac->sg_list, periods);
 
 	for (i = 0; i < periods; i++) {
-		sg_assign_page(&imxdmac->sg_list[i], NULL);
+		imxdmac->sg_list[i].page_link = 0;
 		imxdmac->sg_list[i].offset = 0;
 		imxdmac->sg_list[i].dma_address = dma_addr;
 		sg_dma_len(&imxdmac->sg_list[i]) = period_len;
@@ -890,7 +894,10 @@ static struct dma_async_tx_descriptor *imxdma_prep_dma_cyclic(
 	}
 
 	/* close the loop */
-	sg_chain(imxdmac->sg_list, periods + 1, imxdmac->sg_list);
+	imxdmac->sg_list[periods].offset = 0;
+	sg_dma_len(&imxdmac->sg_list[periods]) = 0;
+	imxdmac->sg_list[periods].page_link =
+		((unsigned long)imxdmac->sg_list | 0x01) & ~0x02;
 
 	desc->type = IMXDMA_DESC_CYCLIC;
 	desc->sg = imxdmac->sg_list;
@@ -1041,7 +1048,7 @@ static struct dma_chan *imxdma_xlate(struct of_phandle_args *dma_spec,
 }
 
 static int __init imxdma_probe(struct platform_device *pdev)
-{
+	{
 	struct imxdma_engine *imxdma;
 	struct resource *res;
 	const struct of_device_id *of_id;
@@ -1076,12 +1083,8 @@ static int __init imxdma_probe(struct platform_device *pdev)
 	if (IS_ERR(imxdma->dma_ahb))
 		return PTR_ERR(imxdma->dma_ahb);
 
-	ret = clk_prepare_enable(imxdma->dma_ipg);
-	if (ret)
-		return ret;
-	ret = clk_prepare_enable(imxdma->dma_ahb);
-	if (ret)
-		goto disable_dma_ipg_clk;
+	clk_prepare_enable(imxdma->dma_ipg);
+	clk_prepare_enable(imxdma->dma_ahb);
 
 	/* reset DMA module */
 	imx_dmav1_writel(imxdma, DCR_DRST, DMA_DCR);
@@ -1091,23 +1094,21 @@ static int __init imxdma_probe(struct platform_device *pdev)
 				       dma_irq_handler, 0, "DMA", imxdma);
 		if (ret) {
 			dev_warn(imxdma->dev, "Can't register IRQ for DMA\n");
-			goto disable_dma_ahb_clk;
+			goto err;
 		}
-		imxdma->irq = irq;
 
 		irq_err = platform_get_irq(pdev, 1);
 		if (irq_err < 0) {
 			ret = irq_err;
-			goto disable_dma_ahb_clk;
+			goto err;
 		}
 
 		ret = devm_request_irq(&pdev->dev, irq_err,
 				       imxdma_err_handler, 0, "DMA", imxdma);
 		if (ret) {
 			dev_warn(imxdma->dev, "Can't register ERRIRQ for DMA\n");
-			goto disable_dma_ahb_clk;
+			goto err;
 		}
-		imxdma->irq_err = irq_err;
 	}
 
 	/* enable DMA module */
@@ -1143,11 +1144,11 @@ static int __init imxdma_probe(struct platform_device *pdev)
 				dev_warn(imxdma->dev, "Can't register IRQ %d "
 					 "for DMA channel %d\n",
 					 irq + i, i);
-				goto disable_dma_ahb_clk;
+				goto err;
 			}
-
-			imxdmac->irq = irq + i;
-			timer_setup(&imxdmac->watchdog, imxdma_watchdog, 0);
+			init_timer(&imxdmac->watchdog);
+			imxdmac->watchdog.function = &imxdma_watchdog;
+			imxdmac->watchdog.data = (unsigned long)imxdmac;
 		}
 
 		imxdmac->imxdma = imxdma;
@@ -1182,14 +1183,14 @@ static int __init imxdma_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, imxdma);
 
-	imxdma->dma_device.copy_align = DMAENGINE_ALIGN_4_BYTES;
+	imxdma->dma_device.copy_align = 2; /* 2^2 = 4 bytes alignment */
 	imxdma->dma_device.dev->dma_parms = &imxdma->dma_parms;
 	dma_set_max_seg_size(imxdma->dma_device.dev, 0xffffff);
 
 	ret = dma_async_device_register(&imxdma->dma_device);
 	if (ret) {
 		dev_err(&pdev->dev, "unable to register\n");
-		goto disable_dma_ahb_clk;
+		goto err;
 	}
 
 	if (pdev->dev.of_node) {
@@ -1205,37 +1206,15 @@ static int __init imxdma_probe(struct platform_device *pdev)
 
 err_of_dma_controller:
 	dma_async_device_unregister(&imxdma->dma_device);
-disable_dma_ahb_clk:
-	clk_disable_unprepare(imxdma->dma_ahb);
-disable_dma_ipg_clk:
+err:
 	clk_disable_unprepare(imxdma->dma_ipg);
+	clk_disable_unprepare(imxdma->dma_ahb);
 	return ret;
-}
-
-static void imxdma_free_irq(struct platform_device *pdev, struct imxdma_engine *imxdma)
-{
-	int i;
-
-	if (is_imx1_dma(imxdma)) {
-		disable_irq(imxdma->irq);
-		disable_irq(imxdma->irq_err);
-	}
-
-	for (i = 0; i < IMX_DMA_CHANNELS; i++) {
-		struct imxdma_channel *imxdmac = &imxdma->channel[i];
-
-		if (!is_imx1_dma(imxdma))
-			disable_irq(imxdmac->irq);
-
-		tasklet_kill(&imxdmac->dma_tasklet);
-	}
 }
 
 static int imxdma_remove(struct platform_device *pdev)
 {
 	struct imxdma_engine *imxdma = platform_get_drvdata(pdev);
-
-	imxdma_free_irq(pdev, imxdma);
 
         dma_async_device_unregister(&imxdma->dma_device);
 

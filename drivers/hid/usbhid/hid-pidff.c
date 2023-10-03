@@ -568,12 +568,6 @@ static int pidff_upload_effect(struct input_dev *dev, struct ff_effect *effect,
 	int type_id;
 	int error;
 
-	pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] = 0;
-	if (old) {
-		pidff->block_load[PID_EFFECT_BLOCK_INDEX].value[0] =
-			pidff->pid_id[effect->id];
-	}
-
 	switch (effect->type) {
 	case FF_CONSTANT:
 		if (!old) {
@@ -1304,7 +1298,6 @@ int hid_pidff_init(struct hid_device *hid)
 
 	if (pidff->pool[PID_DEVICE_MANAGED_POOL].value &&
 	    pidff->pool[PID_DEVICE_MANAGED_POOL].value[0] == 0) {
-		error = -EPERM;
 		hid_notice(hid,
 			   "device does not support device managed pool\n");
 		goto fail;

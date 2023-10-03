@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0-only
 /*
  * vivid-vid-cap.c - video capture support functions.
  *
  * Copyright 2014 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *
+ * This program is free software; you may redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #include <linux/errno.h>
@@ -14,7 +26,6 @@
 #include <media/v4l2-common.h>
 #include <media/v4l2-event.h>
 #include <media/v4l2-dv-timings.h>
-#include <media/v4l2-rect.h>
 
 #include "vivid-core.h"
 #include "vivid-vid-common.h"
@@ -24,34 +35,32 @@
 /* timeperframe: min/max and default */
 static const struct v4l2_fract
 	tpf_min     = {.numerator = 1,		.denominator = FPS_MAX},
-	tpf_max     = {.numerator = FPS_MAX,	.denominator = 1};
+	tpf_max     = {.numerator = FPS_MAX,	.denominator = 1},
+	tpf_default = {.numerator = 1,		.denominator = 30};
 
 static const struct vivid_fmt formats_ovl[] = {
 	{
+		.name     = "RGB565 (LE)",
 		.fourcc   = V4L2_PIX_FMT_RGB565, /* gggbbbbb rrrrrggg */
-		.vdownsampling = { 1 },
-		.bit_depth = { 16 },
+		.depth    = 16,
 		.planes   = 1,
-		.buffers = 1,
 	},
 	{
+		.name     = "XRGB555 (LE)",
 		.fourcc   = V4L2_PIX_FMT_XRGB555, /* gggbbbbb arrrrrgg */
-		.vdownsampling = { 1 },
-		.bit_depth = { 16 },
+		.depth    = 16,
 		.planes   = 1,
-		.buffers = 1,
 	},
 	{
+		.name     = "ARGB555 (LE)",
 		.fourcc   = V4L2_PIX_FMT_ARGB555, /* gggbbbbb arrrrrgg */
-		.vdownsampling = { 1 },
-		.bit_depth = { 16 },
+		.depth    = 16,
 		.planes   = 1,
-		.buffers = 1,
 	},
 };
 
 /* The number of discrete webcam framesizes */
-#define VIVID_WEBCAM_SIZES 5
+#define VIVID_WEBCAM_SIZES 3
 /* The number of discrete webcam frameintervals */
 #define VIVID_WEBCAM_IVALS (VIVID_WEBCAM_SIZES * 2)
 
@@ -60,8 +69,6 @@ static const struct v4l2_frmsize_discrete webcam_sizes[VIVID_WEBCAM_SIZES] = {
 	{  320, 180 },
 	{  640, 360 },
 	{ 1280, 720 },
-	{ 1920, 1080 },
-	{ 3840, 2160 },
 };
 
 /*
@@ -69,10 +76,6 @@ static const struct v4l2_frmsize_discrete webcam_sizes[VIVID_WEBCAM_SIZES] = {
  * elements in this array as there are in webcam_sizes.
  */
 static const struct v4l2_fract webcam_intervals[VIVID_WEBCAM_IVALS] = {
-	{  1, 1 },
-	{  1, 2 },
-	{  1, 4 },
-	{  1, 5 },
 	{  1, 10 },
 	{  1, 15 },
 	{  1, 25 },
@@ -81,12 +84,17 @@ static const struct v4l2_fract webcam_intervals[VIVID_WEBCAM_IVALS] = {
 	{  1, 60 },
 };
 
-static int vid_cap_queue_setup(struct vb2_queue *vq,
+static const struct v4l2_discrete_probe webcam_probe = {
+	webcam_sizes,
+	VIVID_WEBCAM_SIZES
+};
+
+static int vid_cap_queue_setup(struct vb2_queue *vq, const struct v4l2_format *fmt,
 		       unsigned *nbuffers, unsigned *nplanes,
-		       unsigned sizes[], struct device *alloc_devs[])
+		       unsigned sizes[], void *alloc_ctxs[])
 {
 	struct vivid_dev *dev = vb2_get_drv_priv(vq);
-	unsigned buffers = tpg_g_buffers(&dev->tpg);
+	unsigned planes = tpg_g_planes(&dev->tpg);
 	unsigned h = dev->fmt_cap_rect.height;
 	unsigned p;
 
@@ -107,32 +115,51 @@ static int vid_cap_queue_setup(struct vb2_queue *vq,
 		dev->queue_setup_error = false;
 		return -EINVAL;
 	}
-	if (*nplanes) {
+	if (fmt) {
+		const struct v4l2_pix_format_mplane *mp;
+		struct v4l2_format mp_fmt;
+		const struct vivid_fmt *vfmt;
+
+		if (!V4L2_TYPE_IS_MULTIPLANAR(fmt->type)) {
+			fmt_sp2mp(fmt, &mp_fmt);
+			fmt = &mp_fmt;
+		}
+		mp = &fmt->fmt.pix_mp;
 		/*
-		 * Check if the number of requested planes match
-		 * the number of buffers in the current format. You can't mix that.
+		 * Check if the number of planes in the specified format match
+		 * the number of planes in the current format. You can't mix that.
 		 */
-		if (*nplanes != buffers)
+		if (mp->num_planes != planes)
 			return -EINVAL;
-		for (p = 0; p < buffers; p++) {
-			if (sizes[p] < tpg_g_line_width(&dev->tpg, p) * h +
-						dev->fmt_cap->data_offset[p])
+		vfmt = vivid_get_format(dev, mp->pixelformat);
+		for (p = 0; p < planes; p++) {
+			sizes[p] = mp->plane_fmt[p].sizeimage;
+			if (sizes[0] < tpg_g_bytesperline(&dev->tpg, 0) * h +
+							vfmt->data_offset[p])
 				return -EINVAL;
 		}
 	} else {
-		for (p = 0; p < buffers; p++)
-			sizes[p] = tpg_g_line_width(&dev->tpg, p) * h +
+		for (p = 0; p < planes; p++)
+			sizes[p] = tpg_g_bytesperline(&dev->tpg, p) * h +
 					dev->fmt_cap->data_offset[p];
 	}
 
 	if (vq->num_buffers + *nbuffers < 2)
 		*nbuffers = 2 - vq->num_buffers;
 
-	*nplanes = buffers;
+	*nplanes = planes;
 
-	dprintk(dev, 1, "%s: count=%d\n", __func__, *nbuffers);
-	for (p = 0; p < buffers; p++)
-		dprintk(dev, 1, "%s: size[%u]=%u\n", __func__, p, sizes[p]);
+	/*
+	 * videobuf2-vmalloc allocator is context-less so no need to set
+	 * alloc_ctxs array.
+	 */
+
+	if (planes == 2)
+		dprintk(dev, 1, "%s, count=%d, sizes=%u, %u\n", __func__,
+			*nbuffers, sizes[0], sizes[1]);
+	else
+		dprintk(dev, 1, "%s, count=%d, size=%u\n", __func__,
+			*nbuffers, sizes[0]);
 
 	return 0;
 }
@@ -141,7 +168,7 @@ static int vid_cap_buf_prepare(struct vb2_buffer *vb)
 {
 	struct vivid_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
 	unsigned long size;
-	unsigned buffers = tpg_g_buffers(&dev->tpg);
+	unsigned planes = tpg_g_planes(&dev->tpg);
 	unsigned p;
 
 	dprintk(dev, 1, "%s\n", __func__);
@@ -157,18 +184,18 @@ static int vid_cap_buf_prepare(struct vb2_buffer *vb)
 		dev->buf_prepare_error = false;
 		return -EINVAL;
 	}
-	for (p = 0; p < buffers; p++) {
-		size = tpg_g_line_width(&dev->tpg, p) * dev->fmt_cap_rect.height +
+	for (p = 0; p < planes; p++) {
+		size = tpg_g_bytesperline(&dev->tpg, p) * dev->fmt_cap_rect.height +
 			dev->fmt_cap->data_offset[p];
 
-		if (vb2_plane_size(vb, p) < size) {
+		if (vb2_plane_size(vb, 0) < size) {
 			dprintk(dev, 1, "%s data will not fit into plane %u (%lu < %lu)\n",
-					__func__, p, vb2_plane_size(vb, p), size);
+					__func__, p, vb2_plane_size(vb, 0), size);
 			return -EINVAL;
 		}
 
 		vb2_set_plane_payload(vb, p, size);
-		vb->planes[p].data_offset = dev->fmt_cap->data_offset[p];
+		vb->v4l2_planes[p].data_offset = dev->fmt_cap->data_offset[p];
 	}
 
 	return 0;
@@ -176,11 +203,10 @@ static int vid_cap_buf_prepare(struct vb2_buffer *vb)
 
 static void vid_cap_buf_finish(struct vb2_buffer *vb)
 {
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vivid_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
-	struct v4l2_timecode *tc = &vbuf->timecode;
+	struct v4l2_timecode *tc = &vb->v4l2_buf.timecode;
 	unsigned fps = 25;
-	unsigned seq = vbuf->sequence;
+	unsigned seq = vb->v4l2_buf.sequence;
 
 	if (!vivid_is_sdtv_cap(dev))
 		return;
@@ -189,7 +215,7 @@ static void vid_cap_buf_finish(struct vb2_buffer *vb)
 	 * Set the timecode. Rarely used, so it is interesting to
 	 * test this.
 	 */
-	vbuf->flags |= V4L2_BUF_FLAG_TIMECODE;
+	vb->v4l2_buf.flags |= V4L2_BUF_FLAG_TIMECODE;
 	if (dev->std_cap & V4L2_STD_525_60)
 		fps = 30;
 	tc->type = (fps == 30) ? V4L2_TC_TYPE_30FPS : V4L2_TC_TYPE_25FPS;
@@ -202,9 +228,8 @@ static void vid_cap_buf_finish(struct vb2_buffer *vb)
 
 static void vid_cap_buf_queue(struct vb2_buffer *vb)
 {
-	struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
 	struct vivid_dev *dev = vb2_get_drv_priv(vb->vb2_queue);
-	struct vivid_buffer *buf = container_of(vbuf, struct vivid_buffer, vb);
+	struct vivid_buffer *buf = container_of(vb, struct vivid_buffer, vb);
 
 	dprintk(dev, 1, "%s\n", __func__);
 
@@ -222,6 +247,9 @@ static int vid_cap_start_streaming(struct vb2_queue *vq, unsigned count)
 	if (vb2_is_streaming(&dev->vb_vid_out_q))
 		dev->can_loop_video = vivid_vid_can_loop(dev);
 
+	if (dev->kthread_vid_cap)
+		return 0;
+
 	dev->vid_cap_seq_count = 0;
 	dprintk(dev, 1, "%s\n", __func__);
 	for (i = 0; i < VIDEO_MAX_FRAME; i++)
@@ -237,8 +265,7 @@ static int vid_cap_start_streaming(struct vb2_queue *vq, unsigned count)
 
 		list_for_each_entry_safe(buf, tmp, &dev->vid_cap_active, list) {
 			list_del(&buf->list);
-			vb2_buffer_done(&buf->vb.vb2_buf,
-					VB2_BUF_STATE_QUEUED);
+			vb2_buffer_done(&buf->vb, VB2_BUF_STATE_QUEUED);
 		}
 	}
 	return err;
@@ -371,7 +398,6 @@ void vivid_update_format_cap(struct vivid_dev *dev, bool keep_controls)
 {
 	struct v4l2_bt_timings *bt = &dev->dv_timings_cap.bt;
 	unsigned size;
-	u64 pixelclock;
 
 	switch (dev->input_type[dev->input]) {
 	case WEBCAM:
@@ -401,15 +427,8 @@ void vivid_update_format_cap(struct vivid_dev *dev, bool keep_controls)
 		dev->src_rect.width = bt->width;
 		dev->src_rect.height = bt->height;
 		size = V4L2_DV_BT_FRAME_WIDTH(bt) * V4L2_DV_BT_FRAME_HEIGHT(bt);
-		if (dev->reduced_fps && can_reduce_fps(bt)) {
-			pixelclock = div_u64(bt->pixelclock * 1000, 1001);
-			bt->flags |= V4L2_DV_FL_REDUCED_FPS;
-		} else {
-			pixelclock = bt->pixelclock;
-			bt->flags &= ~V4L2_DV_FL_REDUCED_FPS;
-		}
 		dev->timeperframe_vid_cap = (struct v4l2_fract) {
-			size / 100, (u32)pixelclock / 100
+			size / 100, (u32)bt->pixelclock / 100
 		};
 		if (bt->interlaced)
 			dev->field_cap = V4L2_FIELD_ALTERNATE;
@@ -422,7 +441,7 @@ void vivid_update_format_cap(struct vivid_dev *dev, bool keep_controls)
 		 */
 		if (keep_controls || !dev->colorspace)
 			break;
-		if (bt->flags & V4L2_DV_FL_IS_CE_VIDEO) {
+		if (bt->standards & V4L2_DV_BT_STD_CEA861) {
 			if (bt->width == 720 && bt->height <= 576)
 				v4l2_ctrl_s_ctrl(dev->colorspace, VIVID_CS_170M);
 			else
@@ -435,18 +454,10 @@ void vivid_update_format_cap(struct vivid_dev *dev, bool keep_controls)
 		tpg_s_rgb_range(&dev->tpg, v4l2_ctrl_g_ctrl(dev->rgb_range_cap));
 		break;
 	}
-	vfree(dev->bitmap_cap);
-	dev->bitmap_cap = NULL;
 	vivid_update_quality(dev);
 	tpg_reset_source(&dev->tpg, dev->src_rect.width, dev->src_rect.height, dev->field_cap);
 	dev->crop_cap = dev->src_rect;
 	dev->crop_bounds_cap = dev->src_rect;
-	if (dev->bitmap_cap &&
-	    (dev->compose_cap.width != dev->crop_cap.width ||
-	     dev->compose_cap.height != dev->crop_cap.height)) {
-		vfree(dev->bitmap_cap);
-		dev->bitmap_cap = NULL;
-	}
 	dev->compose_cap = dev->crop_cap;
 	if (V4L2_FIELD_HAS_T_OR_B(dev->field_cap))
 		dev->compose_cap.height /= 2;
@@ -487,25 +498,11 @@ static unsigned vivid_colorspace_cap(struct vivid_dev *dev)
 	return dev->colorspace_out;
 }
 
-static unsigned vivid_xfer_func_cap(struct vivid_dev *dev)
-{
-	if (!dev->loop_video || vivid_is_webcam(dev) || vivid_is_tv_cap(dev))
-		return tpg_g_xfer_func(&dev->tpg);
-	return dev->xfer_func_out;
-}
-
 static unsigned vivid_ycbcr_enc_cap(struct vivid_dev *dev)
 {
 	if (!dev->loop_video || vivid_is_webcam(dev) || vivid_is_tv_cap(dev))
 		return tpg_g_ycbcr_enc(&dev->tpg);
 	return dev->ycbcr_enc_out;
-}
-
-static unsigned int vivid_hsv_enc_cap(struct vivid_dev *dev)
-{
-	if (!dev->loop_video || vivid_is_webcam(dev) || vivid_is_tv_cap(dev))
-		return tpg_g_hsv_enc(&dev->tpg);
-	return dev->hsv_enc_out;
 }
 
 static unsigned vivid_quantization_cap(struct vivid_dev *dev)
@@ -527,17 +524,13 @@ int vivid_g_fmt_vid_cap(struct file *file, void *priv,
 	mp->field        = dev->field_cap;
 	mp->pixelformat  = dev->fmt_cap->fourcc;
 	mp->colorspace   = vivid_colorspace_cap(dev);
-	mp->xfer_func    = vivid_xfer_func_cap(dev);
-	if (dev->fmt_cap->color_enc == TGP_COLOR_ENC_HSV)
-		mp->hsv_enc    = vivid_hsv_enc_cap(dev);
-	else
-		mp->ycbcr_enc    = vivid_ycbcr_enc_cap(dev);
+	mp->ycbcr_enc    = vivid_ycbcr_enc_cap(dev);
 	mp->quantization = vivid_quantization_cap(dev);
-	mp->num_planes = dev->fmt_cap->buffers;
+	mp->num_planes = dev->fmt_cap->planes;
 	for (p = 0; p < mp->num_planes; p++) {
 		mp->plane_fmt[p].bytesperline = tpg_g_bytesperline(&dev->tpg, p);
 		mp->plane_fmt[p].sizeimage =
-			tpg_g_line_width(&dev->tpg, p) * mp->height +
+			mp->plane_fmt[p].bytesperline * mp->height +
 			dev->fmt_cap->data_offset[p];
 	}
 	return 0;
@@ -566,9 +559,7 @@ int vivid_try_fmt_vid_cap(struct file *file, void *priv,
 	mp->field = vivid_field_cap(dev, mp->field);
 	if (vivid_is_webcam(dev)) {
 		const struct v4l2_frmsize_discrete *sz =
-			v4l2_find_nearest_size(webcam_sizes,
-					       VIVID_WEBCAM_SIZES, width,
-					       height, mp->width, mp->height);
+			v4l2_find_nearest_format(&webcam_probe, mp->width, mp->height);
 
 		w = sz->width;
 		h = sz->height;
@@ -588,16 +579,16 @@ int vivid_try_fmt_vid_cap(struct file *file, void *priv,
 	} else {
 		struct v4l2_rect r = { 0, 0, mp->width, mp->height * factor };
 
-		v4l2_rect_set_min_size(&r, &vivid_min_rect);
-		v4l2_rect_set_max_size(&r, &vivid_max_rect);
+		rect_set_min_size(&r, &vivid_min_rect);
+		rect_set_max_size(&r, &vivid_max_rect);
 		if (dev->has_scaler_cap && !dev->has_compose_cap) {
 			struct v4l2_rect max_r = { 0, 0, MAX_ZOOM * w, MAX_ZOOM * h };
 
-			v4l2_rect_set_max_size(&r, &max_r);
+			rect_set_max_size(&r, &max_r);
 		} else if (!dev->has_scaler_cap && dev->has_crop_cap && !dev->has_compose_cap) {
-			v4l2_rect_set_max_size(&r, &dev->src_rect);
+			rect_set_max_size(&r, &dev->src_rect);
 		} else if (!dev->has_scaler_cap && !dev->has_crop_cap) {
-			v4l2_rect_set_min_size(&r, &dev->src_rect);
+			rect_set_min_size(&r, &dev->src_rect);
 		}
 		mp->width = r.width;
 		mp->height = r.height / factor;
@@ -605,34 +596,22 @@ int vivid_try_fmt_vid_cap(struct file *file, void *priv,
 
 	/* This driver supports custom bytesperline values */
 
-	mp->num_planes = fmt->buffers;
-	for (p = 0; p < fmt->buffers; p++) {
-		/* Calculate the minimum supported bytesperline value */
-		bytesperline = (mp->width * fmt->bit_depth[p]) >> 3;
-		/* Calculate the maximum supported bytesperline value */
-		max_bpl = (MAX_ZOOM * MAX_WIDTH * fmt->bit_depth[p]) >> 3;
-
+	/* Calculate the minimum supported bytesperline value */
+	bytesperline = (mp->width * fmt->depth) >> 3;
+	/* Calculate the maximum supported bytesperline value */
+	max_bpl = (MAX_ZOOM * MAX_WIDTH * fmt->depth) >> 3;
+	mp->num_planes = fmt->planes;
+	for (p = 0; p < mp->num_planes; p++) {
 		if (pfmt[p].bytesperline > max_bpl)
 			pfmt[p].bytesperline = max_bpl;
 		if (pfmt[p].bytesperline < bytesperline)
 			pfmt[p].bytesperline = bytesperline;
-
-		pfmt[p].sizeimage = (pfmt[p].bytesperline * mp->height) /
-				fmt->vdownsampling[p] + fmt->data_offset[p];
-
+		pfmt[p].sizeimage = pfmt[p].bytesperline * mp->height +
+			fmt->data_offset[p];
 		memset(pfmt[p].reserved, 0, sizeof(pfmt[p].reserved));
 	}
-	for (p = fmt->buffers; p < fmt->planes; p++)
-		pfmt[0].sizeimage += (pfmt[0].bytesperline * mp->height *
-			(fmt->bit_depth[p] / fmt->vdownsampling[p])) /
-			(fmt->bit_depth[0] / fmt->vdownsampling[0]);
-
 	mp->colorspace = vivid_colorspace_cap(dev);
-	if (fmt->color_enc == TGP_COLOR_ENC_HSV)
-		mp->hsv_enc = vivid_hsv_enc_cap(dev);
-	else
-		mp->ycbcr_enc = vivid_ycbcr_enc_cap(dev);
-	mp->xfer_func = vivid_xfer_func_cap(dev);
+	mp->ycbcr_enc = vivid_ycbcr_enc_cap(dev);
 	mp->quantization = vivid_quantization_cap(dev);
 	memset(mp->reserved, 0, sizeof(mp->reserved));
 	return 0;
@@ -648,7 +627,6 @@ int vivid_s_fmt_vid_cap(struct file *file, void *priv,
 	struct vb2_queue *q = &dev->vb_vid_cap_q;
 	int ret = vivid_try_fmt_vid_cap(file, priv, f);
 	unsigned factor = 1;
-	unsigned p;
 	unsigned i;
 
 	if (ret < 0)
@@ -676,7 +654,7 @@ int vivid_s_fmt_vid_cap(struct file *file, void *priv,
 
 		if (dev->has_scaler_cap) {
 			if (dev->has_compose_cap)
-				v4l2_rect_map_inside(compose, &r);
+				rect_map_inside(compose, &r);
 			else
 				*compose = r;
 			if (dev->has_crop_cap && !dev->has_compose_cap) {
@@ -691,9 +669,9 @@ int vivid_s_fmt_vid_cap(struct file *file, void *priv,
 					factor * r.height * MAX_ZOOM
 				};
 
-				v4l2_rect_set_min_size(crop, &min_r);
-				v4l2_rect_set_max_size(crop, &max_r);
-				v4l2_rect_map_inside(crop, &dev->crop_bounds_cap);
+				rect_set_min_size(crop, &min_r);
+				rect_set_max_size(crop, &max_r);
+				rect_map_inside(crop, &dev->crop_bounds_cap);
 			} else if (dev->has_crop_cap) {
 				struct v4l2_rect min_r = {
 					0, 0,
@@ -706,27 +684,27 @@ int vivid_s_fmt_vid_cap(struct file *file, void *priv,
 					factor * compose->height * MAX_ZOOM
 				};
 
-				v4l2_rect_set_min_size(crop, &min_r);
-				v4l2_rect_set_max_size(crop, &max_r);
-				v4l2_rect_map_inside(crop, &dev->crop_bounds_cap);
+				rect_set_min_size(crop, &min_r);
+				rect_set_max_size(crop, &max_r);
+				rect_map_inside(crop, &dev->crop_bounds_cap);
 			}
 		} else if (dev->has_crop_cap && !dev->has_compose_cap) {
 			r.height *= factor;
-			v4l2_rect_set_size_to(crop, &r);
-			v4l2_rect_map_inside(crop, &dev->crop_bounds_cap);
+			rect_set_size_to(crop, &r);
+			rect_map_inside(crop, &dev->crop_bounds_cap);
 			r = *crop;
 			r.height /= factor;
-			v4l2_rect_set_size_to(compose, &r);
+			rect_set_size_to(compose, &r);
 		} else if (!dev->has_crop_cap) {
-			v4l2_rect_map_inside(compose, &r);
+			rect_map_inside(compose, &r);
 		} else {
 			r.height *= factor;
-			v4l2_rect_set_max_size(crop, &r);
-			v4l2_rect_map_inside(crop, &dev->crop_bounds_cap);
+			rect_set_max_size(crop, &r);
+			rect_map_inside(crop, &dev->crop_bounds_cap);
 			compose->top *= factor;
 			compose->height *= factor;
-			v4l2_rect_set_size_to(compose, crop);
-			v4l2_rect_map_inside(compose, &r);
+			rect_set_size_to(compose, crop);
+			rect_map_inside(compose, &r);
 			compose->top /= factor;
 			compose->height /= factor;
 		}
@@ -737,29 +715,27 @@ int vivid_s_fmt_vid_cap(struct file *file, void *priv,
 					webcam_sizes[i].height == mp->height)
 				break;
 		dev->webcam_size_idx = i;
-		if (dev->webcam_ival_idx >= 2 * (VIVID_WEBCAM_SIZES - i))
-			dev->webcam_ival_idx = 2 * (VIVID_WEBCAM_SIZES - i) - 1;
+		if (dev->webcam_ival_idx >= 2 * (3 - i))
+			dev->webcam_ival_idx = 2 * (3 - i) - 1;
 		vivid_update_format_cap(dev, false);
 	} else {
 		struct v4l2_rect r = { 0, 0, mp->width, mp->height };
 
-		v4l2_rect_set_size_to(compose, &r);
+		rect_set_size_to(compose, &r);
 		r.height *= factor;
-		v4l2_rect_set_size_to(crop, &r);
+		rect_set_size_to(crop, &r);
 	}
 
 	dev->fmt_cap_rect.width = mp->width;
 	dev->fmt_cap_rect.height = mp->height;
 	tpg_s_buf_height(&dev->tpg, mp->height);
-	tpg_s_fourcc(&dev->tpg, dev->fmt_cap->fourcc);
-	for (p = 0; p < tpg_g_buffers(&dev->tpg); p++)
-		tpg_s_bytesperline(&dev->tpg, p, mp->plane_fmt[p].bytesperline);
+	tpg_s_bytesperline(&dev->tpg, 0, mp->plane_fmt[0].bytesperline);
+	if (tpg_g_planes(&dev->tpg) > 1)
+		tpg_s_bytesperline(&dev->tpg, 1, mp->plane_fmt[1].bytesperline);
 	dev->field_cap = mp->field;
-	if (dev->field_cap == V4L2_FIELD_ALTERNATE)
-		tpg_s_field(&dev->tpg, V4L2_FIELD_TOP, true);
-	else
-		tpg_s_field(&dev->tpg, dev->field_cap, false);
+	tpg_s_field(&dev->tpg, dev->field_cap);
 	tpg_s_crop_compose(&dev->tpg, &dev->crop_cap, &dev->compose_cap);
+	tpg_s_fourcc(&dev->tpg, dev->fmt_cap->fourcc);
 	if (vivid_is_sdtv_cap(dev))
 		dev->tv_field_cap = mp->field;
 	tpg_update_mv_step(&dev->tpg);
@@ -836,7 +812,7 @@ int vivid_vid_cap_g_selection(struct file *file, void *priv,
 	if (sel->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 	if (vivid_is_webcam(dev))
-		return -ENODATA;
+		return -EINVAL;
 
 	sel->r.left = sel->r.top = 0;
 	switch (sel->target) {
@@ -877,8 +853,6 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 	struct vivid_dev *dev = video_drvdata(file);
 	struct v4l2_rect *crop = &dev->crop_cap;
 	struct v4l2_rect *compose = &dev->compose_cap;
-	unsigned orig_compose_w = compose->width;
-	unsigned orig_compose_h = compose->height;
 	unsigned factor = V4L2_FIELD_HAS_T_OR_B(dev->field_cap) ? 2 : 1;
 	int ret;
 
@@ -887,7 +861,7 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 	if (s->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
 	if (vivid_is_webcam(dev))
-		return -ENODATA;
+		return -EINVAL;
 
 	switch (s->target) {
 	case V4L2_SEL_TGT_CROP:
@@ -896,9 +870,9 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 		ret = vivid_vid_adjust_sel(s->flags, &s->r);
 		if (ret)
 			return ret;
-		v4l2_rect_set_min_size(&s->r, &vivid_min_rect);
-		v4l2_rect_set_max_size(&s->r, &dev->src_rect);
-		v4l2_rect_map_inside(&s->r, &dev->crop_bounds_cap);
+		rect_set_min_size(&s->r, &vivid_min_rect);
+		rect_set_max_size(&s->r, &dev->src_rect);
+		rect_map_inside(&s->r, &dev->crop_bounds_cap);
 		s->r.top /= factor;
 		s->r.height /= factor;
 		if (dev->has_scaler_cap) {
@@ -914,37 +888,36 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 				s->r.height / MAX_ZOOM
 			};
 
-			v4l2_rect_set_min_size(&fmt, &min_rect);
+			rect_set_min_size(&fmt, &min_rect);
 			if (!dev->has_compose_cap)
-				v4l2_rect_set_max_size(&fmt, &max_rect);
-			if (!v4l2_rect_same_size(&dev->fmt_cap_rect, &fmt) &&
+				rect_set_max_size(&fmt, &max_rect);
+			if (!rect_same_size(&dev->fmt_cap_rect, &fmt) &&
 			    vb2_is_busy(&dev->vb_vid_cap_q))
 				return -EBUSY;
 			if (dev->has_compose_cap) {
-				v4l2_rect_set_min_size(compose, &min_rect);
-				v4l2_rect_set_max_size(compose, &max_rect);
-				v4l2_rect_map_inside(compose, &fmt);
+				rect_set_min_size(compose, &min_rect);
+				rect_set_max_size(compose, &max_rect);
 			}
 			dev->fmt_cap_rect = fmt;
 			tpg_s_buf_height(&dev->tpg, fmt.height);
 		} else if (dev->has_compose_cap) {
 			struct v4l2_rect fmt = dev->fmt_cap_rect;
 
-			v4l2_rect_set_min_size(&fmt, &s->r);
-			if (!v4l2_rect_same_size(&dev->fmt_cap_rect, &fmt) &&
+			rect_set_min_size(&fmt, &s->r);
+			if (!rect_same_size(&dev->fmt_cap_rect, &fmt) &&
 			    vb2_is_busy(&dev->vb_vid_cap_q))
 				return -EBUSY;
 			dev->fmt_cap_rect = fmt;
 			tpg_s_buf_height(&dev->tpg, fmt.height);
-			v4l2_rect_set_size_to(compose, &s->r);
-			v4l2_rect_map_inside(compose, &dev->fmt_cap_rect);
+			rect_set_size_to(compose, &s->r);
+			rect_map_inside(compose, &dev->fmt_cap_rect);
 		} else {
-			if (!v4l2_rect_same_size(&s->r, &dev->fmt_cap_rect) &&
+			if (!rect_same_size(&s->r, &dev->fmt_cap_rect) &&
 			    vb2_is_busy(&dev->vb_vid_cap_q))
 				return -EBUSY;
-			v4l2_rect_set_size_to(&dev->fmt_cap_rect, &s->r);
-			v4l2_rect_set_size_to(compose, &s->r);
-			v4l2_rect_map_inside(compose, &dev->fmt_cap_rect);
+			rect_set_size_to(&dev->fmt_cap_rect, &s->r);
+			rect_set_size_to(compose, &s->r);
+			rect_map_inside(compose, &dev->fmt_cap_rect);
 			tpg_s_buf_height(&dev->tpg, dev->fmt_cap_rect.height);
 		}
 		s->r.top *= factor;
@@ -957,8 +930,8 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 		ret = vivid_vid_adjust_sel(s->flags, &s->r);
 		if (ret)
 			return ret;
-		v4l2_rect_set_min_size(&s->r, &vivid_min_rect);
-		v4l2_rect_set_max_size(&s->r, &dev->fmt_cap_rect);
+		rect_set_min_size(&s->r, &vivid_min_rect);
+		rect_set_max_size(&s->r, &dev->fmt_cap_rect);
 		if (dev->has_scaler_cap) {
 			struct v4l2_rect max_rect = {
 				0, 0,
@@ -966,7 +939,7 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 				(dev->src_rect.height / factor) * MAX_ZOOM
 			};
 
-			v4l2_rect_set_max_size(&s->r, &max_rect);
+			rect_set_max_size(&s->r, &max_rect);
 			if (dev->has_crop_cap) {
 				struct v4l2_rect min_rect = {
 					0, 0,
@@ -979,34 +952,34 @@ int vivid_vid_cap_s_selection(struct file *file, void *fh, struct v4l2_selection
 					(s->r.height * factor) * MAX_ZOOM
 				};
 
-				v4l2_rect_set_min_size(crop, &min_rect);
-				v4l2_rect_set_max_size(crop, &max_rect);
-				v4l2_rect_map_inside(crop, &dev->crop_bounds_cap);
+				rect_set_min_size(crop, &min_rect);
+				rect_set_max_size(crop, &max_rect);
+				rect_map_inside(crop, &dev->crop_bounds_cap);
 			}
 		} else if (dev->has_crop_cap) {
 			s->r.top *= factor;
 			s->r.height *= factor;
-			v4l2_rect_set_max_size(&s->r, &dev->src_rect);
-			v4l2_rect_set_size_to(crop, &s->r);
-			v4l2_rect_map_inside(crop, &dev->crop_bounds_cap);
+			rect_set_max_size(&s->r, &dev->src_rect);
+			rect_set_size_to(crop, &s->r);
+			rect_map_inside(crop, &dev->crop_bounds_cap);
 			s->r.top /= factor;
 			s->r.height /= factor;
 		} else {
-			v4l2_rect_set_size_to(&s->r, &dev->src_rect);
+			rect_set_size_to(&s->r, &dev->src_rect);
 			s->r.height /= factor;
 		}
-		v4l2_rect_map_inside(&s->r, &dev->fmt_cap_rect);
+		rect_map_inside(&s->r, &dev->fmt_cap_rect);
+		if (dev->bitmap_cap && (compose->width != s->r.width ||
+					compose->height != s->r.height)) {
+			kfree(dev->bitmap_cap);
+			dev->bitmap_cap = NULL;
+		}
 		*compose = s->r;
 		break;
 	default:
 		return -EINVAL;
 	}
 
-	if (dev->bitmap_cap && (compose->width != orig_compose_w ||
-				compose->height != orig_compose_h)) {
-		vfree(dev->bitmap_cap);
-		dev->bitmap_cap = NULL;
-	}
 	tpg_s_crop_compose(&dev->tpg, crop, compose);
 	return 0;
 }
@@ -1039,17 +1012,14 @@ int vivid_vid_cap_cropcap(struct file *file, void *priv,
 int vidioc_enum_fmt_vid_overlay(struct file *file, void  *priv,
 					struct v4l2_fmtdesc *f)
 {
-	struct vivid_dev *dev = video_drvdata(file);
 	const struct vivid_fmt *fmt;
-
-	if (dev->multiplanar)
-		return -ENOTTY;
 
 	if (f->index >= ARRAY_SIZE(formats_ovl))
 		return -EINVAL;
 
 	fmt = &formats_ovl[f->index];
 
+	strlcpy(f->description, fmt->name, sizeof(f->description));
 	f->pixelformat = fmt->fourcc;
 	return 0;
 }
@@ -1061,9 +1031,6 @@ int vidioc_g_fmt_vid_overlay(struct file *file, void *priv,
 	const struct v4l2_rect *compose = &dev->compose_cap;
 	struct v4l2_window *win = &f->fmt.win;
 	unsigned clipcount = win->clipcount;
-
-	if (dev->multiplanar)
-		return -ENOTTY;
 
 	win->w.top = dev->overlay_cap_top;
 	win->w.left = dev->overlay_cap_left;
@@ -1095,9 +1062,6 @@ int vidioc_try_fmt_vid_overlay(struct file *file, void *priv,
 	const struct v4l2_rect *compose = &dev->compose_cap;
 	struct v4l2_window *win = &f->fmt.win;
 	int i, j;
-
-	if (dev->multiplanar)
-		return -ENOTTY;
 
 	win->w.left = clamp_t(int, win->w.left,
 			      -dev->fb_cap.fmt.width, dev->fb_cap.fmt.width);
@@ -1135,7 +1099,7 @@ int vidioc_try_fmt_vid_overlay(struct file *file, void *priv,
 			for (j = i + 1; j < win->clipcount; j++) {
 				struct v4l2_rect *r2 = &dev->try_clips_cap[j].c;
 
-				if (v4l2_rect_overlap(r1, r2))
+				if (rect_overlap(r1, r2))
 					return -EINVAL;
 			}
 		}
@@ -1186,9 +1150,6 @@ int vivid_vid_cap_overlay(struct file *file, void *fh, unsigned i)
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
-	if (dev->multiplanar)
-		return -ENOTTY;
-
 	if (i && dev->fb_vbase_cap == NULL)
 		return -EINVAL;
 
@@ -1208,9 +1169,6 @@ int vivid_vid_cap_g_fbuf(struct file *file, void *fh,
 {
 	struct vivid_dev *dev = video_drvdata(file);
 
-	if (dev->multiplanar)
-		return -ENOTTY;
-
 	*a = dev->fb_cap;
 	a->capability = V4L2_FBUF_CAP_BITMAP_CLIPPING |
 			V4L2_FBUF_CAP_LIST_CLIPPING;
@@ -1226,9 +1184,6 @@ int vivid_vid_cap_s_fbuf(struct file *file, void *fh,
 {
 	struct vivid_dev *dev = video_drvdata(file);
 	const struct vivid_fmt *fmt;
-
-	if (dev->multiplanar)
-		return -ENOTTY;
 
 	if (!capable(CAP_SYS_ADMIN) && !capable(CAP_SYS_RAWIO))
 		return -EPERM;
@@ -1247,16 +1202,9 @@ int vivid_vid_cap_s_fbuf(struct file *file, void *fh,
 	fmt = vivid_get_format(dev, a->fmt.pixelformat);
 	if (!fmt || !fmt->can_do_overlay)
 		return -EINVAL;
-	if (a->fmt.bytesperline < (a->fmt.width * fmt->bit_depth[0]) / 8)
+	if (a->fmt.bytesperline < (a->fmt.width * fmt->depth) / 8)
 		return -EINVAL;
-	if (a->fmt.bytesperline > a->fmt.sizeimage / a->fmt.height)
-		return -EINVAL;
-
-	/*
-	 * Only support the framebuffer of one of the vivid instances.
-	 * Anything else is rejected.
-	 */
-	if (!vivid_validate_fb(a))
+	if (a->fmt.height * a->fmt.bytesperline < a->fmt.sizeimage)
 		return -EINVAL;
 
 	dev->fb_vbase_cap = phys_to_virt((unsigned long)a->base);
@@ -1384,7 +1332,7 @@ int vidioc_s_input(struct file *file, void *priv, unsigned i)
 			v4l2_ctrl_s_ctrl(dev->colorspace, VIVID_CS_170M);
 			break;
 		case HDMI:
-			if (bt->flags & V4L2_DV_FL_IS_CE_VIDEO) {
+			if (bt->standards & V4L2_DV_BT_STD_CEA861) {
 				if (dev->src_rect.width == 720 && dev->src_rect.height <= 576)
 					v4l2_ctrl_s_ctrl(dev->colorspace, VIVID_CS_170M);
 				else
@@ -1604,66 +1552,6 @@ int vivid_vid_cap_s_std(struct file *file, void *priv, v4l2_std_id id)
 	return 0;
 }
 
-static void find_aspect_ratio(u32 width, u32 height,
-			       u32 *num, u32 *denom)
-{
-	if (!(height % 3) && ((height * 4 / 3) == width)) {
-		*num = 4;
-		*denom = 3;
-	} else if (!(height % 9) && ((height * 16 / 9) == width)) {
-		*num = 16;
-		*denom = 9;
-	} else if (!(height % 10) && ((height * 16 / 10) == width)) {
-		*num = 16;
-		*denom = 10;
-	} else if (!(height % 4) && ((height * 5 / 4) == width)) {
-		*num = 5;
-		*denom = 4;
-	} else if (!(height % 9) && ((height * 15 / 9) == width)) {
-		*num = 15;
-		*denom = 9;
-	} else { /* default to 16:9 */
-		*num = 16;
-		*denom = 9;
-	}
-}
-
-static bool valid_cvt_gtf_timings(struct v4l2_dv_timings *timings)
-{
-	struct v4l2_bt_timings *bt = &timings->bt;
-	u32 total_h_pixel;
-	u32 total_v_lines;
-	u32 h_freq;
-
-	if (!v4l2_valid_dv_timings(timings, &vivid_dv_timings_cap,
-				NULL, NULL))
-		return false;
-
-	total_h_pixel = V4L2_DV_BT_FRAME_WIDTH(bt);
-	total_v_lines = V4L2_DV_BT_FRAME_HEIGHT(bt);
-
-	h_freq = (u32)bt->pixelclock / total_h_pixel;
-
-	if (bt->standards == 0 || (bt->standards & V4L2_DV_BT_STD_CVT)) {
-		if (v4l2_detect_cvt(total_v_lines, h_freq, bt->vsync, bt->width,
-				    bt->polarities, bt->interlaced, timings))
-			return true;
-	}
-
-	if (bt->standards == 0 || (bt->standards & V4L2_DV_BT_STD_GTF)) {
-		struct v4l2_fract aspect_ratio;
-
-		find_aspect_ratio(bt->width, bt->height,
-				  &aspect_ratio.numerator,
-				  &aspect_ratio.denominator);
-		if (v4l2_detect_gtf(total_v_lines, h_freq, bt->vsync,
-				    bt->polarities, bt->interlaced,
-				    aspect_ratio, timings))
-			return true;
-	}
-	return false;
-}
-
 int vivid_vid_cap_s_dv_timings(struct file *file, void *_fh,
 				    struct v4l2_dv_timings *timings)
 {
@@ -1671,16 +1559,13 @@ int vivid_vid_cap_s_dv_timings(struct file *file, void *_fh,
 
 	if (!vivid_is_hdmi_cap(dev))
 		return -ENODATA;
-	if (!v4l2_find_dv_timings_cap(timings, &vivid_dv_timings_cap,
-				      0, NULL, NULL) &&
-	    !valid_cvt_gtf_timings(timings))
-		return -EINVAL;
-
-	if (v4l2_match_dv_timings(timings, &dev->dv_timings_cap, 0, false))
-		return 0;
 	if (vb2_is_busy(&dev->vb_vid_cap_q))
 		return -EBUSY;
-
+	if (!v4l2_find_dv_timings_cap(timings, &vivid_dv_timings_cap,
+				0, NULL, NULL))
+		return -EINVAL;
+	if (v4l2_match_dv_timings(timings, &dev->dv_timings_cap, 0))
+		return 0;
 	dev->dv_timings_cap = *timings;
 	vivid_update_format_cap(dev, false);
 	return 0;
@@ -1718,9 +1603,6 @@ int vidioc_s_edid(struct file *file, void *_fh,
 			 struct v4l2_edid *edid)
 {
 	struct vivid_dev *dev = video_drvdata(file);
-	u16 phys_addr;
-	unsigned int i;
-	int ret;
 
 	memset(edid->reserved, 0, sizeof(edid->reserved));
 	if (edid->pad >= dev->num_inputs)
@@ -1729,32 +1611,14 @@ int vidioc_s_edid(struct file *file, void *_fh,
 		return -EINVAL;
 	if (edid->blocks == 0) {
 		dev->edid_blocks = 0;
-		phys_addr = CEC_PHYS_ADDR_INVALID;
-		goto set_phys_addr;
+		return 0;
 	}
 	if (edid->blocks > dev->edid_max_blocks) {
 		edid->blocks = dev->edid_max_blocks;
 		return -E2BIG;
 	}
-	phys_addr = cec_get_edid_phys_addr(edid->edid, edid->blocks * 128, NULL);
-	ret = v4l2_phys_addr_validate(phys_addr, &phys_addr, NULL);
-	if (ret)
-		return ret;
-
-	if (vb2_is_busy(&dev->vb_vid_cap_q))
-		return -EBUSY;
-
 	dev->edid_blocks = edid->blocks;
 	memcpy(dev->edid, edid->edid, edid->blocks * 128);
-
-set_phys_addr:
-	/* TODO: a proper hotplug detect cycle should be emulated here */
-	cec_s_phys_addr(dev->cec_rx_adap, phys_addr, false);
-
-	for (i = 0; i < MAX_OUTPUTS && dev->cec_tx_adap[i]; i++)
-		cec_s_phys_addr(dev->cec_tx_adap[i],
-				v4l2_phys_addr_for_input(phys_addr, i + 1),
-				false);
 	return 0;
 }
 
@@ -1799,14 +1663,18 @@ int vidioc_enum_frameintervals(struct file *file, void *priv,
 		return -EINVAL;
 
 	if (!vivid_is_webcam(dev)) {
+		static const struct v4l2_fract step = { 1, 1 };
+
 		if (fival->index)
 			return -EINVAL;
 		if (fival->width < MIN_WIDTH || fival->width > MAX_WIDTH * MAX_ZOOM)
 			return -EINVAL;
 		if (fival->height < MIN_HEIGHT || fival->height > MAX_HEIGHT * MAX_ZOOM)
 			return -EINVAL;
-		fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
-		fival->discrete = dev->timeperframe_vid_cap;
+		fival->type = V4L2_FRMIVAL_TYPE_CONTINUOUS;
+		fival->stepwise.min = tpf_min;
+		fival->stepwise.max = tpf_max;
+		fival->stepwise.step = step;
 		return 0;
 	}
 
@@ -1816,7 +1684,7 @@ int vidioc_enum_frameintervals(struct file *file, void *priv,
 			break;
 	if (i == ARRAY_SIZE(webcam_sizes))
 		return -EINVAL;
-	if (fival->index >= 2 * (VIVID_WEBCAM_SIZES - i))
+	if (fival->index >= 2 * (3 - i))
 		return -EINVAL;
 	fival->type = V4L2_FRMIVAL_TYPE_DISCRETE;
 	fival->discrete = webcam_intervals[fival->index];
@@ -1846,7 +1714,7 @@ int vivid_vid_cap_s_parm(struct file *file, void *priv,
 			  struct v4l2_streamparm *parm)
 {
 	struct vivid_dev *dev = video_drvdata(file);
-	unsigned ival_sz = 2 * (VIVID_WEBCAM_SIZES - dev->webcam_size_idx);
+	unsigned ival_sz = 2 * (3 - dev->webcam_size_idx);
 	struct v4l2_fract tpf;
 	unsigned i;
 
@@ -1874,7 +1742,6 @@ int vivid_vid_cap_s_parm(struct file *file, void *priv,
 	/* resync the thread's timings */
 	dev->cap_seq_resync = true;
 	dev->timeperframe_vid_cap = tpf;
-	parm->parm.capture.capability   = V4L2_CAP_TIMEPERFRAME;
 	parm->parm.capture.timeperframe = tpf;
 	parm->parm.capture.readbuffers  = 1;
 	return 0;

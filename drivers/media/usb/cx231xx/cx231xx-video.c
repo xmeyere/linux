@@ -36,10 +36,10 @@
 #include <media/v4l2-common.h>
 #include <media/v4l2-ioctl.h>
 #include <media/v4l2-event.h>
-#include <media/drv-intf/msp3400.h>
+#include <media/msp3400.h>
 #include <media/tuner.h>
 
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 
 #include "cx231xx-vbi.h"
 
@@ -100,73 +100,6 @@ static struct cx231xx_fmt format[] = {
 };
 
 
-static int cx231xx_enable_analog_tuner(struct cx231xx *dev)
-{
-#ifdef CONFIG_MEDIA_CONTROLLER
-	struct media_device *mdev = dev->media_dev;
-	struct media_entity  *entity, *decoder = NULL, *source;
-	struct media_link *link, *found_link = NULL;
-	int ret, active_links = 0;
-
-	if (!mdev)
-		return 0;
-
-	/*
-	 * This will find the tuner that is connected into the decoder.
-	 * Technically, this is not 100% correct, as the device may be
-	 * using an analog input instead of the tuner. However, as we can't
-	 * do DVB streaming while the DMA engine is being used for V4L2,
-	 * this should be enough for the actual needs.
-	 */
-	media_device_for_each_entity(entity, mdev) {
-		if (entity->function == MEDIA_ENT_F_ATV_DECODER) {
-			decoder = entity;
-			break;
-		}
-	}
-	if (!decoder)
-		return 0;
-
-	list_for_each_entry(link, &decoder->links, list) {
-		if (link->sink->entity == decoder) {
-			found_link = link;
-			if (link->flags & MEDIA_LNK_FL_ENABLED)
-				active_links++;
-			break;
-		}
-	}
-
-	if (active_links == 1 || !found_link)
-		return 0;
-
-	source = found_link->source->entity;
-	list_for_each_entry(link, &source->links, list) {
-		struct media_entity *sink;
-		int flags = 0;
-
-		sink = link->sink->entity;
-
-		if (sink == entity)
-			flags = MEDIA_LNK_FL_ENABLED;
-
-		ret = media_entity_setup_link(link, flags);
-		if (ret) {
-			dev_err(dev->dev,
-				"Couldn't change link %s->%s to %s. Error %d\n",
-				source->name, sink->name,
-				flags ? "enabled" : "disabled",
-				ret);
-			return ret;
-		} else
-			dev_dbg(dev->dev,
-				"link %s->%s was %s\n",
-				source->name, sink->name,
-				flags ? "ENABLED" : "disabled");
-	}
-#endif
-	return 0;
-}
-
 /* ------------------------------------------------------------------
 	Video buffer and parser functions
    ------------------------------------------------------------------*/
@@ -199,10 +132,10 @@ static inline void print_err_status(struct cx231xx *dev, int packet, int status)
 
 	switch (status) {
 	case -ENOENT:
-		errmsg = "unlinked synchronously";
+		errmsg = "unlinked synchronuously";
 		break;
 	case -ECONNRESET:
-		errmsg = "unlinked asynchronously";
+		errmsg = "unlinked asynchronuously";
 		break;
 	case -ENOSR:
 		errmsg = "Buffer error (overrun)";
@@ -734,9 +667,6 @@ buffer_setup(struct videobuf_queue *vq, unsigned int *count, unsigned int *size)
 	if (*count < CX231XX_MIN_BUF)
 		*count = CX231XX_MIN_BUF;
 
-
-	cx231xx_enable_analog_tuner(dev);
-
 	return 0;
 }
 
@@ -747,7 +677,8 @@ static void free_buffer(struct videobuf_queue *vq, struct cx231xx_buffer *buf)
 	struct cx231xx *dev = fh->dev;
 	unsigned long flags = 0;
 
-	BUG_ON(in_interrupt());
+	if (in_interrupt())
+		BUG();
 
 	/* We used to wait for the buffer to finish here, but this didn't work
 	   because, as we were keeping the state as VIDEOBUF_QUEUED,
@@ -825,7 +756,6 @@ buffer_prepare(struct videobuf_queue *vq, struct videobuf_buffer *vb,
 	}
 
 	buf->vb.state = VIDEOBUF_PREPARED;
-
 	return 0;
 
 fail:
@@ -859,7 +789,7 @@ static void buffer_release(struct videobuf_queue *vq,
 	free_buffer(vq, buf);
 }
 
-static const struct videobuf_queue_ops cx231xx_video_qops = {
+static struct videobuf_queue_ops cx231xx_video_qops = {
 	.buf_setup = buffer_setup,
 	.buf_prepare = buffer_prepare,
 	.buf_queue = buffer_queue,
@@ -1010,9 +940,7 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	struct cx231xx *dev = fh->dev;
 	int rc;
 	struct cx231xx_fmt *fmt;
-	struct v4l2_subdev_format format = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-	};
+	struct v4l2_mbus_framefmt mbus_fmt;
 
 	rc = check_dev(dev);
 	if (rc < 0)
@@ -1040,9 +968,9 @@ static int vidioc_s_fmt_vid_cap(struct file *file, void *priv,
 	dev->height = f->fmt.pix.height;
 	dev->format = fmt;
 
-	v4l2_fill_mbus_format(&format.format, &f->fmt.pix, MEDIA_BUS_FMT_FIXED);
-	call_all(dev, pad, set_fmt, NULL, &format);
-	v4l2_fill_pix_format(&f->fmt.pix, &format.format);
+	v4l2_fill_mbus_format(&mbus_fmt, &f->fmt.pix, MEDIA_BUS_FMT_FIXED);
+	call_all(dev, video, s_mbus_fmt, &mbus_fmt);
+	v4l2_fill_pix_format(&f->fmt.pix, &mbus_fmt);
 
 	return rc;
 }
@@ -1060,9 +988,7 @@ static int vidioc_s_std(struct file *file, void *priv, v4l2_std_id norm)
 {
 	struct cx231xx_fh *fh = priv;
 	struct cx231xx *dev = fh->dev;
-	struct v4l2_subdev_format format = {
-		.which = V4L2_SUBDEV_FORMAT_ACTIVE,
-	};
+	struct v4l2_mbus_framefmt mbus_fmt;
 	int rc;
 
 	rc = check_dev(dev);
@@ -1086,10 +1012,11 @@ static int vidioc_s_std(struct file *file, void *priv, v4l2_std_id norm)
 	/* We need to reset basic properties in the decoder related to
 	   resolution (since a standard change effects things like the number
 	   of lines in VACT, etc) */
-	format.format.code = MEDIA_BUS_FMT_FIXED;
-	format.format.width = dev->width;
-	format.format.height = dev->height;
-	call_all(dev, pad, set_fmt, NULL, &format);
+	memset(&mbus_fmt, 0, sizeof(mbus_fmt));
+	mbus_fmt.code = MEDIA_BUS_FMT_FIXED;
+	mbus_fmt.width = dev->width;
+	mbus_fmt.height = dev->height;
+	call_all(dev, video, s_mbus_fmt, &mbus_fmt);
 
 	/* do mode control overrides */
 	cx231xx_do_mode_ctrl_overrides(dev);
@@ -1103,53 +1030,8 @@ static const char *iname[] = {
 	[CX231XX_VMUX_TELEVISION] = "Television",
 	[CX231XX_VMUX_CABLE]      = "Cable TV",
 	[CX231XX_VMUX_DVB]        = "DVB",
+	[CX231XX_VMUX_DEBUG]      = "for debug only",
 };
-
-void cx231xx_v4l2_create_entities(struct cx231xx *dev)
-{
-#if defined(CONFIG_MEDIA_CONTROLLER)
-	int ret, i;
-
-	/* Create entities for each input connector */
-	for (i = 0; i < MAX_CX231XX_INPUT; i++) {
-		struct media_entity *ent = &dev->input_ent[i];
-
-		if (!INPUT(i)->type)
-			break;
-
-		ent->name = iname[INPUT(i)->type];
-		ent->flags = MEDIA_ENT_FL_CONNECTOR;
-		dev->input_pad[i].flags = MEDIA_PAD_FL_SOURCE;
-
-		switch (INPUT(i)->type) {
-		case CX231XX_VMUX_COMPOSITE1:
-			ent->function = MEDIA_ENT_F_CONN_COMPOSITE;
-			break;
-		case CX231XX_VMUX_SVIDEO:
-			ent->function = MEDIA_ENT_F_CONN_SVIDEO;
-			break;
-		case CX231XX_VMUX_TELEVISION:
-		case CX231XX_VMUX_CABLE:
-		case CX231XX_VMUX_DVB:
-			/* The DVB core will handle it */
-			if (dev->tuner_type == TUNER_ABSENT)
-				continue;
-			/* fall through */
-		default: /* just to shut up a gcc warning */
-			ent->function = MEDIA_ENT_F_CONN_RF;
-			break;
-		}
-
-		ret = media_entity_pads_init(ent, 1, &dev->input_pad[i]);
-		if (ret < 0)
-			pr_err("failed to initialize input pad[%d]!\n", i);
-
-		ret = media_device_register_entity(dev->media_dev, ent);
-		if (ret < 0)
-			pr_err("failed to register input entity %d!\n", i);
-	}
-#endif
-}
 
 int cx231xx_enum_input(struct file *file, void *priv,
 			     struct v4l2_input *i)
@@ -1157,8 +1039,7 @@ int cx231xx_enum_input(struct file *file, void *priv,
 	struct cx231xx_fh *fh = priv;
 	struct cx231xx *dev = fh->dev;
 	u32 gen_stat;
-	unsigned int n;
-	int ret;
+	unsigned int ret, n;
 
 	n = i->index;
 	if (n >= MAX_CX231XX_INPUT)
@@ -1175,7 +1056,7 @@ int cx231xx_enum_input(struct file *file, void *priv,
 	    (CX231XX_VMUX_CABLE == INPUT(n)->type))
 		i->type = V4L2_INPUT_TYPE_TUNER;
 
-	i->std = dev->vdev.tvnorms;
+	i->std = dev->vdev->tvnorms;
 
 	/* If they are asking about the active input, read signal status */
 	if (n == dev->video_input) {
@@ -1389,7 +1270,7 @@ int cx231xx_g_register(struct file *file, void *priv,
 		ret = cx231xx_read_ctrl_reg(dev, VRT_GET_REGISTER,
 				(u16)reg->reg, value, 4);
 		reg->val = value[0] | value[1] << 8 |
-			value[2] << 16 | (u32)value[3] << 24;
+			value[2] << 16 | value[3] << 24;
 		reg->size = 4;
 		break;
 	case 1:	/* AFE - read byte */
@@ -1487,7 +1368,6 @@ static int vidioc_cropcap(struct file *file, void *priv,
 {
 	struct cx231xx_fh *fh = priv;
 	struct cx231xx *dev = fh->dev;
-	bool is_50hz = dev->norm & V4L2_STD_625_50;
 
 	if (cc->type != V4L2_BUF_TYPE_VIDEO_CAPTURE)
 		return -EINVAL;
@@ -1497,8 +1377,8 @@ static int vidioc_cropcap(struct file *file, void *priv,
 	cc->bounds.width = dev->width;
 	cc->bounds.height = dev->height;
 	cc->defrect = cc->bounds;
-	cc->pixelaspect.numerator = is_50hz ? 54 : 11;
-	cc->pixelaspect.denominator = is_50hz ? 59 : 10;
+	cc->pixelaspect.numerator = 54;	/* 4:3 FIXME: remove magic numbers */
+	cc->pixelaspect.denominator = 59;
 
 	return 0;
 }
@@ -1571,7 +1451,7 @@ int cx231xx_querycap(struct file *file, void *priv,
 	cap->capabilities = cap->device_caps | V4L2_CAP_READWRITE |
 		V4L2_CAP_VBI_CAPTURE | V4L2_CAP_VIDEO_CAPTURE |
 		V4L2_CAP_STREAMING | V4L2_CAP_DEVICE_CAPS;
-	if (video_is_registered(&dev->radio_dev))
+	if (dev->radio_dev)
 		cap->capabilities |= V4L2_CAP_RADIO;
 
 	return 0;
@@ -1756,8 +1636,6 @@ static int cx231xx_v4l2_open(struct file *filp)
 	case VFL_TYPE_RADIO:
 		radio = 1;
 		break;
-	default:
-		return -EINVAL;
 	}
 
 	cx231xx_videodbg("open dev=%s type=%s users=%d\n",
@@ -1851,21 +1729,34 @@ void cx231xx_release_analog_resources(struct cx231xx *dev)
 
 	/*FIXME: I2C IR should be disconnected */
 
-	if (video_is_registered(&dev->radio_dev))
-		video_unregister_device(&dev->radio_dev);
-	if (video_is_registered(&dev->vbi_dev)) {
-		dev_info(dev->dev, "V4L2 device %s deregistered\n",
-			video_device_node_name(&dev->vbi_dev));
-		video_unregister_device(&dev->vbi_dev);
+	if (dev->radio_dev) {
+		if (video_is_registered(dev->radio_dev))
+			video_unregister_device(dev->radio_dev);
+		else
+			video_device_release(dev->radio_dev);
+		dev->radio_dev = NULL;
 	}
-	if (video_is_registered(&dev->vdev)) {
+	if (dev->vbi_dev) {
 		dev_info(dev->dev, "V4L2 device %s deregistered\n",
-			video_device_node_name(&dev->vdev));
+			video_device_node_name(dev->vbi_dev));
+		if (video_is_registered(dev->vbi_dev))
+			video_unregister_device(dev->vbi_dev);
+		else
+			video_device_release(dev->vbi_dev);
+		dev->vbi_dev = NULL;
+	}
+	if (dev->vdev) {
+		dev_info(dev->dev, "V4L2 device %s deregistered\n",
+			video_device_node_name(dev->vdev));
 
 		if (dev->board.has_417)
 			cx231xx_417_unregister(dev);
 
-		video_unregister_device(&dev->vdev);
+		if (video_is_registered(dev->vdev))
+			video_unregister_device(dev->vdev);
+		else
+			video_device_release(dev->vdev);
+		dev->vdev = NULL;
 	}
 	v4l2_ctrl_handler_free(&dev->ctrl_handler);
 	v4l2_ctrl_handler_free(&dev->radio_ctrl_handler);
@@ -1922,7 +1813,7 @@ static int cx231xx_close(struct file *filp)
 			v4l2_fh_exit(&fh->fh);
 			kfree(fh);
 			dev->users--;
-			wake_up_interruptible(&dev->open);
+			wake_up_interruptible_nr(&dev->open, 1);
 			return 0;
 		}
 
@@ -1941,7 +1832,7 @@ static int cx231xx_close(struct file *filp)
 		}
 
 		/* Save some power by putting tuner to sleep */
-		call_all(dev, tuner, standby);
+		call_all(dev, core, s_power, 0);
 
 		/* do this before setting alternate! */
 		if (dev->USE_ISO)
@@ -1955,7 +1846,7 @@ static int cx231xx_close(struct file *filp)
 	}
 	v4l2_fh_exit(&fh->fh);
 	kfree(fh);
-	wake_up_interruptible(&dev->open);
+	wake_up_interruptible_nr(&dev->open, 1);
 	return 0;
 }
 
@@ -2008,29 +1899,29 @@ cx231xx_v4l2_read(struct file *filp, char __user *buf, size_t count,
  * cx231xx_v4l2_poll()
  * will allocate buffers when called for the first time
  */
-static __poll_t cx231xx_v4l2_poll(struct file *filp, poll_table *wait)
+static unsigned int cx231xx_v4l2_poll(struct file *filp, poll_table *wait)
 {
-	__poll_t req_events = poll_requested_events(wait);
+	unsigned long req_events = poll_requested_events(wait);
 	struct cx231xx_fh *fh = filp->private_data;
 	struct cx231xx *dev = fh->dev;
-	__poll_t res = 0;
+	unsigned res = 0;
 	int rc;
 
 	rc = check_dev(dev);
 	if (rc < 0)
-		return EPOLLERR;
+		return POLLERR;
 
 	rc = res_get(fh);
 
 	if (unlikely(rc < 0))
-		return EPOLLERR;
+		return POLLERR;
 
 	if (v4l2_event_pending(&fh->fh))
-		res |= EPOLLPRI;
+		res |= POLLPRI;
 	else
 		poll_wait(filp, &fh->fh.wait, wait);
 
-	if (!(req_events & (EPOLLIN | EPOLLRDNORM)))
+	if (!(req_events & (POLLIN | POLLRDNORM)))
 		return res;
 
 	if ((V4L2_BUF_TYPE_VIDEO_CAPTURE == fh->type) ||
@@ -2040,7 +1931,7 @@ static __poll_t cx231xx_v4l2_poll(struct file *filp, poll_table *wait)
 		mutex_unlock(&dev->lock);
 		return res;
 	}
-	return res | EPOLLERR;
+	return res | POLLERR;
 }
 
 /*
@@ -2122,7 +2013,7 @@ static struct video_device cx231xx_vbi_template;
 
 static const struct video_device cx231xx_video_template = {
 	.fops         = &cx231xx_v4l_fops,
-	.release      = video_device_release_empty,
+	.release      = video_device_release,
 	.ioctl_ops    = &video_ioctl_ops,
 	.tvnorms      = V4L2_STD_ALL,
 };
@@ -2158,14 +2049,19 @@ static struct video_device cx231xx_radio_template = {
 
 /******************************** usb interface ******************************/
 
-static void cx231xx_vdev_init(struct cx231xx *dev,
-		struct video_device *vfd,
-		const struct video_device *template,
-		const char *type_name)
+static struct video_device *cx231xx_vdev_init(struct cx231xx *dev,
+		const struct video_device
+		*template, const char *type_name)
 {
+	struct video_device *vfd;
+
+	vfd = video_device_alloc();
+	if (NULL == vfd)
+		return NULL;
+
 	*vfd = *template;
 	vfd->v4l2_dev = &dev->v4l2_dev;
-	vfd->release = video_device_release_empty;
+	vfd->release = video_device_release;
 	vfd->lock = &dev->lock;
 
 	snprintf(vfd->name, sizeof(vfd->name), "%s %s", dev->name, type_name);
@@ -2177,6 +2073,7 @@ static void cx231xx_vdev_init(struct cx231xx *dev,
 		v4l2_disable_ioctl(vfd, VIDIOC_G_TUNER);
 		v4l2_disable_ioctl(vfd, VIDIOC_S_TUNER);
 	}
+	return vfd;
 }
 
 int cx231xx_register_analog_devices(struct cx231xx *dev)
@@ -2219,16 +2116,15 @@ int cx231xx_register_analog_devices(struct cx231xx *dev)
 	/* write code here...  */
 
 	/* allocate and fill video video_device struct */
-	cx231xx_vdev_init(dev, &dev->vdev, &cx231xx_video_template, "video");
-#if defined(CONFIG_MEDIA_CONTROLLER)
-	dev->video_pad.flags = MEDIA_PAD_FL_SINK;
-	ret = media_entity_pads_init(&dev->vdev.entity, 1, &dev->video_pad);
-	if (ret < 0)
-		dev_err(dev->dev, "failed to initialize video media entity!\n");
-#endif
-	dev->vdev.ctrl_handler = &dev->ctrl_handler;
+	dev->vdev = cx231xx_vdev_init(dev, &cx231xx_video_template, "video");
+	if (!dev->vdev) {
+		dev_err(dev->dev, "cannot allocate video_device.\n");
+		return -ENODEV;
+	}
+
+	dev->vdev->ctrl_handler = &dev->ctrl_handler;
 	/* register v4l2 video video_device */
-	ret = video_register_device(&dev->vdev, VFL_TYPE_GRABBER,
+	ret = video_register_device(dev->vdev, VFL_TYPE_GRABBER,
 				    video_nr[dev->devno]);
 	if (ret) {
 		dev_err(dev->dev,
@@ -2238,24 +2134,22 @@ int cx231xx_register_analog_devices(struct cx231xx *dev)
 	}
 
 	dev_info(dev->dev, "Registered video device %s [v4l2]\n",
-		video_device_node_name(&dev->vdev));
+		video_device_node_name(dev->vdev));
 
 	/* Initialize VBI template */
 	cx231xx_vbi_template = cx231xx_video_template;
 	strcpy(cx231xx_vbi_template.name, "cx231xx-vbi");
 
 	/* Allocate and fill vbi video_device struct */
-	cx231xx_vdev_init(dev, &dev->vbi_dev, &cx231xx_vbi_template, "vbi");
+	dev->vbi_dev = cx231xx_vdev_init(dev, &cx231xx_vbi_template, "vbi");
 
-#if defined(CONFIG_MEDIA_CONTROLLER)
-	dev->vbi_pad.flags = MEDIA_PAD_FL_SINK;
-	ret = media_entity_pads_init(&dev->vbi_dev.entity, 1, &dev->vbi_pad);
-	if (ret < 0)
-		dev_err(dev->dev, "failed to initialize vbi media entity!\n");
-#endif
-	dev->vbi_dev.ctrl_handler = &dev->ctrl_handler;
+	if (!dev->vbi_dev) {
+		dev_err(dev->dev, "cannot allocate video_device.\n");
+		return -ENODEV;
+	}
+	dev->vbi_dev->ctrl_handler = &dev->ctrl_handler;
 	/* register v4l2 vbi video_device */
-	ret = video_register_device(&dev->vbi_dev, VFL_TYPE_VBI,
+	ret = video_register_device(dev->vbi_dev, VFL_TYPE_VBI,
 				    vbi_nr[dev->devno]);
 	if (ret < 0) {
 		dev_err(dev->dev, "unable to register vbi device\n");
@@ -2263,13 +2157,18 @@ int cx231xx_register_analog_devices(struct cx231xx *dev)
 	}
 
 	dev_info(dev->dev, "Registered VBI device %s\n",
-		video_device_node_name(&dev->vbi_dev));
+		video_device_node_name(dev->vbi_dev));
 
 	if (cx231xx_boards[dev->model].radio.type == CX231XX_RADIO) {
-		cx231xx_vdev_init(dev, &dev->radio_dev,
-				&cx231xx_radio_template, "radio");
-		dev->radio_dev.ctrl_handler = &dev->radio_ctrl_handler;
-		ret = video_register_device(&dev->radio_dev, VFL_TYPE_RADIO,
+		dev->radio_dev = cx231xx_vdev_init(dev, &cx231xx_radio_template,
+						   "radio");
+		if (!dev->radio_dev) {
+			dev_err(dev->dev,
+				"cannot allocate video_device.\n");
+			return -ENODEV;
+		}
+		dev->radio_dev->ctrl_handler = &dev->radio_ctrl_handler;
+		ret = video_register_device(dev->radio_dev, VFL_TYPE_RADIO,
 					    radio_nr[dev->devno]);
 		if (ret < 0) {
 			dev_err(dev->dev,
@@ -2277,7 +2176,7 @@ int cx231xx_register_analog_devices(struct cx231xx *dev)
 			return ret;
 		}
 		dev_info(dev->dev, "Registered radio device as %s\n",
-			video_device_node_name(&dev->radio_dev));
+			video_device_node_name(dev->radio_dev));
 	}
 
 	return 0;

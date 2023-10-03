@@ -20,7 +20,11 @@
 #ifndef LPC_ICH_H
 #define LPC_ICH_H
 
-#include <linux/platform_data/intel-spi.h>
+/* Watchdog resources */
+#define ICH_RES_IO_TCO		0
+#define ICH_RES_IO_SMI		1
+#define ICH_RES_MEM_OFF		2
+#define ICH_RES_MEM_GCS_PMC	0
 
 /* GPIO resources */
 #define ICH_RES_GPIO	0
@@ -42,7 +46,6 @@ struct lpc_ich_info {
 	char name[32];
 	unsigned int iTCO_version;
 	unsigned int gpio_version;
-	enum intel_spi_type spi_type;
 	u8 use_gpio;
 };
 

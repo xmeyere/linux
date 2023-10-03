@@ -15,13 +15,14 @@
 #include <linux/types.h>
 #include <linux/delay.h>
 #include <linux/gfs2_ondisk.h>
-#include <linux/sched/signal.h>
 
 #include "incore.h"
 #include "glock.h"
 #include "util.h"
 #include "sys.h"
 #include "trace_gfs2.h"
+
+extern struct workqueue_struct *gfs2_control_wq;
 
 /**
  * gfs2_update_stats - Update time based stats
@@ -30,11 +31,10 @@
  *
  * @delta is the difference between the current rtt sample and the
  * running average srtt. We add 1/8 of that to the srtt in order to
- * update the current srtt estimate. The variance estimate is a bit
- * more complicated. We subtract the current variance estimate from
- * the abs value of the @delta and add 1/4 of that to the running
- * total.  That's equivalent to 3/4 of the current variance
- * estimate plus 1/4 of the abs of @delta.
+ * update the current srtt estimate. The varience estimate is a bit
+ * more complicated. We subtract the abs value of the @delta from
+ * the current variance estimate and add 1/4 of that to the running
+ * total.
  *
  * Note that the index points at the array entry containing the smoothed
  * mean value, and the variance is always in the following entry
@@ -50,7 +50,7 @@ static inline void gfs2_update_stats(struct gfs2_lkstats *s, unsigned index,
 	s64 delta = sample - s->stats[index];
 	s->stats[index] += (delta >> 3);
 	index++;
-	s->stats[index] += (s64)(abs(delta) - s->stats[index]) >> 2;
+	s->stats[index] += ((abs64(delta) - s->stats[index]) >> 2);
 }
 
 /**
@@ -80,7 +80,7 @@ static inline void gfs2_update_reply_times(struct gfs2_glock *gl)
 
 	preempt_disable();
 	rtt = ktime_to_ns(ktime_sub(ktime_get_real(), gl->gl_dstamp));
-	lks = this_cpu_ptr(gl->gl_name.ln_sbd->sd_lkstats);
+	lks = this_cpu_ptr(gl->gl_sbd->sd_lkstats);
 	gfs2_update_stats(&gl->gl_stats, index, rtt);		/* Local */
 	gfs2_update_stats(&lks->lkstats[gltype], index, rtt);	/* Global */
 	preempt_enable();
@@ -108,7 +108,7 @@ static inline void gfs2_update_request_times(struct gfs2_glock *gl)
 	dstamp = gl->gl_dstamp;
 	gl->gl_dstamp = ktime_get_real();
 	irt = ktime_to_ns(ktime_sub(gl->gl_dstamp, dstamp));
-	lks = this_cpu_ptr(gl->gl_name.ln_sbd->sd_lkstats);
+	lks = this_cpu_ptr(gl->gl_sbd->sd_lkstats);
 	gfs2_update_stats(&gl->gl_stats, GFS2_LKS_SIRT, irt);		/* Local */
 	gfs2_update_stats(&lks->lkstats[gltype], GFS2_LKS_SIRT, irt);	/* Global */
 	preempt_enable();
@@ -253,7 +253,7 @@ static void gfs2_reverse_hex(char *c, u64 value)
 static int gdlm_lock(struct gfs2_glock *gl, unsigned int req_state,
 		     unsigned int flags)
 {
-	struct lm_lockstruct *ls = &gl->gl_name.ln_sbd->sd_lockstruct;
+	struct lm_lockstruct *ls = &gl->gl_sbd->sd_lockstruct;
 	int req;
 	u32 lkf;
 	char strname[GDLM_STRNAME_BYTES] = "";
@@ -281,8 +281,9 @@ static int gdlm_lock(struct gfs2_glock *gl, unsigned int req_state,
 
 static void gdlm_put_lock(struct gfs2_glock *gl)
 {
-	struct gfs2_sbd *sdp = gl->gl_name.ln_sbd;
+	struct gfs2_sbd *sdp = gl->gl_sbd;
 	struct lm_lockstruct *ls = &sdp->sd_lockstruct;
+	int lvb_needs_unlock = 0;
 	int error;
 
 	if (gl->gl_lksb.sb_lkid == 0) {
@@ -295,15 +296,13 @@ static void gdlm_put_lock(struct gfs2_glock *gl)
 	gfs2_sbstats_inc(gl, GFS2_LKS_DCOUNT);
 	gfs2_update_request_times(gl);
 
-	/* don't want to call dlm if we've unmounted the lock protocol */
-	if (test_bit(DFL_UNMOUNT, &ls->ls_recover_flags)) {
-		gfs2_glock_free(gl);
-		return;
-	}
-	/* don't want to skip dlm_unlock writing the lvb when lock has one */
+	/* don't want to skip dlm_unlock writing the lvb when lock is ex */
+
+	if (gl->gl_lksb.sb_lvbptr && (gl->gl_state == LM_ST_EXCLUSIVE))
+		lvb_needs_unlock = 1;
 
 	if (test_bit(SDF_SKIP_DLM_UNLOCK, &sdp->sd_flags) &&
-	    !gl->gl_lksb.sb_lvbptr) {
+	    !lvb_needs_unlock) {
 		gfs2_glock_free(gl);
 		return;
 	}
@@ -320,7 +319,7 @@ static void gdlm_put_lock(struct gfs2_glock *gl)
 
 static void gdlm_cancel(struct gfs2_glock *gl)
 {
-	struct lm_lockstruct *ls = &gl->gl_name.ln_sbd->sd_lockstruct;
+	struct lm_lockstruct *ls = &gl->gl_sbd->sd_lockstruct;
 	dlm_unlock(ls->ls_dlm, gl->gl_lksb.sb_lkid, DLM_LKF_CANCEL, NULL, gl);
 }
 
@@ -823,13 +822,6 @@ restart:
 		goto fail;
 	}
 
-	/**
-	 * If we're a spectator, we don't want to take the lock in EX because
-	 * we cannot do the first-mount responsibility it implies: recovery.
-	 */
-	if (sdp->sd_args.ar_spectator)
-		goto locks_done;
-
 	error = mounted_lock(sdp, DLM_LOCK_EX, DLM_LKF_CONVERT|DLM_LKF_NOQUEUE);
 	if (!error) {
 		mounted_mode = DLM_LOCK_EX;
@@ -905,16 +897,9 @@ locks_done:
 	if (lvb_gen < mount_gen) {
 		/* wait for mounted nodes to update control_lock lvb to our
 		   generation, which might include new recovery bits set */
-		if (sdp->sd_args.ar_spectator) {
-			fs_info(sdp, "Recovery is required. Waiting for a "
-				"non-spectator to mount.\n");
-			msleep_interruptible(1000);
-		} else {
-			fs_info(sdp, "control_mount wait1 block %u start %u "
-				"mount %u lvb %u flags %lx\n", block_gen,
-				start_gen, mount_gen, lvb_gen,
-				ls->ls_recover_flags);
-		}
+		fs_info(sdp, "control_mount wait1 block %u start %u mount %u "
+			"lvb %u flags %lx\n", block_gen, start_gen, mount_gen,
+			lvb_gen, ls->ls_recover_flags);
 		spin_unlock(&ls->ls_recover_spin);
 		goto restart;
 	}
@@ -1073,7 +1058,6 @@ static void free_recover_size(struct lm_lockstruct *ls)
 	ls->ls_recover_submit = NULL;
 	ls->ls_recover_result = NULL;
 	ls->ls_recover_size = 0;
-	ls->ls_lvb_bits = NULL;
 }
 
 /* dlm calls before it does lock recovery */
@@ -1107,7 +1091,7 @@ static void gdlm_recover_slot(void *arg, struct dlm_slot *slot)
 
 	spin_lock(&ls->ls_recover_spin);
 	if (ls->ls_recover_size < jid + 1) {
-		fs_err(sdp, "recover_slot jid %d gen %u short size %d\n",
+		fs_err(sdp, "recover_slot jid %d gen %u short size %d",
 		       jid, ls->ls_recover_block, ls->ls_recover_size);
 		spin_unlock(&ls->ls_recover_spin);
 		return;
@@ -1169,7 +1153,7 @@ static void gdlm_recovery_result(struct gfs2_sbd *sdp, unsigned int jid,
 		return;
 	}
 	if (ls->ls_recover_size < jid + 1) {
-		fs_err(sdp, "recovery_result jid %d short size %d\n",
+		fs_err(sdp, "recovery_result jid %d short size %d",
 		       jid, ls->ls_recover_size);
 		spin_unlock(&ls->ls_recover_spin);
 		return;
@@ -1190,7 +1174,7 @@ static void gdlm_recovery_result(struct gfs2_sbd *sdp, unsigned int jid,
 	spin_unlock(&ls->ls_recover_spin);
 }
 
-static const struct dlm_lockspace_ops gdlm_lockspace_ops = {
+const struct dlm_lockspace_ops gdlm_lockspace_ops = {
 	.recover_prep = gdlm_recover_prep,
 	.recover_slot = gdlm_recover_slot,
 	.recover_done = gdlm_recover_done,

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __PERF_VDSO__
 #define __PERF_VDSO__
 
@@ -24,7 +23,7 @@ bool dso__is_vdso(struct dso *dso);
 struct machine;
 struct thread;
 
-struct dso *machine__findnew_vdso(struct machine *machine, struct thread *thread);
-void machine__exit_vdso(struct machine *machine);
+struct dso *vdso__dso_findnew(struct machine *machine, struct thread *thread);
+void vdso__exit(struct machine *machine);
 
 #endif /* __PERF_VDSO__ */

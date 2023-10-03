@@ -83,7 +83,7 @@ static inline int smp_startup_cpu(unsigned int lcpu)
 	pcpu = get_hard_smp_processor_id(lcpu);
 
 	/* Fixup atomic count: it exited inside IRQ handler. */
-	task_thread_info(paca_ptrs[lcpu]->__current)->preempt_count	= 0;
+	task_thread_info(paca[lcpu].__current)->preempt_count	= 0;
 
 	/*
 	 * If the RTAS start-cpu token does not exist then presume the
@@ -102,6 +102,13 @@ static inline int smp_startup_cpu(unsigned int lcpu)
 	return 1;
 }
 
+static int __init smp_iic_probe(void)
+{
+	iic_request_IPIs();
+
+	return num_possible_cpus();
+}
+
 static void smp_cell_setup_cpu(int cpu)
 {
 	if (cpu != boot_cpuid)
@@ -115,8 +122,7 @@ static void smp_cell_setup_cpu(int cpu)
 
 static int smp_cell_kick_cpu(int nr)
 {
-	if (nr < 0 || nr >= nr_cpu_ids)
-		return -EINVAL;
+	BUG_ON(nr < 0 || nr >= NR_CPUS);
 
 	if (!smp_startup_cpu(nr))
 		return -ENOENT;
@@ -126,14 +132,14 @@ static int smp_cell_kick_cpu(int nr)
 	 * cpu_start field to become non-zero After we set cpu_start,
 	 * the processor will continue on to secondary_start
 	 */
-	paca_ptrs[nr]->cpu_start = 1;
+	paca[nr].cpu_start = 1;
 
 	return 0;
 }
 
 static struct smp_ops_t bpa_iic_smp_ops = {
 	.message_pass	= iic_message_pass,
-	.probe		= iic_request_IPIs,
+	.probe		= smp_iic_probe,
 	.kick_cpu	= smp_cell_kick_cpu,
 	.setup_cpu	= smp_cell_setup_cpu,
 	.cpu_bootable	= smp_generic_cpu_bootable,

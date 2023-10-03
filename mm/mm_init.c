@@ -11,7 +11,6 @@
 #include <linux/export.h>
 #include <linux/memory.h>
 #include <linux/notifier.h>
-#include <linux/sched.h>
 #include "internal.h"
 
 #ifdef CONFIG_DEBUG_MEMORY_INIT
@@ -53,9 +52,15 @@ void __init mminit_verify_zonelist(void)
 				zone->name);
 
 			/* Iterate the zonelist */
-			for_each_zone_zonelist(zone, z, zonelist, zoneid)
-				pr_cont("%d:%s ", zone_to_nid(zone), zone->name);
-			pr_cont("\n");
+			for_each_zone_zonelist(zone, z, zonelist, zoneid) {
+#ifdef CONFIG_NUMA
+				printk(KERN_CONT "%d:%s ",
+					zone->node, zone->name);
+#else
+				printk(KERN_CONT "0:%s ", zone->name);
+#endif /* CONFIG_NUMA */
+			}
+			printk(KERN_CONT "\n");
 		}
 	}
 }
@@ -123,6 +128,14 @@ void __init mminit_verify_pageflags_layout(void)
 			(NODES_MASK << NODES_PGSHIFT) +
 			(SECTIONS_MASK << SECTIONS_PGSHIFT);
 	BUG_ON(or_mask != add_mask);
+}
+
+void __meminit mminit_verify_page_links(struct page *page, enum zone_type zone,
+			unsigned long nid, unsigned long pfn)
+{
+	BUG_ON(page_to_nid(page) != nid);
+	BUG_ON(page_zonenum(page) != zone);
+	BUG_ON(page_to_pfn(page) != pfn);
 }
 
 static __init int set_mminit_loglevel(char *str)

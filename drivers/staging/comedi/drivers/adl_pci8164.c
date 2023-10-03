@@ -1,9 +1,18 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * comedi/drivers/adl_pci8164.c
  *
  * Hardware comedi driver for PCI-8164 Adlink card
  * Copyright (C) 2004 Michel Lachine <mike@mikelachaine.ca>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 /*
@@ -19,8 +28,9 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
+#include <linux/pci.h>
 
-#include "../comedi_pci.h"
+#include "../comedidev.h"
 
 #define PCI8164_AXIS(x)		((x) * 0x08)
 #define PCI8164_CMD_MSTS_REG	0x00
@@ -59,7 +69,7 @@ static int adl_pci8164_insn_write(struct comedi_device *dev,
 }
 
 static int adl_pci8164_auto_attach(struct comedi_device *dev,
-				   unsigned long context_unused)
+					     unsigned long context_unused)
 {
 	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
 	struct comedi_subdevice *s;

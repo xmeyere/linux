@@ -19,7 +19,6 @@
 
 #include "cm.h"
 #include "cm-regbits-33xx.h"
-#include "prcm-common.h"
 
 /* CM base address */
 #define AM33XX_CM_BASE		0x44e00000
@@ -375,6 +374,6 @@
 
 
 #ifndef __ASSEMBLER__
-int am33xx_cm_init(const struct omap_prcm_init_data *data);
+int am33xx_cm_init(void);
 #endif /* ASSEMBLER */
 #endif

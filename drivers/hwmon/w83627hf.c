@@ -130,23 +130,17 @@ superio_select(struct w83627hf_sio_data *sio, int ld)
 	outb(ld,  sio->sioaddr + 1);
 }
 
-static inline int
+static inline void
 superio_enter(struct w83627hf_sio_data *sio)
 {
-	if (!request_muxed_region(sio->sioaddr, 2, DRVNAME))
-		return -EBUSY;
-
 	outb(0x87, sio->sioaddr);
 	outb(0x87, sio->sioaddr);
-
-	return 0;
 }
 
 static inline void
 superio_exit(struct w83627hf_sio_data *sio)
 {
 	outb(0xAA, sio->sioaddr);
-	release_region(sio->sioaddr, 2);
 }
 
 #define W627_DEVID 0x52
@@ -581,30 +575,26 @@ static ssize_t show_in_0(struct w83627hf_data *data, char *buf, u8 reg)
 	return sprintf(buf,"%ld\n", in0);
 }
 
-static ssize_t in0_input_show(struct device *dev,
-			      struct device_attribute *attr, char *buf)
+static ssize_t show_regs_in_0(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = w83627hf_update_device(dev);
 	return show_in_0(data, buf, data->in[0]);
 }
 
-static ssize_t in0_min_show(struct device *dev, struct device_attribute *attr,
-			    char *buf)
+static ssize_t show_regs_in_min0(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = w83627hf_update_device(dev);
 	return show_in_0(data, buf, data->in_min[0]);
 }
 
-static ssize_t in0_max_show(struct device *dev, struct device_attribute *attr,
-			    char *buf)
+static ssize_t show_regs_in_max0(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = w83627hf_update_device(dev);
 	return show_in_0(data, buf, data->in_max[0]);
 }
 
-static ssize_t in0_min_store(struct device *dev,
-			     struct device_attribute *attr, const char *buf,
-			     size_t count)
+static ssize_t store_regs_in_min0(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
 {
 	struct w83627hf_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -632,9 +622,8 @@ static ssize_t in0_min_store(struct device *dev,
 	return count;
 }
 
-static ssize_t in0_max_store(struct device *dev,
-			     struct device_attribute *attr, const char *buf,
-			     size_t count)
+static ssize_t store_regs_in_max0(struct device *dev, struct device_attribute *attr,
+	const char *buf, size_t count)
 {
 	struct w83627hf_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -662,9 +651,11 @@ static ssize_t in0_max_store(struct device *dev,
 	return count;
 }
 
-static DEVICE_ATTR_RO(in0_input);
-static DEVICE_ATTR_RW(in0_min);
-static DEVICE_ATTR_RW(in0_max);
+static DEVICE_ATTR(in0_input, S_IRUGO, show_regs_in_0, NULL);
+static DEVICE_ATTR(in0_min, S_IRUGO | S_IWUSR,
+	show_regs_in_min0, store_regs_in_min0);
+static DEVICE_ATTR(in0_max, S_IRUGO | S_IWUSR,
+	show_regs_in_max0, store_regs_in_max0);
 
 static ssize_t
 show_fan_input(struct device *dev, struct device_attribute *devattr, char *buf)
@@ -805,22 +796,21 @@ sysfs_temp_decl(2);
 sysfs_temp_decl(3);
 
 static ssize_t
-cpu0_vid_show(struct device *dev, struct device_attribute *attr, char *buf)
+show_vid_reg(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = w83627hf_update_device(dev);
 	return sprintf(buf, "%ld\n", (long) vid_from_reg(data->vid, data->vrm));
 }
-static DEVICE_ATTR_RO(cpu0_vid);
+static DEVICE_ATTR(cpu0_vid, S_IRUGO, show_vid_reg, NULL);
 
 static ssize_t
-vrm_show(struct device *dev, struct device_attribute *attr, char *buf)
+show_vrm_reg(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = dev_get_drvdata(dev);
 	return sprintf(buf, "%ld\n", (long) data->vrm);
 }
 static ssize_t
-vrm_store(struct device *dev, struct device_attribute *attr, const char *buf,
-	  size_t count)
+store_vrm_reg(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct w83627hf_data *data = dev_get_drvdata(dev);
 	unsigned long val;
@@ -836,15 +826,15 @@ vrm_store(struct device *dev, struct device_attribute *attr, const char *buf,
 
 	return count;
 }
-static DEVICE_ATTR_RW(vrm);
+static DEVICE_ATTR(vrm, S_IRUGO | S_IWUSR, show_vrm_reg, store_vrm_reg);
 
 static ssize_t
-alarms_show(struct device *dev, struct device_attribute *attr, char *buf)
+show_alarms_reg(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = w83627hf_update_device(dev);
 	return sprintf(buf, "%ld\n", (long) data->alarms);
 }
-static DEVICE_ATTR_RO(alarms);
+static DEVICE_ATTR(alarms, S_IRUGO, show_alarms_reg, NULL);
 
 static ssize_t
 show_alarm(struct device *dev, struct device_attribute *attr, char *buf)
@@ -870,7 +860,7 @@ static SENSOR_DEVICE_ATTR(temp2_alarm, S_IRUGO, show_alarm, NULL, 5);
 static SENSOR_DEVICE_ATTR(temp3_alarm, S_IRUGO, show_alarm, NULL, 13);
 
 static ssize_t
-beep_mask_show(struct device *dev, struct device_attribute *attr, char *buf)
+show_beep_mask(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct w83627hf_data *data = w83627hf_update_device(dev);
 	return sprintf(buf, "%ld\n",
@@ -878,7 +868,7 @@ beep_mask_show(struct device *dev, struct device_attribute *attr, char *buf)
 }
 
 static ssize_t
-beep_mask_store(struct device *dev, struct device_attribute *attr,
+store_beep_mask(struct device *dev, struct device_attribute *attr,
 		const char *buf, size_t count)
 {
 	struct w83627hf_data *data = dev_get_drvdata(dev);
@@ -905,7 +895,8 @@ beep_mask_store(struct device *dev, struct device_attribute *attr,
 	return count;
 }
 
-static DEVICE_ATTR_RW(beep_mask);
+static DEVICE_ATTR(beep_mask, S_IRUGO | S_IWUSR,
+		   show_beep_mask, store_beep_mask);
 
 static ssize_t
 show_beep(struct device *dev, struct device_attribute *attr, char *buf)
@@ -1273,18 +1264,18 @@ sysfs_temp_type(2);
 sysfs_temp_type(3);
 
 static ssize_t
-name_show(struct device *dev, struct device_attribute *devattr, char *buf)
+show_name(struct device *dev, struct device_attribute *devattr, char *buf)
 {
 	struct w83627hf_data *data = dev_get_drvdata(dev);
 
 	return sprintf(buf, "%s\n", data->name);
 }
-static DEVICE_ATTR_RO(name);
+static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 
 static int __init w83627hf_find(int sioaddr, unsigned short *addr,
 				struct w83627hf_sio_data *sio_data)
 {
-	int err;
+	int err = -ENODEV;
 	u16 val;
 
 	static __initconst char *const names[] = {
@@ -1296,11 +1287,7 @@ static int __init w83627hf_find(int sioaddr, unsigned short *addr,
 	};
 
 	sio_data->sioaddr = sioaddr;
-	err = superio_enter(sio_data);
-	if (err)
-		return err;
-
-	err = -ENODEV;
+	superio_enter(sio_data);
 	val = force_id ? force_id : superio_inb(sio_data, DEVID);
 	switch (val) {
 	case W627_DEVID:
@@ -1654,20 +1641,8 @@ static int w83627thf_read_gpio5(struct platform_device *pdev)
 	struct w83627hf_sio_data *sio_data = dev_get_platdata(&pdev->dev);
 	int res = 0xff, sel;
 
-	if (superio_enter(sio_data)) {
-		/*
-		 * Some other driver reserved the address space for itself.
-		 * We don't want to fail driver instantiation because of that,
-		 * so display a warning and keep going.
-		 */
-		dev_warn(&pdev->dev,
-			 "Can not read VID data: Failed to enable SuperIO access\n");
-		return res;
-	}
-
+	superio_enter(sio_data);
 	superio_select(sio_data, W83627HF_LD_GPIO5);
-
-	res = 0xff;
 
 	/* Make sure these GPIO pins are enabled */
 	if (!(superio_inb(sio_data, W83627THF_GPIO5_EN) & (1<<3))) {
@@ -1699,17 +1674,7 @@ static int w83687thf_read_vid(struct platform_device *pdev)
 	struct w83627hf_sio_data *sio_data = dev_get_platdata(&pdev->dev);
 	int res = 0xff;
 
-	if (superio_enter(sio_data)) {
-		/*
-		 * Some other driver reserved the address space for itself.
-		 * We don't want to fail driver instantiation because of that,
-		 * so display a warning and keep going.
-		 */
-		dev_warn(&pdev->dev,
-			 "Can not read VID data: Failed to enable SuperIO access\n");
-		return res;
-	}
-
+	superio_enter(sio_data);
 	superio_select(sio_data, W83627HF_LD_HWM);
 
 	/* Make sure these GPIO pins are enabled */

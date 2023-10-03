@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/lib/string.c
  *
@@ -27,10 +26,6 @@
 #include <linux/export.h>
 #include <linux/bug.h>
 #include <linux/errno.h>
-
-#include <asm/byteorder.h>
-#include <asm/word-at-a-time.h>
-#include <asm/page.h>
 
 #ifndef __HAVE_ARCH_STRNCASECMP
 /**
@@ -132,7 +127,7 @@ EXPORT_SYMBOL(strncpy);
  * @src: Where to copy the string from
  * @size: size of destination buffer
  *
- * Compatible with ``*BSD``: the result is always a valid
+ * Compatible with *BSD: the result is always a valid
  * NUL-terminated string that fits in the buffer (unless,
  * of course, the buffer size is zero). It does not pad
  * out the result like strncpy() does.
@@ -150,148 +145,6 @@ size_t strlcpy(char *dest, const char *src, size_t size)
 }
 EXPORT_SYMBOL(strlcpy);
 #endif
-
-#ifndef __HAVE_ARCH_STRSCPY
-/**
- * strscpy - Copy a C-string into a sized buffer
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- * @count: Size of destination buffer
- *
- * Copy the string, or as much of it as fits, into the dest buffer.  The
- * behavior is undefined if the string buffers overlap.  The destination
- * buffer is always NUL terminated, unless it's zero-sized.
- *
- * Preferred to strlcpy() since the API doesn't require reading memory
- * from the src string beyond the specified "count" bytes, and since
- * the return value is easier to error-check than strlcpy()'s.
- * In addition, the implementation is robust to the string changing out
- * from underneath it, unlike the current strlcpy() implementation.
- *
- * Preferred to strncpy() since it always returns a valid string, and
- * doesn't unnecessarily force the tail of the destination buffer to be
- * zeroed.  If zeroing is desired please use strscpy_pad().
- *
- * Return: The number of characters copied (not including the trailing
- *         %NUL) or -E2BIG if the destination buffer wasn't big enough.
- */
-ssize_t strscpy(char *dest, const char *src, size_t count)
-{
-	const struct word_at_a_time constants = WORD_AT_A_TIME_CONSTANTS;
-	size_t max = count;
-	long res = 0;
-
-	if (count == 0)
-		return -E2BIG;
-
-#ifdef CONFIG_HAVE_EFFICIENT_UNALIGNED_ACCESS
-	/*
-	 * If src is unaligned, don't cross a page boundary,
-	 * since we don't know if the next page is mapped.
-	 */
-	if ((long)src & (sizeof(long) - 1)) {
-		size_t limit = PAGE_SIZE - ((long)src & (PAGE_SIZE - 1));
-		if (limit < max)
-			max = limit;
-	}
-#else
-	/* If src or dest is unaligned, don't do word-at-a-time. */
-	if (((long) dest | (long) src) & (sizeof(long) - 1))
-		max = 0;
-#endif
-
-	while (max >= sizeof(unsigned long)) {
-		unsigned long c, data;
-
-		c = read_word_at_a_time(src+res);
-		if (has_zero(c, &data, &constants)) {
-			data = prep_zero_mask(c, data, &constants);
-			data = create_zero_mask(data);
-			*(unsigned long *)(dest+res) = c & zero_bytemask(data);
-			return res + find_zero(data);
-		}
-		*(unsigned long *)(dest+res) = c;
-		res += sizeof(unsigned long);
-		count -= sizeof(unsigned long);
-		max -= sizeof(unsigned long);
-	}
-
-	while (count) {
-		char c;
-
-		c = src[res];
-		dest[res] = c;
-		if (!c)
-			return res;
-		res++;
-		count--;
-	}
-
-	/* Hit buffer length without finding a NUL; force NUL-termination. */
-	if (res)
-		dest[res-1] = '\0';
-
-	return -E2BIG;
-}
-EXPORT_SYMBOL(strscpy);
-#endif
-
-/**
- * stpcpy - copy a string from src to dest returning a pointer to the new end
- *          of dest, including src's %NUL-terminator. May overrun dest.
- * @dest: pointer to end of string being copied into. Must be large enough
- *        to receive copy.
- * @src: pointer to the beginning of string being copied from. Must not overlap
- *       dest.
- *
- * stpcpy differs from strcpy in a key way: the return value is a pointer
- * to the new %NUL-terminating character in @dest. (For strcpy, the return
- * value is a pointer to the start of @dest). This interface is considered
- * unsafe as it doesn't perform bounds checking of the inputs. As such it's
- * not recommended for usage. Instead, its definition is provided in case
- * the compiler lowers other libcalls to stpcpy.
- */
-char *stpcpy(char *__restrict__ dest, const char *__restrict__ src);
-char *stpcpy(char *__restrict__ dest, const char *__restrict__ src)
-{
-	while ((*dest++ = *src++) != '\0')
-		/* nothing */;
-	return --dest;
-}
-EXPORT_SYMBOL(stpcpy);
-
-/**
- * strscpy_pad() - Copy a C-string into a sized buffer
- * @dest: Where to copy the string to
- * @src: Where to copy the string from
- * @count: Size of destination buffer
- *
- * Copy the string, or as much of it as fits, into the dest buffer.  The
- * behavior is undefined if the string buffers overlap.  The destination
- * buffer is always %NUL terminated, unless it's zero-sized.
- *
- * If the source string is shorter than the destination buffer, zeros
- * the tail of the destination buffer.
- *
- * For full explanation of why you may want to consider using the
- * 'strscpy' functions please see the function docstring for strscpy().
- *
- * Return: The number of characters copied (not including the trailing
- *         %NUL) or -E2BIG if the destination buffer wasn't big enough.
- */
-ssize_t strscpy_pad(char *dest, const char *src, size_t count)
-{
-	ssize_t written;
-
-	written = strscpy(dest, src, count);
-	if (written < 0 || written == count - 1)
-		return written;
-
-	memset(dest + written + 1, 0, count - written - 1);
-
-	return written;
-}
-EXPORT_SYMBOL(strscpy_pad);
 
 #ifndef __HAVE_ARCH_STRCAT
 /**
@@ -689,56 +542,33 @@ bool sysfs_streq(const char *s1, const char *s2)
 EXPORT_SYMBOL(sysfs_streq);
 
 /**
- * match_string - matches given string in an array
- * @array:	array of strings
- * @n:		number of strings in the array or -1 for NULL terminated arrays
- * @string:	string to match with
+ * strtobool - convert common user inputs into boolean values
+ * @s: input string
+ * @res: result
  *
- * Return:
- * index of a @string in the @array if matches, or %-EINVAL otherwise.
+ * This routine returns 0 iff the first character is one of 'Yy1Nn0'.
+ * Otherwise it will return -EINVAL.  Value pointed to by res is
+ * updated upon finding a match.
  */
-int match_string(const char * const *array, size_t n, const char *string)
+int strtobool(const char *s, bool *res)
 {
-	int index;
-	const char *item;
-
-	for (index = 0; index < n; index++) {
-		item = array[index];
-		if (!item)
-			break;
-		if (!strcmp(item, string))
-			return index;
+	switch (s[0]) {
+	case 'y':
+	case 'Y':
+	case '1':
+		*res = true;
+		break;
+	case 'n':
+	case 'N':
+	case '0':
+		*res = false;
+		break;
+	default:
+		return -EINVAL;
 	}
-
-	return -EINVAL;
+	return 0;
 }
-EXPORT_SYMBOL(match_string);
-
-/**
- * __sysfs_match_string - matches given string in an array
- * @array: array of strings
- * @n: number of strings in the array or -1 for NULL terminated arrays
- * @str: string to match with
- *
- * Returns index of @str in the @array or -EINVAL, just like match_string().
- * Uses sysfs_streq instead of strcmp for matching.
- */
-int __sysfs_match_string(const char * const *array, size_t n, const char *str)
-{
-	const char *item;
-	int index;
-
-	for (index = 0; index < n; index++) {
-		item = array[index];
-		if (!item)
-			break;
-		if (sysfs_streq(item, str))
-			return index;
-	}
-
-	return -EINVAL;
-}
-EXPORT_SYMBOL(__sysfs_match_string);
+EXPORT_SYMBOL(strtobool);
 
 #ifndef __HAVE_ARCH_MEMSET
 /**
@@ -777,75 +607,9 @@ EXPORT_SYMBOL(memset);
 void memzero_explicit(void *s, size_t count)
 {
 	memset(s, 0, count);
-	barrier_data(s);
+	OPTIMIZER_HIDE_VAR(s);
 }
 EXPORT_SYMBOL(memzero_explicit);
-
-#ifndef __HAVE_ARCH_MEMSET16
-/**
- * memset16() - Fill a memory area with a uint16_t
- * @s: Pointer to the start of the area.
- * @v: The value to fill the area with
- * @count: The number of values to store
- *
- * Differs from memset() in that it fills with a uint16_t instead
- * of a byte.  Remember that @count is the number of uint16_ts to
- * store, not the number of bytes.
- */
-void *memset16(uint16_t *s, uint16_t v, size_t count)
-{
-	uint16_t *xs = s;
-
-	while (count--)
-		*xs++ = v;
-	return s;
-}
-EXPORT_SYMBOL(memset16);
-#endif
-
-#ifndef __HAVE_ARCH_MEMSET32
-/**
- * memset32() - Fill a memory area with a uint32_t
- * @s: Pointer to the start of the area.
- * @v: The value to fill the area with
- * @count: The number of values to store
- *
- * Differs from memset() in that it fills with a uint32_t instead
- * of a byte.  Remember that @count is the number of uint32_ts to
- * store, not the number of bytes.
- */
-void *memset32(uint32_t *s, uint32_t v, size_t count)
-{
-	uint32_t *xs = s;
-
-	while (count--)
-		*xs++ = v;
-	return s;
-}
-EXPORT_SYMBOL(memset32);
-#endif
-
-#ifndef __HAVE_ARCH_MEMSET64
-/**
- * memset64() - Fill a memory area with a uint64_t
- * @s: Pointer to the start of the area.
- * @v: The value to fill the area with
- * @count: The number of values to store
- *
- * Differs from memset() in that it fills with a uint64_t instead
- * of a byte.  Remember that @count is the number of uint64_ts to
- * store, not the number of bytes.
- */
-void *memset64(uint64_t *s, uint64_t v, size_t count)
-{
-	uint64_t *xs = s;
-
-	while (count--)
-		*xs++ = v;
-	return s;
-}
-EXPORT_SYMBOL(memset64);
-#endif
 
 #ifndef __HAVE_ARCH_MEMCPY
 /**
@@ -920,26 +684,6 @@ __visible int memcmp(const void *cs, const void *ct, size_t count)
 	return res;
 }
 EXPORT_SYMBOL(memcmp);
-#endif
-
-#ifndef __HAVE_ARCH_BCMP
-/**
- * bcmp - returns 0 if and only if the buffers have identical contents.
- * @a: pointer to first buffer.
- * @b: pointer to second buffer.
- * @len: size of buffers.
- *
- * The sign or magnitude of a non-zero return value has no particular
- * meaning, and architectures may implement their own more efficient bcmp(). So
- * while this particular implementation is a simple (tail) call to memcmp, do
- * not rely on anything but whether the return value is zero or non-zero.
- */
-#undef bcmp
-int bcmp(const void *a, const void *b, size_t len)
-{
-	return memcmp(a, b, len);
-}
-EXPORT_SYMBOL(bcmp);
 #endif
 
 #ifndef __HAVE_ARCH_MEMSCAN
@@ -1071,7 +815,7 @@ void *memchr_inv(const void *start, int c, size_t bytes)
 
 	value64 = value;
 #if defined(CONFIG_ARCH_HAS_FAST_MULTIPLIER) && BITS_PER_LONG == 64
-	value64 *= 0x0101010101010101ULL;
+	value64 *= 0x0101010101010101;
 #elif defined(CONFIG_ARCH_HAS_FAST_MULTIPLIER)
 	value64 *= 0x01010101;
 	value64 |= value64 << 32;
@@ -1105,27 +849,3 @@ void *memchr_inv(const void *start, int c, size_t bytes)
 	return check_bytes8(start, value, bytes % 8);
 }
 EXPORT_SYMBOL(memchr_inv);
-
-/**
- * strreplace - Replace all occurrences of character in string.
- * @s: The string to operate on.
- * @old: The character being replaced.
- * @new: The character @old is replaced with.
- *
- * Returns pointer to the nul byte at the end of @s.
- */
-char *strreplace(char *s, char old, char new)
-{
-	for (; *s; ++s)
-		if (*s == old)
-			*s = new;
-	return s;
-}
-EXPORT_SYMBOL(strreplace);
-
-void fortify_panic(const char *name)
-{
-	pr_emerg("detected buffer overflow in %s\n", name);
-	BUG();
-}
-EXPORT_SYMBOL(fortify_panic);

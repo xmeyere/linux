@@ -38,13 +38,13 @@
 #include <drm/drmP.h>
 #include "drm_legacy.h"
 
-#if IS_ENABLED(CONFIG_AGP)
+#if __OS_HAS_AGP
 
 #ifdef HAVE_PAGE_AGP
 # include <asm/agp.h>
 #else
 # ifdef __powerpc__
-#  define PAGE_AGP	pgprot_noncached_wc(PAGE_KERNEL)
+#  define PAGE_AGP	__pgprot(_PAGE_KERNEL | _PAGE_NO_CACHE)
 # else
 #  define PAGE_AGP	PAGE_KERNEL
 # endif
@@ -80,7 +80,7 @@ static void *agp_remap(unsigned long offset, unsigned long size,
 	 * page-table instead (that's probably faster anyhow...).
 	 */
 	/* note: use vmalloc() because num_pages could be large... */
-	page_map = vmalloc(array_size(num_pages, sizeof(struct page *)));
+	page_map = vmalloc(num_pages * sizeof(struct page *));
 	if (!page_map)
 		return NULL;
 
@@ -111,14 +111,14 @@ int drm_unbind_agp(struct agp_memory * handle)
 	return agp_unbind_memory(handle);
 }
 
-#else /*  CONFIG_AGP  */
+#else  /*  __OS_HAS_AGP  */
 static inline void *agp_remap(unsigned long offset, unsigned long size,
 			      struct drm_device * dev)
 {
 	return NULL;
 }
 
-#endif /* CONFIG_AGP */
+#endif				/* agp */
 
 void drm_legacy_ioremap(struct drm_local_map *map, struct drm_device *dev)
 {
@@ -149,16 +149,3 @@ void drm_legacy_ioremapfree(struct drm_local_map *map, struct drm_device *dev)
 		iounmap(map->handle);
 }
 EXPORT_SYMBOL(drm_legacy_ioremapfree);
-
-u64 drm_get_max_iomem(void)
-{
-	struct resource *tmp;
-	resource_size_t max_iomem = 0;
-
-	for (tmp = iomem_resource.child; tmp; tmp = tmp->sibling) {
-		max_iomem = max(max_iomem,  tmp->end);
-	}
-
-	return max_iomem;
-}
-EXPORT_SYMBOL(drm_get_max_iomem);

@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *	webcam.c -- USB webcam gadget driver
  *
  *	Copyright (C) 2009-2010
  *	    Laurent Pinchart (laurent.pinchart@ideasonboard.com)
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -30,6 +34,9 @@ static unsigned int streaming_maxburst;
 module_param(streaming_maxburst, uint, S_IRUGO|S_IWUSR);
 MODULE_PARM_DESC(streaming_maxburst, "0 - 15 (ss only)");
 
+static unsigned int trace;
+module_param(trace, uint, S_IRUGO|S_IWUSR);
+MODULE_PARM_DESC(trace, "Trace level bitmask");
 /* --------------------------------------------------------------------------
  * Device descriptor
  */
@@ -70,7 +77,7 @@ static struct usb_function *f_uvc;
 static struct usb_device_descriptor webcam_device_descriptor = {
 	.bLength		= USB_DT_DEVICE_SIZE,
 	.bDescriptorType	= USB_DT_DEVICE,
-	/* .bcdUSB = DYNAMIC */
+	.bcdUSB			= cpu_to_le16(0x0200),
 	.bDeviceClass		= USB_CLASS_MISC,
 	.bDeviceSubClass	= 0x02,
 	.bDeviceProtocol	= 0x01,
@@ -292,7 +299,6 @@ static const struct uvc_descriptor_header * const uvc_fs_streaming_cls[] = {
 	(const struct uvc_descriptor_header *) &uvc_format_yuv,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_720p,
-	(const struct uvc_descriptor_header *) &uvc_color_matching,
 	(const struct uvc_descriptor_header *) &uvc_format_mjpg,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_720p,
@@ -305,7 +311,6 @@ static const struct uvc_descriptor_header * const uvc_hs_streaming_cls[] = {
 	(const struct uvc_descriptor_header *) &uvc_format_yuv,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_720p,
-	(const struct uvc_descriptor_header *) &uvc_color_matching,
 	(const struct uvc_descriptor_header *) &uvc_format_mjpg,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_720p,
@@ -318,7 +323,6 @@ static const struct uvc_descriptor_header * const uvc_ss_streaming_cls[] = {
 	(const struct uvc_descriptor_header *) &uvc_format_yuv,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_yuv_720p,
-	(const struct uvc_descriptor_header *) &uvc_color_matching,
 	(const struct uvc_descriptor_header *) &uvc_format_mjpg,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_360p,
 	(const struct uvc_descriptor_header *) &uvc_frame_mjpg_720p,
@@ -330,7 +334,7 @@ static const struct uvc_descriptor_header * const uvc_ss_streaming_cls[] = {
  * USB configuration
  */
 
-static int
+static int __init
 webcam_config_bind(struct usb_configuration *c)
 {
 	int status = 0;
@@ -354,7 +358,7 @@ static struct usb_configuration webcam_config_driver = {
 	.MaxPower		= CONFIG_USB_GADGET_VBUS_DRAW,
 };
 
-static int
+static int /* __init_or_exit */
 webcam_unbind(struct usb_composite_dev *cdev)
 {
 	if (!IS_ERR_OR_NULL(f_uvc))
@@ -364,7 +368,7 @@ webcam_unbind(struct usb_composite_dev *cdev)
 	return 0;
 }
 
-static int
+static int __init
 webcam_bind(struct usb_composite_dev *cdev)
 {
 	struct f_uvc_opts *uvc_opts;
@@ -379,6 +383,7 @@ webcam_bind(struct usb_composite_dev *cdev)
 	uvc_opts->streaming_interval = streaming_interval;
 	uvc_opts->streaming_maxpacket = streaming_maxpacket;
 	uvc_opts->streaming_maxburst = streaming_maxburst;
+	uvc_set_trace_param(trace);
 
 	uvc_opts->fs_control = uvc_fs_control_cls;
 	uvc_opts->ss_control = uvc_ss_control_cls;
@@ -417,7 +422,7 @@ error:
  * Driver
  */
 
-static struct usb_composite_driver webcam_driver = {
+static __refdata struct usb_composite_driver webcam_driver = {
 	.name		= "g_webcam",
 	.dev		= &webcam_device_descriptor,
 	.strings	= webcam_device_strings,
@@ -431,4 +436,5 @@ module_usb_composite_driver(webcam_driver);
 MODULE_AUTHOR("Laurent Pinchart");
 MODULE_DESCRIPTION("Webcam Video Gadget");
 MODULE_LICENSE("GPL");
+MODULE_VERSION("0.1.0");
 

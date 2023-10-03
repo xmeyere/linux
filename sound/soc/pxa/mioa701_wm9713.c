@@ -53,25 +53,26 @@
 #include <sound/initval.h>
 #include <sound/ac97_codec.h>
 
+#include "pxa2xx-ac97.h"
 #include "../codecs/wm9713.h"
 
 #define AC97_GPIO_PULL		0x58
 
 /* Use GPIO8 for rear speaker amplifier */
-static int rear_amp_power(struct snd_soc_component *component, int power)
+static int rear_amp_power(struct snd_soc_codec *codec, int power)
 {
 	unsigned short reg;
 
 	if (power) {
-		reg = snd_soc_component_read32(component, AC97_GPIO_CFG);
-		snd_soc_component_write(component, AC97_GPIO_CFG, reg | 0x0100);
-		reg = snd_soc_component_read32(component, AC97_GPIO_PULL);
-		snd_soc_component_write(component, AC97_GPIO_PULL, reg | (1<<15));
+		reg = snd_soc_read(codec, AC97_GPIO_CFG);
+		snd_soc_write(codec, AC97_GPIO_CFG, reg | 0x0100);
+		reg = snd_soc_read(codec, AC97_GPIO_PULL);
+		snd_soc_write(codec, AC97_GPIO_PULL, reg | (1<<15));
 	} else {
-		reg = snd_soc_component_read32(component, AC97_GPIO_CFG);
-		snd_soc_component_write(component, AC97_GPIO_CFG, reg & ~0x0100);
-		reg = snd_soc_component_read32(component, AC97_GPIO_PULL);
-		snd_soc_component_write(component, AC97_GPIO_PULL, reg & ~(1<<15));
+		reg = snd_soc_read(codec, AC97_GPIO_CFG);
+		snd_soc_write(codec, AC97_GPIO_CFG, reg & ~0x0100);
+		reg = snd_soc_read(codec, AC97_GPIO_PULL);
+		snd_soc_write(codec, AC97_GPIO_PULL, reg & ~(1<<15));
 	}
 
 	return 0;
@@ -80,13 +81,9 @@ static int rear_amp_power(struct snd_soc_component *component, int power)
 static int rear_amp_event(struct snd_soc_dapm_widget *widget,
 			  struct snd_kcontrol *kctl, int event)
 {
-	struct snd_soc_card *card = widget->dapm->card;
-	struct snd_soc_pcm_runtime *rtd;
-	struct snd_soc_component *component;
+	struct snd_soc_codec *codec = widget->dapm->card->rtd[0].codec;
 
-	rtd = snd_soc_get_pcm_runtime(card, card->dai_link[0].name);
-	component = rtd->codec_dai->component;
-	return rear_amp_power(component, SND_SOC_DAPM_EVENT_ON(event));
+	return rear_amp_power(codec, SND_SOC_DAPM_EVENT_ON(event));
 }
 
 /* mioa701 machine dapm widgets */
@@ -129,13 +126,13 @@ static const struct snd_soc_dapm_route audio_map[] = {
 
 static int mioa701_wm9713_init(struct snd_soc_pcm_runtime *rtd)
 {
-	struct snd_soc_component *component = rtd->codec_dai->component;
+	struct snd_soc_codec *codec = rtd->codec;
 
 	/* Prepare GPIO8 for rear speaker amplifier */
-	snd_soc_component_update_bits(component, AC97_GPIO_CFG, 0x100, 0x100);
+	snd_soc_update_bits(codec, AC97_GPIO_CFG, 0x100, 0x100);
 
 	/* Prepare MIC input */
-	snd_soc_component_update_bits(component, AC97_3D_CONTROL, 0xc000, 0xc000);
+	snd_soc_update_bits(codec, AC97_3D_CONTROL, 0xc000, 0xc000);
 
 	return 0;
 }
@@ -157,7 +154,7 @@ static struct snd_soc_dai_link mioa701_dai[] = {
 		.name = "AC97 Aux",
 		.stream_name = "AC97 Aux",
 		.cpu_dai_name = "pxa2xx-ac97-aux",
-		.codec_dai_name = "wm9713-aux",
+		.codec_dai_name ="wm9713-aux",
 		.codec_name = "wm9713-codec",
 		.platform_name = "pxa-pcm-audio",
 		.ops = &mioa701_ops,
@@ -184,16 +181,25 @@ static int mioa701_wm9713_probe(struct platform_device *pdev)
 		return -ENODEV;
 
 	mioa701.dev = &pdev->dev;
-	rc = devm_snd_soc_register_card(&pdev->dev, &mioa701);
+	rc =  snd_soc_register_card(&mioa701);
 	if (!rc)
-		dev_warn(&pdev->dev, "Be warned that incorrect mixers/muxes setup will "
+		dev_warn(&pdev->dev, "Be warned that incorrect mixers/muxes setup will"
 			 "lead to overheating and possible destruction of your device."
 			 " Do not use without a good knowledge of mio's board design!\n");
 	return rc;
 }
 
+static int mioa701_wm9713_remove(struct platform_device *pdev)
+{
+	struct snd_soc_card *card = platform_get_drvdata(pdev);
+
+	snd_soc_unregister_card(card);
+	return 0;
+}
+
 static struct platform_driver mioa701_wm9713_driver = {
 	.probe		= mioa701_wm9713_probe,
+	.remove		= mioa701_wm9713_remove,
 	.driver		= {
 		.name		= "mioa701-wm9713",
 		.pm     = &snd_soc_pm_ops,
@@ -206,4 +212,3 @@ module_platform_driver(mioa701_wm9713_driver);
 MODULE_AUTHOR("Robert Jarzmik (rjarzmik@free.fr)");
 MODULE_DESCRIPTION("ALSA SoC WM9713 MIO A701");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:mioa701-wm9713");

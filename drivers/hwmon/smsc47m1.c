@@ -73,21 +73,16 @@ superio_inb(int reg)
 /* logical device for fans is 0x0A */
 #define superio_select() superio_outb(0x07, 0x0A)
 
-static inline int
+static inline void
 superio_enter(void)
 {
-	if (!request_muxed_region(REG, 2, DRVNAME))
-		return -EBUSY;
-
 	outb(0x55, REG);
-	return 0;
 }
 
 static inline void
 superio_exit(void)
 {
 	outb(0xAA, REG);
-	release_region(REG, 2);
 }
 
 #define SUPERIO_REG_ACT		0x30
@@ -269,8 +264,8 @@ static ssize_t get_pwm_en(struct device *dev, struct device_attribute
 	return sprintf(buf, "%d\n", PWM_EN_FROM_REG(data->pwm[attr->index]));
 }
 
-static ssize_t alarms_show(struct device *dev,
-			   struct device_attribute *devattr, char *buf)
+static ssize_t get_alarms(struct device *dev, struct device_attribute
+			  *devattr, char *buf)
 {
 	struct smsc47m1_data *data = smsc47m1_update_device(dev, 0);
 	return sprintf(buf, "%d\n", data->alarms);
@@ -445,16 +440,16 @@ fan_present(1);
 fan_present(2);
 fan_present(3);
 
-static DEVICE_ATTR_RO(alarms);
+static DEVICE_ATTR(alarms, S_IRUGO, get_alarms, NULL);
 
-static ssize_t name_show(struct device *dev, struct device_attribute
+static ssize_t show_name(struct device *dev, struct device_attribute
 			 *devattr, char *buf)
 {
 	struct smsc47m1_data *data = dev_get_drvdata(dev);
 
 	return sprintf(buf, "%s\n", data->name);
 }
-static DEVICE_ATTR_RO(name);
+static DEVICE_ATTR(name, S_IRUGO, show_name, NULL);
 
 static struct attribute *smsc47m1_attributes_fan1[] = {
 	&sensor_dev_attr_fan1_input.dev_attr.attr,
@@ -536,12 +531,8 @@ static int __init smsc47m1_find(struct smsc47m1_sio_data *sio_data)
 {
 	u8 val;
 	unsigned short addr;
-	int err;
 
-	err = superio_enter();
-	if (err)
-		return err;
-
+	superio_enter();
 	val = force_id ? force_id : superio_inb(SUPERIO_REG_DEVID);
 
 	/*
@@ -617,14 +608,13 @@ static int __init smsc47m1_find(struct smsc47m1_sio_data *sio_data)
 static void smsc47m1_restore(const struct smsc47m1_sio_data *sio_data)
 {
 	if ((sio_data->activate & 0x01) == 0) {
-		if (!superio_enter()) {
-			superio_select();
-			pr_info("Disabling device\n");
-			superio_outb(SUPERIO_REG_ACT, sio_data->activate);
-			superio_exit();
-		} else {
-			pr_warn("Failed to disable device\n");
-		}
+		superio_enter();
+		superio_select();
+
+		pr_info("Disabling device\n");
+		superio_outb(SUPERIO_REG_ACT, sio_data->activate);
+
+		superio_exit();
 	}
 }
 

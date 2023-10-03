@@ -90,7 +90,7 @@ static LIST_HEAD(gtms);
  */
 struct gtm_timer *gtm_get_timer16(void)
 {
-	struct gtm *gtm;
+	struct gtm *gtm = NULL;
 	int i;
 
 	list_for_each_entry(gtm, &gtms, list_node) {
@@ -107,7 +107,7 @@ struct gtm_timer *gtm_get_timer16(void)
 		spin_unlock_irq(&gtm->lock);
 	}
 
-	if (!list_empty(&gtms))
+	if (gtm)
 		return ERR_PTR(-EBUSY);
 	return ERR_PTR(-ENODEV);
 }
@@ -388,8 +388,8 @@ static int __init fsl_gtm_init(void)
 
 		gtm = kzalloc(sizeof(*gtm), GFP_KERNEL);
 		if (!gtm) {
-			pr_err("%pOF: unable to allocate memory\n",
-				np);
+			pr_err("%s: unable to allocate memory\n",
+				np->full_name);
 			continue;
 		}
 
@@ -397,7 +397,7 @@ static int __init fsl_gtm_init(void)
 
 		clock = of_get_property(np, "clock-frequency", &size);
 		if (!clock || size != sizeof(*clock)) {
-			pr_err("%pOF: no clock-frequency\n", np);
+			pr_err("%s: no clock-frequency\n", np->full_name);
 			goto err;
 		}
 		gtm->clock = *clock;
@@ -406,9 +406,9 @@ static int __init fsl_gtm_init(void)
 			unsigned int irq;
 
 			irq = irq_of_parse_and_map(np, i);
-			if (!irq) {
-				pr_err("%pOF: not enough interrupts specified\n",
-				       np);
+			if (irq == NO_IRQ) {
+				pr_err("%s: not enough interrupts specified\n",
+				       np->full_name);
 				goto err;
 			}
 			gtm->timers[i].irq = irq;
@@ -417,8 +417,8 @@ static int __init fsl_gtm_init(void)
 
 		gtm->regs = of_iomap(np, 0);
 		if (!gtm->regs) {
-			pr_err("%pOF: unable to iomap registers\n",
-			       np);
+			pr_err("%s: unable to iomap registers\n",
+			       np->full_name);
 			goto err;
 		}
 

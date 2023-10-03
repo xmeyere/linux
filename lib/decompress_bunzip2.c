@@ -51,7 +51,6 @@
 #endif /* STATIC */
 
 #include <linux/decompress/mm.h>
-#include <linux/crc32poly.h>
 
 #ifndef INT_MAX
 #define INT_MAX 0x7fffffff
@@ -655,7 +654,7 @@ static int INIT start_bunzip(struct bunzip_data **bdp, void *inbuf, long len,
 	for (i = 0; i < 256; i++) {
 		c = i << 24;
 		for (j = 8; j; j--)
-			c = c&0x80000000 ? (c << 1)^(CRC32_POLY_BE) : (c << 1);
+			c = c&0x80000000 ? (c << 1)^0x04c11db7 : (c << 1);
 		bd->crc32Table[i] = c;
 	}
 
@@ -744,12 +743,12 @@ exit_0:
 }
 
 #ifdef PREBOOT
-STATIC int INIT __decompress(unsigned char *buf, long len,
+STATIC int INIT decompress(unsigned char *buf, long len,
 			long (*fill)(void*, unsigned long),
 			long (*flush)(void*, unsigned long),
-			unsigned char *outbuf, long olen,
+			unsigned char *outbuf,
 			long *pos,
-			void (*error)(char *x))
+			void(*error)(char *x))
 {
 	return bunzip2(buf, len - 4, fill, flush, outbuf, pos, error);
 }

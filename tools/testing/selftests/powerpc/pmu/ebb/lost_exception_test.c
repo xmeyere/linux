@@ -23,8 +23,6 @@ static int test_body(void)
 	int i, orig_period, max_period;
 	struct event event;
 
-	SKIP_IF(!ebb_is_supported());
-
 	/* We use PMC4 to make sure the kernel switches all counters correctly */
 	event_init_named(&event, 0x40002, "instructions");
 	event_leader_ebb_init(&event);
@@ -75,6 +73,7 @@ static int test_body(void)
 	ebb_freeze_pmcs();
 	ebb_global_disable();
 
+	count_pmc(4, sample_period);
 	mtspr(SPRN_PMC4, 0xdead);
 
 	dump_summary_ebb_state();
@@ -97,6 +96,5 @@ static int lost_exception(void)
 
 int main(void)
 {
-	test_harness_set_timeout(300);
 	return test_harness(lost_exception, "lost_exception");
 }

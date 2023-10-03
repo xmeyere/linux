@@ -48,8 +48,10 @@
 /* The solo writes to 1k byte pages, 32 pages, in the dma. Each 1k page
  * is broken down to 20 * 48 byte regions (one for each channel possible)
  * with the rest of the page being dummy data. */
-#define PERIODS			G723_FDMA_PAGES
+#define G723_MAX_BUFFER		(G723_PERIOD_BYTES * PERIODS_MAX)
 #define G723_INTR_ORDER		4 /* 0 - 4 */
+#define PERIODS_MIN		(1 << G723_INTR_ORDER)
+#define PERIODS_MAX		G723_FDMA_PAGES
 
 struct solo_snd_pcm {
 	int				on;
@@ -128,11 +130,11 @@ static const struct snd_pcm_hardware snd_solo_pcm_hw = {
 	.rate_max		= SAMPLERATE,
 	.channels_min		= 1,
 	.channels_max		= 1,
-	.buffer_bytes_max	= G723_PERIOD_BYTES * PERIODS,
+	.buffer_bytes_max	= G723_MAX_BUFFER,
 	.period_bytes_min	= G723_PERIOD_BYTES,
 	.period_bytes_max	= G723_PERIOD_BYTES,
-	.periods_min		= PERIODS,
-	.periods_max		= PERIODS,
+	.periods_min		= PERIODS_MIN,
+	.periods_max		= PERIODS_MAX,
 };
 
 static int snd_solo_pcm_open(struct snd_pcm_substream *ss)
@@ -223,9 +225,9 @@ static snd_pcm_uframes_t snd_solo_pcm_pointer(struct snd_pcm_substream *ss)
 	return idx * G723_FRAMES_PER_PAGE;
 }
 
-static int snd_solo_pcm_copy_user(struct snd_pcm_substream *ss, int channel,
-				  unsigned long pos, void __user *dst,
-				  unsigned long count)
+static int snd_solo_pcm_copy(struct snd_pcm_substream *ss, int channel,
+			     snd_pcm_uframes_t pos, void __user *dst,
+			     snd_pcm_uframes_t count)
 {
 	struct solo_snd_pcm *solo_pcm = snd_pcm_substream_chip(ss);
 	struct solo_dev *solo_dev = solo_pcm->solo_dev;
@@ -242,41 +244,17 @@ static int snd_solo_pcm_copy_user(struct snd_pcm_substream *ss, int channel,
 		if (err)
 			return err;
 
-		if (copy_to_user(dst, solo_pcm->g723_buf, G723_PERIOD_BYTES))
+		err = copy_to_user(dst + (i * G723_PERIOD_BYTES),
+				   solo_pcm->g723_buf, G723_PERIOD_BYTES);
+
+		if (err)
 			return -EFAULT;
-		dst += G723_PERIOD_BYTES;
 	}
 
 	return 0;
 }
 
-static int snd_solo_pcm_copy_kernel(struct snd_pcm_substream *ss, int channel,
-				    unsigned long pos, void *dst,
-				    unsigned long count)
-{
-	struct solo_snd_pcm *solo_pcm = snd_pcm_substream_chip(ss);
-	struct solo_dev *solo_dev = solo_pcm->solo_dev;
-	int err, i;
-
-	for (i = 0; i < (count / G723_FRAMES_PER_PAGE); i++) {
-		int page = (pos / G723_FRAMES_PER_PAGE) + i;
-
-		err = solo_p2m_dma_t(solo_dev, 0, solo_pcm->g723_dma,
-				     SOLO_G723_EXT_ADDR(solo_dev) +
-				     (page * G723_PERIOD_BLOCK) +
-				     (ss->number * G723_PERIOD_BYTES),
-				     G723_PERIOD_BYTES, 0, 0);
-		if (err)
-			return err;
-
-		memcpy(dst, solo_pcm->g723_buf, G723_PERIOD_BYTES);
-		dst += G723_PERIOD_BYTES;
-	}
-
-	return 0;
-}
-
-static const struct snd_pcm_ops snd_solo_pcm_ops = {
+static struct snd_pcm_ops snd_solo_pcm_ops = {
 	.open = snd_solo_pcm_open,
 	.close = snd_solo_pcm_close,
 	.ioctl = snd_pcm_lib_ioctl,
@@ -285,8 +263,7 @@ static const struct snd_pcm_ops snd_solo_pcm_ops = {
 	.prepare = snd_solo_pcm_prepare,
 	.trigger = snd_solo_pcm_trigger,
 	.pointer = snd_solo_pcm_pointer,
-	.copy_user = snd_solo_pcm_copy_user,
-	.copy_kernel = snd_solo_pcm_copy_kernel,
+	.copy = snd_solo_pcm_copy,
 };
 
 static int snd_solo_capture_volume_info(struct snd_kcontrol *kcontrol,
@@ -328,7 +305,7 @@ static int snd_solo_capture_volume_put(struct snd_kcontrol *kcontrol,
 	return 1;
 }
 
-static const struct snd_kcontrol_new snd_solo_capture_volume = {
+static struct snd_kcontrol_new snd_solo_capture_volume = {
 	.iface = SNDRV_CTL_ELEM_IFACE_MIXER,
 	.name = "Capture Volume",
 	.info = snd_solo_capture_volume_info,
@@ -363,8 +340,7 @@ static int solo_snd_pcm_init(struct solo_dev *solo_dev)
 	ret = snd_pcm_lib_preallocate_pages_for_all(pcm,
 					SNDRV_DMA_TYPE_CONTINUOUS,
 					snd_dma_continuous_data(GFP_KERNEL),
-					G723_PERIOD_BYTES * PERIODS,
-					G723_PERIOD_BYTES * PERIODS);
+					G723_MAX_BUFFER, G723_MAX_BUFFER);
 	if (ret < 0)
 		return ret;
 
@@ -375,7 +351,7 @@ static int solo_snd_pcm_init(struct solo_dev *solo_dev)
 
 int solo_g723_init(struct solo_dev *solo_dev)
 {
-	static struct snd_device_ops ops = { };
+	static struct snd_device_ops ops = { NULL };
 	struct snd_card *card;
 	struct snd_kcontrol_new kctl;
 	char name[32];
@@ -410,7 +386,7 @@ int solo_g723_init(struct solo_dev *solo_dev)
 
 	ret = snd_ctl_add(card, snd_ctl_new1(&kctl, solo_dev));
 	if (ret < 0)
-		goto snd_error;
+		return ret;
 
 	ret = solo_snd_pcm_init(solo_dev);
 	if (ret < 0)

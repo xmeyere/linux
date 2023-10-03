@@ -22,7 +22,7 @@
  */
 #include "priv.h"
 
-#include <core/pci.h>
+#include <core/device.h>
 
 struct priv {
 	struct pci_dev *pdev;
@@ -53,15 +53,9 @@ pcirom_fini(void *data)
 static void *
 pcirom_init(struct nvkm_bios *bios, const char *name)
 {
-	struct nvkm_device *device = bios->subdev.device;
+	struct pci_dev *pdev = nv_device(bios)->pdev;
 	struct priv *priv = NULL;
-	struct pci_dev *pdev;
 	int ret;
-
-	if (device->func->pci)
-		pdev = device->func->pci(device)->pdev;
-	else
-		return ERR_PTR(-ENODEV);
 
 	if (!(ret = pci_enable_rom(pdev))) {
 		if (ret = -ENOMEM,
@@ -91,23 +85,13 @@ nvbios_pcirom = {
 static void *
 platform_init(struct nvkm_bios *bios, const char *name)
 {
-	struct nvkm_device *device = bios->subdev.device;
-	struct pci_dev *pdev;
+	struct pci_dev *pdev = nv_device(bios)->pdev;
 	struct priv *priv;
 	int ret = -ENOMEM;
 
-	if (device->func->pci)
-		pdev = device->func->pci(device)->pdev;
-	else
-		return ERR_PTR(-ENODEV);
-
-	if (!pdev->rom || pdev->romlen == 0)
-		return ERR_PTR(-ENODEV);
-
 	if ((priv = kmalloc(sizeof(*priv), GFP_KERNEL))) {
-		priv->size = pdev->romlen;
 		if (ret = -ENODEV,
-		    (priv->rom = ioremap(pdev->rom, pdev->romlen)))
+		    (priv->rom = pci_platform_rom(pdev, &priv->size)))
 			return priv;
 		kfree(priv);
 	}
@@ -115,20 +99,11 @@ platform_init(struct nvkm_bios *bios, const char *name)
 	return ERR_PTR(ret);
 }
 
-static void
-platform_fini(void *data)
-{
-	struct priv *priv = data;
-
-	iounmap(priv->rom);
-	kfree(priv);
-}
-
 const struct nvbios_source
 nvbios_platform = {
 	.name = "PLATFORM",
 	.init = platform_init,
-	.fini = platform_fini,
+	.fini = (void(*)(void *))kfree,
 	.read = pcirom_read,
 	.rw = true,
 };

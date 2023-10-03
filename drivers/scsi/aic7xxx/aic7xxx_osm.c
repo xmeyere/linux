@@ -812,6 +812,7 @@ struct scsi_host_template aic7xxx_driver_template = {
 	.slave_configure	= ahc_linux_slave_configure,
 	.target_alloc		= ahc_linux_target_alloc,
 	.target_destroy		= ahc_linux_target_destroy,
+	.use_blk_tags		= 1,
 };
 
 /**************************** Tasklet Handler *********************************/
@@ -861,8 +862,8 @@ int
 ahc_dmamem_alloc(struct ahc_softc *ahc, bus_dma_tag_t dmat, void** vaddr,
 		 int flags, bus_dmamap_t *mapp)
 {
-	/* XXX: check if we really need the GFP_ATOMIC and unwind this mess! */
-	*vaddr = dma_alloc_coherent(ahc->dev, dmat->maxsize, mapp, GFP_ATOMIC);
+	*vaddr = pci_alloc_consistent(ahc->dev_softc,
+				      dmat->maxsize, mapp);
 	if (*vaddr == NULL)
 		return ENOMEM;
 	return 0;
@@ -872,7 +873,8 @@ void
 ahc_dmamem_free(struct ahc_softc *ahc, bus_dma_tag_t dmat,
 		void* vaddr, bus_dmamap_t map)
 {
-	dma_free_coherent(ahc->dev, dmat->maxsize, vaddr, map);
+	pci_free_consistent(ahc->dev_softc, dmat->maxsize,
+			    vaddr, map);
 }
 
 int
@@ -1123,7 +1125,8 @@ ahc_linux_register_host(struct ahc_softc *ahc, struct scsi_host_template *templa
 
 	host->transportt = ahc_linux_transport_template;
 
-	retval = scsi_add_host(host, ahc->dev);
+	retval = scsi_add_host(host,
+			(ahc->dev_softc ? &ahc->dev_softc->dev : NULL));
 	if (retval) {
 		printk(KERN_WARNING "aic7xxx: scsi_add_host failed\n");
 		scsi_host_put(host);
@@ -1139,7 +1142,7 @@ ahc_linux_register_host(struct ahc_softc *ahc, struct scsi_host_template *templa
  * or forcing transfer negotiations on the next command to any
  * target.
  */
-static void
+void
 ahc_linux_initialize_scsi_bus(struct ahc_softc *ahc)
 {
 	int i;
@@ -1211,9 +1214,10 @@ ahc_platform_alloc(struct ahc_softc *ahc, void *platform_arg)
 {
 
 	ahc->platform_data =
-	    kzalloc(sizeof(struct ahc_platform_data), GFP_ATOMIC);
+	    kmalloc(sizeof(struct ahc_platform_data), GFP_ATOMIC);
 	if (ahc->platform_data == NULL)
 		return (ENOMEM);
+	memset(ahc->platform_data, 0, sizeof(struct ahc_platform_data));
 	ahc->platform_data->irq = AHC_LINUX_NOIRQ;
 	ahc_lockinit(ahc);
 	ahc->seltime = (aic7xxx_seltime & 0x3) << 4;
@@ -1334,7 +1338,6 @@ ahc_platform_set_tags(struct ahc_softc *ahc, struct scsi_device *sdev,
 	case AHC_DEV_Q_TAGGED:
 		scsi_change_queue_depth(sdev,
 				dev->openings + dev->active);
-		break;
 	default:
 		/*
 		 * We allow the OS to queue 2 untagged transactions to
@@ -2325,6 +2328,11 @@ done:
 	} else
 		ahc_unlock(ahc, &flags);
 	return (retval);
+}
+
+void
+ahc_platform_dump_card_state(struct ahc_softc *ahc)
+{
 }
 
 static void ahc_linux_set_width(struct scsi_target *starget, int width)

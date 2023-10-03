@@ -70,7 +70,7 @@
 #include <linux/platform_device.h>
 
 #include <asm/setup.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/amigahw.h>
 #include <asm/amigaints.h>
 #include <asm/irq.h>
@@ -146,7 +146,6 @@ static struct amiga_floppy_struct unit[FD_MAX_UNITS];
 
 static struct timer_list flush_track_timer[FD_MAX_UNITS];
 static struct timer_list post_write_timer;
-static unsigned long post_write_timer_drive;
 static struct timer_list motor_on_timer;
 static struct timer_list motor_off_timer[FD_MAX_UNITS];
 static int on_attempts;
@@ -324,7 +323,7 @@ static void fd_deselect (int drive)
 
 }
 
-static void motor_on_callback(struct timer_list *unused)
+static void motor_on_callback(unsigned long nr)
 {
 	if (!(ciaa.pra & DSKRDY) || --on_attempts == 0) {
 		complete_all(&motor_on_completion);
@@ -345,6 +344,7 @@ static int fd_motor_on(int nr)
 		fd_select(nr);
 
 		reinit_completion(&motor_on_completion);
+		motor_on_timer.data = nr;
 		mod_timer(&motor_on_timer, jiffies + HZ/2);
 
 		on_attempts = 10;
@@ -356,7 +356,7 @@ static int fd_motor_on(int nr)
 		on_attempts = -1;
 #if 0
 		printk (KERN_ERR "motor_on failed, turning motor off\n");
-		fd_motor_off (motor_off_timer + nr);
+		fd_motor_off (nr);
 		return 0;
 #else
 		printk (KERN_WARNING "DSKRDY not set after 1.5 seconds - assuming drive is spinning notwithstanding\n");
@@ -366,17 +366,20 @@ static int fd_motor_on(int nr)
 	return 1;
 }
 
-static void fd_motor_off(struct timer_list *timer)
+static void fd_motor_off(unsigned long drive)
 {
-	unsigned long drive = ((unsigned long)timer -
-			       (unsigned long)&motor_off_timer[0]) /
-					sizeof(motor_off_timer[0]);
+	long calledfromint;
+#ifdef MODULE
+	long decusecount;
 
+	decusecount = drive & 0x40000000;
+#endif
+	calledfromint = drive & 0x80000000;
 	drive&=3;
-	if (!try_fdc(drive)) {
+	if (calledfromint && !try_fdc(drive)) {
 		/* We would be blocked in an interrupt, so try again later */
-		timer->expires = jiffies + 1;
-		add_timer(timer);
+		motor_off_timer[drive].expires = jiffies + 1;
+		add_timer(motor_off_timer + drive);
 		return;
 	}
 	unit[drive].motor = 0;
@@ -390,6 +393,8 @@ static void floppy_off (unsigned int nr)
 	int drive;
 
 	drive = nr & 3;
+	/* called this way it is always from interrupt */
+	motor_off_timer[drive].data = nr | 0x80000000;
 	mod_timer(motor_off_timer + drive, jiffies + 3*HZ);
 }
 
@@ -431,7 +436,7 @@ static int fd_calibrate(int drive)
 			break;
 		if (--n == 0) {
 			printk (KERN_ERR "fd%d: calibrate failed, turning motor off\n", drive);
-			fd_motor_off (motor_off_timer + drive);
+			fd_motor_off (drive);
 			unit[drive].track = -1;
 			rel_fdc();
 			return 0;
@@ -560,7 +565,7 @@ static irqreturn_t fd_block_done(int irq, void *dummy)
 	if (block_flag == 2) { /* writing */
 		writepending = 2;
 		post_write_timer.expires = jiffies + 1; /* at least 2 ms */
-		post_write_timer_drive = selected;
+		post_write_timer.data = selected;
 		add_timer(&post_write_timer);
 	}
 	else {                /* reading */
@@ -647,10 +652,6 @@ static void post_write (unsigned long drive)
 	rel_fdc(); /* corresponds to get_fdc() in raw_write */
 }
 
-static void post_write_callback(struct timer_list *timer)
-{
-	post_write(post_write_timer_drive);
-}
 
 /*
  * The following functions are to convert the block contents into raw data
@@ -1244,12 +1245,8 @@ static void dos_write(int disk)
 /* FIXME: this assumes the drive is still spinning -
  * which is only true if we complete writing a track within three seconds
  */
-static void flush_track_callback(struct timer_list *timer)
+static void flush_track_callback(unsigned long nr)
 {
-	unsigned long nr = ((unsigned long)timer -
-			       (unsigned long)&flush_track_timer[0]) /
-					sizeof(flush_track_timer[0]);
-
 	nr&=3;
 	writefromint = 1;
 	if (!try_fdc(nr)) {
@@ -1381,7 +1378,7 @@ static void redo_fd_request(void)
 	struct amiga_floppy_struct *floppy;
 	char *data;
 	unsigned long flags;
-	blk_status_t err;
+	int err;
 
 next_req:
 	rq = set_next_request();
@@ -1395,7 +1392,7 @@ next_req:
 
 next_segment:
 	/* Here someone could investigate to be more efficient */
-	for (cnt = 0, err = BLK_STS_OK; cnt < blk_rq_cur_sectors(rq); cnt++) {
+	for (cnt = 0, err = 0; cnt < blk_rq_cur_sectors(rq); cnt++) {
 #ifdef DEBUG
 		printk("fd: sector %ld + %d requested for %s\n",
 		       blk_rq_pos(rq), cnt,
@@ -1403,7 +1400,7 @@ next_segment:
 #endif
 		block = blk_rq_pos(rq) + cnt;
 		if ((int)block > floppy->blocks) {
-			err = BLK_STS_IOERR;
+			err = -EIO;
 			break;
 		}
 
@@ -1416,7 +1413,7 @@ next_segment:
 #endif
 
 		if (get_track(drive, track) == -1) {
-			err = BLK_STS_IOERR;
+			err = -EIO;
 			break;
 		}
 
@@ -1427,7 +1424,7 @@ next_segment:
 
 			/* keep the drive spinning while writes are scheduled */
 			if (!fd_motor_on(drive)) {
-				err = BLK_STS_IOERR;
+				err = -EIO;
 				break;
 			}
 			/*
@@ -1653,7 +1650,8 @@ static void floppy_release(struct gendisk *disk, fmode_t mode)
 		fd_ref[drive] = 0;
 	}
 #ifdef MODULE
-	floppy_off (drive);
+/* the mod_use counter is handled this way */
+	floppy_off (drive | 0x40000000);
 #endif
 	mutex_unlock(&amiflop_mutex);
 }
@@ -1701,41 +1699,11 @@ static const struct block_device_operations floppy_fops = {
 	.check_events	= amiga_check_events,
 };
 
-static struct gendisk *fd_alloc_disk(int drive)
-{
-	struct gendisk *disk;
-
-	disk = alloc_disk(1);
-	if (!disk)
-		goto out;
-
-	disk->queue = blk_init_queue(do_fd_request, &amiflop_lock);
-	if (IS_ERR(disk->queue)) {
-		disk->queue = NULL;
-		goto out_put_disk;
-	}
-
-	unit[drive].trackbuf = kmalloc(FLOPPY_MAX_SECTORS * 512, GFP_KERNEL);
-	if (!unit[drive].trackbuf)
-		goto out_cleanup_queue;
-
-	return disk;
-
-out_cleanup_queue:
-	blk_cleanup_queue(disk->queue);
-	disk->queue = NULL;
-out_put_disk:
-	put_disk(disk);
-out:
-	unit[drive].type->code = FD_NODRIVE;
-	return NULL;
-}
-
 static int __init fd_probe_drives(void)
 {
 	int drive,drives,nomem;
 
-	pr_info("FD: probing units\nfound");
+	printk(KERN_INFO "FD: probing units\nfound ");
 	drives=0;
 	nomem=0;
 	for(drive=0;drive<FD_MAX_UNITS;drive++) {
@@ -1743,17 +1711,27 @@ static int __init fd_probe_drives(void)
 		fd_probe(drive);
 		if (unit[drive].type->code == FD_NODRIVE)
 			continue;
-
-		disk = fd_alloc_disk(drive);
+		disk = alloc_disk(1);
 		if (!disk) {
-			pr_cont(" no mem for fd%d", drive);
-			nomem = 1;
+			unit[drive].type->code = FD_NODRIVE;
 			continue;
 		}
 		unit[drive].gendisk = disk;
-		drives++;
 
-		pr_cont(" fd%d",drive);
+		disk->queue = blk_init_queue(do_fd_request, &amiflop_lock);
+		if (!disk->queue) {
+			unit[drive].type->code = FD_NODRIVE;
+			continue;
+		}
+
+		drives++;
+		if ((unit[drive].trackbuf = kmalloc(FLOPPY_MAX_SECTORS * 512, GFP_KERNEL)) == NULL) {
+			printk("no mem for ");
+			unit[drive].type = &drive_types[num_dr_types - 1]; /* FD_NODRIVE */
+			drives--;
+			nomem = 1;
+		}
+		printk("fd%d ",drive);
 		disk->major = FLOPPY_MAJOR;
 		disk->first_minor = drive;
 		disk->fops = &floppy_fops;
@@ -1764,11 +1742,11 @@ static int __init fd_probe_drives(void)
 	}
 	if ((drives > 0) || (nomem == 0)) {
 		if (drives == 0)
-			pr_cont(" no drives");
-		pr_cont("\n");
+			printk("no drives");
+		printk("\n");
 		return drives;
 	}
-	pr_cont("\n");
+	printk("\n");
 	return -ENOMEM;
 }
  
@@ -1778,7 +1756,7 @@ static struct kobject *floppy_find(dev_t dev, int *part, void *data)
 	if (unit[drive].type->code == FD_NODRIVE)
 		return NULL;
 	*part = 0;
-	return get_disk_and_module(unit[drive].gendisk);
+	return get_disk(unit[drive].gendisk);
 }
 
 static int __init amiga_floppy_probe(struct platform_device *pdev)
@@ -1814,19 +1792,27 @@ static int __init amiga_floppy_probe(struct platform_device *pdev)
 				floppy_find, NULL, NULL);
 
 	/* initialize variables */
-	timer_setup(&motor_on_timer, motor_on_callback, 0);
+	init_timer(&motor_on_timer);
 	motor_on_timer.expires = 0;
+	motor_on_timer.data = 0;
+	motor_on_timer.function = motor_on_callback;
 	for (i = 0; i < FD_MAX_UNITS; i++) {
-		timer_setup(&motor_off_timer[i], fd_motor_off, 0);
+		init_timer(&motor_off_timer[i]);
 		motor_off_timer[i].expires = 0;
-		timer_setup(&flush_track_timer[i], flush_track_callback, 0);
+		motor_off_timer[i].data = i|0x80000000;
+		motor_off_timer[i].function = fd_motor_off;
+		init_timer(&flush_track_timer[i]);
 		flush_track_timer[i].expires = 0;
+		flush_track_timer[i].data = i;
+		flush_track_timer[i].function = flush_track_callback;
 
 		unit[i].track = -1;
 	}
 
-	timer_setup(&post_write_timer, post_write_callback, 0);
+	init_timer(&post_write_timer);
 	post_write_timer.expires = 0;
+	post_write_timer.data = 0;
+	post_write_timer.function = post_write;
   
 	for (i = 0; i < 128; i++)
 		mfmdecode[i]=255;
@@ -1850,6 +1836,30 @@ out_blkdev:
 	unregister_blkdev(FLOPPY_MAJOR,"fd");
 	return ret;
 }
+
+#if 0 /* not safe to unload */
+static int __exit amiga_floppy_remove(struct platform_device *pdev)
+{
+	int i;
+
+	for( i = 0; i < FD_MAX_UNITS; i++) {
+		if (unit[i].type->code != FD_NODRIVE) {
+			struct request_queue *q = unit[i].gendisk->queue;
+			del_gendisk(unit[i].gendisk);
+			put_disk(unit[i].gendisk);
+			kfree(unit[i].trackbuf);
+			if (q)
+				blk_cleanup_queue(q);
+		}
+	}
+	blk_unregister_region(MKDEV(FLOPPY_MAJOR, 0), 256);
+	free_irq(IRQ_AMIGA_CIAA_TB, NULL);
+	free_irq(IRQ_AMIGA_DSKBLK, NULL);
+	custom.dmacon = DMAF_DISK; /* disable DMA */
+	amiga_chip_free(raw_buf);
+	unregister_blkdev(FLOPPY_MAJOR, "fd");
+}
+#endif
 
 static struct platform_driver amiga_floppy_driver = {
 	.driver   = {

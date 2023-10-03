@@ -1,16 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *	uvc_v4l2.c  --  USB Video Class Gadget driver
  *
  *	Copyright (C) 2009-2010
  *	    Laurent Pinchart (laurent.pinchart@ideasonboard.com)
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  */
 
+#include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/errno.h>
-#include <linux/kernel.h>
 #include <linux/list.h>
-#include <linux/usb/g_uvc.h>
+#include <linux/mutex.h>
 #include <linux/videodev2.h>
 #include <linux/vmalloc.h>
 #include <linux/wait.h>
@@ -50,7 +54,8 @@ uvc_send_response(struct uvc_device *uvc, struct uvc_request_data *data)
  * V4L2 ioctls
  */
 
-struct uvc_format {
+struct uvc_format
+{
 	u8 bpp;
 	u32 fcc;
 };
@@ -72,8 +77,7 @@ uvc_v4l2_querycap(struct file *file, void *fh, struct v4l2_capability *cap)
 	strlcpy(cap->bus_info, dev_name(&cdev->gadget->dev),
 		sizeof(cap->bus_info));
 
-	cap->device_caps = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING;
-	cap->capabilities = cap->device_caps | V4L2_CAP_DEVICE_CAPS;
+	cap->capabilities = V4L2_CAP_VIDEO_OUTPUT | V4L2_CAP_STREAMING;
 
 	return 0;
 }
@@ -308,10 +312,8 @@ uvc_v4l2_release(struct file *file)
 
 	uvc_function_disconnect(uvc);
 
-	mutex_lock(&video->mutex);
 	uvcg_video_enable(video, 0);
 	uvcg_free_buffers(&video->queue);
-	mutex_unlock(&video->mutex);
 
 	file->private_data = NULL;
 	v4l2_fh_del(&handle->vfh);
@@ -330,7 +332,7 @@ uvc_v4l2_mmap(struct file *file, struct vm_area_struct *vma)
 	return uvcg_queue_mmap(&uvc->video.queue, vma);
 }
 
-static __poll_t
+static unsigned int
 uvc_v4l2_poll(struct file *file, poll_table *wait)
 {
 	struct video_device *vdev = video_devdata(file);
@@ -351,11 +353,11 @@ static unsigned long uvcg_v4l2_get_unmapped_area(struct file *file,
 }
 #endif
 
-const struct v4l2_file_operations uvc_v4l2_fops = {
+struct v4l2_file_operations uvc_v4l2_fops = {
 	.owner		= THIS_MODULE,
 	.open		= uvc_v4l2_open,
 	.release	= uvc_v4l2_release,
-	.unlocked_ioctl	= video_ioctl2,
+	.ioctl		= video_ioctl2,
 	.mmap		= uvc_v4l2_mmap,
 	.poll		= uvc_v4l2_poll,
 #ifndef CONFIG_MMU

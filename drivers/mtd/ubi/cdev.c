@@ -174,9 +174,9 @@ static int vol_cdev_fsync(struct file *file, loff_t start, loff_t end,
 	struct ubi_device *ubi = desc->vol->ubi;
 	struct inode *inode = file_inode(file);
 	int err;
-	inode_lock(inode);
+	mutex_lock(&inode->i_mutex);
 	err = ubi_sync(ubi->ubi_num);
-	inode_unlock(inode);
+	mutex_unlock(&inode->i_mutex);
 	return err;
 }
 
@@ -367,10 +367,6 @@ static ssize_t vol_cdev_write(struct file *file, const char __user *buf,
 			return count;
 		}
 
-		/*
-		 * We voluntarily do not take into account the skip_check flag
-		 * as we want to make sure what we wrote was correctly written.
-		 */
 		err = ubi_check_volume(ubi, vol->vol_id);
 		if (err < 0)
 			return err;
@@ -420,7 +416,7 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 		}
 
 		rsvd_bytes = (long long)vol->reserved_pebs *
-					vol->usable_leb_size;
+					ubi->leb_size-vol->data_pad;
 		if (bytes < 0 || bytes > rsvd_bytes) {
 			err = -EINVAL;
 			break;
@@ -458,8 +454,8 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 
 		/* Validate the request */
 		err = -EINVAL;
-		if (!ubi_leb_valid(vol, req.lnum) ||
-		    req.bytes < 0 || req.bytes > vol->usable_leb_size)
+		if (req.lnum < 0 || req.lnum >= vol->reserved_pebs ||
+		    req.bytes < 0 || req.lnum >= vol->usable_leb_size)
 			break;
 
 		err = get_exclusive(desc);
@@ -489,7 +485,7 @@ static long vol_cdev_ioctl(struct file *file, unsigned int cmd,
 			break;
 		}
 
-		if (!ubi_leb_valid(vol, lnum)) {
+		if (lnum < 0 || lnum >= vol->reserved_pebs) {
 			err = -EINVAL;
 			break;
 		}
@@ -623,13 +619,6 @@ static int verify_mkvol_req(const struct ubi_device *ubi,
 		goto bad;
 
 	if (req->vol_type != UBI_DYNAMIC_VOLUME &&
-	    req->vol_type != UBI_STATIC_VOLUME)
-		goto bad;
-
-	if (req->flags & ~UBI_VOL_VALID_FLGS)
-		goto bad;
-
-	if (req->flags & UBI_VOL_SKIP_CRC_CHECK_FLG &&
 	    req->vol_type != UBI_STATIC_VOLUME)
 		goto bad;
 
@@ -960,7 +949,7 @@ static long ubi_cdev_ioctl(struct file *file, unsigned int cmd,
 		if (!req) {
 			err = -ENOMEM;
 			break;
-		}
+		};
 
 		err = copy_from_user(req, argp, sizeof(struct ubi_rnvol_req));
 		if (err) {

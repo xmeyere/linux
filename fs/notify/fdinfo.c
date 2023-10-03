@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/file.h>
 #include <linux/fs.h>
 #include <linux/fsnotify_backend.h>
@@ -15,7 +14,7 @@
 #include <linux/exportfs.h>
 
 #include "inotify/inotify.h"
-#include "fsnotify.h"
+#include "../fs/mount.h"
 
 #if defined(CONFIG_PROC_FS)
 
@@ -77,15 +76,15 @@ static void inotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 	struct inotify_inode_mark *inode_mark;
 	struct inode *inode;
 
-	if (mark->connector->type != FSNOTIFY_OBJ_TYPE_INODE)
+	if (!(mark->flags & (FSNOTIFY_MARK_FLAG_ALIVE | FSNOTIFY_MARK_FLAG_INODE)))
 		return;
 
 	inode_mark = container_of(mark, struct inotify_inode_mark, fsn_mark);
-	inode = igrab(fsnotify_conn_inode(mark->connector));
+	inode = igrab(mark->inode);
 	if (inode) {
-		seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:0 ",
+		seq_printf(m, "inotify wd:%x ino:%lx sdev:%x mask:%x ignored_mask:%x ",
 			   inode_mark->wd, inode->i_ino, inode->i_sb->s_dev,
-			   inotify_mark_user_mask(mark));
+			   mark->mask, mark->ignored_mask);
 		show_mark_fhandle(m, inode);
 		seq_putc(m, '\n');
 		iput(inode);
@@ -106,11 +105,14 @@ static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 	unsigned int mflags = 0;
 	struct inode *inode;
 
+	if (!(mark->flags & FSNOTIFY_MARK_FLAG_ALIVE))
+		return;
+
 	if (mark->flags & FSNOTIFY_MARK_FLAG_IGNORED_SURV_MODIFY)
 		mflags |= FAN_MARK_IGNORED_SURV_MODIFY;
 
-	if (mark->connector->type == FSNOTIFY_OBJ_TYPE_INODE) {
-		inode = igrab(fsnotify_conn_inode(mark->connector));
+	if (mark->flags & FSNOTIFY_MARK_FLAG_INODE) {
+		inode = igrab(mark->inode);
 		if (!inode)
 			return;
 		seq_printf(m, "fanotify ino:%lx sdev:%x mflags:%x mask:%x ignored_mask:%x ",
@@ -119,8 +121,8 @@ static void fanotify_fdinfo(struct seq_file *m, struct fsnotify_mark *mark)
 		show_mark_fhandle(m, inode);
 		seq_putc(m, '\n');
 		iput(inode);
-	} else if (mark->connector->type == FSNOTIFY_OBJ_TYPE_VFSMOUNT) {
-		struct mount *mnt = fsnotify_conn_mount(mark->connector);
+	} else if (mark->flags & FSNOTIFY_MARK_FLAG_VFSMOUNT) {
+		struct mount *mnt = real_mount(mark->mnt);
 
 		seq_printf(m, "fanotify mnt_id:%x mflags:%x mask:%x ignored_mask:%x\n",
 			   mnt->mnt_id, mflags, mark->mask, mark->ignored_mask);
@@ -149,9 +151,6 @@ void fanotify_show_fdinfo(struct seq_file *m, struct file *f)
 
 	if (group->fanotify_data.max_marks == UINT_MAX)
 		flags |= FAN_UNLIMITED_MARKS;
-
-	if (group->fanotify_data.audit)
-		flags |= FAN_ENABLE_AUDIT;
 
 	seq_printf(m, "fanotify flags:%x event-flags:%x\n",
 		   flags, group->fanotify_data.f_flags);

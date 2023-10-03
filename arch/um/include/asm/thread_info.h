@@ -6,18 +6,15 @@
 #ifndef __UM_THREAD_INFO_H
 #define __UM_THREAD_INFO_H
 
-#define THREAD_SIZE_ORDER CONFIG_KERNEL_STACK_ORDER
-#define THREAD_SIZE ((1 << CONFIG_KERNEL_STACK_ORDER) * PAGE_SIZE)
-
 #ifndef __ASSEMBLY__
 
 #include <asm/types.h>
 #include <asm/page.h>
-#include <asm/segment.h>
-#include <sysdep/ptrace_user.h>
+#include <asm/uaccess.h>
 
 struct thread_info {
 	struct task_struct	*task;		/* main task structure */
+	struct exec_domain	*exec_domain;	/* execution domain */
 	unsigned long		flags;		/* low level flags */
 	__u32			cpu;		/* current CPU */
 	int			preempt_count;  /* 0 => preemptable,
@@ -26,13 +23,12 @@ struct thread_info {
 					 	   0-0xBFFFFFFF for user
 						   0-0xFFFFFFFF for kernel */
 	struct thread_info	*real_thread;    /* Points to non-IRQ stack */
-	unsigned long aux_fp_regs[FP_SIZE];	/* auxiliary fp_regs to save/restore
-						   them out-of-band */
 };
 
 #define INIT_THREAD_INFO(tsk)			\
 {						\
 	.task =		&tsk,			\
+	.exec_domain =	&default_exec_domain,	\
 	.flags =		0,		\
 	.cpu =		0,			\
 	.preempt_count = INIT_PREEMPT_COUNT,	\
@@ -40,6 +36,10 @@ struct thread_info {
 	.real_thread = NULL,			\
 }
 
+#define init_thread_info	(init_thread_union.thread_info)
+#define init_stack		(init_thread_union.stack)
+
+#define THREAD_SIZE ((1 << CONFIG_KERNEL_STACK_ORDER) * PAGE_SIZE)
 /* how to get the thread information struct from C */
 static inline struct thread_info *current_thread_info(void)
 {
@@ -52,6 +52,8 @@ static inline struct thread_info *current_thread_info(void)
 	return ti;
 }
 
+#define THREAD_SIZE_ORDER CONFIG_KERNEL_STACK_ORDER
+
 #endif
 
 #define TIF_SYSCALL_TRACE	0	/* syscall trace active */
@@ -62,13 +64,11 @@ static inline struct thread_info *current_thread_info(void)
 #define TIF_SYSCALL_AUDIT	6
 #define TIF_RESTORE_SIGMASK	7
 #define TIF_NOTIFY_RESUME	8
-#define TIF_SECCOMP		9	/* secure computing */
 
 #define _TIF_SYSCALL_TRACE	(1 << TIF_SYSCALL_TRACE)
 #define _TIF_SIGPENDING		(1 << TIF_SIGPENDING)
 #define _TIF_NEED_RESCHED	(1 << TIF_NEED_RESCHED)
 #define _TIF_MEMDIE		(1 << TIF_MEMDIE)
 #define _TIF_SYSCALL_AUDIT	(1 << TIF_SYSCALL_AUDIT)
-#define _TIF_SECCOMP		(1 << TIF_SECCOMP)
 
 #endif

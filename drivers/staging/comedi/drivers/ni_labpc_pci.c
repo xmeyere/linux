@@ -1,8 +1,17 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * comedi/drivers/ni_labpc_pci.c
  * Driver for National Instruments Lab-PC PCI-1200
  * Copyright (C) 2001, 2002, 2003 Frank Mori Hess <fmhess@users.sourceforge.net>
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 /*
@@ -22,8 +31,9 @@
 
 #include <linux/module.h>
 #include <linux/interrupt.h>
+#include <linux/pci.h>
 
-#include "../comedi_pci.h"
+#include "../comedidev.h"
 
 #include "ni_labpc.h"
 
@@ -41,9 +51,9 @@ static const struct labpc_boardinfo labpc_pci_boards[] = {
 	},
 };
 
-/* ripped from mite.h and mite_setup2() to avoid mite dependency */
-#define MITE_IODWBSR	0xc0	/* IO Device Window Base Size Register */
-#define WENAB		BIT(7)	/* window enable */
+/* ripped from mite.h and mite_setup2() to avoid mite dependancy */
+#define MITE_IODWBSR	0xc0	 /* IO Device Window Base Size Register */
+#define WENAB		(1 << 7) /* window enable */
 
 static int labpc_pci_mite_init(struct pci_dev *pcidev)
 {
@@ -93,17 +103,11 @@ static int labpc_pci_auto_attach(struct comedi_device *dev,
 	return labpc_common_attach(dev, pcidev->irq, IRQF_SHARED);
 }
 
-static void labpc_pci_detach(struct comedi_device *dev)
-{
-	labpc_common_detach(dev);
-	comedi_pci_detach(dev);
-}
-
 static struct comedi_driver labpc_pci_comedi_driver = {
 	.driver_name	= "labpc_pci",
 	.module		= THIS_MODULE,
 	.auto_attach	= labpc_pci_auto_attach,
-	.detach		= labpc_pci_detach,
+	.detach		= comedi_pci_detach,
 };
 
 static const struct pci_device_id labpc_pci_table[] = {

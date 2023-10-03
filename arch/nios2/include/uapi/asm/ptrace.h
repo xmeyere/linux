@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /*
  * Copyright (C) 2010 Tobias Klauser <tklauser@distanz.ch>
  * Copyright (C) 2004 Microtronix Datacom Ltd
@@ -14,8 +13,6 @@
 #define _UAPI_ASM_NIOS2_PTRACE_H
 
 #ifndef __ASSEMBLY__
-
-#include <linux/types.h>
 
 /*
  * Register numbers used by 'ptrace' system call interface.

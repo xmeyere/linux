@@ -13,6 +13,10 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  *
  * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  */
 
 #include <linux/kernel.h>
@@ -23,7 +27,7 @@
 #include <linux/slab.h>
 #include <asm/div64.h>
 
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 #include "zl10353_priv.h"
 #include "zl10353.h"
 
@@ -131,7 +135,8 @@ static void zl10353_calc_nominal_rate(struct dvb_frontend *fe,
 
 	value = (u64)10 * (1 << 23) / 7 * 125;
 	value = (bw * value) + adc_clock / 2;
-	*nominal_rate = div_u64(value, adc_clock);
+	do_div(value, adc_clock);
+	*nominal_rate = value;
 
 	dprintk("%s: bw %d, adc_clock %d => 0x%x\n",
 		__func__, bw, adc_clock, *nominal_rate);
@@ -158,7 +163,8 @@ static void zl10353_calc_input_freq(struct dvb_frontend *fe,
 		if (ife > adc_clock / 2)
 			ife = adc_clock - ife;
 	}
-	value = div_u64((u64)65536 * ife + adc_clock / 2, adc_clock);
+	value = (u64)65536 * ife + adc_clock / 2;
+	do_div(value, adc_clock);
 	*input_freq = -value;
 
 	dprintk("%s: if2 %d, ife %d, adc_clock %d => %d / 0x%x\n",
@@ -211,7 +217,7 @@ static int zl10353_set_parameters(struct dvb_frontend *fe)
 		break;
 	default:
 		c->bandwidth_hz = 8000000;
-		/* fall through */
+		/* fall though */
 	case 8000000:
 		zl10353_single_write(fe, MCLK_RATIO, 0x75);
 		zl10353_single_write(fe, 0x64, 0x36);
@@ -268,7 +274,6 @@ static int zl10353_set_parameters(struct dvb_frontend *fe)
 		if (c->hierarchy == HIERARCHY_AUTO ||
 		    c->hierarchy == HIERARCHY_NONE)
 			break;
-		/* fall through */
 	default:
 		return -EINVAL;
 	}
@@ -366,9 +371,9 @@ static int zl10353_set_parameters(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int zl10353_get_parameters(struct dvb_frontend *fe,
-				  struct dtv_frontend_properties *c)
+static int zl10353_get_parameters(struct dvb_frontend *fe)
 {
+	struct dtv_frontend_properties *c = &fe->dtv_property_cache;
 	struct zl10353_state *state = fe->demodulator_priv;
 	int s6, s9;
 	u16 tps;
@@ -457,7 +462,7 @@ static int zl10353_get_parameters(struct dvb_frontend *fe,
 	return 0;
 }
 
-static int zl10353_read_status(struct dvb_frontend *fe, enum fe_status *status)
+static int zl10353_read_status(struct dvb_frontend *fe, fe_status_t *status)
 {
 	struct zl10353_state *state = fe->demodulator_priv;
 	int s6, s7, s8;
@@ -528,13 +533,13 @@ static int zl10353_read_snr(struct dvb_frontend *fe, u16 *snr)
 static int zl10353_read_ucblocks(struct dvb_frontend *fe, u32 *ucblocks)
 {
 	struct zl10353_state *state = fe->demodulator_priv;
-	u32 ubl = 0;
+       u32 ubl = 0;
 
-	ubl = zl10353_read_register(state, RS_UBC_1) << 8 |
-	      zl10353_read_register(state, RS_UBC_0);
+       ubl = zl10353_read_register(state, RS_UBC_1) << 8 |
+	     zl10353_read_register(state, RS_UBC_0);
 
-	state->ucblocks += ubl;
-	*ucblocks = state->ucblocks;
+       state->ucblocks += ubl;
+       *ucblocks = state->ucblocks;
 
 	return 0;
 }
@@ -599,7 +604,7 @@ static void zl10353_release(struct dvb_frontend *fe)
 	kfree(state);
 }
 
-static const struct dvb_frontend_ops zl10353_ops;
+static struct dvb_frontend_ops zl10353_ops;
 
 struct dvb_frontend *zl10353_attach(const struct zl10353_config *config,
 				    struct i2c_adapter *i2c)
@@ -631,13 +636,14 @@ error:
 	return NULL;
 }
 
-static const struct dvb_frontend_ops zl10353_ops = {
+static struct dvb_frontend_ops zl10353_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		.name			= "Zarlink ZL10353 DVB-T",
-		.frequency_min_hz	= 174 * MHz,
-		.frequency_max_hz	= 862 * MHz,
-		.frequency_stepsize_hz	= 166667,
+		.frequency_min		= 174000000,
+		.frequency_max		= 862000000,
+		.frequency_stepsize	= 166667,
+		.frequency_tolerance	= 0,
 		.caps = FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 |
 			FE_CAN_FEC_3_4 | FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 |
 			FE_CAN_FEC_AUTO |
@@ -675,4 +681,4 @@ MODULE_DESCRIPTION("Zarlink ZL10353 DVB-T demodulator driver");
 MODULE_AUTHOR("Chris Pascoe");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL_GPL(zl10353_attach);
+EXPORT_SYMBOL(zl10353_attach);

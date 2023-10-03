@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * linux/fs/lockd/host.c
  *
@@ -114,10 +113,10 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 	unsigned long now = jiffies;
 
 	if (nsm != NULL)
-		refcount_inc(&nsm->sm_count);
+		atomic_inc(&nsm->sm_count);
 	else {
 		host = NULL;
-		nsm = nsm_get_handle(ni->net, ni->sap, ni->salen,
+		nsm = nsm_get_handle(ni->sap, ni->salen,
 					ni->hostname, ni->hostname_len);
 		if (unlikely(nsm == NULL)) {
 			dprintk("lockd: %s failed; no nsm handle\n",
@@ -151,7 +150,7 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 	host->h_state      = 0;
 	host->h_nsmstate   = 0;
 	host->h_pidcount   = 0;
-	refcount_set(&host->h_count, 1);
+	atomic_set(&host->h_count, 1);
 	mutex_init(&host->h_mutex);
 	host->h_nextrebind = now + NLM_HOST_REBIND;
 	host->h_expires    = now + NLM_HOST_EXPIRE;
@@ -162,7 +161,6 @@ static struct nlm_host *nlm_alloc_host(struct nlm_lookup_host_info *ni,
 	host->h_nsmhandle  = nsm;
 	host->h_addrbuf    = nsm->sm_addrbuf;
 	host->net	   = ni->net;
-	strlcpy(host->nodename, utsname()->nodename, sizeof(host->nodename));
 
 out:
 	return host;
@@ -290,11 +288,12 @@ void nlmclnt_release_host(struct nlm_host *host)
 
 	WARN_ON_ONCE(host->h_server);
 
-	if (refcount_dec_and_mutex_lock(&host->h_count, &nlm_host_mutex)) {
+	if (atomic_dec_and_test(&host->h_count)) {
 		WARN_ON_ONCE(!list_empty(&host->h_lockowners));
 		WARN_ON_ONCE(!list_empty(&host->h_granted));
 		WARN_ON_ONCE(!list_empty(&host->h_reclaim));
 
+		mutex_lock(&nlm_host_mutex);
 		nlm_destroy_host_locked(host);
 		mutex_unlock(&nlm_host_mutex);
 	}
@@ -340,7 +339,7 @@ struct nlm_host *nlmsvc_lookup_host(const struct svc_rqst *rqstp,
 	};
 	struct lockd_net *ln = net_generic(net, lockd_net_id);
 
-	dprintk("lockd: %s(host='%.*s', vers=%u, proto=%s)\n", __func__,
+	dprintk("lockd: %s(host='%*s', vers=%u, proto=%s)\n", __func__,
 			(int)hostname_len, hostname, rqstp->rq_vers,
 			(rqstp->rq_prot == IPPROTO_UDP ? "udp" : "tcp"));
 
@@ -387,8 +386,6 @@ struct nlm_host *nlmsvc_lookup_host(const struct svc_rqst *rqstp,
 	ln->nrhosts++;
 	nrhosts++;
 
-	refcount_inc(&host->h_count);
-
 	dprintk("lockd: %s created host %s (%s)\n",
 		__func__, host->h_name, host->h_addrbuf);
 
@@ -411,7 +408,7 @@ void nlmsvc_release_host(struct nlm_host *host)
 	dprintk("lockd: release server host %s\n", host->h_name);
 
 	WARN_ON_ONCE(!host->h_server);
-	refcount_dec(&host->h_count);
+	atomic_dec(&host->h_count);
 }
 
 /*
@@ -432,7 +429,12 @@ nlm_bind_host(struct nlm_host *host)
 	 * RPC rebind is required
 	 */
 	if ((clnt = host->h_rpcclnt) != NULL) {
-		nlm_rebind_host(host);
+		if (time_after_eq(jiffies, host->h_nextrebind)) {
+			rpc_force_rebind(clnt);
+			host->h_nextrebind = jiffies + NLM_HOST_REBIND;
+			dprintk("lockd: next rebind in %lu jiffies\n",
+					host->h_nextrebind - jiffies);
+		}
 	} else {
 		unsigned long increment = nlmsvc_timeout;
 		struct rpc_timeout timeparms = {
@@ -480,20 +482,13 @@ nlm_bind_host(struct nlm_host *host)
 	return clnt;
 }
 
-/**
- * nlm_rebind_host - If needed, force a portmap lookup of the peer's lockd port
- * @host: NLM host handle for peer
- *
- * This is not needed when using a connection-oriented protocol, such as TCP.
- * The existing autobind mechanism is sufficient to force a rebind when
- * required, e.g. on connection state transitions.
+/*
+ * Force a portmap lookup of the remote lockd port
  */
 void
 nlm_rebind_host(struct nlm_host *host)
 {
-	if (host->h_proto != IPPROTO_UDP)
-		return;
-
+	dprintk("lockd: rebind host %s\n", host->h_name);
 	if (host->h_rpcclnt && time_after_eq(jiffies, host->h_nextrebind)) {
 		rpc_force_rebind(host->h_rpcclnt);
 		host->h_nextrebind = jiffies + NLM_HOST_REBIND;
@@ -507,7 +502,7 @@ struct nlm_host * nlm_get_host(struct nlm_host *host)
 {
 	if (host) {
 		dprintk("lockd: get host %s\n", host->h_name);
-		refcount_inc(&host->h_count);
+		atomic_inc(&host->h_count);
 		host->h_expires = jiffies + NLM_HOST_EXPIRE;
 	}
 	return host;
@@ -539,18 +534,17 @@ static struct nlm_host *next_host_state(struct hlist_head *cache,
 
 /**
  * nlm_host_rebooted - Release all resources held by rebooted host
- * @net:  network namespace
  * @info: pointer to decoded results of NLM_SM_NOTIFY call
  *
  * We were notified that the specified host has rebooted.  Release
  * all resources held by that peer.
  */
-void nlm_host_rebooted(const struct net *net, const struct nlm_reboot *info)
+void nlm_host_rebooted(const struct nlm_reboot *info)
 {
 	struct nsm_handle *nsm;
 	struct nlm_host	*host;
 
-	nsm = nsm_reboot_lookup(net, info);
+	nsm = nsm_reboot_lookup(info);
 	if (unlikely(nsm == NULL))
 		return;
 
@@ -581,10 +575,8 @@ static void nlm_complain_hosts(struct net *net)
 
 		if (ln->nrhosts == 0)
 			return;
-		pr_warn("lockd: couldn't shutdown host module for net %x!\n",
-			net->ns.inum);
-		dprintk("lockd: %lu hosts left in net %x:\n", ln->nrhosts,
-			net->ns.inum);
+		printk(KERN_WARNING "lockd: couldn't shutdown host module for net %p!\n", net);
+		dprintk("lockd: %lu hosts left in net %p:\n", ln->nrhosts, net);
 	} else {
 		if (nrhosts == 0)
 			return;
@@ -595,9 +587,9 @@ static void nlm_complain_hosts(struct net *net)
 	for_each_host(host, chain, nlm_server_hosts) {
 		if (net && host->net != net)
 			continue;
-		dprintk("       %s (cnt %d use %d exp %ld net %x)\n",
-			host->h_name, refcount_read(&host->h_count),
-			host->h_inuse, host->h_expires, host->net->ns.inum);
+		dprintk("       %s (cnt %d use %d exp %ld net %p)\n",
+			host->h_name, atomic_read(&host->h_count),
+			host->h_inuse, host->h_expires, host->net);
 	}
 }
 
@@ -610,8 +602,7 @@ nlm_shutdown_hosts_net(struct net *net)
 	mutex_lock(&nlm_host_mutex);
 
 	/* First, make all hosts eligible for gc */
-	dprintk("lockd: nuking all hosts in net %x...\n",
-		net ? net->ns.inum : 0);
+	dprintk("lockd: nuking all hosts in net %p...\n", net);
 	for_each_host(host, chain, nlm_server_hosts) {
 		if (net && host->net != net)
 			continue;
@@ -624,8 +615,9 @@ nlm_shutdown_hosts_net(struct net *net)
 
 	/* Then, perform a garbage collection pass */
 	nlm_gc_hosts(net);
-	nlm_complain_hosts(net);
 	mutex_unlock(&nlm_host_mutex);
+
+	nlm_complain_hosts(net);
 }
 
 /*
@@ -651,8 +643,7 @@ nlm_gc_hosts(struct net *net)
 	struct hlist_node *next;
 	struct nlm_host	*host;
 
-	dprintk("lockd: host garbage collection for net %x\n",
-		net ? net->ns.inum : 0);
+	dprintk("lockd: host garbage collection for net %p\n", net);
 	for_each_host(host, chain, nlm_server_hosts) {
 		if (net && host->net != net)
 			continue;
@@ -665,16 +656,15 @@ nlm_gc_hosts(struct net *net)
 	for_each_host_safe(host, next, chain, nlm_server_hosts) {
 		if (net && host->net != net)
 			continue;
-		if (host->h_inuse || time_before(jiffies, host->h_expires)) {
+		if (atomic_read(&host->h_count) || host->h_inuse
+		 || time_before(jiffies, host->h_expires)) {
 			dprintk("nlm_gc_hosts skipping %s "
-				"(cnt %d use %d exp %ld net %x)\n",
-				host->h_name, refcount_read(&host->h_count),
-				host->h_inuse, host->h_expires,
-				host->net->ns.inum);
+				"(cnt %d use %d exp %ld net %p)\n",
+				host->h_name, atomic_read(&host->h_count),
+				host->h_inuse, host->h_expires, host->net);
 			continue;
 		}
-		if (refcount_dec_if_one(&host->h_count))
-			nlm_destroy_host_locked(host);
+		nlm_destroy_host_locked(host);
 	}
 
 	if (net) {

@@ -198,7 +198,8 @@ static int non_atomic_pte_lookup(struct vm_area_struct *vma,
 #else
 	*pageshift = PAGE_SHIFT;
 #endif
-	if (get_user_pages(vaddr, 1, write ? FOLL_WRITE : 0, &page, NULL) <= 0)
+	if (get_user_pages
+	    (current, current->mm, vaddr, 1, write, 0, &page, NULL) <= 0)
 		return -EFAULT;
 	*paddr = page_to_phys(page);
 	put_page(page);
@@ -219,20 +220,15 @@ static int atomic_pte_lookup(struct vm_area_struct *vma, unsigned long vaddr,
 	int write, unsigned long *paddr, int *pageshift)
 {
 	pgd_t *pgdp;
-	p4d_t *p4dp;
-	pud_t *pudp;
 	pmd_t *pmdp;
+	pud_t *pudp;
 	pte_t pte;
 
 	pgdp = pgd_offset(vma->vm_mm, vaddr);
 	if (unlikely(pgd_none(*pgdp)))
 		goto err;
 
-	p4dp = p4d_offset(pgdp, vaddr);
-	if (unlikely(p4d_none(*p4dp)))
-		goto err;
-
-	pudp = pud_offset(p4dp, vaddr);
+	pudp = pud_offset(pgdp, vaddr);
 	if (unlikely(pud_none(*pudp)))
 		goto err;
 
@@ -661,7 +657,6 @@ int gru_handle_user_call_os(unsigned long cb)
 	if ((cb & (GRU_HANDLE_STRIDE - 1)) || ucbnum >= GRU_NUM_CB)
 		return -EINVAL;
 
-again:
 	gts = gru_find_lock_gts(cb);
 	if (!gts)
 		return -EINVAL;
@@ -670,11 +665,7 @@ again:
 	if (ucbnum >= gts->ts_cbr_au_count * GRU_CBR_AU_SIZE)
 		goto exit;
 
-	if (gru_check_context_placement(gts)) {
-		gru_unlock_gts(gts);
-		gru_unload_context(gts, 1);
-		goto again;
-	}
+	gru_check_context_placement(gts);
 
 	/*
 	 * CCH may contain stale data if ts_force_cch_reload is set.
@@ -892,11 +883,7 @@ int gru_set_context_option(unsigned long arg)
 		} else {
 			gts->ts_user_blade_id = req.val1;
 			gts->ts_user_chiplet_id = req.val0;
-			if (gru_check_context_placement(gts)) {
-				gru_unlock_gts(gts);
-				gru_unload_context(gts, 1);
-				return ret;
-			}
+			gru_check_context_placement(gts);
 		}
 		break;
 	case sco_gseg_owner:

@@ -18,6 +18,13 @@
 #include <linux/hdmi.h>
 #include "hdmi.h"
 
+
+/* Supported HDMI Audio channels */
+#define MSM_HDMI_AUDIO_CHANNEL_2		0
+#define MSM_HDMI_AUDIO_CHANNEL_4		1
+#define MSM_HDMI_AUDIO_CHANNEL_6		2
+#define MSM_HDMI_AUDIO_CHANNEL_8		3
+
 /* maps MSM_HDMI_AUDIO_CHANNEL_n consts used by audio driver to # of channels: */
 static int nchannels[] = { 2, 4, 6, 8 };
 
@@ -82,7 +89,7 @@ static const struct hdmi_msm_audio_arcs *get_arcs(unsigned long int pixclock)
 	return NULL;
 }
 
-int msm_hdmi_audio_update(struct hdmi *hdmi)
+int hdmi_audio_update(struct hdmi *hdmi)
 {
 	struct hdmi_audio *audio = &hdmi->audio;
 	struct hdmi_audio_infoframe *info = &audio->infoframe;
@@ -175,10 +182,10 @@ int msm_hdmi_audio_update(struct hdmi *hdmi)
 		/* configure infoframe: */
 		hdmi_audio_infoframe_pack(info, buf, sizeof(buf));
 		hdmi_write(hdmi, REG_HDMI_AUDIO_INFO0,
-				(buf[3] <<  0) | (buf[4] <<  8) |
-				(buf[5] << 16) | (buf[6] << 24));
+				(buf[3] <<  0) || (buf[4] <<  8) ||
+				(buf[5] << 16) || (buf[6] << 24));
 		hdmi_write(hdmi, REG_HDMI_AUDIO_INFO1,
-				(buf[7] <<  0) | (buf[8] << 8));
+				(buf[7] <<  0) || (buf[8] << 8));
 
 		hdmi_write(hdmi, REG_HDMI_GC, 0);
 
@@ -196,6 +203,7 @@ int msm_hdmi_audio_update(struct hdmi *hdmi)
 		audio_config |= HDMI_AUDIO_CFG_FIFO_WATERMARK(4);
 		audio_config |= HDMI_AUDIO_CFG_ENGINE_ENABLE;
 	} else {
+		hdmi_write(hdmi, REG_HDMI_GC, HDMI_GC_MUTE);
 		acr_pkt_ctrl &= ~HDMI_ACR_PKT_CTRL_CONT;
 		acr_pkt_ctrl &= ~HDMI_ACR_PKT_CTRL_SEND;
 		vbi_pkt_ctrl &= ~HDMI_VBI_PKT_CTRL_GC_ENABLE;
@@ -225,7 +233,7 @@ int msm_hdmi_audio_update(struct hdmi *hdmi)
 	return 0;
 }
 
-int msm_hdmi_audio_info_setup(struct hdmi *hdmi, bool enabled,
+int hdmi_audio_info_setup(struct hdmi *hdmi, bool enabled,
 	uint32_t num_of_channels, uint32_t channel_allocation,
 	uint32_t level_shift, bool down_mix)
 {
@@ -245,10 +253,10 @@ int msm_hdmi_audio_info_setup(struct hdmi *hdmi, bool enabled,
 	audio->infoframe.level_shift_value = level_shift;
 	audio->infoframe.downmix_inhibit = down_mix;
 
-	return msm_hdmi_audio_update(hdmi);
+	return hdmi_audio_update(hdmi);
 }
 
-void msm_hdmi_audio_set_sample_rate(struct hdmi *hdmi, int rate)
+void hdmi_audio_set_sample_rate(struct hdmi *hdmi, int rate)
 {
 	struct hdmi_audio *audio;
 
@@ -261,5 +269,5 @@ void msm_hdmi_audio_set_sample_rate(struct hdmi *hdmi, int rate)
 		return;
 
 	audio->rate = rate;
-	msm_hdmi_audio_update(hdmi);
+	hdmi_audio_update(hdmi);
 }

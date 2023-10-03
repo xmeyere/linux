@@ -35,7 +35,6 @@
 #include <linux/kernel.h>
 #include <linux/delay.h>
 #include <linux/init.h>
-#include <linux/sched/task_stack.h>
 #include <linux/smp.h>
 #include <linux/irq.h>
 
@@ -60,17 +59,17 @@
 
 void nlm_send_ipi_single(int logical_cpu, unsigned int action)
 {
-	unsigned int hwtid;
+	int cpu, node;
 	uint64_t picbase;
 
-	/* node id is part of hwtid, and needed for send_ipi */
-	hwtid = cpu_logical_map(logical_cpu);
-	picbase = nlm_get_node(nlm_hwtid_to_node(hwtid))->picbase;
+	cpu = cpu_logical_map(logical_cpu);
+	node = nlm_cpuid_to_node(cpu);
+	picbase = nlm_get_node(node)->picbase;
 
 	if (action & SMP_CALL_FUNCTION)
-		nlm_pic_send_ipi(picbase, hwtid, IRQ_IPI_SMP_FUNCTION, 0);
+		nlm_pic_send_ipi(picbase, cpu, IRQ_IPI_SMP_FUNCTION, 0);
 	if (action & SMP_RESCHEDULE_YOURSELF)
-		nlm_pic_send_ipi(picbase, hwtid, IRQ_IPI_SMP_RESCHEDULE, 0);
+		nlm_pic_send_ipi(picbase, cpu, IRQ_IPI_SMP_RESCHEDULE, 0);
 }
 
 void nlm_send_ipi_mask(const struct cpumask *mask, unsigned int action)
@@ -83,19 +82,17 @@ void nlm_send_ipi_mask(const struct cpumask *mask, unsigned int action)
 }
 
 /* IRQ_IPI_SMP_FUNCTION Handler */
-void nlm_smp_function_ipi_handler(struct irq_desc *desc)
+void nlm_smp_function_ipi_handler(unsigned int irq, struct irq_desc *desc)
 {
-	unsigned int irq = irq_desc_get_irq(desc);
 	clear_c0_eimr(irq);
 	ack_c0_eirr(irq);
-	generic_smp_call_function_interrupt();
+	smp_call_function_interrupt();
 	set_c0_eimr(irq);
 }
 
 /* IRQ_IPI_SMP_RESCHEDULE  handler */
-void nlm_smp_resched_ipi_handler(struct irq_desc *desc)
+void nlm_smp_resched_ipi_handler(unsigned int irq, struct irq_desc *desc)
 {
-	unsigned int irq = irq_desc_get_irq(desc);
 	clear_c0_eimr(irq);
 	ack_c0_eirr(irq);
 	scheduler_ipi();
@@ -122,8 +119,7 @@ static void nlm_init_secondary(void)
 	int hwtid;
 
 	hwtid = hard_smp_processor_id();
-	cpu_set_core(&current_cpu_data, hwtid / NLM_THREADS_PER_CORE);
-	current_cpu_data.package = nlm_nodeid();
+	current_cpu_data.core = hwtid / NLM_THREADS_PER_CORE;
 	nlm_percpu_init(hwtid);
 	nlm_smp_irq_init(hwtid);
 }
@@ -147,22 +143,18 @@ unsigned long nlm_next_gp;
 unsigned long nlm_next_sp;
 static cpumask_t phys_cpu_present_mask;
 
-int nlm_boot_secondary(int logical_cpu, struct task_struct *idle)
+void nlm_boot_secondary(int logical_cpu, struct task_struct *idle)
 {
-	uint64_t picbase;
-	int hwtid;
+	int cpu, node;
 
-	hwtid = cpu_logical_map(logical_cpu);
-	picbase = nlm_get_node(nlm_hwtid_to_node(hwtid))->picbase;
-
+	cpu = cpu_logical_map(logical_cpu);
+	node = nlm_cpuid_to_node(logical_cpu);
 	nlm_next_sp = (unsigned long)__KSTK_TOS(idle);
 	nlm_next_gp = (unsigned long)task_thread_info(idle);
 
 	/* barrier for sp/gp store above */
 	__sync();
-	nlm_pic_send_ipi(picbase, hwtid, 1, 1);  /* NMI */
-
-	return 0;
+	nlm_pic_send_ipi(nlm_get_node(node)->picbase, cpu, 1, 1);  /* NMI */
 }
 
 void __init nlm_smp_setup(void)
@@ -190,7 +182,7 @@ void __init nlm_smp_setup(void)
 			__cpu_number_map[i] = num_cpus;
 			__cpu_logical_map[num_cpus] = i;
 			set_cpu_possible(num_cpus, true);
-			node = nlm_hwtid_to_node(i);
+			node = nlm_cpuid_to_node(i);
 			cpumask_set_cpu(num_cpus, &nlm_get_node(node)->cpumask);
 			++num_cpus;
 		}
@@ -274,7 +266,7 @@ int nlm_wakeup_secondary_cpus(void)
 	return 0;
 }
 
-const struct plat_smp_ops nlm_smp_ops = {
+struct plat_smp_ops nlm_smp_ops = {
 	.send_ipi_single	= nlm_send_ipi_single,
 	.send_ipi_mask		= nlm_send_ipi_mask,
 	.init_secondary		= nlm_init_secondary,

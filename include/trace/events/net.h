@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM net
 
@@ -217,13 +216,6 @@ DEFINE_EVENT(net_dev_rx_verbose_template, napi_gro_receive_entry,
 );
 
 DEFINE_EVENT(net_dev_rx_verbose_template, netif_receive_skb_entry,
-
-	TP_PROTO(const struct sk_buff *skb),
-
-	TP_ARGS(skb)
-);
-
-DEFINE_EVENT(net_dev_rx_verbose_template, netif_receive_skb_list_entry,
 
 	TP_PROTO(const struct sk_buff *skb),
 

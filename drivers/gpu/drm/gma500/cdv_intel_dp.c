@@ -220,7 +220,7 @@ i2c_dp_aux_prepare_bus(struct i2c_adapter *adapter)
  * FIXME: This is the old dp aux helper, gma500 is the last driver that needs to
  * be ported over to the new helper code in drm_dp_helper.c like i915 or radeon.
  */
-static int
+static int __deprecated
 i2c_dp_aux_add_bus(struct i2c_adapter *adapter)
 {
 	int error;
@@ -247,6 +247,7 @@ i2c_dp_aux_add_bus(struct i2c_adapter *adapter)
 
 #define wait_for(COND, MS) _wait_for(COND, MS, 1)
 
+#define DP_LINK_STATUS_SIZE	6
 #define DP_LINK_CHECK_TIMEOUT	(10 * 1000)
 
 #define DP_LINK_CONFIGURATION_SIZE	9
@@ -505,7 +506,7 @@ static void cdv_intel_edp_backlight_off (struct gma_encoder *intel_encoder)
 	msleep(intel_dp->backlight_off_delay);
 }
 
-static enum drm_mode_status
+static int
 cdv_intel_dp_mode_valid(struct drm_connector *connector,
 		    struct drm_display_mode *mode)
 {
@@ -1770,7 +1771,7 @@ static int cdv_intel_dp_get_modes(struct drm_connector *connector)
 
 	edid = drm_get_edid(connector, &intel_dp->adapter);
 	if (edid) {
-		drm_connector_update_edid_property(connector, edid);
+		drm_mode_connector_update_edid_property(connector, edid);
 		ret = drm_add_edid_modes(connector, edid);
 		kfree(edid);
 	}
@@ -1901,8 +1902,10 @@ cdv_intel_dp_destroy(struct drm_connector *connector)
 
 	if (is_edp(gma_encoder)) {
 	/*	cdv_intel_panel_destroy_backlight(connector->dev); */
-		kfree(intel_dp->panel_fixed_mode);
-		intel_dp->panel_fixed_mode = NULL;
+		if (intel_dp->panel_fixed_mode) {
+			kfree(intel_dp->panel_fixed_mode);
+			intel_dp->panel_fixed_mode = NULL;
+		}
 	}
 	i2c_del_adapter(&intel_dp->adapter);
 	drm_connector_unregister(connector);
@@ -2018,8 +2021,7 @@ cdv_intel_dp_init(struct drm_device *dev, struct psb_intel_mode_device *mode_dev
 	encoder = &gma_encoder->base;
 
 	drm_connector_init(dev, connector, &cdv_intel_dp_connector_funcs, type);
-	drm_encoder_init(dev, encoder, &cdv_intel_dp_enc_funcs,
-			 DRM_MODE_ENCODER_TMDS, NULL);
+	drm_encoder_init(dev, encoder, &cdv_intel_dp_enc_funcs, DRM_MODE_ENCODER_TMDS);
 
 	gma_connector_attach_encoder(gma_connector, gma_encoder);
 
@@ -2119,12 +2121,12 @@ cdv_intel_dp_init(struct drm_device *dev, struct psb_intel_mode_device *mode_dev
 					       intel_dp->dpcd,
 					       sizeof(intel_dp->dpcd));
 		cdv_intel_edp_panel_vdd_off(gma_encoder);
-		if (ret <= 0) {
+		if (ret == 0) {
 			/* if this fails, presume the device is a ghost */
 			DRM_INFO("failed to retrieve link info, disabling eDP\n");
 			cdv_intel_dp_encoder_destroy(encoder);
 			cdv_intel_dp_destroy(connector);
-			goto err_connector;
+			goto err_priv;
 		} else {
         		DRM_DEBUG_KMS("DPCD: Rev=%x LN_Rate=%x LN_CNT=%x LN_DOWNSP=%x\n",
 				intel_dp->dpcd[0], intel_dp->dpcd[1], 

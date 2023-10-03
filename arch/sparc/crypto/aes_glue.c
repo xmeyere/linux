@@ -344,7 +344,8 @@ static void ctr_crypt_final(struct crypto_sparc64_aes_ctx *ctx,
 
 	ctx->ops->ecb_encrypt(&ctx->key[0], (const u64 *)ctrblk,
 			      keystream, AES_BLOCK_SIZE);
-	crypto_xor_cpy(dst, (u8 *) keystream, src, nbytes);
+	crypto_xor((u8 *) keystream, src, nbytes);
+	memcpy(dst, keystream, nbytes);
 	crypto_inc(ctrblk, AES_BLOCK_SIZE);
 }
 
@@ -432,7 +433,6 @@ static struct crypto_alg algs[] = { {
 		.blkcipher = {
 			.min_keysize	= AES_MIN_KEY_SIZE,
 			.max_keysize	= AES_MAX_KEY_SIZE,
-			.ivsize		= AES_BLOCK_SIZE,
 			.setkey		= aes_set_key,
 			.encrypt	= cbc_encrypt,
 			.decrypt	= cbc_decrypt,
@@ -452,7 +452,6 @@ static struct crypto_alg algs[] = { {
 		.blkcipher = {
 			.min_keysize	= AES_MIN_KEY_SIZE,
 			.max_keysize	= AES_MAX_KEY_SIZE,
-			.ivsize		= AES_BLOCK_SIZE,
 			.setkey		= aes_set_key,
 			.encrypt	= ctr_crypt,
 			.decrypt	= ctr_crypt,

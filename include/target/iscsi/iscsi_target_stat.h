@@ -1,24 +1,19 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef ISCSI_TARGET_STAT_H
 #define ISCSI_TARGET_STAT_H
-
-#include <linux/types.h>
-#include <linux/spinlock.h>
-#include <linux/socket.h>
 
 /*
  * For struct iscsi_tiqn->tiqn_wwn default groups
  */
-extern const struct config_item_type iscsi_stat_instance_cit;
-extern const struct config_item_type iscsi_stat_sess_err_cit;
-extern const struct config_item_type iscsi_stat_tgt_attr_cit;
-extern const struct config_item_type iscsi_stat_login_cit;
-extern const struct config_item_type iscsi_stat_logout_cit;
+extern struct config_item_type iscsi_stat_instance_cit;
+extern struct config_item_type iscsi_stat_sess_err_cit;
+extern struct config_item_type iscsi_stat_tgt_attr_cit;
+extern struct config_item_type iscsi_stat_login_cit;
+extern struct config_item_type iscsi_stat_logout_cit;
 
 /*
  * For struct iscsi_session->se_sess default groups
  */
-extern const struct config_item_type iscsi_stat_sess_cit;
+extern struct config_item_type iscsi_stat_sess_cit;
 
 /* iSCSI session error types */
 #define ISCSI_SESS_ERR_UNKNOWN		0
@@ -55,7 +50,7 @@ struct iscsi_login_stats {
 	u64		last_fail_time;		/* time stamp (jiffies) */
 	u32		last_fail_type;
 	int		last_intr_fail_ip_family;
-	struct sockaddr_storage last_intr_fail_sockaddr;
+	unsigned char	last_intr_fail_ip_addr[IPV6_ADDRESS_SPACE];
 	char		last_intr_fail_name[224];
 } ____cacheline_aligned;
 

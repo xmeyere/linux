@@ -28,15 +28,31 @@
 #include <linux/thermal.h>
 #include <linux/cpumask.h>
 
-struct cpufreq_policy;
-
 #ifdef CONFIG_CPU_THERMAL
 /**
  * cpufreq_cooling_register - function to create cpufreq cooling device.
- * @policy: cpufreq policy.
+ * @clip_cpus: cpumask of cpus where the frequency constraints will happen
  */
 struct thermal_cooling_device *
-cpufreq_cooling_register(struct cpufreq_policy *policy);
+cpufreq_cooling_register(const struct cpumask *clip_cpus);
+
+/**
+ * of_cpufreq_cooling_register - create cpufreq cooling device based on DT.
+ * @np: a valid struct device_node to the cooling device device tree node.
+ * @clip_cpus: cpumask of cpus where the frequency constraints will happen
+ */
+#ifdef CONFIG_THERMAL_OF
+struct thermal_cooling_device *
+of_cpufreq_cooling_register(struct device_node *np,
+			    const struct cpumask *clip_cpus);
+#else
+static inline struct thermal_cooling_device *
+of_cpufreq_cooling_register(struct device_node *np,
+			    const struct cpumask *clip_cpus)
+{
+	return ERR_PTR(-ENOSYS);
+}
+#endif
 
 /**
  * cpufreq_cooling_unregister - function to remove cpufreq cooling device.
@@ -44,33 +60,29 @@ cpufreq_cooling_register(struct cpufreq_policy *policy);
  */
 void cpufreq_cooling_unregister(struct thermal_cooling_device *cdev);
 
+unsigned long cpufreq_cooling_get_level(unsigned int cpu, unsigned int freq);
 #else /* !CONFIG_CPU_THERMAL */
 static inline struct thermal_cooling_device *
-cpufreq_cooling_register(struct cpufreq_policy *policy)
+cpufreq_cooling_register(const struct cpumask *clip_cpus)
 {
 	return ERR_PTR(-ENOSYS);
 }
-
+static inline struct thermal_cooling_device *
+of_cpufreq_cooling_register(struct device_node *np,
+			    const struct cpumask *clip_cpus)
+{
+	return ERR_PTR(-ENOSYS);
+}
 static inline
 void cpufreq_cooling_unregister(struct thermal_cooling_device *cdev)
 {
 	return;
 }
-#endif	/* CONFIG_CPU_THERMAL */
-
-#if defined(CONFIG_THERMAL_OF) && defined(CONFIG_CPU_THERMAL)
-/**
- * of_cpufreq_cooling_register - create cpufreq cooling device based on DT.
- * @policy: cpufreq policy.
- */
-struct thermal_cooling_device *
-of_cpufreq_cooling_register(struct cpufreq_policy *policy);
-#else
-static inline struct thermal_cooling_device *
-of_cpufreq_cooling_register(struct cpufreq_policy *policy)
+static inline
+unsigned long cpufreq_cooling_get_level(unsigned int cpu, unsigned int freq)
 {
-	return NULL;
+	return THERMAL_CSTATE_INVALID;
 }
-#endif /* defined(CONFIG_THERMAL_OF) && defined(CONFIG_CPU_THERMAL) */
+#endif	/* CONFIG_CPU_THERMAL */
 
 #endif /* __CPU_COOLING_H__ */

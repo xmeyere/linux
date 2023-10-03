@@ -1,10 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <errno.h>
-#include <inttypes.h>
 #include <linux/list.h>
 #include <linux/compiler.h>
 #include <linux/string.h>
 #include "ordered-events.h"
+#include "evlist.h"
 #include "session.h"
 #include "asm/bug.h"
 #include "debug.h"
@@ -82,7 +80,7 @@ static union perf_event *dup_event(struct ordered_events *oe,
 
 static void free_dup_event(struct ordered_events *oe, union perf_event *event)
 {
-	if (event && oe->copy_on_queue) {
+	if (oe->copy_on_queue) {
 		oe->cur_alloc_size -= event->header.size;
 		free(event);
 	}
@@ -133,8 +131,8 @@ static struct ordered_event *alloc_event(struct ordered_events *oe,
 	return new;
 }
 
-static struct ordered_event *
-ordered_events__new_event(struct ordered_events *oe, u64 timestamp,
+struct ordered_event *
+ordered_events__new(struct ordered_events *oe, u64 timestamp,
 		    union perf_event *event)
 {
 	struct ordered_event *new;
@@ -153,49 +151,22 @@ void ordered_events__delete(struct ordered_events *oe, struct ordered_event *eve
 	list_move(&event->list, &oe->cache);
 	oe->nr_events--;
 	free_dup_event(oe, event->event);
-	event->event = NULL;
 }
 
-int ordered_events__queue(struct ordered_events *oe, union perf_event *event,
-			  u64 timestamp, u64 file_offset)
+static int __ordered_events__flush(struct perf_session *s,
+				   struct perf_tool *tool)
 {
-	struct ordered_event *oevent;
-
-	if (!timestamp || timestamp == ~0ULL)
-		return -ETIME;
-
-	if (timestamp < oe->last_flush) {
-		pr_oe_time(timestamp,      "out of order event\n");
-		pr_oe_time(oe->last_flush, "last flush, last_flush_type %d\n",
-			   oe->last_flush_type);
-
-		oe->nr_unordered_events++;
-	}
-
-	oevent = ordered_events__new_event(oe, timestamp, event);
-	if (!oevent) {
-		ordered_events__flush(oe, OE_FLUSH__HALF);
-		oevent = ordered_events__new_event(oe, timestamp, event);
-	}
-
-	if (!oevent)
-		return -ENOMEM;
-
-	oevent->file_offset = file_offset;
-	return 0;
-}
-
-static int __ordered_events__flush(struct ordered_events *oe)
-{
+	struct ordered_events *oe = &s->ordered_events;
 	struct list_head *head = &oe->events;
 	struct ordered_event *tmp, *iter;
+	struct perf_sample sample;
 	u64 limit = oe->next_flush;
 	u64 last_ts = oe->last ? oe->last->timestamp : 0ULL;
 	bool show_progress = limit == ULLONG_MAX;
 	struct ui_progress prog;
 	int ret;
 
-	if (!limit)
+	if (!tool->ordered_events || !limit)
 		return 0;
 
 	if (show_progress)
@@ -207,9 +178,16 @@ static int __ordered_events__flush(struct ordered_events *oe)
 
 		if (iter->timestamp > limit)
 			break;
-		ret = oe->deliver(oe, iter);
+
+		ret = perf_evlist__parse_sample(s->evlist, iter->event, &sample);
 		if (ret)
-			return ret;
+			pr_err("Can't parse sample, err = %d\n", ret);
+		else {
+			ret = perf_session__deliver_event(s, iter->event, &sample, tool,
+							  iter->file_offset);
+			if (ret)
+				return ret;
+		}
 
 		ordered_events__delete(oe, iter);
 		oe->last_flush = iter->timestamp;
@@ -223,14 +201,13 @@ static int __ordered_events__flush(struct ordered_events *oe)
 	else if (last_ts <= limit)
 		oe->last = list_entry(head->prev, struct ordered_event, list);
 
-	if (show_progress)
-		ui_progress__finish();
-
 	return 0;
 }
 
-int ordered_events__flush(struct ordered_events *oe, enum oe_flush how)
+int ordered_events__flush(struct perf_session *s, struct perf_tool *tool,
+			  enum oe_flush how)
 {
+	struct ordered_events *oe = &s->ordered_events;
 	static const char * const str[] = {
 		"NONE",
 		"FINAL",
@@ -238,9 +215,6 @@ int ordered_events__flush(struct ordered_events *oe, enum oe_flush how)
 		"HALF ",
 	};
 	int err;
-
-	if (oe->nr_events == 0)
-		return 0;
 
 	switch (how) {
 	case OE_FLUSH__FINAL:
@@ -274,7 +248,7 @@ int ordered_events__flush(struct ordered_events *oe, enum oe_flush how)
 		   str[how], oe->nr_events);
 	pr_oe_time(oe->max_timestamp, "max_timestamp\n");
 
-	err = __ordered_events__flush(oe);
+	err = __ordered_events__flush(s, tool);
 
 	if (!err) {
 		if (how == OE_FLUSH__ROUND)
@@ -290,14 +264,13 @@ int ordered_events__flush(struct ordered_events *oe, enum oe_flush how)
 	return err;
 }
 
-void ordered_events__init(struct ordered_events *oe, ordered_events__deliver_t deliver)
+void ordered_events__init(struct ordered_events *oe)
 {
 	INIT_LIST_HEAD(&oe->events);
 	INIT_LIST_HEAD(&oe->cache);
 	INIT_LIST_HEAD(&oe->to_free);
 	oe->max_alloc_size = (u64) -1;
 	oe->cur_alloc_size = 0;
-	oe->deliver	   = deliver;
 }
 
 void ordered_events__free(struct ordered_events *oe)
@@ -310,13 +283,4 @@ void ordered_events__free(struct ordered_events *oe)
 		free_dup_event(oe, event->event);
 		free(event);
 	}
-}
-
-void ordered_events__reinit(struct ordered_events *oe)
-{
-	ordered_events__deliver_t old_deliver = oe->deliver;
-
-	ordered_events__free(oe);
-	memset(oe, '\0', sizeof(*oe));
-	ordered_events__init(oe, old_deliver);
 }

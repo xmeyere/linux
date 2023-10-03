@@ -12,7 +12,7 @@
  *   along with this program; if not, write to the Free Software
  *   Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307, USA.
  *
- *   Copyright (C) 2011 John Crispin <john@phrozen.org>
+ *   Copyright (C) 2011 John Crispin <blogic@openwrt.org>
  */
 
 #ifndef LTQ_DMA_H__
@@ -40,7 +40,6 @@ struct ltq_dma_channel {
 	int desc;			/* the current descriptor */
 	struct ltq_dma_desc *desc_base; /* the descriptor base */
 	int phys;			/* physical addr */
-	struct device *dev;
 };
 
 enum {

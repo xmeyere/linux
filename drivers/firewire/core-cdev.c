@@ -221,7 +221,7 @@ struct inbound_phy_packet_event {
 #ifdef CONFIG_COMPAT
 static void __user *u64_to_uptr(u64 value)
 {
-	if (in_compat_syscall())
+	if (is_compat_task())
 		return compat_ptr(value);
 	else
 		return (void __user *)(unsigned long)value;
@@ -229,7 +229,7 @@ static void __user *u64_to_uptr(u64 value)
 
 static u64 uptr_to_u64(void __user *ptr)
 {
-	if (in_compat_syscall())
+	if (is_compat_task())
 		return ptr_to_compat(ptr);
 	else
 		return (u64)(unsigned long)ptr;
@@ -486,7 +486,7 @@ static int ioctl_get_info(struct client *client, union ioctl_arg *arg)
 static int add_client_resource(struct client *client,
 			       struct client_resource *resource, gfp_t gfp_mask)
 {
-	bool preload = gfpflags_allow_blocking(gfp_mask);
+	bool preload = !!(gfp_mask & __GFP_WAIT);
 	unsigned long flags;
 	int ret;
 
@@ -831,10 +831,8 @@ static int ioctl_send_response(struct client *client, union ioctl_arg *arg)
 
 	r = container_of(resource, struct inbound_transaction_resource,
 			 resource);
-	if (is_fcp_request(r->request)) {
-		kfree(r->data);
+	if (is_fcp_request(r->request))
 		goto out;
-	}
 
 	if (a->length != fw_get_response_length(r->request)) {
 		ret = -EINVAL;
@@ -1207,7 +1205,7 @@ static int ioctl_get_cycle_timer2(struct client *client, union ioctl_arg *arg)
 {
 	struct fw_cdev_get_cycle_timer2 *a = &arg->get_cycle_timer2;
 	struct fw_card *card = client->device->card;
-	struct timespec64 ts = {0, 0};
+	struct timespec ts = {0, 0};
 	u32 cycle_time;
 	int ret = 0;
 
@@ -1216,9 +1214,9 @@ static int ioctl_get_cycle_timer2(struct client *client, union ioctl_arg *arg)
 	cycle_time = card->driver->read_csr(card, CSR_CYCLE_TIME);
 
 	switch (a->clk_id) {
-	case CLOCK_REALTIME:      ktime_get_real_ts64(&ts);	break;
-	case CLOCK_MONOTONIC:     ktime_get_ts64(&ts);		break;
-	case CLOCK_MONOTONIC_RAW: ktime_get_raw_ts64(&ts);	break;
+	case CLOCK_REALTIME:      getnstimeofday(&ts);	break;
+	case CLOCK_MONOTONIC:     ktime_get_ts(&ts);	break;
+	case CLOCK_MONOTONIC_RAW: getrawmonotonic(&ts);	break;
 	default:
 		ret = -EINVAL;
 	}
@@ -1309,7 +1307,8 @@ static void iso_resource_work(struct work_struct *work)
 	 */
 	if (r->todo == ISO_RES_REALLOC && !success &&
 	    !client->in_shutdown &&
-	    idr_remove(&client->resource_idr, r->resource.handle)) {
+	    idr_find(&client->resource_idr, r->resource.handle)) {
+		idr_remove(&client->resource_idr, r->resource.handle);
 		client_put(client);
 		free = true;
 	}
@@ -1497,7 +1496,6 @@ static void outbound_phy_packet_callback(struct fw_packet *packet,
 {
 	struct outbound_phy_packet_event *e =
 		container_of(packet, struct outbound_phy_packet_event, p);
-	struct client *e_client;
 
 	switch (status) {
 	/* expected: */
@@ -1514,10 +1512,9 @@ static void outbound_phy_packet_callback(struct fw_packet *packet,
 	}
 	e->phy_packet.data[0] = packet->timestamp;
 
-	e_client = e->client;
 	queue_event(e->client, &e->event, &e->phy_packet,
 		    sizeof(e->phy_packet) + e->phy_packet.length, NULL, 0);
-	client_put(e_client);
+	client_put(e->client);
 }
 
 static int ioctl_send_phy_packet(struct client *client, union ioctl_arg *arg)
@@ -1788,17 +1785,17 @@ static int fw_device_op_release(struct inode *inode, struct file *file)
 	return 0;
 }
 
-static __poll_t fw_device_op_poll(struct file *file, poll_table * pt)
+static unsigned int fw_device_op_poll(struct file *file, poll_table * pt)
 {
 	struct client *client = file->private_data;
-	__poll_t mask = 0;
+	unsigned int mask = 0;
 
 	poll_wait(file, &client->wait, pt);
 
 	if (fw_device_is_shutdown(client->device))
-		mask |= EPOLLHUP | EPOLLERR;
+		mask |= POLLHUP | POLLERR;
 	if (!list_empty(&client->event_list))
-		mask |= EPOLLIN | EPOLLRDNORM;
+		mask |= POLLIN | POLLRDNORM;
 
 	return mask;
 }

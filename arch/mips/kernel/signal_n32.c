@@ -33,11 +33,12 @@
 #include <asm/cacheflush.h>
 #include <asm/compat-signal.h>
 #include <asm/sim.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/ucontext.h>
 #include <asm/fpu.h>
 #include <asm/cpu-features.h>
 #include <asm/war.h>
+#include <asm/vdso.h>
 
 #include "signal-common.h"
 
@@ -64,15 +65,13 @@ struct rt_sigframe_n32 {
 	struct ucontextn32 rs_uc;
 };
 
-asmlinkage void sysn32_rt_sigreturn(void)
+asmlinkage void sysn32_rt_sigreturn(nabi_no_regargs struct pt_regs regs)
 {
 	struct rt_sigframe_n32 __user *frame;
-	struct pt_regs *regs;
 	sigset_t set;
 	int sig;
 
-	regs = current_pt_regs();
-	frame = (struct rt_sigframe_n32 __user *)regs->regs[29];
+	frame = (struct rt_sigframe_n32 __user *) regs.regs[29];
 	if (!access_ok(VERIFY_READ, frame, sizeof(*frame)))
 		goto badframe;
 	if (__copy_conv_sigset_from_user(&set, &frame->rs_uc.uc_sigmask))
@@ -80,7 +79,7 @@ asmlinkage void sysn32_rt_sigreturn(void)
 
 	set_current_blocked(&set);
 
-	sig = restore_sigcontext(regs, &frame->rs_uc.uc_mcontext);
+	sig = restore_sigcontext(&regs, &frame->rs_uc.uc_mcontext);
 	if (sig < 0)
 		goto badframe;
 	else if (sig)
@@ -95,8 +94,8 @@ asmlinkage void sysn32_rt_sigreturn(void)
 	__asm__ __volatile__(
 		"move\t$29, %0\n\t"
 		"j\tsyscall_exit"
-		: /* no outputs */
-		: "r" (regs));
+		:/* no outputs */
+		:"r" (&regs));
 	/* Unreached */
 
 badframe:
@@ -152,11 +151,7 @@ static int setup_rt_frame_n32(void *sig_return, struct ksignal *ksig,
 
 struct mips_abi mips_abi_n32 = {
 	.setup_rt_frame = setup_rt_frame_n32,
-	.restart	= __NR_N32_restart_syscall,
-
-	.off_sc_fpregs = offsetof(struct sigcontext, sc_fpregs),
-	.off_sc_fpc_csr = offsetof(struct sigcontext, sc_fpc_csr),
-	.off_sc_used_math = offsetof(struct sigcontext, sc_used_math),
-
-	.vdso		= &vdso_image_n32,
+	.rt_signal_return_offset =
+		offsetof(struct mips_vdso, n32_rt_signal_trampoline),
+	.restart	= __NR_N32_restart_syscall
 };

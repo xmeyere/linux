@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Xpram.c -- the S/390 expanded memory RAM-disk
  *           
@@ -42,7 +41,7 @@
 #include <linux/suspend.h>
 #include <linux/platform_device.h>
 #include <linux/gfp.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 
 #define XPRAM_NAME	"xpram"
 #define XPRAM_DEVS	1	/* one partition */
@@ -182,16 +181,14 @@ static unsigned long xpram_highest_page_index(void)
 /*
  * Block device make request function.
  */
-static blk_qc_t xpram_make_request(struct request_queue *q, struct bio *bio)
+static void xpram_make_request(struct request_queue *q, struct bio *bio)
 {
-	xpram_device_t *xdev = bio->bi_disk->private_data;
+	xpram_device_t *xdev = bio->bi_bdev->bd_disk->private_data;
 	struct bio_vec bvec;
 	struct bvec_iter iter;
 	unsigned int index;
 	unsigned long page_addr;
 	unsigned long bytes;
-
-	blk_queue_split(q, &bio);
 
 	if ((bio->bi_iter.bi_sector & 7) != 0 ||
 	    (bio->bi_iter.bi_size & 4095) != 0)
@@ -223,11 +220,11 @@ static blk_qc_t xpram_make_request(struct request_queue *q, struct bio *bio)
 			index++;
 		}
 	}
-	bio_endio(bio);
-	return BLK_QC_T_NONE;
+	set_bit(BIO_UPTODATE, &bio->bi_flags);
+	bio_endio(bio, 0);
+	return;
 fail:
 	bio_io_error(bio);
-	return BLK_QC_T_NONE;
 }
 
 static int xpram_getgeo(struct block_device *bdev, struct hd_geometry *geo)
@@ -348,8 +345,8 @@ static int __init xpram_setup_blkdev(void)
 			put_disk(xpram_disks[i]);
 			goto out;
 		}
-		blk_queue_flag_set(QUEUE_FLAG_NONROT, xpram_queues[i]);
-		blk_queue_flag_clear(QUEUE_FLAG_ADD_RANDOM, xpram_queues[i]);
+		queue_flag_set_unlocked(QUEUE_FLAG_NONROT, xpram_queues[i]);
+		queue_flag_clear_unlocked(QUEUE_FLAG_ADD_RANDOM, xpram_queues[i]);
 		blk_queue_make_request(xpram_queues[i], xpram_make_request);
 		blk_queue_logical_block_size(xpram_queues[i], 4096);
 	}

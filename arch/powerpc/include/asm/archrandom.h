@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_POWERPC_ARCHRANDOM_H
 #define _ASM_POWERPC_ARCHRANDOM_H
 
@@ -6,44 +5,46 @@
 
 #include <asm/machdep.h>
 
-static inline bool arch_get_random_long(unsigned long *v)
+static inline int arch_get_random_long(unsigned long *v)
 {
-	return false;
+	if (ppc_md.get_random_long)
+		return ppc_md.get_random_long(v);
+
+	return 0;
 }
 
-static inline bool arch_get_random_int(unsigned int *v)
-{
-	return false;
-}
-
-static inline bool arch_get_random_seed_long(unsigned long *v)
-{
-	if (ppc_md.get_random_seed)
-		return ppc_md.get_random_seed(v);
-
-	return false;
-}
-
-static inline bool arch_get_random_seed_int(unsigned int *v)
+static inline int arch_get_random_int(unsigned int *v)
 {
 	unsigned long val;
-	bool rc;
+	int rc;
 
-	rc = arch_get_random_seed_long(&val);
+	rc = arch_get_random_long(&val);
 	if (rc)
 		*v = val;
 
 	return rc;
 }
-#endif /* CONFIG_ARCH_RANDOM */
 
-#ifdef CONFIG_PPC_POWERNV
-int powernv_hwrng_present(void);
+static inline int arch_has_random(void)
+{
+	return !!ppc_md.get_random_long;
+}
+
 int powernv_get_random_long(unsigned long *v);
-int powernv_get_random_real_mode(unsigned long *v);
-#else
-static inline int powernv_hwrng_present(void) { return 0; }
-static inline int powernv_get_random_real_mode(unsigned long *v) { return 0; }
-#endif
+
+static inline int arch_get_random_seed_long(unsigned long *v)
+{
+	return 0;
+}
+static inline int arch_get_random_seed_int(unsigned int *v)
+{
+	return 0;
+}
+static inline int arch_has_random_seed(void)
+{
+	return 0;
+}
+
+#endif /* CONFIG_ARCH_RANDOM */
 
 #endif /* _ASM_POWERPC_ARCHRANDOM_H */

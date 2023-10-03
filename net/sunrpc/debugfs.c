@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /**
  * debugfs interface for sunrpc
  *
@@ -11,11 +10,13 @@
 #include "netns.h"
 
 static struct dentry *topdir;
-static struct dentry *rpc_fault_dir;
 static struct dentry *rpc_clnt_dir;
 static struct dentry *rpc_xprt_dir;
 
-unsigned int rpc_inject_disconnect;
+struct rpc_clnt_iter {
+	struct rpc_clnt	*clnt;
+	loff_t		pos;
+};
 
 static int
 tasks_show(struct seq_file *f, void *v)
@@ -43,10 +44,12 @@ static void *
 tasks_start(struct seq_file *f, loff_t *ppos)
 	__acquires(&clnt->cl_lock)
 {
-	struct rpc_clnt *clnt = f->private;
+	struct rpc_clnt_iter *iter = f->private;
 	loff_t pos = *ppos;
+	struct rpc_clnt *clnt = iter->clnt;
 	struct rpc_task *task;
 
+	iter->pos = pos + 1;
 	spin_lock(&clnt->cl_lock);
 	list_for_each_entry(task, &clnt->cl_tasks, tk_task)
 		if (pos-- == 0)
@@ -57,10 +60,12 @@ tasks_start(struct seq_file *f, loff_t *ppos)
 static void *
 tasks_next(struct seq_file *f, void *v, loff_t *pos)
 {
-	struct rpc_clnt *clnt = f->private;
+	struct rpc_clnt_iter *iter = f->private;
+	struct rpc_clnt *clnt = iter->clnt;
 	struct rpc_task *task = v;
 	struct list_head *next = task->tk_task.next;
 
+	++iter->pos;
 	++*pos;
 
 	/* If there's another task on list, return it */
@@ -73,7 +78,9 @@ static void
 tasks_stop(struct seq_file *f, void *v)
 	__releases(&clnt->cl_lock)
 {
-	struct rpc_clnt *clnt = f->private;
+	struct rpc_clnt_iter *iter = f->private;
+	struct rpc_clnt *clnt = iter->clnt;
+
 	spin_unlock(&clnt->cl_lock);
 }
 
@@ -86,13 +93,17 @@ static const struct seq_operations tasks_seq_operations = {
 
 static int tasks_open(struct inode *inode, struct file *filp)
 {
-	int ret = seq_open(filp, &tasks_seq_operations);
+	int ret = seq_open_private(filp, &tasks_seq_operations,
+					sizeof(struct rpc_clnt_iter));
+
 	if (!ret) {
 		struct seq_file *seq = filp->private_data;
-		struct rpc_clnt *clnt = seq->private = inode->i_private;
+		struct rpc_clnt_iter *iter = seq->private;
 
-		if (!atomic_inc_not_zero(&clnt->cl_count)) {
-			seq_release(inode, filp);
+		iter->clnt = inode->i_private;
+
+		if (!atomic_inc_not_zero(&iter->clnt->cl_count)) {
+			seq_release_private(inode, filp);
 			ret = -EINVAL;
 		}
 	}
@@ -104,10 +115,10 @@ static int
 tasks_release(struct inode *inode, struct file *filp)
 {
 	struct seq_file *seq = filp->private_data;
-	struct rpc_clnt *clnt = seq->private;
+	struct rpc_clnt_iter *iter = seq->private;
 
-	rpc_release_client(clnt);
-	return seq_release(inode, filp);
+	rpc_release_client(iter->clnt);
+	return seq_release_private(inode, filp);
 }
 
 static const struct file_operations tasks_fops = {
@@ -139,7 +150,7 @@ rpc_clnt_debugfs_register(struct rpc_clnt *clnt)
 		return;
 
 	/* make tasks file */
-	if (!debugfs_create_file("tasks", S_IFREG | 0400, clnt->cl_debugfs,
+	if (!debugfs_create_file("tasks", S_IFREG | S_IRUSR, clnt->cl_debugfs,
 				 clnt, &tasks_fops))
 		goto out_err;
 
@@ -241,13 +252,11 @@ rpc_xprt_debugfs_register(struct rpc_xprt *xprt)
 		return;
 
 	/* make tasks file */
-	if (!debugfs_create_file("info", S_IFREG | 0400, xprt->debugfs,
+	if (!debugfs_create_file("info", S_IFREG | S_IRUSR, xprt->debugfs,
 				 xprt, &xprt_info_fops)) {
 		debugfs_remove_recursive(xprt->debugfs);
 		xprt->debugfs = NULL;
 	}
-
-	atomic_set(&xprt->inject_disconnect, rpc_inject_disconnect);
 }
 
 void
@@ -257,79 +266,11 @@ rpc_xprt_debugfs_unregister(struct rpc_xprt *xprt)
 	xprt->debugfs = NULL;
 }
 
-static int
-fault_open(struct inode *inode, struct file *filp)
-{
-	filp->private_data = kmalloc(128, GFP_KERNEL);
-	if (!filp->private_data)
-		return -ENOMEM;
-	return 0;
-}
-
-static int
-fault_release(struct inode *inode, struct file *filp)
-{
-	kfree(filp->private_data);
-	return 0;
-}
-
-static ssize_t
-fault_disconnect_read(struct file *filp, char __user *user_buf,
-		      size_t len, loff_t *offset)
-{
-	char *buffer = (char *)filp->private_data;
-	size_t size;
-
-	size = sprintf(buffer, "%u\n", rpc_inject_disconnect);
-	return simple_read_from_buffer(user_buf, len, offset, buffer, size);
-}
-
-static ssize_t
-fault_disconnect_write(struct file *filp, const char __user *user_buf,
-		       size_t len, loff_t *offset)
-{
-	char buffer[16];
-
-	if (len >= sizeof(buffer))
-		len = sizeof(buffer) - 1;
-	if (copy_from_user(buffer, user_buf, len))
-		return -EFAULT;
-	buffer[len] = '\0';
-	if (kstrtouint(buffer, 10, &rpc_inject_disconnect))
-		return -EINVAL;
-	return len;
-}
-
-static const struct file_operations fault_disconnect_fops = {
-	.owner		= THIS_MODULE,
-	.open		= fault_open,
-	.read		= fault_disconnect_read,
-	.write		= fault_disconnect_write,
-	.release	= fault_release,
-};
-
-static struct dentry *
-inject_fault_dir(struct dentry *topdir)
-{
-	struct dentry *faultdir;
-
-	faultdir = debugfs_create_dir("inject_fault", topdir);
-	if (!faultdir)
-		return NULL;
-
-	if (!debugfs_create_file("disconnect", S_IFREG | 0400, faultdir,
-				 NULL, &fault_disconnect_fops))
-		return NULL;
-
-	return faultdir;
-}
-
 void __exit
 sunrpc_debugfs_exit(void)
 {
 	debugfs_remove_recursive(topdir);
 	topdir = NULL;
-	rpc_fault_dir = NULL;
 	rpc_clnt_dir = NULL;
 	rpc_xprt_dir = NULL;
 }
@@ -340,10 +281,6 @@ sunrpc_debugfs_init(void)
 	topdir = debugfs_create_dir("sunrpc", NULL);
 	if (!topdir)
 		return;
-
-	rpc_fault_dir = inject_fault_dir(topdir);
-	if (!rpc_fault_dir)
-		goto out_remove;
 
 	rpc_clnt_dir = debugfs_create_dir("rpc_clnt", topdir);
 	if (!rpc_clnt_dir)
@@ -357,6 +294,5 @@ sunrpc_debugfs_init(void)
 out_remove:
 	debugfs_remove_recursive(topdir);
 	topdir = NULL;
-	rpc_fault_dir = NULL;
 	rpc_clnt_dir = NULL;
 }

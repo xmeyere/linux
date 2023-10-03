@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <linux/usb.h>
 #include <linux/usb/hcd.h>
 #include "usb.h"
@@ -10,8 +9,7 @@ static int uas_is_interface(struct usb_host_interface *intf)
 		intf->desc.bInterfaceProtocol == USB_PR_UAS);
 }
 
-static struct usb_host_interface *uas_find_uas_alt_setting(
-		struct usb_interface *intf)
+static int uas_find_uas_alt_setting(struct usb_interface *intf)
 {
 	int i;
 
@@ -19,10 +17,10 @@ static struct usb_host_interface *uas_find_uas_alt_setting(
 		struct usb_host_interface *alt = &intf->altsetting[i];
 
 		if (uas_is_interface(alt))
-			return alt;
+			return alt->desc.bAlternateSetting;
 	}
 
-	return NULL;
+	return -ENODEV;
 }
 
 static int uas_find_endpoints(struct usb_host_interface *alt,
@@ -53,21 +51,20 @@ static int uas_find_endpoints(struct usb_host_interface *alt,
 }
 
 static int uas_use_uas_driver(struct usb_interface *intf,
-			      const struct usb_device_id *id,
-			      unsigned long *flags_ret)
+			      const struct usb_device_id *id)
 {
 	struct usb_host_endpoint *eps[4] = { };
 	struct usb_device *udev = interface_to_usbdev(intf);
 	struct usb_hcd *hcd = bus_to_hcd(udev->bus);
 	unsigned long flags = id->driver_info;
-	struct usb_host_interface *alt;
-	int r;
+	int r, alt;
+
 
 	alt = uas_find_uas_alt_setting(intf);
-	if (!alt)
+	if (alt < 0)
 		return 0;
 
-	r = uas_find_endpoints(alt, eps);
+	r = uas_find_endpoints(&intf->altsetting[alt], eps);
 	if (r < 0)
 		return 0;
 
@@ -76,7 +73,7 @@ static int uas_use_uas_driver(struct usb_interface *intf,
 	 * this writing the following versions exist:
 	 * ASM1051 - no uas support version
 	 * ASM1051 - with broken (*) uas support
-	 * ASM1053 - with working uas support, but problems with large xfers
+	 * ASM1053 - with working uas support
 	 * ASM1153 - with working uas support
 	 *
 	 * Devices with these chips re-use a number of device-ids over the
@@ -106,28 +103,8 @@ static int uas_use_uas_driver(struct usb_interface *intf,
 		} else if (usb_ss_max_streams(&eps[1]->ss_ep_comp) == 32) {
 			/* Possibly an ASM1051, disable uas */
 			flags |= US_FL_IGNORE_UAS;
-		} else {
-			/* ASM1053, these have issues with large transfers */
-			flags |= US_FL_MAX_SECTORS_240;
 		}
 	}
-
-	/* All Seagate disk enclosures have broken ATA pass-through support */
-	if (le16_to_cpu(udev->descriptor.idVendor) == 0x0bc2)
-		flags |= US_FL_NO_ATA_1X;
-
-	/*
-	 * RTL9210-based enclosure from HIKSEMI, MD202 reportedly have issues
-	 * with UAS.  This isn't distinguishable with just idVendor and
-	 * idProduct, use manufacturer and product too.
-	 *
-	 * Reported-by: Hongling Zeng <zenghongling@kylinos.cn>
-	 */
-	if (le16_to_cpu(udev->descriptor.idVendor) == 0x0bda &&
-			le16_to_cpu(udev->descriptor.idProduct) == 0x9210 &&
-			(udev->manufacturer && !strcmp(udev->manufacturer, "HIKSEMI")) &&
-			(udev->product && !strcmp(udev->product, "MD202")))
-		flags |= US_FL_IGNORE_UAS;
 
 	usb_stor_adjust_quirks(udev, &flags);
 
@@ -154,9 +131,6 @@ static int uas_use_uas_driver(struct usb_interface *intf,
 			"Please try an other USB controller if you wish to use UAS.\n");
 		return 0;
 	}
-
-	if (flags_ret)
-		*flags_ret = flags;
 
 	return 1;
 }

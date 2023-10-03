@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _SPARC_PGTABLE_H
 #define _SPARC_PGTABLE_H
 
@@ -15,7 +14,7 @@
 #include <asm-generic/4level-fixup.h>
 
 #include <linux/spinlock.h>
-#include <linux/mm_types.h>
+#include <linux/swap.h>
 #include <asm/types.h>
 #include <asm/pgtsrmmu.h>
 #include <asm/vaddrs.h>
@@ -92,9 +91,9 @@ extern unsigned long pfn_base;
  * ZERO_PAGE is a global shared page that is always zero: used
  * for zero-mapped memory areas etc..
  */
-extern unsigned long empty_zero_page[PAGE_SIZE / sizeof(unsigned long)];
+extern unsigned long empty_zero_page;
 
-#define ZERO_PAGE(vaddr) (virt_to_page(empty_zero_page))
+#define ZERO_PAGE(vaddr) (virt_to_page(&empty_zero_page))
 
 /*
  * In general all page table modifications should use the V8 atomic
@@ -299,7 +298,7 @@ static inline pte_t mk_pte_io(unsigned long page, pgprot_t pgprot, int space)
 #define pgprot_noncached pgprot_noncached
 static inline pgprot_t pgprot_noncached(pgprot_t prot)
 {
-	pgprot_val(prot) &= ~pgprot_val(__pgprot(SRMMU_CACHE));
+	prot &= ~__pgprot(SRMMU_CACHE);
 	return prot;
 }
 

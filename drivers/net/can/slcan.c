@@ -147,7 +147,7 @@ static void slc_bump(struct slcan *sl)
 	u32 tmpid;
 	char *cmd = sl->rbuff;
 
-	memset(&cf, 0, sizeof(cf));
+	cf.can_id = 0;
 
 	switch (*cmd) {
 	case 'r':
@@ -186,6 +186,8 @@ static void slc_bump(struct slcan *sl)
 	else
 		return;
 
+	*(u64 *) (&cf.data) = 0; /* clear payload */
+
 	/* RTR frames may have a dlc > 0 but they never have any data bytes */
 	if (!(cf.can_id & CAN_RTR_FLAG)) {
 		for (i = 0; i < cf.can_dlc; i++) {
@@ -212,13 +214,13 @@ static void slc_bump(struct slcan *sl)
 
 	can_skb_reserve(skb);
 	can_skb_prv(skb)->ifindex = sl->dev->ifindex;
-	can_skb_prv(skb)->skbcnt = 0;
 
-	skb_put_data(skb, &cf, sizeof(struct can_frame));
+	memcpy(skb_put(skb, sizeof(struct can_frame)),
+	       &cf, sizeof(struct can_frame));
+	netif_rx_ni(skb);
 
 	sl->dev->stats.rx_packets++;
 	sl->dev->stats.rx_bytes += cf.can_dlc;
-	netif_rx_ni(skb);
 }
 
 /* parse tty input stream */
@@ -341,16 +343,9 @@ static void slcan_transmit(struct work_struct *work)
  */
 static void slcan_write_wakeup(struct tty_struct *tty)
 {
-	struct slcan *sl;
-
-	rcu_read_lock();
-	sl = rcu_dereference(tty->disc_data);
-	if (!sl)
-		goto out;
+	struct slcan *sl = tty->disc_data;
 
 	schedule_work(&sl->tx_work);
-out:
-	rcu_read_unlock();
 }
 
 /* Send a can_frame to a TTY queue. */
@@ -358,7 +353,7 @@ static netdev_tx_t slc_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct slcan *sl = netdev_priv(dev);
 
-	if (skb->len != CAN_MTU)
+	if (skb->len != sizeof(struct can_frame))
 		goto out;
 
 	spin_lock(&sl->lock);
@@ -421,7 +416,7 @@ static int slc_open(struct net_device *dev)
 static void slc_free_netdev(struct net_device *dev)
 {
 	int i = dev->base_addr;
-
+	free_netdev(dev);
 	slcan_devs[i] = NULL;
 }
 
@@ -440,14 +435,13 @@ static const struct net_device_ops slc_netdev_ops = {
 static void slc_setup(struct net_device *dev)
 {
 	dev->netdev_ops		= &slc_netdev_ops;
-	dev->needs_free_netdev	= true;
-	dev->priv_destructor	= slc_free_netdev;
+	dev->destructor		= slc_free_netdev;
 
 	dev->hard_header_len	= 0;
 	dev->addr_len		= 0;
 	dev->tx_queue_len	= 10;
 
-	dev->mtu		= CAN_MTU;
+	dev->mtu		= sizeof(struct can_frame);
 	dev->type		= ARPHRD_CAN;
 
 	/* New-style flags. */
@@ -513,7 +507,7 @@ static void slc_sync(void)
 }
 
 /* Find a free SLCAN channel, and link in this `tty' line. */
-static struct slcan *slc_alloc(void)
+static struct slcan *slc_alloc(dev_t line)
 {
 	int i;
 	char name[IFNAMSIZ];
@@ -588,7 +582,7 @@ static int slcan_open(struct tty_struct *tty)
 
 	/* OK.  Find a free SLCAN channel to use. */
 	err = -ENFILE;
-	sl = slc_alloc();
+	sl = slc_alloc(tty_devnum(tty));
 	if (sl == NULL)
 		goto err_exit;
 
@@ -618,11 +612,6 @@ err_free_chan:
 	sl->tty = NULL;
 	tty->disc_data = NULL;
 	clear_bit(SLF_INUSE, &sl->flags);
-	slc_free_netdev(sl->dev);
-	/* do not call free_netdev before rtnl_unlock */
-	rtnl_unlock();
-	free_netdev(sl->dev);
-	return err;
 
 err_exit:
 	rtnl_unlock();
@@ -648,11 +637,10 @@ static void slcan_close(struct tty_struct *tty)
 		return;
 
 	spin_lock_bh(&sl->lock);
-	rcu_assign_pointer(tty->disc_data, NULL);
+	tty->disc_data = NULL;
 	sl->tty = NULL;
 	spin_unlock_bh(&sl->lock);
 
-	synchronize_rcu();
 	flush_work(&sl->tx_work);
 
 	/* Flush network side */
@@ -714,7 +702,7 @@ static int __init slcan_init(void)
 	pr_info("slcan: serial line CAN interface driver\n");
 	pr_info("slcan: %d dynamic interface channels.\n", maxdev);
 
-	slcan_devs = kcalloc(maxdev, sizeof(struct net_device *), GFP_KERNEL);
+	slcan_devs = kzalloc(sizeof(struct net_device *)*maxdev, GFP_KERNEL);
 	if (!slcan_devs)
 		return -ENOMEM;
 
@@ -772,6 +760,8 @@ static void __exit slcan_exit(void)
 		if (sl->tty) {
 			printk(KERN_ERR "%s: tty discipline still running\n",
 			       dev->name);
+			/* Intentionally leak the control block. */
+			dev->destructor = NULL;
 		}
 
 		unregister_netdev(dev);

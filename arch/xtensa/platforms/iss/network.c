@@ -16,8 +16,6 @@
  *
  */
 
-#define pr_fmt(fmt) "%s: " fmt, __func__
-
 #include <linux/list.h>
 #include <linux/irq.h>
 #include <linux/spinlock.h>
@@ -107,17 +105,13 @@ static char *split_if_spec(char *str, ...)
 
 	va_start(ap, str);
 	while ((arg = va_arg(ap, char**)) != NULL) {
-		if (*str == '\0') {
-			va_end(ap);
+		if (*str == '\0')
 			return NULL;
-		}
 		end = strchr(str, ',');
 		if (end != str)
 			*arg = str;
-		if (end == NULL) {
-			va_end(ap);
+		if (end == NULL)
 			return NULL;
-		}
 		*end++ = '\0';
 		str = end;
 	}
@@ -236,7 +230,7 @@ static int tuntap_probe(struct iss_net_private *lp, int index, char *init)
 
 	init += sizeof(TRANSPORT_TUNTAP_NAME) - 1;
 	if (*init == ',') {
-		rem = split_if_spec(init + 1, &mac_str, &dev_name, NULL);
+		rem = split_if_spec(init + 1, &mac_str, &dev_name);
 		if (rem != NULL) {
 			pr_err("%s: extra garbage on specification : '%s'\n",
 			       dev->name, rem);
@@ -351,12 +345,12 @@ static int iss_net_poll(void)
 }
 
 
-static void iss_net_timer(struct timer_list *t)
+static void iss_net_timer(unsigned long priv)
 {
-	struct iss_net_private *lp = from_timer(lp, t, timer);
+	struct iss_net_private *lp = (struct iss_net_private *)priv;
 
-	iss_net_poll();
 	spin_lock(&lp->lock);
+	iss_net_poll();
 	mod_timer(&lp->timer, jiffies + lp->timer_val);
 	spin_unlock(&lp->lock);
 }
@@ -367,7 +361,7 @@ static int iss_net_open(struct net_device *dev)
 	struct iss_net_private *lp = netdev_priv(dev);
 	int err;
 
-	spin_lock_bh(&lp->lock);
+	spin_lock(&lp->lock);
 
 	err = lp->tp.open(lp);
 	if (err < 0)
@@ -382,18 +376,18 @@ static int iss_net_open(struct net_device *dev)
 	while ((err = iss_net_rx(dev)) > 0)
 		;
 
-	spin_unlock_bh(&lp->lock);
-	spin_lock_bh(&opened_lock);
+	spin_lock(&opened_lock);
 	list_add(&lp->opened_list, &opened);
-	spin_unlock_bh(&opened_lock);
-	spin_lock_bh(&lp->lock);
+	spin_unlock(&opened_lock);
 
-	timer_setup(&lp->timer, iss_net_timer, 0);
+	init_timer(&lp->timer);
 	lp->timer_val = ISS_NET_TIMER_VALUE;
+	lp->timer.data = (unsigned long) lp;
+	lp->timer.function = iss_net_timer;
 	mod_timer(&lp->timer, jiffies + lp->timer_val);
 
 out:
-	spin_unlock_bh(&lp->lock);
+	spin_unlock(&lp->lock);
 	return err;
 }
 
@@ -401,7 +395,7 @@ static int iss_net_close(struct net_device *dev)
 {
 	struct iss_net_private *lp = netdev_priv(dev);
 	netif_stop_queue(dev);
-	spin_lock_bh(&lp->lock);
+	spin_lock(&lp->lock);
 
 	spin_lock(&opened_lock);
 	list_del(&opened);
@@ -411,24 +405,25 @@ static int iss_net_close(struct net_device *dev)
 
 	lp->tp.close(lp);
 
-	spin_unlock_bh(&lp->lock);
+	spin_unlock(&lp->lock);
 	return 0;
 }
 
 static int iss_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 {
 	struct iss_net_private *lp = netdev_priv(dev);
+	unsigned long flags;
 	int len;
 
 	netif_stop_queue(dev);
-	spin_lock_bh(&lp->lock);
+	spin_lock_irqsave(&lp->lock, flags);
 
 	len = lp->tp.write(lp, &skb);
 
 	if (len == skb->len) {
 		lp->stats.tx_packets++;
 		lp->stats.tx_bytes += skb->len;
-		netif_trans_update(dev);
+		dev->trans_start = jiffies;
 		netif_start_queue(dev);
 
 		/* this is normally done in the interrupt when tx finishes */
@@ -443,7 +438,7 @@ static int iss_net_start_xmit(struct sk_buff *skb, struct net_device *dev)
 		pr_err("%s: %s failed(%d)\n", dev->name, __func__, len);
 	}
 
-	spin_unlock_bh(&lp->lock);
+	spin_unlock_irqrestore(&lp->lock, flags);
 
 	dev_kfree_skb(skb);
 	return NETDEV_TX_OK;
@@ -471,9 +466,9 @@ static int iss_net_set_mac(struct net_device *dev, void *addr)
 
 	if (!is_valid_ether_addr(hwaddr->sa_data))
 		return -EADDRNOTAVAIL;
-	spin_lock_bh(&lp->lock);
+	spin_lock(&lp->lock);
 	memcpy(dev->dev_addr, hwaddr->sa_data, ETH_ALEN);
-	spin_unlock_bh(&lp->lock);
+	spin_unlock(&lp->lock);
 	return 0;
 }
 
@@ -482,7 +477,7 @@ static int iss_net_change_mtu(struct net_device *dev, int new_mtu)
 	return -EINVAL;
 }
 
-void iss_net_user_timer_expire(struct timer_list *unused)
+void iss_net_user_timer_expire(unsigned long _conn)
 {
 }
 
@@ -525,11 +520,11 @@ static int iss_net_configure(int index, char *init)
 	*lp = (struct iss_net_private) {
 		.device_list		= LIST_HEAD_INIT(lp->device_list),
 		.opened_list		= LIST_HEAD_INIT(lp->opened_list),
+		.lock			= __SPIN_LOCK_UNLOCKED(lp.lock),
 		.dev			= dev,
 		.index			= index,
-	};
+		};
 
-	spin_lock_init(&lp->lock);
 	/*
 	 * If this name ends up conflicting with an existing registered
 	 * netdevice, that is OK, register_netdev{,ice}() will notice this
@@ -582,7 +577,8 @@ static int iss_net_configure(int index, char *init)
 		return 1;
 	}
 
-	timer_setup(&lp->tl, iss_net_user_timer_expire, 0);
+	init_timer(&lp->tl);
+	lp->tl.function = iss_net_user_timer_expire;
 
 	return 0;
 
@@ -608,6 +604,8 @@ struct iss_net_init {
  * those fields. They will be later initialized in iss_net_init.
  */
 
+#define ERR KERN_ERR "iss_net_setup: "
+
 static int __init iss_net_setup(char *str)
 {
 	struct iss_net_private *device = NULL;
@@ -619,14 +617,14 @@ static int __init iss_net_setup(char *str)
 
 	end = strchr(str, '=');
 	if (!end) {
-		pr_err("Expected '=' after device number\n");
+		printk(ERR "Expected '=' after device number\n");
 		return 1;
 	}
 	*end = 0;
 	rc = kstrtouint(str, 0, &n);
 	*end = '=';
 	if (rc < 0) {
-		pr_err("Failed to parse '%s'\n", str);
+		printk(ERR "Failed to parse '%s'\n", str);
 		return 1;
 	}
 	str = end;
@@ -642,13 +640,13 @@ static int __init iss_net_setup(char *str)
 	spin_unlock(&devices_lock);
 
 	if (device && device->index == n) {
-		pr_err("Device %u already configured\n", n);
+		printk(ERR "Device %u already configured\n", n);
 		return 1;
 	}
 
 	new = alloc_bootmem(sizeof(*new));
 	if (new == NULL) {
-		pr_err("Alloc_bootmem failed\n");
+		printk(ERR "Alloc_bootmem failed\n");
 		return 1;
 	}
 
@@ -659,6 +657,8 @@ static int __init iss_net_setup(char *str)
 	list_add_tail(&new->list, &eth_cmd_line);
 	return 1;
 }
+
+#undef ERR
 
 __setup("eth", iss_net_setup);
 
@@ -680,4 +680,6 @@ static int iss_net_init(void)
 
 	return 1;
 }
-device_initcall(iss_net_init);
+
+module_init(iss_net_init);
+

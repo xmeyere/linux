@@ -159,14 +159,14 @@ static int aoe_debugfs_open(struct inode *inode, struct file *file)
 	return single_open(file, aoedisk_debugfs_show, inode->i_private);
 }
 
-static DEVICE_ATTR(state, 0444, aoedisk_show_state, NULL);
-static DEVICE_ATTR(mac, 0444, aoedisk_show_mac, NULL);
-static DEVICE_ATTR(netif, 0444, aoedisk_show_netif, NULL);
+static DEVICE_ATTR(state, S_IRUGO, aoedisk_show_state, NULL);
+static DEVICE_ATTR(mac, S_IRUGO, aoedisk_show_mac, NULL);
+static DEVICE_ATTR(netif, S_IRUGO, aoedisk_show_netif, NULL);
 static struct device_attribute dev_attr_firmware_version = {
-	.attr = { .name = "firmware-version", .mode = 0444 },
+	.attr = { .name = "firmware-version", .mode = S_IRUGO },
 	.show = aoedisk_show_fwver,
 };
-static DEVICE_ATTR(payload, 0444, aoedisk_show_payload, NULL);
+static DEVICE_ATTR(payload, S_IRUGO, aoedisk_show_payload, NULL);
 
 static struct attribute *aoe_attrs[] = {
 	&dev_attr_state.attr,
@@ -177,13 +177,8 @@ static struct attribute *aoe_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group aoe_attr_group = {
+static const struct attribute_group attr_group = {
 	.attrs = aoe_attrs,
-};
-
-static const struct attribute_group *aoe_attr_groups[] = {
-	&aoe_attr_group,
-	NULL,
 };
 
 static const struct file_operations aoe_debugfs_fops = {
@@ -222,6 +217,17 @@ aoedisk_rm_debugfs(struct aoedev *d)
 {
 	debugfs_remove(d->debugfs);
 	d->debugfs = NULL;
+}
+
+static int
+aoedisk_add_sysfs(struct aoedev *d)
+{
+	return sysfs_create_group(&disk_to_dev(d->gd)->kobj, &attr_group);
+}
+void
+aoedisk_rm_sysfs(struct aoedev *d)
+{
+	sysfs_remove_group(&disk_to_dev(d->gd)->kobj, &attr_group);
 }
 
 static int
@@ -389,9 +395,9 @@ aoeblk_gdalloc(void *vp)
 	WARN_ON(d->flags & DEVFL_TKILL);
 	WARN_ON(d->gd);
 	WARN_ON(d->flags & DEVFL_UP);
-	blk_queue_max_hw_sectors(q, BLK_DEF_MAX_SECTORS);
-	q->backing_dev_info->name = "aoe";
-	q->backing_dev_info->ra_pages = READ_AHEAD / PAGE_SIZE;
+	blk_queue_max_hw_sectors(q, 1024);
+	q->backing_dev_info.name = "aoe";
+	q->backing_dev_info.ra_pages = READ_AHEAD / PAGE_CACHE_SIZE;
 	d->bufpool = mp;
 	d->blkq = gd->queue = q;
 	q->queuedata = d;
@@ -411,7 +417,8 @@ aoeblk_gdalloc(void *vp)
 
 	spin_unlock_irqrestore(&d->lock, flags);
 
-	device_add_disk(NULL, gd, aoe_attr_groups);
+	add_disk(gd);
+	aoedisk_add_sysfs(d);
 	aoedisk_add_debugfs(d);
 
 	spin_lock_irqsave(&d->lock, flags);

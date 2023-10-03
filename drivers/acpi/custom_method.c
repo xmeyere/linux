@@ -37,8 +37,6 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
 				   sizeof(struct acpi_table_header)))
 			return -EFAULT;
 		uncopied_bytes = max_size = table.length;
-		/* make sure the buf is not allocated */
-		kfree(buf);
 		buf = kzalloc(max_size, GFP_KERNEL);
 		if (!buf)
 			return -ENOMEM;
@@ -50,11 +48,8 @@ static ssize_t cm_write(struct file *file, const char __user * user_buf,
 	if ((*ppos > max_size) ||
 	    (*ppos + count > max_size) ||
 	    (*ppos + count < count) ||
-	    (count > uncopied_bytes)) {
-		kfree(buf);
-		buf = NULL;
+	    (count > uncopied_bytes))
 		return -EINVAL;
-	}
 
 	if (copy_from_user(buf + (*ppos), user_buf, count)) {
 		kfree(buf);
@@ -99,7 +94,7 @@ static void __exit acpi_custom_method_exit(void)
 {
 	if (cm_dentry)
 		debugfs_remove(cm_dentry);
-}
+ }
 
 module_init(acpi_custom_method_init);
 module_exit(acpi_custom_method_exit);

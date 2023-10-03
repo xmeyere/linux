@@ -22,21 +22,15 @@
 #include <linux/spinlock.h>
 #include <linux/syscore_ops.h>
 
-static ATOMIC_NOTIFIER_HEAD(cpu_pm_notifier_chain);
+static DEFINE_RWLOCK(cpu_pm_notifier_lock);
+static RAW_NOTIFIER_HEAD(cpu_pm_notifier_chain);
 
 static int cpu_pm_notify(enum cpu_pm_event event, int nr_to_call, int *nr_calls)
 {
 	int ret;
 
-	/*
-	 * __atomic_notifier_call_chain has a RCU read critical section, which
-	 * could be disfunctional in cpu idle. Copy RCU_NONIDLE code to let
-	 * RCU know this.
-	 */
-	rcu_irq_enter_irqson();
-	ret = __atomic_notifier_call_chain(&cpu_pm_notifier_chain, event, NULL,
+	ret = __raw_notifier_call_chain(&cpu_pm_notifier_chain, event, NULL,
 		nr_to_call, nr_calls);
-	rcu_irq_exit_irqson();
 
 	return notifier_to_errno(ret);
 }
@@ -53,7 +47,14 @@ static int cpu_pm_notify(enum cpu_pm_event event, int nr_to_call, int *nr_calls)
  */
 int cpu_pm_register_notifier(struct notifier_block *nb)
 {
-	return atomic_notifier_chain_register(&cpu_pm_notifier_chain, nb);
+	unsigned long flags;
+	int ret;
+
+	write_lock_irqsave(&cpu_pm_notifier_lock, flags);
+	ret = raw_notifier_chain_register(&cpu_pm_notifier_chain, nb);
+	write_unlock_irqrestore(&cpu_pm_notifier_lock, flags);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(cpu_pm_register_notifier);
 
@@ -68,7 +69,14 @@ EXPORT_SYMBOL_GPL(cpu_pm_register_notifier);
  */
 int cpu_pm_unregister_notifier(struct notifier_block *nb)
 {
-	return atomic_notifier_chain_unregister(&cpu_pm_notifier_chain, nb);
+	unsigned long flags;
+	int ret;
+
+	write_lock_irqsave(&cpu_pm_notifier_lock, flags);
+	ret = raw_notifier_chain_unregister(&cpu_pm_notifier_chain, nb);
+	write_unlock_irqrestore(&cpu_pm_notifier_lock, flags);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(cpu_pm_unregister_notifier);
 
@@ -89,9 +97,10 @@ EXPORT_SYMBOL_GPL(cpu_pm_unregister_notifier);
  */
 int cpu_pm_enter(void)
 {
-	int nr_calls = 0;
+	int nr_calls;
 	int ret = 0;
 
+	read_lock(&cpu_pm_notifier_lock);
 	ret = cpu_pm_notify(CPU_PM_ENTER, -1, &nr_calls);
 	if (ret)
 		/*
@@ -99,6 +108,7 @@ int cpu_pm_enter(void)
 		 * PM entry who are notified earlier to prepare for it.
 		 */
 		cpu_pm_notify(CPU_PM_ENTER_FAILED, nr_calls - 1, NULL);
+	read_unlock(&cpu_pm_notifier_lock);
 
 	return ret;
 }
@@ -118,7 +128,13 @@ EXPORT_SYMBOL_GPL(cpu_pm_enter);
  */
 int cpu_pm_exit(void)
 {
-	return cpu_pm_notify(CPU_PM_EXIT, -1, NULL);
+	int ret;
+
+	read_lock(&cpu_pm_notifier_lock);
+	ret = cpu_pm_notify(CPU_PM_EXIT, -1, NULL);
+	read_unlock(&cpu_pm_notifier_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(cpu_pm_exit);
 
@@ -140,9 +156,10 @@ EXPORT_SYMBOL_GPL(cpu_pm_exit);
  */
 int cpu_cluster_pm_enter(void)
 {
-	int nr_calls = 0;
+	int nr_calls;
 	int ret = 0;
 
+	read_lock(&cpu_pm_notifier_lock);
 	ret = cpu_pm_notify(CPU_CLUSTER_PM_ENTER, -1, &nr_calls);
 	if (ret)
 		/*
@@ -150,6 +167,7 @@ int cpu_cluster_pm_enter(void)
 		 * PM entry who are notified earlier to prepare for it.
 		 */
 		cpu_pm_notify(CPU_CLUSTER_PM_ENTER_FAILED, nr_calls - 1, NULL);
+	read_unlock(&cpu_pm_notifier_lock);
 
 	return ret;
 }
@@ -162,7 +180,7 @@ EXPORT_SYMBOL_GPL(cpu_cluster_pm_enter);
  * low power state that may have caused some blocks in the same power domain
  * to reset.
  *
- * Must be called after cpu_cluster_pm_enter has been called for the power
+ * Must be called after cpu_pm_exit has been called on all cpus in the power
  * domain, and before cpu_pm_exit has been called on any cpu in the power
  * domain. Notified drivers can include VFP co-processor, interrupt controller
  * and its PM extensions, local CPU timers context save/restore which
@@ -172,7 +190,13 @@ EXPORT_SYMBOL_GPL(cpu_cluster_pm_enter);
  */
 int cpu_cluster_pm_exit(void)
 {
-	return cpu_pm_notify(CPU_CLUSTER_PM_EXIT, -1, NULL);
+	int ret;
+
+	read_lock(&cpu_pm_notifier_lock);
+	ret = cpu_pm_notify(CPU_CLUSTER_PM_EXIT, -1, NULL);
+	read_unlock(&cpu_pm_notifier_lock);
+
+	return ret;
 }
 EXPORT_SYMBOL_GPL(cpu_cluster_pm_exit);
 

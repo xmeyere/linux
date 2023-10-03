@@ -224,7 +224,7 @@ static int wdt_keepalive(void)
 
 static int wdt_set_timeout(int t)
 {
-	unsigned int tmrval;
+	int tmrval;
 
 	/*
 	 * Convert seconds to watchdog counter time units, rounding up.
@@ -427,7 +427,7 @@ static long wdt_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 			return -EINVAL;
 
 		wdt_keepalive();
-		/* Fall through */
+		/* Fall */
 
 	case WDIOC_GETTIMEOUT:
 		return put_user(timeout, uarg.i);

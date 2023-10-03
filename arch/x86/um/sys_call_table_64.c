@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * System call table for UML/x86-64, copied from arch/x86/kernel/syscall_*.c
  * with some changes for UML.
@@ -8,7 +7,6 @@
 #include <linux/sys.h>
 #include <linux/cache.h>
 #include <generated/user_constants.h>
-#include <asm/syscall.h>
 
 #define __NO_STUBS
 
@@ -18,7 +16,7 @@
  */
 
 /* Not going to be implemented by UML, since we have no hardware. */
-#define sys_iopl sys_ni_syscall
+#define stub_iopl sys_ni_syscall
 #define sys_ioperm sys_ni_syscall
 
 /*
@@ -36,13 +34,18 @@
 #define stub_execveat sys_execveat
 #define stub_rt_sigreturn sys_rt_sigreturn
 
-#define __SYSCALL_64(nr, sym, qual) extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long) ;
+#define __SYSCALL_COMMON(nr, sym, compat) __SYSCALL_64(nr, sym, compat)
+#define __SYSCALL_X32(nr, sym, compat) /* Not supported */
+
+#define __SYSCALL_64(nr, sym, compat) extern asmlinkage void sym(void) ;
 #include <asm/syscalls_64.h>
 
 #undef __SYSCALL_64
-#define __SYSCALL_64(nr, sym, qual) [ nr ] = sym,
+#define __SYSCALL_64(nr, sym, compat) [ nr ] = sym,
 
-extern asmlinkage long sys_ni_syscall(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
+typedef void (*sys_call_ptr_t)(void);
+
+extern void sys_ni_syscall(void);
 
 const sys_call_ptr_t sys_call_table[] ____cacheline_aligned = {
 	/*

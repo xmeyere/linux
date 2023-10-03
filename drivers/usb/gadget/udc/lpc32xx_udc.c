@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * USB Gadget driver for LPC32xx
  *
@@ -13,29 +12,57 @@
  *
  * Note: This driver is based on original work done by Mike James for
  *       the LPC3180.
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include <linux/clk.h>
-#include <linux/delay.h>
-#include <linux/dma-mapping.h>
-#include <linux/dmapool.h>
-#include <linux/i2c.h>
-#include <linux/interrupt.h>
+#include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/of.h>
 #include <linux/platform_device.h>
-#include <linux/proc_fs.h>
+#include <linux/delay.h>
+#include <linux/ioport.h>
 #include <linux/slab.h>
+#include <linux/errno.h>
+#include <linux/init.h>
+#include <linux/list.h>
+#include <linux/interrupt.h>
+#include <linux/proc_fs.h>
+#include <linux/clk.h>
 #include <linux/usb/ch9.h>
 #include <linux/usb/gadget.h>
+#include <linux/i2c.h>
+#include <linux/kthread.h>
+#include <linux/freezer.h>
+#include <linux/dma-mapping.h>
+#include <linux/dmapool.h>
+#include <linux/workqueue.h>
+#include <linux/of.h>
 #include <linux/usb/isp1301.h>
 
+#include <asm/byteorder.h>
+#include <mach/hardware.h>
+#include <linux/io.h>
+#include <asm/irq.h>
+
+#include <mach/platform.h>
+#include <mach/irqs.h>
+#include <mach/board.h>
 #ifdef CONFIG_USB_GADGET_DEBUG_FILES
 #include <linux/debugfs.h>
 #include <linux/seq_file.h>
 #endif
-
-#include <mach/hardware.h>
 
 /*
  * USB device configuration structure
@@ -133,7 +160,9 @@ struct lpc32xx_udc {
 	u32			io_p_size;
 	void __iomem		*udp_baseaddr;
 	int			udp_irq[4];
+	struct clk		*usb_pll_clk;
 	struct clk		*usb_slv_clk;
+	struct clk		*usb_otg_clk;
 
 	/* DMA support */
 	u32			*udca_v_base;
@@ -193,6 +222,16 @@ static inline struct lpc32xx_udc *to_udc(struct usb_gadget *g)
 	dev_warn(epp->udc->dev, "%s:" fmt, __func__, ## arg)
 
 #define UDCA_BUFF_SIZE (128)
+
+/* TODO: When the clock framework is introduced in LPC32xx, IO_ADDRESS will
+ * be replaced with an inremap()ed pointer
+ * */
+#define USB_CTRL		IO_ADDRESS(LPC32XX_CLK_PM_BASE + 0x64)
+
+/* USB_CTRL bit defines */
+#define USB_SLAVE_HCLK_EN	(1 << 24)
+#define USB_HOST_NEED_CLK_EN	(1 << 21)
+#define USB_DEV_NEED_CLK_EN	(1 << 22)
 
 /**********************************************************************
  * USB device controller register offsets
@@ -613,6 +652,9 @@ static void isp1301_udc_configure(struct lpc32xx_udc *udc)
 	i2c_smbus_write_byte_data(udc->isp1301_i2c_client,
 		ISP1301_I2C_INTERRUPT_RISING, INT_VBUS_VLD);
 
+	/* Enable usb_need_clk clock after transceiver is initialized */
+	writel((readl(USB_CTRL) | USB_DEV_NEED_CLK_EN), USB_CTRL);
+
 	dev_info(udc->dev, "ISP1301 Vendor ID  : 0x%04x\n",
 		 i2c_smbus_read_word_data(udc->isp1301_i2c_client, 0x00));
 	dev_info(udc->dev, "ISP1301 Product ID : 0x%04x\n",
@@ -922,7 +964,8 @@ static struct lpc32xx_usbd_dd_gad *udc_dd_alloc(struct lpc32xx_udc *udc)
 	dma_addr_t			dma;
 	struct lpc32xx_usbd_dd_gad	*dd;
 
-	dd = dma_pool_alloc(udc->dd_cache, GFP_ATOMIC | GFP_DMA, &dma);
+	dd = (struct lpc32xx_usbd_dd_gad *) dma_pool_alloc(
+			udc->dd_cache, (GFP_KERNEL | GFP_DMA), &dma);
 	if (dd)
 		dd->this_dma = dma;
 
@@ -950,13 +993,31 @@ static void udc_clk_set(struct lpc32xx_udc *udc, int enable)
 			return;
 
 		udc->clocked = 1;
-		clk_prepare_enable(udc->usb_slv_clk);
+
+		/* 48MHz PLL up */
+		clk_enable(udc->usb_pll_clk);
+
+		/* Enable the USB device clock */
+		writel(readl(USB_CTRL) | USB_DEV_NEED_CLK_EN,
+			     USB_CTRL);
+
+		clk_enable(udc->usb_otg_clk);
 	} else {
 		if (!udc->clocked)
 			return;
 
 		udc->clocked = 0;
-		clk_disable_unprepare(udc->usb_slv_clk);
+
+		/* Never disable the USB_HCLK during normal operation */
+
+		/* 48MHz PLL dpwn */
+		clk_disable(udc->usb_pll_clk);
+
+		/* Disable the USB device clock */
+		writel(readl(USB_CTRL) & ~USB_DEV_NEED_CLK_EN,
+			     USB_CTRL);
+
+		clk_disable(udc->usb_otg_clk);
 	}
 }
 
@@ -1165,11 +1226,11 @@ static void udc_pop_fifo(struct lpc32xx_udc *udc, u8 *data, u32 bytes)
 			tmp = readl(USBD_RXDATA(udc->udp_baseaddr));
 
 			bl = bytes - n;
-			if (bl > 4)
-				bl = 4;
+			if (bl > 3)
+				bl = 3;
 
 			for (i = 0; i < bl; i++)
-				data[n + i] = (u8) ((tmp >> (i * 8)) & 0xFF);
+				data[n + i] = (u8) ((tmp >> (n * 8)) & 0xFF);
 		}
 		break;
 
@@ -1602,17 +1663,17 @@ static int lpc32xx_ep_enable(struct usb_ep *_ep,
 			     const struct usb_endpoint_descriptor *desc)
 {
 	struct lpc32xx_ep *ep = container_of(_ep, struct lpc32xx_ep, ep);
-	struct lpc32xx_udc *udc;
+	struct lpc32xx_udc *udc = ep->udc;
 	u16 maxpacket;
 	u32 tmp;
 	unsigned long flags;
 
 	/* Verify EP data */
 	if ((!_ep) || (!ep) || (!desc) ||
-	    (desc->bDescriptorType != USB_DT_ENDPOINT))
+	    (desc->bDescriptorType != USB_DT_ENDPOINT)) {
+		dev_dbg(udc->dev, "bad ep or descriptor\n");
 		return -EINVAL;
-
-	udc = ep->udc;
+	}
 	maxpacket = usb_endpoint_maxp(desc);
 	if ((maxpacket == 0) || (maxpacket > ep->maxpacket)) {
 		dev_dbg(udc->dev, "bad ep descriptor's packet size\n");
@@ -1742,14 +1803,23 @@ static int lpc32xx_ep_queue(struct usb_ep *_ep,
 	req = container_of(_req, struct lpc32xx_request, req);
 	ep = container_of(_ep, struct lpc32xx_ep, ep);
 
-	if (!_ep || !_req || !_req->complete || !_req->buf ||
+	if (!_req || !_req->complete || !_req->buf ||
 	    !list_empty(&req->queue))
 		return -EINVAL;
 
 	udc = ep->udc;
 
-	if (udc->gadget.speed == USB_SPEED_UNKNOWN)
-		return -EPIPE;
+	if (!_ep) {
+		dev_dbg(udc->dev, "invalid ep\n");
+		return -EINVAL;
+	}
+
+
+	if ((!udc) || (!udc->driver) ||
+	    (udc->gadget.speed == USB_SPEED_UNKNOWN)) {
+		dev_dbg(udc->dev, "invalid device\n");
+		return -EINVAL;
+	}
 
 	if (ep->lep) {
 		struct lpc32xx_usbd_dd_gad *dd;
@@ -1860,7 +1930,7 @@ static int lpc32xx_ep_dequeue(struct usb_ep *_ep, struct usb_request *_req)
 static int lpc32xx_ep_set_halt(struct usb_ep *_ep, int value)
 {
 	struct lpc32xx_ep *ep = container_of(_ep, struct lpc32xx_ep, ep);
-	struct lpc32xx_udc *udc;
+	struct lpc32xx_udc *udc = ep->udc;
 	unsigned long flags;
 
 	if ((!ep) || (ep->hwep_num <= 1))
@@ -1870,7 +1940,6 @@ static int lpc32xx_ep_set_halt(struct usb_ep *_ep, int value)
 	if (ep->is_in)
 		return -EAGAIN;
 
-	udc = ep->udc;
 	spin_lock_irqsave(&udc->lock, flags);
 
 	if (value == 1) {
@@ -2515,8 +2584,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep0",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_CONTROL,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 0,
@@ -2528,8 +2595,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep1-int",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_INT,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 2,
@@ -2541,8 +2606,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep2-bulk",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_BULK,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 4,
@@ -2554,8 +2617,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep3-iso",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_ISO,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 1023,
 		.hwep_num_base	= 6,
@@ -2567,8 +2628,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep4-int",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_INT,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 8,
@@ -2580,8 +2639,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep5-bulk",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_BULK,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 10,
@@ -2593,8 +2650,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep6-iso",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_ISO,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 1023,
 		.hwep_num_base	= 12,
@@ -2606,8 +2661,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep7-int",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_INT,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 14,
@@ -2619,8 +2672,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep8-bulk",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_BULK,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 16,
@@ -2632,8 +2683,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep9-iso",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_ISO,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 1023,
 		.hwep_num_base	= 18,
@@ -2645,8 +2694,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep10-int",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_INT,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 20,
@@ -2658,8 +2705,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep11-bulk",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_BULK,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 22,
@@ -2671,8 +2716,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep12-iso",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_ISO,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 1023,
 		.hwep_num_base	= 24,
@@ -2684,8 +2727,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep13-int",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_INT,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 26,
@@ -2697,8 +2738,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep14-bulk",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_BULK,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 64,
 		.hwep_num_base	= 28,
@@ -2710,8 +2749,6 @@ static const struct lpc32xx_udc controller_template = {
 		.ep = {
 			.name	= "ep15-bulk",
 			.ops	= &lpc32xx_ep_ops,
-			.caps	= USB_EP_CAPS(USB_EP_CAPS_TYPE_BULK,
-					USB_EP_CAPS_DIR_ALL),
 		},
 		.maxpacket	= 1023,
 		.hwep_num_base	= 30,
@@ -3021,7 +3058,6 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
 	}
 
 	udc->isp1301_i2c_client = isp1301_get_client(isp1301_node);
-	of_node_put(isp1301_node);
 	if (!udc->isp1301_i2c_client) {
 		retval = -EPROBE_DEFER;
 		goto phy_fail;
@@ -3079,19 +3115,56 @@ static int lpc32xx_udc_probe(struct platform_device *pdev)
 		goto io_map_fail;
 	}
 
-	/* Get USB device clock */
-	udc->usb_slv_clk = clk_get(&pdev->dev, NULL);
+	/* Enable AHB slave USB clock, needed for further USB clock control */
+	writel(USB_SLAVE_HCLK_EN | (1 << 19), USB_CTRL);
+
+	/* Get required clocks */
+	udc->usb_pll_clk = clk_get(&pdev->dev, "ck_pll5");
+	if (IS_ERR(udc->usb_pll_clk)) {
+		dev_err(udc->dev, "failed to acquire USB PLL\n");
+		retval = PTR_ERR(udc->usb_pll_clk);
+		goto pll_get_fail;
+	}
+	udc->usb_slv_clk = clk_get(&pdev->dev, "ck_usbd");
 	if (IS_ERR(udc->usb_slv_clk)) {
 		dev_err(udc->dev, "failed to acquire USB device clock\n");
 		retval = PTR_ERR(udc->usb_slv_clk);
 		goto usb_clk_get_fail;
 	}
+	udc->usb_otg_clk = clk_get(&pdev->dev, "ck_usb_otg");
+	if (IS_ERR(udc->usb_otg_clk)) {
+		dev_err(udc->dev, "failed to acquire USB otg clock\n");
+		retval = PTR_ERR(udc->usb_otg_clk);
+		goto usb_otg_clk_get_fail;
+	}
+
+	/* Setup PLL clock to 48MHz */
+	retval = clk_enable(udc->usb_pll_clk);
+	if (retval < 0) {
+		dev_err(udc->dev, "failed to start USB PLL\n");
+		goto pll_enable_fail;
+	}
+
+	retval = clk_set_rate(udc->usb_pll_clk, 48000);
+	if (retval < 0) {
+		dev_err(udc->dev, "failed to set USB clock rate\n");
+		goto pll_set_fail;
+	}
+
+	writel(readl(USB_CTRL) | USB_DEV_NEED_CLK_EN, USB_CTRL);
 
 	/* Enable USB device clock */
-	retval = clk_prepare_enable(udc->usb_slv_clk);
+	retval = clk_enable(udc->usb_slv_clk);
 	if (retval < 0) {
 		dev_err(udc->dev, "failed to start USB device clock\n");
 		goto usb_clk_enable_fail;
+	}
+
+	/* Enable USB OTG clock */
+	retval = clk_enable(udc->usb_otg_clk);
+	if (retval < 0) {
+		dev_err(udc->dev, "failed to start USB otg clock\n");
+		goto usb_otg_clk_enable_fail;
 	}
 
 	/* Setup deferred workqueue data */
@@ -3204,10 +3277,19 @@ dma_alloc_fail:
 	dma_free_coherent(&pdev->dev, UDCA_BUFF_SIZE,
 			  udc->udca_v_base, udc->udca_p_base);
 i2c_fail:
-	clk_disable_unprepare(udc->usb_slv_clk);
+	clk_disable(udc->usb_otg_clk);
+usb_otg_clk_enable_fail:
+	clk_disable(udc->usb_slv_clk);
 usb_clk_enable_fail:
+pll_set_fail:
+	clk_disable(udc->usb_pll_clk);
+pll_enable_fail:
+	clk_put(udc->usb_otg_clk);
+usb_otg_clk_get_fail:
 	clk_put(udc->usb_slv_clk);
 usb_clk_get_fail:
+	clk_put(udc->usb_pll_clk);
+pll_get_fail:
 	iounmap(udc->udp_baseaddr);
 io_map_fail:
 	release_mem_region(udc->io_p_start, udc->io_p_size);
@@ -3244,9 +3326,12 @@ static int lpc32xx_udc_remove(struct platform_device *pdev)
 	free_irq(udc->udp_irq[IRQ_USB_HP], udc);
 	free_irq(udc->udp_irq[IRQ_USB_LP], udc);
 
-	clk_disable_unprepare(udc->usb_slv_clk);
+	clk_disable(udc->usb_otg_clk);
+	clk_put(udc->usb_otg_clk);
+	clk_disable(udc->usb_slv_clk);
 	clk_put(udc->usb_slv_clk);
-
+	clk_disable(udc->usb_pll_clk);
+	clk_put(udc->usb_pll_clk);
 	iounmap(udc->udp_baseaddr);
 	release_mem_region(udc->io_p_start, udc->io_p_size);
 	kfree(udc);
@@ -3272,7 +3357,7 @@ static int lpc32xx_udc_suspend(struct platform_device *pdev, pm_message_t mesg)
 		udc->clocked = 1;
 
 		/* Kill global USB clock */
-		clk_disable_unprepare(udc->usb_slv_clk);
+		clk_disable(udc->usb_slv_clk);
 	}
 
 	return 0;
@@ -3284,7 +3369,7 @@ static int lpc32xx_udc_resume(struct platform_device *pdev)
 
 	if (udc->clocked) {
 		/* Enable global USB clock */
-		clk_prepare_enable(udc->usb_slv_clk);
+		clk_enable(udc->usb_slv_clk);
 
 		/* Enable clocking */
 		udc_clk_set(udc, 1);

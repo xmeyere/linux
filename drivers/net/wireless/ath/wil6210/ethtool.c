@@ -1,6 +1,5 @@
 /*
- * Copyright (c) 2014,2017 Qualcomm Atheros, Inc.
- * Copyright (c) 2018, The Linux Foundation. All rights reserved.
+ * Copyright (c) 2014 Qualcomm Atheros, Inc.
  *
  * Permission to use, copy, modify, and/or distribute this software for any
  * purpose with or without fee is hereby granted, provided that the above
@@ -28,7 +27,7 @@ static int wil_ethtoolops_begin(struct net_device *ndev)
 
 	mutex_lock(&wil->mutex);
 
-	wil_dbg_misc(wil, "ethtoolops_begin\n");
+	wil_dbg_misc(wil, "%s()\n", __func__);
 
 	return 0;
 }
@@ -37,7 +36,7 @@ static void wil_ethtoolops_complete(struct net_device *ndev)
 {
 	struct wil6210_priv *wil = ndev_to_wil(ndev);
 
-	wil_dbg_misc(wil, "ethtoolops_complete\n");
+	wil_dbg_misc(wil, "%s()\n", __func__);
 
 	mutex_unlock(&wil->mutex);
 }
@@ -48,23 +47,30 @@ static int wil_ethtoolops_get_coalesce(struct net_device *ndev,
 	struct wil6210_priv *wil = ndev_to_wil(ndev);
 	u32 tx_itr_en, tx_itr_val = 0;
 	u32 rx_itr_en, rx_itr_val = 0;
-	int ret;
 
-	wil_dbg_misc(wil, "ethtoolops_get_coalesce\n");
+	wil_dbg_misc(wil, "%s()\n", __func__);
 
-	ret = wil_pm_runtime_get(wil);
-	if (ret < 0)
-		return ret;
+	if (test_bit(hw_capability_advanced_itr_moderation,
+		     wil->hw_capabilities)) {
+		tx_itr_en = ioread32(wil->csr +
+				     HOSTADDR(RGF_DMA_ITR_TX_CNT_CTL));
+		if (tx_itr_en & BIT_DMA_ITR_TX_CNT_CTL_EN)
+			tx_itr_val =
+				ioread32(wil->csr +
+					 HOSTADDR(RGF_DMA_ITR_TX_CNT_TRSH));
 
-	tx_itr_en = wil_r(wil, RGF_DMA_ITR_TX_CNT_CTL);
-	if (tx_itr_en & BIT_DMA_ITR_TX_CNT_CTL_EN)
-		tx_itr_val = wil_r(wil, RGF_DMA_ITR_TX_CNT_TRSH);
-
-	rx_itr_en = wil_r(wil, RGF_DMA_ITR_RX_CNT_CTL);
-	if (rx_itr_en & BIT_DMA_ITR_RX_CNT_CTL_EN)
-		rx_itr_val = wil_r(wil, RGF_DMA_ITR_RX_CNT_TRSH);
-
-	wil_pm_runtime_put(wil);
+		rx_itr_en = ioread32(wil->csr +
+				     HOSTADDR(RGF_DMA_ITR_RX_CNT_CTL));
+		if (rx_itr_en & BIT_DMA_ITR_RX_CNT_CTL_EN)
+			rx_itr_val =
+				ioread32(wil->csr +
+					 HOSTADDR(RGF_DMA_ITR_RX_CNT_TRSH));
+	} else {
+		rx_itr_en = ioread32(wil->csr + HOSTADDR(RGF_DMA_ITR_CNT_CRL));
+		if (rx_itr_en & BIT_DMA_ITR_CNT_CRL_EN)
+			rx_itr_val = ioread32(wil->csr +
+					      HOSTADDR(RGF_DMA_ITR_CNT_TRSH));
+	}
 
 	cp->tx_coalesce_usecs = tx_itr_val;
 	cp->rx_coalesce_usecs = rx_itr_val;
@@ -75,13 +81,11 @@ static int wil_ethtoolops_set_coalesce(struct net_device *ndev,
 				       struct ethtool_coalesce *cp)
 {
 	struct wil6210_priv *wil = ndev_to_wil(ndev);
-	struct wireless_dev *wdev = ndev->ieee80211_ptr;
-	int ret;
 
-	wil_dbg_misc(wil, "ethtoolops_set_coalesce: rx %d usec, tx %d usec\n",
+	wil_dbg_misc(wil, "%s(rx %d usec, tx %d usec)\n", __func__,
 		     cp->rx_coalesce_usecs, cp->tx_coalesce_usecs);
 
-	if (wdev->iftype == NL80211_IFTYPE_MONITOR) {
+	if (wil->wdev->iftype == NL80211_IFTYPE_MONITOR) {
 		wil_dbg_misc(wil, "No IRQ coalescing in monitor mode\n");
 		return -EINVAL;
 	}
@@ -96,14 +100,7 @@ static int wil_ethtoolops_set_coalesce(struct net_device *ndev,
 
 	wil->tx_max_burst_duration = cp->tx_coalesce_usecs;
 	wil->rx_max_burst_duration = cp->rx_coalesce_usecs;
-
-	ret = wil_pm_runtime_get(wil);
-	if (ret < 0)
-		return ret;
-
-	wil->txrx_ops.configure_interrupt_moderation(wil);
-
-	wil_pm_runtime_put(wil);
+	wil_configure_interrupt_moderation(wil);
 
 	return 0;
 

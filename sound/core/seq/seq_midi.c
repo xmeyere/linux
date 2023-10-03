@@ -78,7 +78,7 @@ static void snd_midi_input_event(struct snd_rawmidi_substream *substream)
 	struct seq_midisynth *msynth;
 	struct snd_seq_event ev;
 	char buf[16], *pbuf;
-	long res;
+	long res, count;
 
 	if (substream == NULL)
 		return;
@@ -94,15 +94,19 @@ static void snd_midi_input_event(struct snd_rawmidi_substream *substream)
 		if (msynth->parser == NULL)
 			continue;
 		pbuf = buf;
-		while (res-- > 0) {
-			if (!snd_midi_event_encode_byte(msynth->parser,
-							*pbuf++, &ev))
-				continue;
-			ev.source.port = msynth->seq_port;
-			ev.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
-			snd_seq_kernel_client_dispatch(msynth->seq_client, &ev, 1, 0);
-			/* clear event and reset header */
-			memset(&ev, 0, sizeof(ev));
+		while (res > 0) {
+			count = snd_midi_event_encode(msynth->parser, pbuf, res, &ev);
+			if (count < 0)
+				break;
+			pbuf += count;
+			res -= count;
+			if (ev.type != SNDRV_SEQ_EVENT_NONE) {
+				ev.source.port = msynth->seq_port;
+				ev.dest.client = SNDRV_SEQ_ADDRESS_SUBSCRIBERS;
+				snd_seq_kernel_client_dispatch(msynth->seq_client, &ev, 1, 0);
+				/* clear event and reset header */
+				memset(&ev, 0, sizeof(ev));
+			}
 		}
 	}
 }
@@ -269,9 +273,8 @@ static void snd_seq_midisynth_delete(struct seq_midisynth *msynth)
 
 /* register new midi synth port */
 static int
-snd_seq_midisynth_probe(struct device *_dev)
+snd_seq_midisynth_register_port(struct snd_seq_device *dev)
 {
-	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct seq_midisynth_client *client;
 	struct seq_midisynth *msynth, *ms;
 	struct snd_seq_port_info *port;
@@ -424,9 +427,8 @@ snd_seq_midisynth_probe(struct device *_dev)
 
 /* release midi synth port */
 static int
-snd_seq_midisynth_remove(struct device *_dev)
+snd_seq_midisynth_unregister_port(struct snd_seq_device *dev)
 {
-	struct snd_seq_device *dev = to_seq_dev(_dev);
 	struct seq_midisynth_client *client;
 	struct seq_midisynth *msynth;
 	struct snd_card *card = dev->card;
@@ -455,14 +457,24 @@ snd_seq_midisynth_remove(struct device *_dev)
 	return 0;
 }
 
-static struct snd_seq_driver seq_midisynth_driver = {
-	.driver = {
-		.name = KBUILD_MODNAME,
-		.probe = snd_seq_midisynth_probe,
-		.remove = snd_seq_midisynth_remove,
-	},
-	.id = SNDRV_SEQ_DEV_ID_MIDISYNTH,
-	.argsize = 0,
-};
 
-module_snd_seq_driver(seq_midisynth_driver);
+static int __init alsa_seq_midi_init(void)
+{
+	static struct snd_seq_dev_ops ops = {
+		snd_seq_midisynth_register_port,
+		snd_seq_midisynth_unregister_port,
+	};
+	memset(&synths, 0, sizeof(synths));
+	snd_seq_autoload_lock();
+	snd_seq_device_register_driver(SNDRV_SEQ_DEV_ID_MIDISYNTH, &ops, 0);
+	snd_seq_autoload_unlock();
+	return 0;
+}
+
+static void __exit alsa_seq_midi_exit(void)
+{
+	snd_seq_device_unregister_driver(SNDRV_SEQ_DEV_ID_MIDISYNTH);
+}
+
+module_init(alsa_seq_midi_init)
+module_exit(alsa_seq_midi_exit)

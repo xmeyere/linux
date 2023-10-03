@@ -1,8 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
-/*
- * Released under the GPLv2 only.
- */
-
 #include <linux/pm.h>
 #include <linux/acpi.h>
 
@@ -32,19 +27,12 @@ extern void usb_release_interface_cache(struct kref *ref);
 extern void usb_disable_device(struct usb_device *dev, int skip_ep0);
 extern int usb_deauthorize_device(struct usb_device *);
 extern int usb_authorize_device(struct usb_device *);
-extern void usb_deauthorize_interface(struct usb_interface *);
-extern void usb_authorize_interface(struct usb_interface *);
 extern void usb_detect_quirks(struct usb_device *udev);
 extern void usb_detect_interface_quirks(struct usb_device *udev);
-extern void usb_release_quirk_list(void);
-extern bool usb_endpoint_is_blacklisted(struct usb_device *udev,
-		struct usb_host_interface *intf,
-		struct usb_endpoint_descriptor *epd);
 extern int usb_remove_device(struct usb_device *udev);
 
 extern int usb_get_device_descriptor(struct usb_device *dev,
 		unsigned int size);
-extern int usb_set_isoch_delay(struct usb_device *dev);
 extern int usb_get_bos_descriptor(struct usb_device *dev);
 extern void usb_release_bos_descriptor(struct usb_device *dev);
 extern char *usb_cache_string(struct usb_device *udev, int index);
@@ -55,7 +43,7 @@ static inline unsigned usb_get_max_power(struct usb_device *udev,
 		struct usb_host_config *c)
 {
 	/* SuperSpeed power is in 8 mA units; others are in 2 mA units */
-	unsigned mul = (udev->speed >= USB_SPEED_SUPER ? 8 : 2);
+	unsigned mul = (udev->speed == USB_SPEED_SUPER ? 8 : 2);
 
 	return c->desc.bMaxPower * mul;
 }
@@ -77,8 +65,6 @@ extern int  usb_hub_init(void);
 extern void usb_hub_cleanup(void);
 extern int usb_major_init(void);
 extern void usb_major_cleanup(void);
-extern int usb_device_supports_lpm(struct usb_device *udev);
-extern int usb_port_disable(struct usb_device *udev);
 
 #ifdef	CONFIG_PM
 
@@ -95,8 +81,7 @@ extern int usb_remote_wakeup(struct usb_device *dev);
 extern int usb_runtime_suspend(struct device *dev);
 extern int usb_runtime_resume(struct device *dev);
 extern int usb_runtime_idle(struct device *dev);
-extern int usb_enable_usb2_hardware_lpm(struct usb_device *udev);
-extern int usb_disable_usb2_hardware_lpm(struct usb_device *udev);
+extern int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable);
 
 #else
 
@@ -116,12 +101,7 @@ static inline int usb_autoresume_device(struct usb_device *udev)
 	return 0;
 }
 
-static inline int usb_enable_usb2_hardware_lpm(struct usb_device *udev)
-{
-	return 0;
-}
-
-static inline int usb_disable_usb2_hardware_lpm(struct usb_device *udev)
+static inline int usb_set_usb2_hardware_lpm(struct usb_device *udev, int enable)
 {
 	return 0;
 }

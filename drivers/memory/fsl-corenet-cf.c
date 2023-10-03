@@ -61,7 +61,6 @@ static const struct of_device_id ccf_matches[] = {
 	},
 	{}
 };
-MODULE_DEVICE_TABLE(of, ccf_matches);
 
 struct ccf_err_regs {
 	u32 errdet;		/* 0x00 Error Detect Register */
@@ -215,8 +214,10 @@ static int ccf_probe(struct platform_device *pdev)
 	dev_set_drvdata(&pdev->dev, ccf);
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
+	if (!irq) {
+		dev_err(&pdev->dev, "%s: no irq\n", __func__);
+		return -ENXIO;
+	}
 
 	ret = devm_request_irq(&pdev->dev, irq, ccf_irq, 0, pdev->name, ccf);
 	if (ret) {

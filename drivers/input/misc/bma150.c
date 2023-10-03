@@ -70,6 +70,7 @@
 #define BMA150_CFG_5_REG	0x11
 
 #define BMA150_CHIP_ID		2
+#define BMA180_CHIP_ID		3
 #define BMA150_CHIP_ID_REG	BMA150_DATA_0_REG
 
 #define BMA150_ACC_X_LSB_REG	BMA150_DATA_2_REG
@@ -146,7 +147,7 @@ struct bma150_data {
  * are stated and verified by Bosch Sensortec where they are configured
  * to provide a generic sensitivity performance.
  */
-static const struct bma150_cfg default_cfg = {
+static struct bma150_cfg default_cfg = {
 	.any_motion_int = 1,
 	.hg_int = 1,
 	.lg_int = 1,
@@ -206,7 +207,7 @@ static int bma150_set_mode(struct bma150_data *bma150, u8 mode)
 		return error;
 
 	if (mode == BMA150_MODE_NORMAL)
-		usleep_range(2000, 2100);
+		msleep(2);
 
 	bma150->mode = mode;
 	return 0;
@@ -221,7 +222,7 @@ static int bma150_soft_reset(struct bma150_data *bma150)
 	if (error)
 		return error;
 
-	usleep_range(2000, 2100);
+	msleep(2);
 	return 0;
 }
 
@@ -332,9 +333,10 @@ static void bma150_report_xyz(struct bma150_data *bma150)
 	y = ((0xc0 & data[2]) >> 6) | (data[3] << 2);
 	z = ((0xc0 & data[4]) >> 6) | (data[5] << 2);
 
-	x = sign_extend32(x, 9);
-	y = sign_extend32(y, 9);
-	z = sign_extend32(z, 9);
+	/* sign extension */
+	x = (s16) (x << 6) >> 6;
+	y = (s16) (y << 6) >> 6;
+	z = (s16) (z << 6) >> 6;
 
 	input_report_abs(bma150->input, ABS_X, x);
 	input_report_abs(bma150->input, ABS_Y, y);
@@ -481,14 +483,13 @@ static int bma150_register_input_device(struct bma150_data *bma150)
 	idev->close = bma150_irq_close;
 	input_set_drvdata(idev, bma150);
 
-	bma150->input = idev;
-
 	error = input_register_device(idev);
 	if (error) {
 		input_free_device(idev);
 		return error;
 	}
 
+	bma150->input = idev;
 	return 0;
 }
 
@@ -511,14 +512,14 @@ static int bma150_register_polled_device(struct bma150_data *bma150)
 
 	bma150_init_input_device(bma150, ipoll_dev->input);
 
-	bma150->input_polled = ipoll_dev;
-	bma150->input = ipoll_dev->input;
-
 	error = input_register_polled_device(ipoll_dev);
 	if (error) {
 		input_free_polled_device(ipoll_dev);
 		return error;
 	}
+
+	bma150->input_polled = ipoll_dev;
+	bma150->input = ipoll_dev->input;
 
 	return 0;
 }
@@ -539,7 +540,7 @@ static int bma150_probe(struct i2c_client *client,
 	}
 
 	chip_id = i2c_smbus_read_byte_data(client, BMA150_CHIP_ID_REG);
-	if (chip_id != BMA150_CHIP_ID) {
+	if (chip_id != BMA150_CHIP_ID && chip_id != BMA180_CHIP_ID) {
 		dev_err(&client->dev, "BMA150 chip id error: %d\n", chip_id);
 		return -EINVAL;
 	}
@@ -643,6 +644,7 @@ static UNIVERSAL_DEV_PM_OPS(bma150_pm, bma150_suspend, bma150_resume, NULL);
 
 static const struct i2c_device_id bma150_id[] = {
 	{ "bma150", 0 },
+	{ "bma180", 0 },
 	{ "smb380", 0 },
 	{ "bma023", 0 },
 	{ }
@@ -652,6 +654,7 @@ MODULE_DEVICE_TABLE(i2c, bma150_id);
 
 static struct i2c_driver bma150_driver = {
 	.driver = {
+		.owner	= THIS_MODULE,
 		.name	= BMA150_DRIVER,
 		.pm	= &bma150_pm,
 	},

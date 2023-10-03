@@ -197,7 +197,7 @@ static void highbank_set_em_messages(struct device *dev,
 
 	for (i = 0; i < SGPIO_PINS; i++) {
 		err = of_get_named_gpio(np, "calxeda,sgpio-gpio", i);
-		if (err < 0)
+		if (IS_ERR_VALUE(err))
 			return;
 
 		pdata->sgpio_gpio[i] = err;
@@ -410,7 +410,7 @@ static int ahci_highbank_hardreset(struct ata_link *link, unsigned int *class,
 	int rc;
 	int retry = 100;
 
-	hpriv->stop_engine(ap);
+	ahci_stop_engine(ap);
 
 	/* clear D2H reception area to properly wait for D2H FIS */
 	ata_tf_init(link->device, &tf);
@@ -483,12 +483,10 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 	}
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
+	if (irq <= 0) {
 		dev_err(dev, "no irq\n");
-		return irq;
-	}
-	if (!irq)
 		return -EINVAL;
+	}
 
 	hpriv = devm_kzalloc(dev, sizeof(*hpriv), GFP_KERNEL);
 	if (!hpriv) {
@@ -501,7 +499,6 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	hpriv->irq = irq;
 	hpriv->flags |= (unsigned long)pi.private_data;
 
 	hpriv->mmio = devm_ioremap(dev, mem->start, resource_size(mem));
@@ -571,7 +568,7 @@ static int ahci_highbank_probe(struct platform_device *pdev)
 	ahci_init_controller(host);
 	ahci_print_info(host, "platform");
 
-	rc = ahci_host_activate(host, &ahci_highbank_platform_sht);
+	rc = ahci_host_activate(host, irq, &ahci_highbank_platform_sht);
 	if (rc)
 		goto err0;
 

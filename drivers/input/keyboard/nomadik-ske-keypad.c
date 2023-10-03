@@ -54,7 +54,7 @@
 /**
  * struct ske_keypad  - data structure used by keypad driver
  * @irq:	irq no
- * @reg_base:	ske registers base address
+ * @reg_base:	ske regsiters base address
  * @input:	pointer to input device object
  * @board:	keypad platform device
  * @keymap:	matrix scan code table for keycodes
@@ -100,7 +100,7 @@ static int __init ske_keypad_chip_init(struct ske_keypad *keypad)
 	while ((readl(keypad->reg_base + SKE_RIS) != 0x00000000) && timeout--)
 		cpu_relax();
 
-	if (timeout == -1)
+	if (!timeout)
 		return -EINVAL;
 
 	/*

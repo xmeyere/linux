@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_WORD_AT_A_TIME_H
 #define _ASM_WORD_AT_A_TIME_H
 
@@ -52,7 +51,5 @@ static inline unsigned long find_zero(unsigned long bits)
 	return t1 + t2 + t3;
 #endif
 }
-
-#define zero_bytemask(mask) ((2ul << (find_zero(mask) * 8)) - 1)
 
 #endif /* _ASM_WORD_AT_A_TIME_H */

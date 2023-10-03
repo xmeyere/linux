@@ -18,7 +18,7 @@
 #include <linux/i2c.h>
 #include <linux/slab.h>
 #include <linux/regulator/consumer.h>
-#include <media/i2c/noon010pc30.h>
+#include <media/noon010pc30.h>
 #include <linux/videodev2.h>
 #include <linux/module.h>
 #include <media/v4l2-ctrls.h>
@@ -492,7 +492,7 @@ unlock:
 }
 
 static int noon010_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_pad_config *cfg,
+				  struct v4l2_subdev_fh *fh,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 	if (code->index >= ARRAY_SIZE(noon010_formats))
@@ -502,16 +502,15 @@ static int noon010_enum_mbus_code(struct v4l2_subdev *sd,
 	return 0;
 }
 
-static int noon010_get_fmt(struct v4l2_subdev *sd,
-			   struct v4l2_subdev_pad_config *cfg,
+static int noon010_get_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct noon010_info *info = to_noon010(sd);
 	struct v4l2_mbus_framefmt *mf;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		if (cfg) {
-			mf = v4l2_subdev_get_try_format(sd, cfg, 0);
+		if (fh) {
+			mf = v4l2_subdev_get_try_format(fh, 0);
 			fmt->format = *mf;
 		}
 		return 0;
@@ -543,7 +542,7 @@ static const struct noon010_format *noon010_try_fmt(struct v4l2_subdev *sd,
 	return &noon010_formats[i];
 }
 
-static int noon010_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+static int noon010_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 			   struct v4l2_subdev_format *fmt)
 {
 	struct noon010_info *info = to_noon010(sd);
@@ -558,8 +557,8 @@ static int noon010_set_fmt(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config
 	fmt->format.field = V4L2_FIELD_NONE;
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY) {
-		if (cfg) {
-			mf = v4l2_subdev_get_try_format(sd, cfg, 0);
+		if (fh) {
+			mf = v4l2_subdev_get_try_format(fh, 0);
 			*mf = fmt->format;
 		}
 		return 0;
@@ -641,7 +640,7 @@ static int noon010_log_status(struct v4l2_subdev *sd)
 
 static int noon010_open(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 {
-	struct v4l2_mbus_framefmt *mf = v4l2_subdev_get_try_format(sd, fh->pad, 0);
+	struct v4l2_mbus_framefmt *mf = v4l2_subdev_get_try_format(fh, 0);
 
 	mf->width = noon010_sizes[0].width;
 	mf->height = noon010_sizes[0].height;
@@ -664,13 +663,13 @@ static const struct v4l2_subdev_core_ops noon010_core_ops = {
 	.log_status	= noon010_log_status,
 };
 
-static const struct v4l2_subdev_pad_ops noon010_pad_ops = {
+static struct v4l2_subdev_pad_ops noon010_pad_ops = {
 	.enum_mbus_code	= noon010_enum_mbus_code,
 	.get_fmt	= noon010_get_fmt,
 	.set_fmt	= noon010_set_fmt,
 };
 
-static const struct v4l2_subdev_video_ops noon010_video_ops = {
+static struct v4l2_subdev_video_ops noon010_video_ops = {
 	.s_stream	= noon010_s_stream,
 };
 
@@ -779,8 +778,8 @@ static int noon010_probe(struct i2c_client *client,
 		goto np_err;
 
 	info->pad.flags = MEDIA_PAD_FL_SOURCE;
-	sd->entity.function = MEDIA_ENT_F_CAM_SENSOR;
-	ret = media_entity_pads_init(&sd->entity, 1, &info->pad);
+	sd->entity.type = MEDIA_ENT_T_V4L2_SUBDEV_SENSOR;
+	ret = media_entity_init(&sd->entity, 1, &info->pad, 0);
 	if (ret < 0)
 		goto np_err;
 

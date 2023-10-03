@@ -1,4 +1,7 @@
-#ifndef _ASM_X86_XOR_H
+#ifdef CONFIG_KMEMCHECK
+/* kmemcheck doesn't handle MMX/SSE/SSE2 instructions */
+# include <asm-generic/xor.h>
+#elif !defined(_ASM_X86_XOR_H)
 #define _ASM_X86_XOR_H
 
 /*
@@ -33,7 +36,7 @@
  * no advantages to be gotten from x86-64 here anyways.
  */
 
-#include <asm/fpu/api.h>
+#include <asm/i387.h>
 
 #ifdef CONFIG_X86_32
 /* reduce register pressure */

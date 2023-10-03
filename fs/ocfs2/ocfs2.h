@@ -50,8 +50,6 @@
 
 #include "reservations.h"
 
-#include "filecheck.h"
-
 /* Caching of metadata buffers */
 
 /* Most user visible OCFS2 inodes will have very few pieces of
@@ -174,7 +172,6 @@ struct ocfs2_lock_res {
 
 	struct list_head         l_blocked_list;
 	struct list_head         l_mask_waiters;
-	struct list_head	 l_holders;
 
 	unsigned long		 l_flags;
 	char                     l_name[OCFS2_LOCK_ID_MAX_LEN];
@@ -227,7 +224,7 @@ struct ocfs2_orphan_scan {
 	struct ocfs2_super 	*os_osb;
 	struct ocfs2_lock_res 	os_lockres;     /* lock to synchronize scans */
 	struct delayed_work 	os_orphan_scan_work;
-	time64_t		os_scantime;  /* time this node ran the scan */
+	struct timespec		os_scantime;  /* time this node ran the scan */
 	u32			os_count;      /* tracks node specific scans */
 	u32  			os_seqno;       /* tracks cluster wide scans */
 	atomic_t		os_state;              /* ACTIVE or INACTIVE */
@@ -289,8 +286,6 @@ enum ocfs2_mount_options
 	OCFS2_MOUNT_HB_GLOBAL = 1 << 14, /* Global heartbeat */
 
 	OCFS2_MOUNT_JOURNAL_ASYNC_COMMIT = 1 << 15,  /* Journal Async Commit */
-	OCFS2_MOUNT_ERRORS_CONT = 1 << 16, /* Return EIO to the calling process on error */
-	OCFS2_MOUNT_ERRORS_ROFS = 1 << 17, /* Change filesystem to read-only on error */
 };
 
 #define OCFS2_OSB_SOFT_RO	0x0001
@@ -322,6 +317,7 @@ struct ocfs2_super
 	u64 system_dir_blkno;
 	u64 bitmap_blkno;
 	u32 bitmap_cpg;
+	u8 *uuid;
 	char *uuid_str;
 	u32 uuid_hash;
 	u8 *vol_label;
@@ -338,8 +334,8 @@ struct ocfs2_super
 	spinlock_t osb_lock;
 	u32 s_next_generation;
 	unsigned long osb_flags;
-	u16 s_inode_steal_slot;
-	u16 s_meta_steal_slot;
+	s16 s_inode_steal_slot;
+	s16 s_meta_steal_slot;
 	atomic_t s_num_inodes_stolen;
 	atomic_t s_num_meta_stolen;
 
@@ -389,8 +385,9 @@ struct ocfs2_super
 	unsigned int	osb_resv_level;
 	unsigned int	osb_dir_resv_level;
 
-	/* Next two fields are for local node slot recovery during
+	/* Next three fields are for local node slot recovery during
 	 * mount. */
+	int dirty;
 	struct ocfs2_dinode *local_alloc_copy;
 	struct ocfs2_quota_recovery *quota_rec;
 
@@ -406,8 +403,6 @@ struct ocfs2_super
 	struct ocfs2_lock_res osb_super_lockres;
 	struct ocfs2_lock_res osb_rename_lockres;
 	struct ocfs2_lock_res osb_nfs_sync_lockres;
-	struct rw_semaphore nfs_sync_rwlock;
-	struct ocfs2_lock_res osb_trim_fs_lockres;
 	struct ocfs2_dlm_debug *osb_dlm_debug;
 
 	struct dentry *osb_debug_root;
@@ -467,20 +462,6 @@ struct ocfs2_super
 	struct ocfs2_refcount_tree *osb_ref_tree_lru;
 
 	struct mutex system_file_mutex;
-
-	/*
-	 * OCFS2 needs to schedule several different types of work which
-	 * require cluster locking, disk I/O, recovery waits, etc. Since these
-	 * types of work tend to be heavy we avoid using the kernel events
-	 * workqueue and schedule on our own.
-	 */
-	struct workqueue_struct *ocfs2_wq;
-
-	/* sysfs directory per partition */
-	struct kset *osb_dev_kset;
-
-	/* file check related stuff */
-	struct ocfs2_filecheck_sysfs_entry osb_fc_ent;
 };
 
 #define OCFS2_SB(sb)	    ((struct ocfs2_super *)(sb)->s_fs_info)
@@ -736,16 +717,6 @@ static inline u64 ocfs2_clusters_to_blocks(struct super_block *sb,
 	return (u64)clusters << c_to_b_bits;
 }
 
-static inline u32 ocfs2_clusters_for_blocks(struct super_block *sb,
-		u64 blocks)
-{
-	int b_to_c_bits = OCFS2_SB(sb)->s_clustersize_bits -
-			sb->s_blocksize_bits;
-
-	blocks += (1 << b_to_c_bits) - 1;
-	return (u32)(blocks >> b_to_c_bits);
-}
-
 static inline u32 ocfs2_blocks_to_clusters(struct super_block *sb,
 					   u64 blocks)
 {
@@ -831,10 +802,10 @@ static inline unsigned int ocfs2_page_index_to_clusters(struct super_block *sb,
 	u32 clusters = pg_index;
 	unsigned int cbits = OCFS2_SB(sb)->s_clustersize_bits;
 
-	if (unlikely(PAGE_SHIFT > cbits))
-		clusters = pg_index << (PAGE_SHIFT - cbits);
-	else if (PAGE_SHIFT < cbits)
-		clusters = pg_index >> (cbits - PAGE_SHIFT);
+	if (unlikely(PAGE_CACHE_SHIFT > cbits))
+		clusters = pg_index << (PAGE_CACHE_SHIFT - cbits);
+	else if (PAGE_CACHE_SHIFT < cbits)
+		clusters = pg_index >> (cbits - PAGE_CACHE_SHIFT);
 
 	return clusters;
 }
@@ -848,10 +819,10 @@ static inline pgoff_t ocfs2_align_clusters_to_page_index(struct super_block *sb,
 	unsigned int cbits = OCFS2_SB(sb)->s_clustersize_bits;
         pgoff_t index = clusters;
 
-	if (PAGE_SHIFT > cbits) {
-		index = (pgoff_t)clusters >> (PAGE_SHIFT - cbits);
-	} else if (PAGE_SHIFT < cbits) {
-		index = (pgoff_t)clusters << (cbits - PAGE_SHIFT);
+	if (PAGE_CACHE_SHIFT > cbits) {
+		index = (pgoff_t)clusters >> (PAGE_CACHE_SHIFT - cbits);
+	} else if (PAGE_CACHE_SHIFT < cbits) {
+		index = (pgoff_t)clusters << (cbits - PAGE_CACHE_SHIFT);
 	}
 
 	return index;
@@ -862,8 +833,8 @@ static inline unsigned int ocfs2_pages_per_cluster(struct super_block *sb)
 	unsigned int cbits = OCFS2_SB(sb)->s_clustersize_bits;
 	unsigned int pages_per_cluster = 1;
 
-	if (PAGE_SHIFT < cbits)
-		pages_per_cluster = 1 << (cbits - PAGE_SHIFT);
+	if (PAGE_CACHE_SHIFT < cbits)
+		pages_per_cluster = 1 << (cbits - PAGE_CACHE_SHIFT);
 
 	return pages_per_cluster;
 }

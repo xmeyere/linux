@@ -27,7 +27,7 @@
 #include <linux/slab.h>
 #include <asm/div64.h>
 
-#include <media/dvb_frontend.h>
+#include "dvb_frontend.h"
 #include "ves1820.h"
 
 
@@ -65,8 +65,8 @@ static int ves1820_writereg(struct ves1820_state *state, u8 reg, u8 data)
 	ret = i2c_transfer(state->i2c, &msg, 1);
 
 	if (ret != 1)
-		printk("ves1820: %s(): writereg error (reg == 0x%02x, val == 0x%02x, ret == %i)\n",
-		       __func__, reg, data, ret);
+		printk("ves1820: %s(): writereg error (reg == 0x%02x, "
+			"val == 0x%02x, ret == %i)\n", __func__, reg, data, ret);
 
 	return (ret != 1) ? -EREMOTEIO : 0;
 }
@@ -84,14 +84,13 @@ static u8 ves1820_readreg(struct ves1820_state *state, u8 reg)
 	ret = i2c_transfer(state->i2c, msg, 2);
 
 	if (ret != 2)
-		printk("ves1820: %s(): readreg error (reg == 0x%02x, ret == %i)\n",
-		       __func__, reg, ret);
+		printk("ves1820: %s(): readreg error (reg == 0x%02x, "
+		"ret == %i)\n", __func__, reg, ret);
 
 	return b1[0];
 }
 
-static int ves1820_setup_reg0(struct ves1820_state *state,
-			      u8 reg0, enum fe_spectral_inversion inversion)
+static int ves1820_setup_reg0(struct ves1820_state *state, u8 reg0, fe_spectral_inversion_t inversion)
 {
 	reg0 |= state->reg0 & 0x62;
 
@@ -137,7 +136,7 @@ static int ves1820_set_symbolrate(struct ves1820_state *state, u32 symbolrate)
 		NDEC = 3;
 
 	/* yeuch! */
-	fpxin = state->config->xin * 10ULL;
+	fpxin = state->config->xin * 10;
 	fptmp = fpxin; do_div(fptmp, 123);
 	if (symbolrate < fptmp)
 		SFIL = 1;
@@ -238,8 +237,7 @@ static int ves1820_set_parameters(struct dvb_frontend *fe)
 	return 0;
 }
 
-static int ves1820_read_status(struct dvb_frontend *fe,
-			       enum fe_status *status)
+static int ves1820_read_status(struct dvb_frontend* fe, fe_status_t* status)
 {
 	struct ves1820_state* state = fe->demodulator_priv;
 	int sync;
@@ -312,9 +310,9 @@ static int ves1820_read_ucblocks(struct dvb_frontend* fe, u32* ucblocks)
 	return 0;
 }
 
-static int ves1820_get_frontend(struct dvb_frontend *fe,
-				struct dtv_frontend_properties *p)
+static int ves1820_get_frontend(struct dvb_frontend *fe)
 {
+	struct dtv_frontend_properties *p = &fe->dtv_property_cache;
 	struct ves1820_state* state = fe->demodulator_priv;
 	int sync;
 	s8 afc = 0;
@@ -369,7 +367,7 @@ static void ves1820_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static const struct dvb_frontend_ops ves1820_ops;
+static struct dvb_frontend_ops ves1820_ops;
 
 struct dvb_frontend* ves1820_attach(const struct ves1820_config* config,
 				    struct i2c_adapter* i2c,
@@ -408,13 +406,13 @@ error:
 	return NULL;
 }
 
-static const struct dvb_frontend_ops ves1820_ops = {
+static struct dvb_frontend_ops ves1820_ops = {
 	.delsys = { SYS_DVBC_ANNEX_A },
 	.info = {
 		.name = "VLSI VES1820 DVB-C",
-		.frequency_min_hz =  47 * MHz,
-		.frequency_max_hz = 862 * MHz,
-		.frequency_stepsize_hz = 62500,
+		.frequency_stepsize = 62500,
+		.frequency_min = 47000000,
+		.frequency_max = 862000000,
 		.caps = FE_CAN_QAM_16 |
 			FE_CAN_QAM_32 |
 			FE_CAN_QAM_64 |
@@ -446,4 +444,4 @@ MODULE_DESCRIPTION("VLSI VES1820 DVB-C Demodulator driver");
 MODULE_AUTHOR("Ralph Metzler, Holger Waechtler");
 MODULE_LICENSE("GPL");
 
-EXPORT_SYMBOL_GPL(ves1820_attach);
+EXPORT_SYMBOL(ves1820_attach);

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *  linux/fs/ext4/bitmap.c
  *
@@ -9,6 +8,7 @@
  */
 
 #include <linux/buffer_head.h>
+#include <linux/jbd2.h>
 #include "ext4.h"
 
 unsigned int ext4_count_free(char *bitmap, unsigned int numchars)

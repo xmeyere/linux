@@ -12,16 +12,13 @@
 #ifndef _ASM_R4KCACHE_H
 #define _ASM_R4KCACHE_H
 
-#include <linux/stringify.h>
-
 #include <asm/asm.h>
 #include <asm/cacheops.h>
 #include <asm/compiler.h>
 #include <asm/cpu-features.h>
 #include <asm/cpu-type.h>
 #include <asm/mipsmtregs.h>
-#include <asm/mmzone.h>
-#include <linux/uaccess.h> /* for uaccess_kernel() */
+#include <asm/uaccess.h> /* for segment_eq() */
 
 extern void (*r4k_blast_dcache)(void);
 extern void (*r4k_blast_icache)(void);
@@ -148,66 +145,49 @@ static inline void flush_scache_line(unsigned long addr)
 }
 
 #define protected_cache_op(op,addr)				\
-({								\
-	int __err = 0;						\
 	__asm__ __volatile__(					\
 	"	.set	push			\n"		\
 	"	.set	noreorder		\n"		\
 	"	.set "MIPS_ISA_ARCH_LEVEL"	\n"		\
-	"1:	cache	%1, (%2)		\n"		\
-	"2:	.insn				\n"		\
-	"	.set	pop			\n"		\
-	"	.section .fixup,\"ax\"		\n"		\
-	"3:	li	%0, %3			\n"		\
-	"	j	2b			\n"		\
-	"	.previous			\n"		\
+	"1:	cache	%0, (%1)		\n"		\
+	"2:	.set	pop			\n"		\
 	"	.section __ex_table,\"a\"	\n"		\
-	"	"STR(PTR)" 1b, 3b		\n"		\
+	"	"STR(PTR)" 1b, 2b		\n"		\
 	"	.previous"					\
-	: "+r" (__err)						\
-	: "i" (op), "r" (addr), "i" (-EFAULT));			\
-	__err;							\
-})
-
+	:							\
+	: "i" (op), "r" (addr))
 
 #define protected_cachee_op(op,addr)				\
-({								\
-	int __err = 0;						\
 	__asm__ __volatile__(					\
 	"	.set	push			\n"		\
 	"	.set	noreorder		\n"		\
 	"	.set	mips0			\n"		\
 	"	.set	eva			\n"		\
-	"1:	cachee	%1, (%2)		\n"		\
-	"2:	.insn				\n"		\
-	"	.set	pop			\n"		\
-	"	.section .fixup,\"ax\"		\n"		\
-	"3:	li	%0, %3			\n"		\
-	"	j	2b			\n"		\
-	"	.previous			\n"		\
+	"1:	cachee	%0, (%1)		\n"		\
+	"2:	.set	pop			\n"		\
 	"	.section __ex_table,\"a\"	\n"		\
-	"	"STR(PTR)" 1b, 3b		\n"		\
+	"	"STR(PTR)" 1b, 2b		\n"		\
 	"	.previous"					\
-	: "+r" (__err)						\
-	: "i" (op), "r" (addr), "i" (-EFAULT));			\
-	__err;							\
-})
+	:							\
+	: "i" (op), "r" (addr))
 
 /*
  * The next two are for badland addresses like signal trampolines.
  */
-static inline int protected_flush_icache_line(unsigned long addr)
+static inline void protected_flush_icache_line(unsigned long addr)
 {
 	switch (boot_cpu_type()) {
 	case CPU_LOONGSON2:
-		return protected_cache_op(Hit_Invalidate_I_Loongson2, addr);
+		protected_cache_op(Hit_Invalidate_I_Loongson2, addr);
+		break;
 
 	default:
 #ifdef CONFIG_EVA
-		return protected_cachee_op(Hit_Invalidate_I, addr);
+		protected_cachee_op(Hit_Invalidate_I, addr);
 #else
-		return protected_cache_op(Hit_Invalidate_I, addr);
+		protected_cache_op(Hit_Invalidate_I, addr);
 #endif
+		break;
 	}
 }
 
@@ -217,22 +197,18 @@ static inline int protected_flush_icache_line(unsigned long addr)
  * caches.  We're talking about one cacheline unnecessarily getting invalidated
  * here so the penalty isn't overly hard.
  */
-static inline int protected_writeback_dcache_line(unsigned long addr)
+static inline void protected_writeback_dcache_line(unsigned long addr)
 {
 #ifdef CONFIG_EVA
-	return protected_cachee_op(Hit_Writeback_Inv_D, addr);
+	protected_cachee_op(Hit_Writeback_Inv_D, addr);
 #else
-	return protected_cache_op(Hit_Writeback_Inv_D, addr);
+	protected_cache_op(Hit_Writeback_Inv_D, addr);
 #endif
 }
 
-static inline int protected_writeback_scache_line(unsigned long addr)
+static inline void protected_writeback_scache_line(unsigned long addr)
 {
-#ifdef CONFIG_EVA
-	return protected_cachee_op(Hit_Writeback_Inv_SD, addr);
-#else
-	return protected_cache_op(Hit_Writeback_Inv_SD, addr);
-#endif
+	protected_cache_op(Hit_Writeback_Inv_SD, addr);
 }
 
 /*
@@ -368,7 +344,7 @@ static inline void invalidate_tcache_page(unsigned long addr)
 	"	cache %1, 0x0a0(%0); cache %1, 0x0b0(%0)\n"	\
 	"	cache %1, 0x0c0(%0); cache %1, 0x0d0(%0)\n"	\
 	"	cache %1, 0x0e0(%0); cache %1, 0x0f0(%0)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, %0, 0x100	\n"	\
+	"	addiu $1, $0, 0x100			\n"	\
 	"	cache %1, 0x000($1); cache %1, 0x010($1)\n"	\
 	"	cache %1, 0x020($1); cache %1, 0x030($1)\n"	\
 	"	cache %1, 0x040($1); cache %1, 0x050($1)\n"	\
@@ -392,17 +368,17 @@ static inline void invalidate_tcache_page(unsigned long addr)
 	"	cache %1, 0x040(%0); cache %1, 0x060(%0)\n"	\
 	"	cache %1, 0x080(%0); cache %1, 0x0a0(%0)\n"	\
 	"	cache %1, 0x0c0(%0); cache %1, 0x0e0(%0)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, %0, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x020($1)\n"	\
 	"	cache %1, 0x040($1); cache %1, 0x060($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0a0($1)\n"	\
 	"	cache %1, 0x0c0($1); cache %1, 0x0e0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, $1, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x020($1)\n"	\
 	"	cache %1, 0x040($1); cache %1, 0x060($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0a0($1)\n"	\
 	"	cache %1, 0x0c0($1); cache %1, 0x0e0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100\n"	\
+	"	addiu $1, $1, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x020($1)\n"	\
 	"	cache %1, 0x040($1); cache %1, 0x060($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0a0($1)\n"	\
@@ -420,25 +396,25 @@ static inline void invalidate_tcache_page(unsigned long addr)
 	"	.set noat\n"					\
 	"	cache %1, 0x000(%0); cache %1, 0x040(%0)\n"	\
 	"	cache %1, 0x080(%0); cache %1, 0x0c0(%0)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, %0, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	cache %1, 0x000($1); cache %1, 0x040($1)\n"	\
 	"	cache %1, 0x080($1); cache %1, 0x0c0($1)\n"	\
 	"	.set pop\n"					\
@@ -453,38 +429,39 @@ static inline void invalidate_tcache_page(unsigned long addr)
 	"	.set mips64r6\n"				\
 	"	.set noat\n"					\
 	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, %0, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
-	"	"__stringify(LONG_ADDIU)" $1, $1, 0x100 \n"	\
-	"	cache %1, 0x000($1); cache %1, 0x080($1)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
+	"	cache %1, 0x000(%0); cache %1, 0x080(%0)\n"	\
+	"	addiu $1, %0, 0x100\n"				\
 	"	.set pop\n"					\
 		:						\
 		: "r" (base),					\
@@ -715,7 +692,7 @@ static inline void protected_blast_##pfx##cache##_range(unsigned long start,\
 									\
 	__##pfx##flush_prologue						\
 									\
-	if (!uaccess_kernel()) {					\
+	if (segment_eq(get_fs(), USER_DS)) {				\
 		while (1) {						\
 			protected_cachee_op(hitop, addr);		\
 			if (addr == aend)				\
@@ -747,26 +724,5 @@ __BUILD_BLAST_CACHE_RANGE(s, scache, Hit_Writeback_Inv_SD, , )
 /* blast_inv_dcache_range */
 __BUILD_BLAST_CACHE_RANGE(inv_d, dcache, Hit_Invalidate_D, , )
 __BUILD_BLAST_CACHE_RANGE(inv_s, scache, Hit_Invalidate_SD, , )
-
-/* Currently, this is very specific to Loongson-3 */
-#define __BUILD_BLAST_CACHE_NODE(pfx, desc, indexop, hitop, lsize)	\
-static inline void blast_##pfx##cache##lsize##_node(long node)		\
-{									\
-	unsigned long start = CAC_BASE | nid_to_addrbase(node);		\
-	unsigned long end = start + current_cpu_data.desc.waysize;	\
-	unsigned long ws_inc = 1UL << current_cpu_data.desc.waybit;	\
-	unsigned long ws_end = current_cpu_data.desc.ways <<		\
-			       current_cpu_data.desc.waybit;		\
-	unsigned long ws, addr;						\
-									\
-	for (ws = 0; ws < ws_end; ws += ws_inc)				\
-		for (addr = start; addr < end; addr += lsize * 32)	\
-			cache##lsize##_unroll32(addr|ws, indexop);	\
-}
-
-__BUILD_BLAST_CACHE_NODE(s, scache, Index_Writeback_Inv_SD, Hit_Writeback_Inv_SD, 16)
-__BUILD_BLAST_CACHE_NODE(s, scache, Index_Writeback_Inv_SD, Hit_Writeback_Inv_SD, 32)
-__BUILD_BLAST_CACHE_NODE(s, scache, Index_Writeback_Inv_SD, Hit_Writeback_Inv_SD, 64)
-__BUILD_BLAST_CACHE_NODE(s, scache, Index_Writeback_Inv_SD, Hit_Writeback_Inv_SD, 128)
 
 #endif /* _ASM_R4KCACHE_H */

@@ -46,7 +46,11 @@ static const struct snd_soc_dapm_widget tegra_wm9712_dapm_widgets[] = {
 
 static int tegra_wm9712_init(struct snd_soc_pcm_runtime *rtd)
 {
-	return snd_soc_dapm_force_enable_pin(&rtd->card->dapm, "Mic Bias");
+	struct snd_soc_dai *codec_dai = rtd->codec_dai;
+	struct snd_soc_codec *codec = codec_dai->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
+
+	return snd_soc_dapm_force_enable_pin(dapm, "Mic Bias");
 }
 
 static struct snd_soc_dai_link tegra_wm9712_dai = {
@@ -59,7 +63,6 @@ static struct snd_soc_dai_link tegra_wm9712_dai = {
 
 static struct snd_soc_card snd_soc_tegra_wm9712 = {
 	.name = "tegra-wm9712",
-	.driver_name = "tegra",
 	.owner = THIS_MODULE,
 	.dai_link = &tegra_wm9712_dai,
 	.num_links = 1,
@@ -78,10 +81,13 @@ static int tegra_wm9712_driver_probe(struct platform_device *pdev)
 
 	machine = devm_kzalloc(&pdev->dev, sizeof(struct tegra_wm9712),
 			       GFP_KERNEL);
-	if (!machine)
+	if (!machine) {
+		dev_err(&pdev->dev, "Can't allocate tegra_wm9712 struct\n");
 		return -ENOMEM;
+	}
 
 	card->dev = &pdev->dev;
+	platform_set_drvdata(pdev, card);
 	snd_soc_card_set_drvdata(card, machine);
 
 	machine->codec = platform_device_alloc("wm9712-codec", -1);

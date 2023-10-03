@@ -1,8 +1,7 @@
-# SPDX-License-Identifier: GPL-2.0
 #
 # Makefile for the linux kernel.
 #
-obj-y			:= core.o clock.o timer-ep93xx.o
+obj-y			:= core.o clock.o
 
 obj-$(CONFIG_EP93XX_DMA)	+= dma.o
 

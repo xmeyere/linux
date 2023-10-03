@@ -87,7 +87,6 @@ static const struct pci_device_id peak_pci_tbl[] = {
 	{PEAK_PCI_VENDOR_ID, PEAK_PC_104P_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
 	{PEAK_PCI_VENDOR_ID, PEAK_PCI_104E_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
 	{PEAK_PCI_VENDOR_ID, PEAK_CPCI_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
-	{PEAK_PCI_VENDOR_ID, PEAK_PCIE_OEM_ID, PCI_ANY_ID, PCI_ANY_ID,},
 #ifdef CONFIG_CAN_PEAK_PCIEC
 	{PEAK_PCI_VENDOR_ID, PEAK_PCIEC_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
 	{PEAK_PCI_VENDOR_ID, PEAK_PCIEC34_DEVICE_ID, PCI_ANY_ID, PCI_ANY_ID,},
@@ -608,7 +607,7 @@ static int peak_pci_probe(struct pci_dev *pdev, const struct pci_device_id *ent)
 	writeb(0x00, cfg_base + PITA_GPIOICR);
 	/* Toggle reset */
 	writeb(0x05, cfg_base + PITA_MISC + 3);
-	usleep_range(5000, 6000);
+	mdelay(5);
 	/* Leave parport mux mode */
 	writeb(0x04, cfg_base + PITA_MISC + 3);
 
@@ -717,10 +716,7 @@ failure_release_regions:
 failure_disable_pci:
 	pci_disable_device(pdev);
 
-	/* pci_xxx_config_word() return positive PCIBIOS_xxx error codes while
-	 * the probe() function must return a negative errno in case of failure
-	 * (err is unchanged if negative) */
-	return pcibios_err_to_errno(err);
+	return err;
 }
 
 static void peak_pci_remove(struct pci_dev *pdev)
@@ -739,15 +735,16 @@ static void peak_pci_remove(struct pci_dev *pdev)
 		struct net_device *prev_dev = chan->prev_dev;
 
 		dev_info(&pdev->dev, "removing device %s\n", dev->name);
-		/* do that only for first channel */
-		if (!prev_dev && chan->pciec_card)
-			peak_pciec_remove(chan->pciec_card);
 		unregister_sja1000dev(dev);
 		free_sja1000dev(dev);
 		dev = prev_dev;
 
-		if (!dev)
+		if (!dev) {
+			/* do that only for first channel */
+			if (chan->pciec_card)
+				peak_pciec_remove(chan->pciec_card);
 			break;
+		}
 		priv = netdev_priv(dev);
 		chan = priv->priv;
 	}

@@ -143,7 +143,7 @@ static u8 wait_chip_ready(struct orc_host * host)
 	for (i = 0; i < 10; i++) {	/* Wait 1 second for report timeout     */
 		if (inb(host->base + ORC_HCTRL) & HOSTSTOP)	/* Wait HOSTSTOP set */
 			return 1;
-		msleep(100);
+		mdelay(100);
 	}
 	return 0;
 }
@@ -155,7 +155,7 @@ static u8 wait_firmware_ready(struct orc_host * host)
 	for (i = 0; i < 10; i++) {	/* Wait 1 second for report timeout     */
 		if (inb(host->base + ORC_HSTUS) & RREADY)		/* Wait READY set */
 			return 1;
-		msleep(100);	/* wait 100ms before try again  */
+		mdelay(100);	/* wait 100ms before try again  */
 	}
 	return 0;
 }
@@ -888,7 +888,7 @@ static int inia100_build_scb(struct orc_host * host, struct orc_scb * scb, struc
 	scb->sense_len = SENSE_SIZE;
 	scb->cdb_len = cmd->cmd_len;
 	if (scb->cdb_len >= IMAX_CDB) {
-		printk("max cdb length= %x\n", cmd->cmd_len);
+		printk("max cdb length= %x\b", cmd->cmd_len);
 		scb->cdb_len = IMAX_CDB;
 	}
 	scb->ident = (u8)(cmd->device->lun & 0xff) | DISC_ALLOW;
@@ -1078,6 +1078,7 @@ static struct scsi_host_template inia100_template = {
 	.can_queue		= 1,
 	.this_id		= 1,
 	.sg_tablesize		= SG_ALL,
+	.cmd_per_lun 		= 1,
 	.use_clustering		= ENABLE_CLUSTERING,
 };
 
@@ -1222,8 +1223,19 @@ static struct pci_driver inia100_pci_driver = {
 	.remove		= inia100_remove_one,
 };
 
-module_pci_driver(inia100_pci_driver);
+static int __init inia100_init(void)
+{
+	return pci_register_driver(&inia100_pci_driver);
+}
+
+static void __exit inia100_exit(void)
+{
+	pci_unregister_driver(&inia100_pci_driver);
+}
 
 MODULE_DESCRIPTION("Initio A100U2W SCSI driver");
 MODULE_AUTHOR("Initio Corporation");
 MODULE_LICENSE("Dual BSD/GPL");
+
+module_init(inia100_init);
+module_exit(inia100_exit);

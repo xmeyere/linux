@@ -19,7 +19,6 @@
  * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA  02111-1307  USA
  */
 
-#include <linux/compiler.h>
 #include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/list.h>
@@ -125,8 +124,7 @@ int cn_netlink_send_mult(struct cn_msg *msg, u16 len, u32 portid, u32 __group,
 	if (group)
 		return netlink_broadcast(dev->nls, skb, portid, group,
 					 gfp_mask);
-	return netlink_unicast(dev->nls, skb, portid,
-			!gfpflags_allow_blocking(gfp_mask));
+	return netlink_unicast(dev->nls, skb, portid, !(gfp_mask&__GFP_WAIT));
 }
 EXPORT_SYMBOL_GPL(cn_netlink_send_mult);
 
@@ -158,7 +156,7 @@ static int cn_call_callback(struct sk_buff *skb)
 	spin_lock_bh(&dev->cbdev->queue_lock);
 	list_for_each_entry(i, &dev->cbdev->queue_list, callback_entry) {
 		if (cn_cb_equal(&i->id.id, &msg->id)) {
-			refcount_inc(&i->refcnt);
+			atomic_inc(&i->refcnt);
 			cbq = i;
 			break;
 		}
@@ -180,10 +178,13 @@ static int cn_call_callback(struct sk_buff *skb)
  *
  * It checks skb, netlink header and msg sizes, and calls callback helper.
  */
-static void cn_rx_skb(struct sk_buff *skb)
+static void cn_rx_skb(struct sk_buff *__skb)
 {
 	struct nlmsghdr *nlh;
+	struct sk_buff *skb;
 	int len, err;
+
+	skb = skb_get(__skb);
 
 	if (skb->len >= NLMSG_HDRLEN) {
 		nlh = nlmsg_hdr(skb);
@@ -191,10 +192,12 @@ static void cn_rx_skb(struct sk_buff *skb)
 
 		if (len < (int)sizeof(struct cn_msg) ||
 		    skb->len < nlh->nlmsg_len ||
-		    len > CONNECTOR_MAX_MSG_SIZE)
+		    len > CONNECTOR_MAX_MSG_SIZE) {
+			kfree_skb(skb);
 			return;
+		}
 
-		err = cn_call_callback(skb_get(skb));
+		err = cn_call_callback(skb);
 		if (err < 0)
 			kfree_skb(skb);
 	}
@@ -240,7 +243,7 @@ void cn_del_callback(struct cb_id *id)
 }
 EXPORT_SYMBOL_GPL(cn_del_callback);
 
-static int __maybe_unused cn_proc_show(struct seq_file *m, void *v)
+static int cn_proc_show(struct seq_file *m, void *v)
 {
 	struct cn_queue_dev *dev = cdev.cbdev;
 	struct cn_callback_entry *cbq;
@@ -260,6 +263,19 @@ static int __maybe_unused cn_proc_show(struct seq_file *m, void *v)
 
 	return 0;
 }
+
+static int cn_proc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, cn_proc_show, NULL);
+}
+
+static const struct file_operations cn_file_ops = {
+	.owner   = THIS_MODULE,
+	.open    = cn_proc_open,
+	.read    = seq_read,
+	.llseek  = seq_lseek,
+	.release = single_release
+};
 
 static struct cn_dev cdev = {
 	.input   = cn_rx_skb,
@@ -285,7 +301,7 @@ static int cn_init(void)
 
 	cn_already_initialized = 1;
 
-	proc_create_single("connector", S_IRUGO, init_net.proc_net, cn_proc_show);
+	proc_create("connector", S_IRUGO, init_net.proc_net, &cn_file_ops);
 
 	return 0;
 }

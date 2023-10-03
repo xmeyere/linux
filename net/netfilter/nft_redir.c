@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2014 Arturo Borrero Gonzalez <arturo@debian.org>
+ * Copyright (c) 2014 Arturo Borrero Gonzalez <arturo.borrero.glez@gmail.com>
  *
  * This program is free software; you can redistribute it and/or modify
  * it under the terms of the GNU General Public License version 2 as
@@ -44,20 +44,25 @@ int nft_redir_init(const struct nft_ctx *ctx,
 		   const struct nlattr * const tb[])
 {
 	struct nft_redir *priv = nft_expr_priv(expr);
-	unsigned int plen;
 	int err;
 
-	plen = FIELD_SIZEOF(struct nf_nat_range, min_addr.all);
+	err = nft_redir_validate(ctx, expr, NULL);
+	if (err < 0)
+		return err;
+
 	if (tb[NFTA_REDIR_REG_PROTO_MIN]) {
-		err = nft_parse_register_load(tb[NFTA_REDIR_REG_PROTO_MIN],
-					      &priv->sreg_proto_min, plen);
+		priv->sreg_proto_min =
+			ntohl(nla_get_be32(tb[NFTA_REDIR_REG_PROTO_MIN]));
+
+		err = nft_validate_input_register(priv->sreg_proto_min);
 		if (err < 0)
 			return err;
 
 		if (tb[NFTA_REDIR_REG_PROTO_MAX]) {
-			err = nft_parse_register_load(tb[NFTA_REDIR_REG_PROTO_MAX],
-						      &priv->sreg_proto_max,
-						      plen);
+			priv->sreg_proto_max =
+				ntohl(nla_get_be32(tb[NFTA_REDIR_REG_PROTO_MAX]));
+
+			err = nft_validate_input_register(priv->sreg_proto_max);
 			if (err < 0)
 				return err;
 		} else {
@@ -71,7 +76,7 @@ int nft_redir_init(const struct nft_ctx *ctx,
 			return -EINVAL;
 	}
 
-	return nf_ct_netns_get(ctx->net, ctx->family);
+	return 0;
 }
 EXPORT_SYMBOL_GPL(nft_redir_init);
 
@@ -80,11 +85,11 @@ int nft_redir_dump(struct sk_buff *skb, const struct nft_expr *expr)
 	const struct nft_redir *priv = nft_expr_priv(expr);
 
 	if (priv->sreg_proto_min) {
-		if (nft_dump_register(skb, NFTA_REDIR_REG_PROTO_MIN,
-				      priv->sreg_proto_min))
+		if (nla_put_be32(skb, NFTA_REDIR_REG_PROTO_MIN,
+				 htonl(priv->sreg_proto_min)))
 			goto nla_put_failure;
-		if (nft_dump_register(skb, NFTA_REDIR_REG_PROTO_MAX,
-				      priv->sreg_proto_max))
+		if (nla_put_be32(skb, NFTA_REDIR_REG_PROTO_MAX,
+				 htonl(priv->sreg_proto_max)))
 			goto nla_put_failure;
 	}
 
@@ -100,4 +105,4 @@ nla_put_failure:
 EXPORT_SYMBOL_GPL(nft_redir_dump);
 
 MODULE_LICENSE("GPL");
-MODULE_AUTHOR("Arturo Borrero Gonzalez <arturo@debian.org>");
+MODULE_AUTHOR("Arturo Borrero Gonzalez <arturo.borrero.glez@gmail.com>");

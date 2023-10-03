@@ -43,7 +43,7 @@ static char *ac97_quirk;
 module_param(ac97_quirk, charp, 0444);
 MODULE_PARM_DESC(ac97_quirk, "AC'97 board specific workarounds.");
 
-static const struct ac97_quirk ac97_quirks[] = {
+static struct ac97_quirk ac97_quirks[] = {
 #if 0 /* Not yet confirmed if all 5536 boards are HP only */
 	{
 		.subvendor = PCI_VENDOR_ID_AMD, 
@@ -192,6 +192,8 @@ static void process_bm0_irq(struct cs5535audio *cs5535au)
 	bm_stat = cs_readb(cs5535au, ACC_BM0_STATUS);
 	spin_unlock(&cs5535au->reg_lock);
 	if (bm_stat & EOP) {
+		struct cs5535audio_dma *dma;
+		dma = cs5535au->playback_substream->runtime->private_data;
 		snd_pcm_period_elapsed(cs5535au->playback_substream);
 	} else {
 		dev_err(cs5535au->card->dev,
@@ -206,8 +208,11 @@ static void process_bm1_irq(struct cs5535audio *cs5535au)
 	spin_lock(&cs5535au->reg_lock);
 	bm_stat = cs_readb(cs5535au, ACC_BM1_STATUS);
 	spin_unlock(&cs5535au->reg_lock);
-	if (bm_stat & EOP)
+	if (bm_stat & EOP) {
+		struct cs5535audio_dma *dma;
+		dma = cs5535au->capture_substream->runtime->private_data;
 		snd_pcm_period_elapsed(cs5535au->capture_substream);
+	}
 }
 
 static irqreturn_t snd_cs5535audio_interrupt(int irq, void *dev_id)
@@ -284,8 +289,8 @@ static int snd_cs5535audio_create(struct snd_card *card,
 	if ((err = pci_enable_device(pci)) < 0)
 		return err;
 
-	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(32)) < 0 ||
-	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(32)) < 0) {
+	if (pci_set_dma_mask(pci, DMA_BIT_MASK(32)) < 0 ||
+	    pci_set_consistent_dma_mask(pci, DMA_BIT_MASK(32)) < 0) {
 		dev_warn(card->dev, "unable to get 32bit dma\n");
 		err = -ENXIO;
 		goto pcifail;

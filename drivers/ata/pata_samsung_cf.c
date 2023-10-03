@@ -17,7 +17,6 @@
 
 #include <linux/kernel.h>
 #include <linux/module.h>
-#include <linux/mod_devicetable.h>
 #include <linux/init.h>
 #include <linux/clk.h>
 #include <linux/libata.h>
@@ -71,7 +70,7 @@ struct s3c_ide_info {
 	struct clk *clk;
 	void __iomem *ide_addr;
 	void __iomem *sfr_addr;
-	int irq;
+	unsigned int irq;
 	enum s3c_cpu_type cpu_type;
 	unsigned int fifo_status_reg;
 };
@@ -264,10 +263,10 @@ static u8 pata_s3c_check_altstatus(struct ata_port *ap)
 /*
  * pata_s3c_data_xfer - Transfer data by PIO
  */
-static unsigned int pata_s3c_data_xfer(struct ata_queued_cmd *qc,
+static unsigned int pata_s3c_data_xfer(struct ata_device *dev,
 				unsigned char *buf, unsigned int buflen, int rw)
 {
-	struct ata_port *ap = qc->dev->link->ap;
+	struct ata_port *ap = dev->link->ap;
 	struct s3c_ide_info *info = ap->host->private_data;
 	void __iomem *data_addr = ap->ioaddr.data_addr;
 	unsigned int words = buflen >> 1, i;
@@ -506,8 +505,10 @@ static int __init pata_s3c_probe(struct platform_device *pdev)
 	cpu_type = platform_get_device_id(pdev)->driver_data;
 
 	info = devm_kzalloc(dev, sizeof(*info), GFP_KERNEL);
-	if (!info)
+	if (!info) {
+		dev_err(dev, "failed to allocate memory for device data\n");
 		return -ENOMEM;
+	}
 
 	info->irq = platform_get_irq(pdev, 0);
 
@@ -581,6 +582,8 @@ static int __init pata_s3c_probe(struct platform_device *pdev)
 	/* Set endianness and enable the interface */
 	pata_s3c_hwinit(info, pdata);
 
+	platform_set_drvdata(pdev, host);
+
 	ret = ata_host_activate(host, info->irq,
 				info->irq ? pata_s3c_irq : NULL,
 				0, &pata_s3c_sht);
@@ -635,7 +638,7 @@ static const struct dev_pm_ops pata_s3c_pm_ops = {
 #endif
 
 /* driver device registration */
-static const struct platform_device_id pata_s3c_driver_ids[] = {
+static struct platform_device_id pata_s3c_driver_ids[] = {
 	{
 		.name		= "s3c64xx-pata",
 		.driver_data	= TYPE_S3C64XX,

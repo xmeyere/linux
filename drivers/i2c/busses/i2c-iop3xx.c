@@ -50,7 +50,10 @@ iic_cook_addr(struct i2c_msg *msg)
 {
 	unsigned char addr;
 
-	addr = i2c_8bit_addr_from_msg(msg);
+	addr = (msg->addr << 1);
+
+	if (msg->flags & I2C_M_RD)
+		addr |= 1;
 
 	return addr;
 }
@@ -456,14 +459,16 @@ iop3xx_i2c_probe(struct platform_device *pdev)
 
 	irq = platform_get_irq(pdev, 0);
 	if (irq < 0) {
-		ret = irq;
+		ret = -ENXIO;
 		goto unmap;
 	}
 	ret = request_irq(irq, iop3xx_i2c_irq_handler, 0,
 				pdev->name, adapter_data);
 
-	if (ret)
+	if (ret) {
+		ret = -EIO;
 		goto unmap;
+	}
 
 	memcpy(new_adapter->name, pdev->name, strlen(pdev->name));
 	new_adapter->owner = THIS_MODULE;

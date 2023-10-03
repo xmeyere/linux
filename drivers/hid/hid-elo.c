@@ -37,22 +37,14 @@ static bool use_fw_quirk = true;
 module_param(use_fw_quirk, bool, S_IRUGO);
 MODULE_PARM_DESC(use_fw_quirk, "Do periodic pokes for broken M firmwares (default = true)");
 
-static int elo_input_configured(struct hid_device *hdev,
+static void elo_input_configured(struct hid_device *hdev,
 		struct hid_input *hidinput)
 {
 	struct input_dev *input = hidinput->input;
 
-	/*
-	 * ELO devices have one Button usage in GenDesk field, which makes
-	 * hid-input map it to BTN_LEFT; that confuses userspace, which then
-	 * considers the device to be a mouse/touchpad instead of touchscreen.
-	 */
-	clear_bit(BTN_LEFT, input->keybit);
 	set_bit(BTN_TOUCH, input->keybit);
 	set_bit(ABS_PRESSURE, input->absbit);
 	input_set_abs_params(input, ABS_PRESSURE, 0, 256, 0, 0);
-
-	return 0;
 }
 
 static void elo_process_data(struct input_dev *input, const u8 *data, int size)
@@ -230,9 +222,6 @@ static int elo_probe(struct hid_device *hdev, const struct hid_device_id *id)
 	struct elo_priv *priv;
 	int ret;
 
-	if (!hid_is_usb(hdev))
-		return -EINVAL;
-
 	priv = kzalloc(sizeof(*priv), GFP_KERNEL);
 	if (!priv)
 		return -ENOMEM;
@@ -270,7 +259,7 @@ static void elo_remove(struct hid_device *hdev)
 	struct elo_priv *priv = hid_get_drvdata(hdev);
 
 	hid_hw_stop(hdev);
-	cancel_delayed_work_sync(&priv->work);
+	flush_workqueue(wq);
 	kfree(priv);
 }
 

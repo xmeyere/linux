@@ -13,7 +13,6 @@
 #include <linux/errno.h>
 #include <asm/asm.h>
 #include <asm/asm-offsets.h>
-#include <asm/export.h>
 #include <asm/regdef.h>
 
 #ifdef CONFIG_64BIT
@@ -77,10 +76,10 @@
 	LOAD	_t1, (offset + UNIT(1))(src);			\
 	LOAD	_t2, (offset + UNIT(2))(src);			\
 	LOAD	_t3, (offset + UNIT(3))(src);			\
-	ADDC(_t0, _t1);						\
-	ADDC(_t2, _t3);						\
 	ADDC(sum, _t0);						\
-	ADDC(sum, _t2)
+	ADDC(sum, _t1);						\
+	ADDC(sum, _t2);						\
+	ADDC(sum, _t3)
 
 #ifdef USE_DOUBLE
 #define CSUM_BIGCHUNK(src, offset, sum, _t0, _t1, _t2, _t3)	\
@@ -104,7 +103,6 @@
 	.set	noreorder
 	.align	5
 LEAF(csum_partial)
-EXPORT_SYMBOL(csum_partial)
 	move	sum, zero
 	move	t7, zero
 
@@ -462,7 +460,6 @@ EXPORT_SYMBOL(csum_partial)
 #endif
 	.if \__nocheck == 1
 	FEXPORT(csum_partial_copy_nocheck)
-	EXPORT_SYMBOL(csum_partial_copy_nocheck)
 	.endif
 	move	sum, zero
 	move	odd, zero
@@ -507,21 +504,21 @@ EXPORT_SYMBOL(csum_partial)
 	SUB	len, len, 8*NBYTES
 	ADD	src, src, 8*NBYTES
 	STORE(t0, UNIT(0)(dst),	.Ls_exc\@)
-	ADDC(t0, t1)
-	STORE(t1, UNIT(1)(dst),	.Ls_exc\@)
 	ADDC(sum, t0)
+	STORE(t1, UNIT(1)(dst),	.Ls_exc\@)
+	ADDC(sum, t1)
 	STORE(t2, UNIT(2)(dst),	.Ls_exc\@)
-	ADDC(t2, t3)
-	STORE(t3, UNIT(3)(dst),	.Ls_exc\@)
 	ADDC(sum, t2)
+	STORE(t3, UNIT(3)(dst),	.Ls_exc\@)
+	ADDC(sum, t3)
 	STORE(t4, UNIT(4)(dst),	.Ls_exc\@)
-	ADDC(t4, t5)
-	STORE(t5, UNIT(5)(dst),	.Ls_exc\@)
 	ADDC(sum, t4)
+	STORE(t5, UNIT(5)(dst),	.Ls_exc\@)
+	ADDC(sum, t5)
 	STORE(t6, UNIT(6)(dst),	.Ls_exc\@)
-	ADDC(t6, t7)
-	STORE(t7, UNIT(7)(dst),	.Ls_exc\@)
 	ADDC(sum, t6)
+	STORE(t7, UNIT(7)(dst),	.Ls_exc\@)
+	ADDC(sum, t7)
 	.set	reorder				/* DADDI_WAR */
 	ADD	dst, dst, 8*NBYTES
 	bgez	len, 1b
@@ -547,13 +544,13 @@ EXPORT_SYMBOL(csum_partial)
 	SUB	len, len, 4*NBYTES
 	ADD	src, src, 4*NBYTES
 	STORE(t0, UNIT(0)(dst),	.Ls_exc\@)
-	ADDC(t0, t1)
-	STORE(t1, UNIT(1)(dst),	.Ls_exc\@)
 	ADDC(sum, t0)
+	STORE(t1, UNIT(1)(dst),	.Ls_exc\@)
+	ADDC(sum, t1)
 	STORE(t2, UNIT(2)(dst),	.Ls_exc\@)
-	ADDC(t2, t3)
-	STORE(t3, UNIT(3)(dst),	.Ls_exc\@)
 	ADDC(sum, t2)
+	STORE(t3, UNIT(3)(dst),	.Ls_exc\@)
+	ADDC(sum, t3)
 	.set	reorder				/* DADDI_WAR */
 	ADD	dst, dst, 4*NBYTES
 	beqz	len, .Ldone\@
@@ -652,13 +649,13 @@ EXPORT_SYMBOL(csum_partial)
 	nop				# improves slotting
 #endif
 	STORE(t0, UNIT(0)(dst),	.Ls_exc\@)
-	ADDC(t0, t1)
-	STORE(t1, UNIT(1)(dst),	.Ls_exc\@)
 	ADDC(sum, t0)
+	STORE(t1, UNIT(1)(dst),	.Ls_exc\@)
+	ADDC(sum, t1)
 	STORE(t2, UNIT(2)(dst),	.Ls_exc\@)
-	ADDC(t2, t3)
-	STORE(t3, UNIT(3)(dst),	.Ls_exc\@)
 	ADDC(sum, t2)
+	STORE(t3, UNIT(3)(dst),	.Ls_exc\@)
+	ADDC(sum, t3)
 	.set	reorder				/* DADDI_WAR */
 	ADD	dst, dst, 4*NBYTES
 	bne	len, rem, 1b
@@ -826,12 +823,9 @@ EXPORT_SYMBOL(csum_partial)
 	.endm
 
 LEAF(__csum_partial_copy_kernel)
-EXPORT_SYMBOL(__csum_partial_copy_kernel)
 #ifndef CONFIG_EVA
 FEXPORT(__csum_partial_copy_to_user)
-EXPORT_SYMBOL(__csum_partial_copy_to_user)
 FEXPORT(__csum_partial_copy_from_user)
-EXPORT_SYMBOL(__csum_partial_copy_from_user)
 #endif
 __BUILD_CSUM_PARTIAL_COPY_USER LEGACY_MODE USEROP USEROP 1
 END(__csum_partial_copy_kernel)

@@ -178,7 +178,7 @@ static int tcf_em_validate(struct tcf_proto *tp,
 	struct tcf_ematch_hdr *em_hdr = nla_data(nla);
 	int data_len = nla_len(nla) - sizeof(*em_hdr);
 	void *data = (void *) em_hdr + sizeof(*em_hdr);
-	struct net *net = tp->chain->block->net;
+	struct net *net = dev_net(qdisc_dev(tp->q));
 
 	if (!TCF_EM_REL_VALID(em_hdr->flags))
 		goto errout;
@@ -242,9 +242,6 @@ static int tcf_em_validate(struct tcf_proto *tp,
 			goto errout;
 
 		if (em->ops->change) {
-			err = -EINVAL;
-			if (em_hdr->flags & TCF_EM_SIMPLE)
-				goto errout;
 			err = em->ops->change(net, data, data_len, em);
 			if (err < 0)
 				goto errout;
@@ -259,8 +256,6 @@ static int tcf_em_validate(struct tcf_proto *tp,
 			 * the value carried.
 			 */
 			if (em_hdr->flags & TCF_EM_SIMPLE) {
-				if (em->ops->datalen > 0)
-					goto errout;
 				if (data_len < sizeof(u32))
 					goto errout;
 				em->data = *(u32 *) data;
@@ -272,12 +267,12 @@ static int tcf_em_validate(struct tcf_proto *tp,
 				}
 				em->data = (unsigned long) v;
 			}
-			em->datalen = data_len;
 		}
 	}
 
 	em->matchid = em_hdr->matchid;
 	em->flags = em_hdr->flags;
+	em->datalen = data_len;
 	em->net = net;
 
 	err = 0;
@@ -319,7 +314,7 @@ int tcf_em_tree_validate(struct tcf_proto *tp, struct nlattr *nla,
 	if (!nla)
 		return 0;
 
-	err = nla_parse_nested(tb, TCA_EMATCH_TREE_MAX, nla, em_policy, NULL);
+	err = nla_parse_nested(tb, TCA_EMATCH_TREE_MAX, nla, em_policy);
 	if (err < 0)
 		goto errout;
 

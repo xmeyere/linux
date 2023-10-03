@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Hypervisor filesystem for Linux on s390
  *
@@ -9,7 +8,6 @@
 
 #include <linux/slab.h>
 #include <linux/cpu.h>
-#include <asm/diag.h>
 #include <asm/hypfs.h>
 #include "hypfs.h"
 
@@ -20,11 +18,14 @@
  */
 static void diag0c(struct hypfs_diag0c_entry *entry)
 {
-	diag_stat_inc(DIAG_STAT_X00C);
 	asm volatile (
+#ifdef CONFIG_64BIT
 		"	sam31\n"
 		"	diag	%0,%0,0x0c\n"
 		"	sam64\n"
+#else
+		"	diag %0,%0,0x0c\n"
+#endif
 		: /* no output register */
 		: "a" (entry)
 		: "memory");
@@ -49,8 +50,7 @@ static void *diag0c_store(unsigned int *count)
 
 	get_online_cpus();
 	cpu_count = num_online_cpus();
-	cpu_vec = kmalloc_array(num_possible_cpus(), sizeof(*cpu_vec),
-				GFP_KERNEL);
+	cpu_vec = kmalloc(sizeof(*cpu_vec) * num_possible_cpus(), GFP_KERNEL);
 	if (!cpu_vec)
 		goto fail_put_online_cpus;
 	/* Note: Diag 0c needs 8 byte alignment and real storage */

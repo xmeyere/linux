@@ -97,8 +97,10 @@ int bochs_hw_init(struct drm_device *dev, uint32_t flags)
 		size = min(size, mem);
 	}
 
-	if (pci_request_region(pdev, 0, "bochs-drm") != 0)
-		DRM_WARN("Cannot request framebuffer, boot fb still active?\n");
+	if (pci_request_region(pdev, 0, "bochs-drm") != 0) {
+		DRM_ERROR("Cannot request framebuffer\n");
+		return -EBUSY;
+	}
 
 	bochs->fb_map = ioremap(addr, size);
 	if (bochs->fb_map == NULL) {
@@ -162,7 +164,6 @@ void bochs_hw_setmode(struct bochs_device *bochs,
 
 	bochs_vga_writeb(bochs, 0x3c0, 0x20); /* unblank */
 
-	bochs_dispi_write(bochs, VBE_DISPI_INDEX_ENABLE,      0);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_BPP,         bochs->bpp);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_XRES,        bochs->xres);
 	bochs_dispi_write(bochs, VBE_DISPI_INDEX_YRES,        bochs->yres);

@@ -1,8 +1,12 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * USB-ACPI glue code
  *
  * Copyright 2012 Red Hat <mjg@redhat.com>
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of the GNU General Public License as published by the Free
+ * Software Foundation, version 2.
+ *
  */
 #include <linux/module.h>
 #include <linux/usb.h>
@@ -90,8 +94,8 @@ static enum usb_port_connect_type usb_acpi_get_connect_type(acpi_handle handle,
 	acpi_status status;
 
 	/*
-	 * According to 9.14 in ACPI Spec 6.2. _PLD indicates whether usb port
-	 * is user visible and _UPC indicates whether it is connectable. If
+	 * According to ACPI Spec 9.13. PLD indicates whether usb port is
+	 * user visible and _UPC indicates whether it is connectable. If
 	 * the port was visible and connectable, it could be freely connected
 	 * and disconnected with USB devices. If no visible and connectable,
 	 * a usb device is directly hard-wired to the port. If no visible and
@@ -122,22 +126,6 @@ out:
  * port_dev->location is non-zero when it has been set by the firmware.
  */
 #define USB_ACPI_LOCATION_VALID (1 << 31)
-
-static struct acpi_device *usb_acpi_find_port(struct acpi_device *parent,
-					      int raw)
-{
-	struct acpi_device *adev;
-
-	if (!parent)
-		return NULL;
-
-	list_for_each_entry(adev, &parent->children, node) {
-		if (acpi_device_adr(adev) == raw)
-			return adev;
-	}
-
-	return acpi_find_child_device(parent, raw, false);
-}
 
 static struct acpi_device *usb_acpi_find_companion(struct device *dev)
 {
@@ -186,10 +174,8 @@ static struct acpi_device *usb_acpi_find_companion(struct device *dev)
 			int raw;
 
 			raw = usb_hcd_find_raw_port_number(hcd, port1);
-
-			adev = usb_acpi_find_port(ACPI_COMPANION(&udev->dev),
-						  raw);
-
+			adev = acpi_find_child_device(ACPI_COMPANION(&udev->dev),
+					raw, false);
 			if (!adev)
 				return NULL;
 		} else {
@@ -200,9 +186,7 @@ static struct acpi_device *usb_acpi_find_companion(struct device *dev)
 				return NULL;
 
 			acpi_bus_get_device(parent_handle, &adev);
-
-			adev = usb_acpi_find_port(adev, port1);
-
+			adev = acpi_find_child_device(adev, port1, false);
 			if (!adev)
 				return NULL;
 		}

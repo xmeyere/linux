@@ -21,31 +21,35 @@
  *
  * Authors: Ben Skeggs
  */
-#include "ram.h"
+#include "gf100.h"
 
-u32
-gm107_ram_probe_fbp(const struct nvkm_ram_func *func,
-		    struct nvkm_device *device, int fbp, int *pltcs)
-{
-	u32 fbpao = nvkm_rd32(device, 0x021c14);
-	return func->probe_fbp_amount(func, fbpao, device, fbp, pltcs);
-}
-
-static const struct nvkm_ram_func
-gm107_ram = {
-	.upper = 0x1000000000,
-	.probe_fbp = gm107_ram_probe_fbp,
-	.probe_fbp_amount = gf108_ram_probe_fbp_amount,
-	.probe_fbpa_amount = gf100_ram_probe_fbpa_amount,
-	.dtor = gk104_ram_dtor,
-	.init = gk104_ram_init,
-	.calc = gk104_ram_calc,
-	.prog = gk104_ram_prog,
-	.tidy = gk104_ram_tidy,
+struct gm107_ram {
+	struct nvkm_ram base;
 };
 
-int
-gm107_ram_new(struct nvkm_fb *fb, struct nvkm_ram **pram)
+static int
+gm107_ram_ctor(struct nvkm_object *parent, struct nvkm_object *engine,
+	       struct nvkm_oclass *oclass, void *data, u32 size,
+	       struct nvkm_object **pobject)
 {
-	return gk104_ram_new_(&gm107_ram, fb, pram);
+	struct gm107_ram *ram;
+	int ret;
+
+	ret = gf100_ram_create(parent, engine, oclass, 0x021c14, &ram);
+	*pobject = nv_object(ram);
+	if (ret)
+		return ret;
+
+	return 0;
 }
+
+struct nvkm_oclass
+gm107_ram_oclass = {
+	.handle = 0,
+	.ofuncs = &(struct nvkm_ofuncs) {
+		.ctor = gm107_ram_ctor,
+		.dtor = _nvkm_ram_dtor,
+		.init = gk104_ram_init,
+		.fini = _nvkm_ram_fini,
+	}
+};

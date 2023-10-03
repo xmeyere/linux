@@ -1,20 +1,20 @@
-/* SPDX-License-Identifier: GPL-2.0 */
-#ifndef __LINUX_COMPILER_TYPES_H
+#ifndef __LINUX_COMPILER_H
 #error "Please don't include <linux/compiler-intel.h> directly, include <linux/compiler.h> instead."
 #endif
 
 #ifdef __ECC
 
-/* Compiler specific definitions for Intel ECC compiler */
+/* Some compiler specific definitions are overwritten here
+ * for Intel ECC compiler
+ */
 
 #include <asm/intrinsics.h>
 
 /* Intel ECC compiler doesn't support gcc specific asm stmts.
  * It uses intrinsics to do the equivalent things.
  */
-
-#define barrier() __memory_barrier()
-#define barrier_data(ptr) barrier()
+#undef RELOC_HIDE
+#undef OPTIMIZER_HIDE_VAR
 
 #define RELOC_HIDE(ptr, off)					\
   ({ unsigned long __ptr;					\
@@ -32,12 +32,9 @@
 
 #endif
 
+#ifndef __HAVE_BUILTIN_BSWAP16__
 /* icc has this, but it's called _bswap16 */
 #define __HAVE_BUILTIN_BSWAP16__
 #define __builtin_bswap16 _bswap16
+#endif
 
-/* The following are for compatibility with GCC, from compiler-gcc.h,
- * and may be redefined here because they should not be shared with other
- * compilers, like clang.
- */
-#define __visible	__attribute__((externally_visible))

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Driver for the NXP ISP1760 chip
  *
@@ -397,6 +396,7 @@ static int handshake(struct usb_hcd *hcd, u32 reg,
 /* reset a non-running (STS_HALT == 1) controller */
 static int ehci_reset(struct usb_hcd *hcd)
 {
+	int retval;
 	struct isp1760_hcd *priv = hcd_to_priv(hcd);
 
 	u32 command = reg_read32(hcd->regs, HC_USBCMD);
@@ -405,8 +405,9 @@ static int ehci_reset(struct usb_hcd *hcd)
 	reg_write32(hcd->regs, HC_USBCMD, command);
 	hcd->state = HC_STATE_HALT;
 	priv->next_statechange = jiffies;
-
-	return handshake(hcd, HC_USBCMD, CMD_RESET, 0, 250 * 1000);
+	retval = handshake(hcd, HC_USBCMD,
+			    CMD_RESET, 0, 250 * 1000);
+	return retval;
 }
 
 static struct isp1760_qh *qh_alloc(gfp_t flags)
@@ -1259,11 +1260,10 @@ leave:
 #define SLOT_TIMEOUT 300
 #define SLOT_CHECK_PERIOD 200
 static struct timer_list errata2_timer;
-static struct usb_hcd *errata2_timer_hcd;
 
-static void errata2_function(struct timer_list *unused)
+static void errata2_function(unsigned long data)
 {
-	struct usb_hcd *hcd = errata2_timer_hcd;
+	struct usb_hcd *hcd = (struct usb_hcd *) data;
 	struct isp1760_hcd *priv = hcd_to_priv(hcd);
 	int slot;
 	struct ptd ptd;
@@ -1335,8 +1335,7 @@ static int isp1760_run(struct usb_hcd *hcd)
 	if (retval)
 		return retval;
 
-	errata2_timer_hcd = hcd;
-	timer_setup(&errata2_timer, errata2_function, 0);
+	setup_timer(&errata2_timer, errata2_function, (unsigned long)hcd);
 	errata2_timer.expires = jiffies + msecs_to_jiffies(SLOT_CHECK_PERIOD);
 	add_timer(&errata2_timer);
 
@@ -1759,7 +1758,7 @@ static void isp1760_hub_descriptor(struct isp1760_hcd *priv,
 	int ports = HCS_N_PORTS(priv->hcs_params);
 	u16 temp;
 
-	desc->bDescriptorType = USB_DT_HUB;
+	desc->bDescriptorType = 0x29;
 	/* priv 1.0, 2.3.9 says 20ms max */
 	desc->bPwrOn2PwrGood = 10;
 	desc->bHubContrCurrent = 0;
@@ -1817,6 +1816,7 @@ static int isp1760_hub_control(struct usb_hcd *hcd, u16 typeReq,
 	u32 temp, status;
 	unsigned long flags;
 	int retval = 0;
+	unsigned selector;
 
 	/*
 	 * FIXME:  support SetPortFeatures USB_PORT_FEAT_INDICATOR.
@@ -1869,7 +1869,7 @@ static int isp1760_hub_control(struct usb_hcd *hcd, u16 typeReq,
 				reg_write32(hcd->regs, HC_PORTSC1,
 							temp | PORT_RESUME);
 				priv->reset_done = jiffies +
-					msecs_to_jiffies(USB_RESUME_TIMEOUT);
+					msecs_to_jiffies(20);
 			}
 			break;
 		case USB_PORT_FEAT_C_SUSPEND:
@@ -2009,6 +2009,7 @@ static int isp1760_hub_control(struct usb_hcd *hcd, u16 typeReq,
 		}
 		break;
 	case SetPortFeature:
+		selector = wIndex >> 8;
 		wIndex &= 0xff;
 		if (!wIndex || wIndex > ports)
 			goto error;
@@ -2091,7 +2092,7 @@ static void isp1760_stop(struct usb_hcd *hcd)
 
 	isp1760_hub_control(hcd, ClearPortFeature, USB_PORT_FEAT_POWER,	1,
 			NULL, 0);
-	msleep(20);
+	mdelay(20);
 
 	spin_lock_irq(&priv->lock);
 	ehci_reset(hcd);

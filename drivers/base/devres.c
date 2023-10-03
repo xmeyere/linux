@@ -1,15 +1,15 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * drivers/base/devres.c - device resource management
  *
  * Copyright (c) 2006  SUSE Linux Products GmbH
  * Copyright (c) 2006  Tejun Heo <teheo@suse.de>
+ *
+ * This file is released under the GPLv2.
  */
 
 #include <linux/device.h>
 #include <linux/module.h>
 #include <linux/slab.h>
-#include <linux/percpu.h>
 
 #include "base.h"
 
@@ -24,14 +24,8 @@ struct devres_node {
 
 struct devres {
 	struct devres_node		node;
-	/*
-	 * Some archs want to perform DMA into kmalloc caches
-	 * and need a guaranteed alignment larger than
-	 * the alignment of a 64-bit integer.
-	 * Thus we use ARCH_KMALLOC_MINALIGN here and get exactly the same
-	 * buffer alignment as if it was allocated by plain kmalloc().
-	 */
-	u8 __aligned(ARCH_KMALLOC_MINALIGN) data[];
+	/* -- 3 pointers */
+	unsigned long long		data[];	/* guarantee ull alignment */
 };
 
 struct devres_group {
@@ -88,17 +82,12 @@ static struct devres_group * node_to_group(struct devres_node *node)
 }
 
 static __always_inline struct devres * alloc_dr(dr_release_t release,
-						size_t size, gfp_t gfp, int nid)
+						size_t size, gfp_t gfp)
 {
-	size_t tot_size;
+	size_t tot_size = sizeof(struct devres) + size;
 	struct devres *dr;
 
-	/* We must catch any near-SIZE_MAX cases that could overflow. */
-	if (unlikely(check_add_overflow(sizeof(struct devres), size,
-					&tot_size)))
-		return NULL;
-
-	dr = kmalloc_node_track_caller(tot_size, gfp, nid);
+	dr = kmalloc_track_caller(tot_size, gfp);
 	if (unlikely(!dr))
 		return NULL;
 
@@ -117,25 +106,24 @@ static void add_dr(struct device *dev, struct devres_node *node)
 }
 
 #ifdef CONFIG_DEBUG_DEVRES
-void * __devres_alloc_node(dr_release_t release, size_t size, gfp_t gfp, int nid,
+void * __devres_alloc(dr_release_t release, size_t size, gfp_t gfp,
 		      const char *name)
 {
 	struct devres *dr;
 
-	dr = alloc_dr(release, size, gfp | __GFP_ZERO, nid);
+	dr = alloc_dr(release, size, gfp | __GFP_ZERO);
 	if (unlikely(!dr))
 		return NULL;
 	set_node_dbginfo(&dr->node, name, size);
 	return dr->data;
 }
-EXPORT_SYMBOL_GPL(__devres_alloc_node);
+EXPORT_SYMBOL_GPL(__devres_alloc);
 #else
 /**
  * devres_alloc - Allocate device resource data
  * @release: Release function devres will be associated with
  * @size: Allocation size
  * @gfp: Allocation flags
- * @nid: NUMA node
  *
  * Allocate devres of @size bytes.  The allocated area is zeroed, then
  * associated with @release.  The returned pointer can be passed to
@@ -144,16 +132,16 @@ EXPORT_SYMBOL_GPL(__devres_alloc_node);
  * RETURNS:
  * Pointer to allocated devres on success, NULL on failure.
  */
-void * devres_alloc_node(dr_release_t release, size_t size, gfp_t gfp, int nid)
+void * devres_alloc(dr_release_t release, size_t size, gfp_t gfp)
 {
 	struct devres *dr;
 
-	dr = alloc_dr(release, size, gfp | __GFP_ZERO, nid);
+	dr = alloc_dr(release, size, gfp | __GFP_ZERO);
 	if (unlikely(!dr))
 		return NULL;
 	return dr->data;
 }
-EXPORT_SYMBOL_GPL(devres_alloc_node);
+EXPORT_SYMBOL_GPL(devres_alloc);
 #endif
 
 /**
@@ -309,10 +297,10 @@ void * devres_get(struct device *dev, void *new_res,
 	if (!dr) {
 		add_dr(dev, &new_dr->node);
 		dr = new_dr;
-		new_res = NULL;
+		new_dr = NULL;
 	}
 	spin_unlock_irqrestore(&dev->devres_lock, flags);
-	devres_free(new_res);
+	devres_free(new_dr);
 
 	return dr->data;
 }
@@ -788,7 +776,7 @@ void * devm_kmalloc(struct device *dev, size_t size, gfp_t gfp)
 	struct devres *dr;
 
 	/* use raw alloc_dr for kmalloc caller tracing */
-	dr = alloc_dr(devm_kmalloc_release, size, gfp, dev_to_node(dev));
+	dr = alloc_dr(devm_kmalloc_release, size, gfp);
 	if (unlikely(!dr))
 		return NULL;
 
@@ -996,68 +984,3 @@ void devm_free_pages(struct device *dev, unsigned long addr)
 			       &devres));
 }
 EXPORT_SYMBOL_GPL(devm_free_pages);
-
-static void devm_percpu_release(struct device *dev, void *pdata)
-{
-	void __percpu *p;
-
-	p = *(void __percpu **)pdata;
-	free_percpu(p);
-}
-
-static int devm_percpu_match(struct device *dev, void *data, void *p)
-{
-	struct devres *devr = container_of(data, struct devres, data);
-
-	return *(void **)devr->data == p;
-}
-
-/**
- * __devm_alloc_percpu - Resource-managed alloc_percpu
- * @dev: Device to allocate per-cpu memory for
- * @size: Size of per-cpu memory to allocate
- * @align: Alignment of per-cpu memory to allocate
- *
- * Managed alloc_percpu. Per-cpu memory allocated with this function is
- * automatically freed on driver detach.
- *
- * RETURNS:
- * Pointer to allocated memory on success, NULL on failure.
- */
-void __percpu *__devm_alloc_percpu(struct device *dev, size_t size,
-		size_t align)
-{
-	void *p;
-	void __percpu *pcpu;
-
-	pcpu = __alloc_percpu(size, align);
-	if (!pcpu)
-		return NULL;
-
-	p = devres_alloc(devm_percpu_release, sizeof(void *), GFP_KERNEL);
-	if (!p) {
-		free_percpu(pcpu);
-		return NULL;
-	}
-
-	*(void __percpu **)p = pcpu;
-
-	devres_add(dev, p);
-
-	return pcpu;
-}
-EXPORT_SYMBOL_GPL(__devm_alloc_percpu);
-
-/**
- * devm_free_percpu - Resource-managed free_percpu
- * @dev: Device this memory belongs to
- * @pdata: Per-cpu memory to free
- *
- * Free memory allocated with devm_alloc_percpu().
- */
-void devm_free_percpu(struct device *dev, void __percpu *pdata)
-{
-	WARN_ON(devres_destroy(dev, devm_percpu_release, devm_percpu_match,
-			       (void *)pdata));
-}
-EXPORT_SYMBOL_GPL(devm_free_percpu);

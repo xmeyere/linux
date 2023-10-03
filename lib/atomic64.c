@@ -96,41 +96,14 @@ long long atomic64_##op##_return(long long a, atomic64_t *v)		\
 }									\
 EXPORT_SYMBOL(atomic64_##op##_return);
 
-#define ATOMIC64_FETCH_OP(op, c_op)					\
-long long atomic64_fetch_##op(long long a, atomic64_t *v)		\
-{									\
-	unsigned long flags;						\
-	raw_spinlock_t *lock = lock_addr(v);				\
-	long long val;							\
-									\
-	raw_spin_lock_irqsave(lock, flags);				\
-	val = v->counter;						\
-	v->counter c_op a;						\
-	raw_spin_unlock_irqrestore(lock, flags);			\
-	return val;							\
-}									\
-EXPORT_SYMBOL(atomic64_fetch_##op);
-
 #define ATOMIC64_OPS(op, c_op)						\
 	ATOMIC64_OP(op, c_op)						\
-	ATOMIC64_OP_RETURN(op, c_op)					\
-	ATOMIC64_FETCH_OP(op, c_op)
+	ATOMIC64_OP_RETURN(op, c_op)
 
 ATOMIC64_OPS(add, +=)
 ATOMIC64_OPS(sub, -=)
 
 #undef ATOMIC64_OPS
-#define ATOMIC64_OPS(op, c_op)						\
-	ATOMIC64_OP(op, c_op)						\
-	ATOMIC64_OP_RETURN(op, c_op)					\
-	ATOMIC64_FETCH_OP(op, c_op)
-
-ATOMIC64_OPS(and, &=)
-ATOMIC64_OPS(or, |=)
-ATOMIC64_OPS(xor, ^=)
-
-#undef ATOMIC64_OPS
-#undef ATOMIC64_FETCH_OP
 #undef ATOMIC64_OP_RETURN
 #undef ATOMIC64_OP
 
@@ -178,18 +151,18 @@ long long atomic64_xchg(atomic64_t *v, long long new)
 }
 EXPORT_SYMBOL(atomic64_xchg);
 
-long long atomic64_fetch_add_unless(atomic64_t *v, long long a, long long u)
+int atomic64_add_unless(atomic64_t *v, long long a, long long u)
 {
 	unsigned long flags;
 	raw_spinlock_t *lock = lock_addr(v);
-	long long val;
+	int ret = 0;
 
 	raw_spin_lock_irqsave(lock, flags);
-	val = v->counter;
-	if (val != u)
+	if (v->counter != u) {
 		v->counter += a;
+		ret = 1;
+	}
 	raw_spin_unlock_irqrestore(lock, flags);
-
-	return val;
+	return ret;
 }
-EXPORT_SYMBOL(atomic64_fetch_add_unless);
+EXPORT_SYMBOL(atomic64_add_unless);

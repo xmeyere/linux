@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 WITH Linux-syscall-note */
 /* fou.h - FOU Interface */
 
 #ifndef _UAPI_LINUX_FOU_H
@@ -26,7 +25,6 @@ enum {
 	FOU_CMD_UNSPEC,
 	FOU_CMD_ADD,
 	FOU_CMD_DEL,
-	FOU_CMD_GET,
 
 	__FOU_CMD_MAX,
 };

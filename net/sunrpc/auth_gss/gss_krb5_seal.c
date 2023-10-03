@@ -63,7 +63,6 @@
 #include <linux/sunrpc/gss_krb5.h>
 #include <linux/random.h>
 #include <linux/crypto.h>
-#include <linux/atomic.h>
 
 #if IS_ENABLED(CONFIG_SUNRPC_DEBUG)
 # define RPCDBG_FACILITY        RPCDBG_AUTH
@@ -178,7 +177,6 @@ gss_get_mic_v2(struct krb5_ctx *ctx, struct xdr_buf *text,
 	u64 seq_send;
 	u8 *cksumkey;
 	unsigned int cksum_usage;
-	__be64 seq_send_be64;
 
 	dprintk("RPC:       %s\n", __func__);
 
@@ -189,9 +187,7 @@ gss_get_mic_v2(struct krb5_ctx *ctx, struct xdr_buf *text,
 	spin_lock(&krb5_seq_lock);
 	seq_send = ctx->seq_send64++;
 	spin_unlock(&krb5_seq_lock);
-
-	seq_send_be64 = cpu_to_be64(seq_send);
-	memcpy(krb5_hdr + 8, (char *) &seq_send_be64, 8);
+	*((__be64 *)(krb5_hdr + 8)) = cpu_to_be64(seq_send);
 
 	if (ctx->initiate) {
 		cksumkey = ctx->initiator_sign;
@@ -230,3 +226,4 @@ gss_get_mic_kerberos(struct gss_ctx *gss_ctx, struct xdr_buf *text,
 		return gss_get_mic_v2(ctx, text, token);
 	}
 }
+

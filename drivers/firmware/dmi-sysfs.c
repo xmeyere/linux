@@ -25,7 +25,6 @@
 #include <linux/slab.h>
 #include <linux/list.h>
 #include <linux/io.h>
-#include <asm/dmi.h>
 
 #define MAX_ENTRY_TYPE 255 /* Most of these aren't used, but we consider
 			      the top entry type is only 8 bits */
@@ -381,7 +380,7 @@ static ssize_t dmi_sel_raw_read_phys32(struct dmi_sysfs_entry *entry,
 	u8 __iomem *mapped;
 	ssize_t wrote = 0;
 
-	mapped = dmi_remap(sel->access_method_address, sel->area_length);
+	mapped = ioremap(sel->access_method_address, sel->area_length);
 	if (!mapped)
 		return -EIO;
 
@@ -391,7 +390,7 @@ static ssize_t dmi_sel_raw_read_phys32(struct dmi_sysfs_entry *entry,
 		wrote++;
 	}
 
-	dmi_unmap(mapped);
+	iounmap(mapped);
 	return wrote;
 }
 
@@ -567,6 +566,7 @@ static struct kobj_type dmi_sysfs_entry_ktype = {
 	.default_attrs = dmi_sysfs_entry_attrs,
 };
 
+static struct kobject *dmi_kobj;
 static struct kset *dmi_kset;
 
 /* Global count of all instances seen.  Only for setup */
@@ -602,7 +602,7 @@ static void __init dmi_sysfs_register_handle(const struct dmi_header *dh,
 				    "%d-%d", dh->type, entry->instance);
 
 	if (*ret) {
-		kobject_put(&entry->kobj);
+		kfree(entry);
 		return;
 	}
 
@@ -648,20 +648,17 @@ static void cleanup_entry_list(void)
 
 static int __init dmi_sysfs_init(void)
 {
-	int error;
+	int error = -ENOMEM;
 	int val;
 
-	if (!dmi_kobj) {
-		pr_debug("dmi-sysfs: dmi entry is absent.\n");
-		error = -ENODATA;
+	/* Set up our directory */
+	dmi_kobj = kobject_create_and_add("dmi", firmware_kobj);
+	if (!dmi_kobj)
 		goto err;
-	}
 
 	dmi_kset = kset_create_and_add("entries", NULL, dmi_kobj);
-	if (!dmi_kset) {
-		error = -ENOMEM;
+	if (!dmi_kset)
 		goto err;
-	}
 
 	val = 0;
 	error = dmi_walk(dmi_sysfs_register_handle, &val);
@@ -678,6 +675,7 @@ static int __init dmi_sysfs_init(void)
 err:
 	cleanup_entry_list();
 	kset_unregister(dmi_kset);
+	kobject_put(dmi_kobj);
 	return error;
 }
 
@@ -687,6 +685,8 @@ static void __exit dmi_sysfs_exit(void)
 	pr_debug("dmi-sysfs: unloading.\n");
 	cleanup_entry_list();
 	kset_unregister(dmi_kset);
+	kobject_del(dmi_kobj);
+	kobject_put(dmi_kobj);
 }
 
 module_init(dmi_sysfs_init);

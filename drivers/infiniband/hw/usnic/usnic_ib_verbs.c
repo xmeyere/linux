@@ -1,24 +1,9 @@
 /*
  * Copyright (c) 2013, Cisco Systems, Inc. All rights reserved.
  *
- * This software is available to you under a choice of one of two
- * licenses.  You may choose to be licensed under the terms of the GNU
- * General Public License (GPL) Version 2, available from the file
- * COPYING in the main directory of this source tree, or the
- * BSD license below:
- *
- *     Redistribution and use in source and binary forms, with or
- *     without modification, are permitted provided that the following
- *     conditions are met:
- *
- *      - Redistributions of source code must retain the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer.
- *
- *      - Redistributions in binary form must reproduce the above
- *        copyright notice, this list of conditions and the following
- *        disclaimer in the documentation and/or other materials
- *        provided with the distribution.
+ * This program is free software; you may redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
  * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
@@ -42,7 +27,6 @@
 #include "usnic_ib.h"
 #include "usnic_common_util.h"
 #include "usnic_ib_qp_grp.h"
-#include "usnic_ib_verbs.h"
 #include "usnic_fwd.h"
 #include "usnic_log.h"
 #include "usnic_uiom.h"
@@ -50,33 +34,9 @@
 
 #define USNIC_DEFAULT_TRANSPORT USNIC_TRANSPORT_ROCE_CUSTOM
 
-const struct usnic_vnic_res_spec min_transport_spec[USNIC_TRANSPORT_MAX] = {
-	{ /*USNIC_TRANSPORT_UNKNOWN*/
-		.resources = {
-			{.type = USNIC_VNIC_RES_TYPE_EOL,	.cnt = 0,},
-		},
-	},
-	{ /*USNIC_TRANSPORT_ROCE_CUSTOM*/
-		.resources = {
-			{.type = USNIC_VNIC_RES_TYPE_WQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_RQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_CQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_EOL,	.cnt = 0,},
-		},
-	},
-	{ /*USNIC_TRANSPORT_IPV4_UDP*/
-		.resources = {
-			{.type = USNIC_VNIC_RES_TYPE_WQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_RQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_CQ,	.cnt = 1,},
-			{.type = USNIC_VNIC_RES_TYPE_EOL,	.cnt = 0,},
-		},
-	},
-};
-
 static void usnic_ib_fw_string_to_u64(char *fw_ver_str, u64 *fw_ver)
 {
-	*fw_ver = *((u64 *)fw_ver_str);
+	*fw_ver = (u64) *fw_ver_str;
 }
 
 static int usnic_ib_fill_create_qp_resp(struct usnic_ib_qp_grp *qp_grp,
@@ -112,12 +72,12 @@ static int usnic_ib_fill_create_qp_resp(struct usnic_ib_qp_grp *qp_grp,
 	resp.bar_len = bar->len;
 
 	chunk = usnic_ib_qp_grp_get_chunk(qp_grp, USNIC_VNIC_RES_TYPE_RQ);
-	if (IS_ERR(chunk)) {
+	if (IS_ERR_OR_NULL(chunk)) {
 		usnic_err("Failed to get chunk %s for qp_grp %d with err %ld\n",
 			usnic_vnic_res_type_to_str(USNIC_VNIC_RES_TYPE_RQ),
 			qp_grp->grp_id,
 			PTR_ERR(chunk));
-		return PTR_ERR(chunk);
+		return chunk ? PTR_ERR(chunk) : -ENOMEM;
 	}
 
 	WARN_ON(chunk->type != USNIC_VNIC_RES_TYPE_RQ);
@@ -126,12 +86,12 @@ static int usnic_ib_fill_create_qp_resp(struct usnic_ib_qp_grp *qp_grp,
 		resp.rq_idx[i] = chunk->res[i]->vnic_idx;
 
 	chunk = usnic_ib_qp_grp_get_chunk(qp_grp, USNIC_VNIC_RES_TYPE_WQ);
-	if (IS_ERR(chunk)) {
+	if (IS_ERR_OR_NULL(chunk)) {
 		usnic_err("Failed to get chunk %s for qp_grp %d with err %ld\n",
 			usnic_vnic_res_type_to_str(USNIC_VNIC_RES_TYPE_WQ),
 			qp_grp->grp_id,
 			PTR_ERR(chunk));
-		return PTR_ERR(chunk);
+		return chunk ? PTR_ERR(chunk) : -ENOMEM;
 	}
 
 	WARN_ON(chunk->type != USNIC_VNIC_RES_TYPE_WQ);
@@ -140,12 +100,12 @@ static int usnic_ib_fill_create_qp_resp(struct usnic_ib_qp_grp *qp_grp,
 		resp.wq_idx[i] = chunk->res[i]->vnic_idx;
 
 	chunk = usnic_ib_qp_grp_get_chunk(qp_grp, USNIC_VNIC_RES_TYPE_CQ);
-	if (IS_ERR(chunk)) {
+	if (IS_ERR_OR_NULL(chunk)) {
 		usnic_err("Failed to get chunk %s for qp_grp %d with err %ld\n",
 			usnic_vnic_res_type_to_str(USNIC_VNIC_RES_TYPE_CQ),
 			qp_grp->grp_id,
 			PTR_ERR(chunk));
-		return PTR_ERR(chunk);
+		return chunk ? PTR_ERR(chunk) : -ENOMEM;
 	}
 
 	WARN_ON(chunk->type != USNIC_VNIC_RES_TYPE_CQ);
@@ -176,7 +136,7 @@ find_free_vf_and_create_qp_grp(struct usnic_ib_dev *us_ibdev,
 	struct usnic_vnic *vnic;
 	struct usnic_ib_qp_grp *qp_grp;
 	struct device *dev, **dev_list;
-	int i;
+	int i, found = 0;
 
 	BUG_ON(!mutex_is_locked(&us_ibdev->usdev_lock));
 
@@ -188,8 +148,6 @@ find_free_vf_and_create_qp_grp(struct usnic_ib_dev *us_ibdev,
 	if (usnic_ib_share_vf) {
 		/* Try to find resouces on a used vf which is in pd */
 		dev_list = usnic_uiom_get_dev_list(pd->umem_pd);
-		if (IS_ERR(dev_list))
-			return ERR_CAST(dev_list);
 		for (i = 0; dev_list[i]; i++) {
 			dev = dev_list[i];
 			vf = pci_get_drvdata(to_pci_dev(dev));
@@ -200,47 +158,43 @@ find_free_vf_and_create_qp_grp(struct usnic_ib_dev *us_ibdev,
 						us_ibdev->ib_dev.name,
 						pci_name(usnic_vnic_get_pdev(
 									vnic)));
-				qp_grp = usnic_ib_qp_grp_create(us_ibdev->ufdev,
-								vf, pd,
-								res_spec,
-								trans_spec);
-
-				spin_unlock(&vf->lock);
-				goto qp_grp_check;
+				found = 1;
+				break;
 			}
 			spin_unlock(&vf->lock);
 
 		}
 		usnic_uiom_free_dev_list(dev_list);
-		dev_list = NULL;
 	}
 
-	/* Try to find resources on an unused vf */
-	list_for_each_entry(vf, &us_ibdev->vf_dev_list, link) {
-		spin_lock(&vf->lock);
-		vnic = vf->vnic;
-		if (vf->qp_grp_ref_cnt == 0 &&
-		    usnic_vnic_check_room(vnic, res_spec) == 0) {
-			qp_grp = usnic_ib_qp_grp_create(us_ibdev->ufdev, vf,
-							pd, res_spec,
-							trans_spec);
-
+	if (!found) {
+		/* Try to find resources on an unused vf */
+		list_for_each_entry(vf, &us_ibdev->vf_dev_list, link) {
+			spin_lock(&vf->lock);
+			vnic = vf->vnic;
+			if (vf->qp_grp_ref_cnt == 0 &&
+				usnic_vnic_check_room(vnic, res_spec) == 0) {
+				found = 1;
+				break;
+			}
 			spin_unlock(&vf->lock);
-			goto qp_grp_check;
 		}
-		spin_unlock(&vf->lock);
 	}
 
-	usnic_info("No free qp grp found on %s\n", us_ibdev->ib_dev.name);
-	return ERR_PTR(-ENOMEM);
+	if (!found) {
+		usnic_info("No free qp grp found on %s\n",
+				us_ibdev->ib_dev.name);
+		return ERR_PTR(-ENOMEM);
+	}
 
-qp_grp_check:
+	qp_grp = usnic_ib_qp_grp_create(us_ibdev->ufdev, vf, pd, res_spec,
+						trans_spec);
+	spin_unlock(&vf->lock);
 	if (IS_ERR_OR_NULL(qp_grp)) {
 		usnic_err("Failed to allocate qp_grp\n");
-		if (usnic_ib_share_vf)
-			usnic_uiom_free_dev_list(dev_list);
 		return ERR_PTR(qp_grp ? PTR_ERR(qp_grp) : -ENOMEM);
 	}
+
 	return qp_grp;
 }
 
@@ -253,6 +207,27 @@ static void qp_grp_destroy(struct usnic_ib_qp_grp *qp_grp)
 	spin_lock(&vf->lock);
 	usnic_ib_qp_grp_destroy(qp_grp);
 	spin_unlock(&vf->lock);
+}
+
+static void eth_speed_to_ib_speed(int speed, u8 *active_speed,
+					u8 *active_width)
+{
+	if (speed <= 10000) {
+		*active_width = IB_WIDTH_1X;
+		*active_speed = IB_SPEED_FDR10;
+	} else if (speed <= 20000) {
+		*active_width = IB_WIDTH_4X;
+		*active_speed = IB_SPEED_DDR;
+	} else if (speed <= 30000) {
+		*active_width = IB_WIDTH_4X;
+		*active_speed = IB_SPEED_QDR;
+	} else if (speed <= 40000) {
+		*active_width = IB_WIDTH_4X;
+		*active_speed = IB_SPEED_FDR10;
+	} else {
+		*active_width = IB_WIDTH_4X;
+		*active_speed = IB_SPEED_EDR;
+	}
 }
 
 static int create_qp_validate_user_data(struct usnic_ib_create_qp_cmd cmd)
@@ -273,20 +248,18 @@ enum rdma_link_layer usnic_ib_port_link_layer(struct ib_device *device,
 }
 
 int usnic_ib_query_device(struct ib_device *ibdev,
-			  struct ib_device_attr *props,
-			  struct ib_udata *uhw)
+				struct ib_device_attr *props)
 {
 	struct usnic_ib_dev *us_ibdev = to_usdev(ibdev);
 	union ib_gid gid;
 	struct ethtool_drvinfo info;
+	struct ethtool_cmd cmd;
 	int qp_per_vf;
 
 	usnic_dbg("\n");
-	if (uhw->inlen || uhw->outlen)
-		return -EINVAL;
-
 	mutex_lock(&us_ibdev->usdev_lock);
 	us_ibdev->netdev->ethtool_ops->get_drvinfo(us_ibdev->netdev, &info);
+	us_ibdev->netdev->ethtool_ops->get_settings(us_ibdev->netdev, &cmd);
 	memset(props, 0, sizeof(*props));
 	usnic_mac_ip_to_gid(us_ibdev->ufdev->mac, us_ibdev->ufdev->inaddr,
 			&gid.raw[0]);
@@ -301,11 +274,11 @@ int usnic_ib_query_device(struct ib_device *ibdev,
 	qp_per_vf = max(us_ibdev->vf_res_cnt[USNIC_VNIC_RES_TYPE_WQ],
 			us_ibdev->vf_res_cnt[USNIC_VNIC_RES_TYPE_RQ]);
 	props->max_qp = qp_per_vf *
-		kref_read(&us_ibdev->vf_cnt);
+		atomic_read(&us_ibdev->vf_cnt.refcount);
 	props->device_cap_flags = IB_DEVICE_PORT_ACTIVE_EVENT |
 		IB_DEVICE_SYS_IMAGE_GUID | IB_DEVICE_BLOCK_MULTICAST_LOOPBACK;
 	props->max_cq = us_ibdev->vf_res_cnt[USNIC_VNIC_RES_TYPE_CQ] *
-		kref_read(&us_ibdev->vf_cnt);
+		atomic_read(&us_ibdev->vf_cnt.refcount);
 	props->max_pd = USNIC_UIOM_MAX_PD_CNT;
 	props->max_mr = USNIC_UIOM_MAX_MR_CNT;
 	props->local_ca_ack_delay = 0;
@@ -334,20 +307,13 @@ int usnic_ib_query_port(struct ib_device *ibdev, u8 port,
 				struct ib_port_attr *props)
 {
 	struct usnic_ib_dev *us_ibdev = to_usdev(ibdev);
+	struct ethtool_cmd cmd;
 
 	usnic_dbg("\n");
 
-	if (ib_get_eth_speed(ibdev, port, &props->active_speed,
-			     &props->active_width))
-		return -EINVAL;
-
-	/*
-	 * usdev_lock is acquired after (and not before) ib_get_eth_speed call
-	 * because acquiring rtnl_lock in ib_get_eth_speed, while holding
-	 * usdev_lock could lead to a deadlock.
-	 */
 	mutex_lock(&us_ibdev->usdev_lock);
-	/* props being zeroed by the caller, avoid zeroing it here */
+	us_ibdev->netdev->ethtool_ops->get_settings(us_ibdev->netdev, &cmd);
+	memset(props, 0, sizeof(*props));
 
 	props->lid = 0;
 	props->lmc = 1;
@@ -370,6 +336,8 @@ int usnic_ib_query_port(struct ib_device *ibdev, u8 port,
 	props->pkey_tbl_len = 1;
 	props->bad_pkey_cntr = 0;
 	props->qkey_viol_cntr = 0;
+	eth_speed_to_ib_speed(cmd.speed, &props->active_speed,
+				&props->active_width);
 	props->max_mtu = IB_MTU_4096;
 	props->active_mtu = iboe_get_mtu(us_ibdev->ufdev->mtu);
 	/* Userspace will adjust for hdrs */
@@ -437,20 +405,10 @@ int usnic_ib_query_gid(struct ib_device *ibdev, u8 port, int index,
 	return 0;
 }
 
-struct net_device *usnic_get_netdev(struct ib_device *device, u8 port_num)
-{
-	struct usnic_ib_dev *us_ibdev = to_usdev(device);
-
-	if (us_ibdev->netdev)
-		dev_hold(us_ibdev->netdev);
-
-	return us_ibdev->netdev;
-}
-
 int usnic_ib_query_pkey(struct ib_device *ibdev, u8 port, u16 index,
 				u16 *pkey)
 {
-	if (index > 0)
+	if (index > 1)
 		return -EINVAL;
 
 	*pkey = 0xffff;
@@ -594,35 +552,31 @@ int usnic_ib_modify_qp(struct ib_qp *ibqp, struct ib_qp_attr *attr,
 
 	qp_grp = to_uqp_grp(ibqp);
 
+	/* TODO: Future Support All States */
 	mutex_lock(&qp_grp->vf->pf->usdev_lock);
-	if ((attr_mask & IB_QP_PORT) && attr->port_num != 1) {
-		/* usnic devices only have one port */
-		status = -EINVAL;
-		goto out_unlock;
-	}
-	if (attr_mask & IB_QP_STATE) {
-		status = usnic_ib_qp_grp_modify(qp_grp, attr->qp_state, NULL);
+	if ((attr_mask & IB_QP_STATE) && attr->qp_state == IB_QPS_INIT) {
+		status = usnic_ib_qp_grp_modify(qp_grp, IB_QPS_INIT, NULL);
+	} else if ((attr_mask & IB_QP_STATE) && attr->qp_state == IB_QPS_RTR) {
+		status = usnic_ib_qp_grp_modify(qp_grp, IB_QPS_RTR, NULL);
+	} else if ((attr_mask & IB_QP_STATE) && attr->qp_state == IB_QPS_RTS) {
+		status = usnic_ib_qp_grp_modify(qp_grp, IB_QPS_RTS, NULL);
 	} else {
-		usnic_err("Unhandled request, attr_mask=0x%x\n", attr_mask);
+		usnic_err("Unexpected combination mask: %u state: %u\n",
+				attr_mask & IB_QP_STATE, attr->qp_state);
 		status = -EINVAL;
 	}
 
-out_unlock:
 	mutex_unlock(&qp_grp->vf->pf->usdev_lock);
 	return status;
 }
 
-struct ib_cq *usnic_ib_create_cq(struct ib_device *ibdev,
-				 const struct ib_cq_init_attr *attr,
-				 struct ib_ucontext *context,
-				 struct ib_udata *udata)
+struct ib_cq *usnic_ib_create_cq(struct ib_device *ibdev, int entries,
+					int vector, struct ib_ucontext *context,
+					struct ib_udata *udata)
 {
 	struct ib_cq *cq;
 
 	usnic_dbg("\n");
-	if (attr->flags)
-		return ERR_PTR(-EINVAL);
-
 	cq = kzalloc(sizeof(*cq), GFP_KERNEL);
 	if (!cq)
 		return ERR_PTR(-EBUSY);
@@ -648,8 +602,8 @@ struct ib_mr *usnic_ib_reg_mr(struct ib_pd *pd, u64 start, u64 length,
 			virt_addr, length);
 
 	mr = kzalloc(sizeof(*mr), GFP_KERNEL);
-	if (!mr)
-		return ERR_PTR(-ENOMEM);
+	if (IS_ERR_OR_NULL(mr))
+		return ERR_PTR(mr ? PTR_ERR(mr) : -ENOMEM);
 
 	mr->umem = usnic_uiom_reg_get(to_upd(pd)->umem_pd, start, length,
 					access_flags, 0);
@@ -672,7 +626,7 @@ int usnic_ib_dereg_mr(struct ib_mr *ibmr)
 
 	usnic_dbg("va 0x%lx length 0x%zx\n", mr->umem->va, mr->umem->length);
 
-	usnic_uiom_reg_release(mr->umem, ibmr->uobject->context);
+	usnic_uiom_reg_release(mr->umem, ibmr->pd->uobject->context->closing);
 	kfree(mr);
 	return 0;
 }
@@ -763,9 +717,7 @@ int usnic_ib_mmap(struct ib_ucontext *context,
 
 /* In ib callbacks section -  Start of stub funcs */
 struct ib_ah *usnic_ib_create_ah(struct ib_pd *pd,
-				 struct rdma_ah_attr *ah_attr,
-				 struct ib_udata *udata)
-
+					struct ib_ah_attr *ah_attr)
 {
 	usnic_dbg("\n");
 	return ERR_PTR(-EPERM);
@@ -777,15 +729,15 @@ int usnic_ib_destroy_ah(struct ib_ah *ah)
 	return -EINVAL;
 }
 
-int usnic_ib_post_send(struct ib_qp *ibqp, const struct ib_send_wr *wr,
-		       const struct ib_send_wr **bad_wr)
+int usnic_ib_post_send(struct ib_qp *ibqp, struct ib_send_wr *wr,
+				struct ib_send_wr **bad_wr)
 {
 	usnic_dbg("\n");
 	return -EINVAL;
 }
 
-int usnic_ib_post_recv(struct ib_qp *ibqp, const struct ib_recv_wr *wr,
-		       const struct ib_recv_wr **bad_wr)
+int usnic_ib_post_recv(struct ib_qp *ibqp, struct ib_recv_wr *wr,
+				struct ib_recv_wr **bad_wr)
 {
 	usnic_dbg("\n");
 	return -EINVAL;

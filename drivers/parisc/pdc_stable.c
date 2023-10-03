@@ -68,7 +68,7 @@
 
 #include <asm/pdc.h>
 #include <asm/page.h>
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/hardware.h>
 
 #define PDCS_VERSION	"0.30"
@@ -333,11 +333,11 @@ pdcspath_hwpath_write(struct pdcspath_entry *entry, const char *buf, size_t coun
 	
 	/* Update the symlink to the real device */
 	sysfs_remove_link(&entry->kobj, "device");
-	write_unlock(&entry->rw_lock);
-
 	ret = sysfs_create_link(&entry->kobj, &entry->dev->kobj, "device");
 	WARN_ON(ret);
 
+	write_unlock(&entry->rw_lock);
+	
 	printk(KERN_INFO PDCS_PREFIX ": changed \"%s\" path to \"%s\"\n",
 		entry->name, buf);
 	
@@ -954,7 +954,7 @@ static struct attribute *pdcs_subsys_attrs[] = {
 	NULL,
 };
 
-static const struct attribute_group pdcs_attr_group = {
+static struct attribute_group pdcs_attr_group = {
 	.attrs = pdcs_subsys_attrs,
 };
 
@@ -992,15 +992,12 @@ pdcs_register_pathentries(void)
 		entry->kobj.kset = paths_kset;
 		err = kobject_init_and_add(&entry->kobj, &ktype_pdcspath, NULL,
 					   "%s", entry->name);
-		if (err) {
-			kobject_put(&entry->kobj);
+		if (err)
 			return err;
-		}
 
 		/* kobject is now registered */
 		write_lock(&entry->rw_lock);
 		entry->ready = 2;
-		write_unlock(&entry->rw_lock);
 		
 		/* Add a nice symlink to the real device */
 		if (entry->dev) {
@@ -1008,6 +1005,7 @@ pdcs_register_pathentries(void)
 			WARN_ON(err);
 		}
 
+		write_unlock(&entry->rw_lock);
 		kobject_uevent(&entry->kobj, KOBJ_ADD);
 	}
 	

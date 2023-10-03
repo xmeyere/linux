@@ -12,7 +12,6 @@
 #include <linux/sysfs.h>
 #include <linux/spi/spi.h>
 #include <linux/regulator/consumer.h>
-#include <linux/gpio/consumer.h>
 #include <linux/err.h>
 #include <linux/module.h>
 #include <linux/delay.h>
@@ -269,23 +268,11 @@ struct ad9523_state {
 	struct regulator		*reg;
 	struct ad9523_platform_data	*pdata;
 	struct iio_chan_spec		ad9523_channels[AD9523_NUM_CHAN];
-	struct gpio_desc		*pwrdown_gpio;
-	struct gpio_desc		*reset_gpio;
-	struct gpio_desc		*sync_gpio;
 
 	unsigned long		vcxo_freq;
 	unsigned long		vco_freq;
 	unsigned long		vco_out_freq[AD9523_NUM_CLK_SRC];
 	unsigned char		vco_out_map[AD9523_NUM_CHAN_ALT_CLK_SRC];
-
-	/*
-	 * Lock for accessing device registers. Some operations require
-	 * multiple consecutive R/W operations, during which the device
-	 * shouldn't be interrupted.  The buffers are also shared across
-	 * all operations so need to be protected on stand alone reads and
-	 * writes.
-	 */
-	struct mutex		lock;
 
 	/*
 	 * DMA (thus cache coherency maintenance) requires the
@@ -297,7 +284,7 @@ struct ad9523_state {
 	} data[2] ____cacheline_aligned;
 };
 
-static int ad9523_read(struct iio_dev *indio_dev, unsigned int addr)
+static int ad9523_read(struct iio_dev *indio_dev, unsigned addr)
 {
 	struct ad9523_state *st = iio_priv(indio_dev);
 	int ret;
@@ -331,8 +318,7 @@ static int ad9523_read(struct iio_dev *indio_dev, unsigned int addr)
 	return ret;
 };
 
-static int ad9523_write(struct iio_dev *indio_dev,
-		unsigned int addr, unsigned int val)
+static int ad9523_write(struct iio_dev *indio_dev, unsigned addr, unsigned val)
 {
 	struct ad9523_state *st = iio_priv(indio_dev);
 	int ret;
@@ -365,11 +351,11 @@ static int ad9523_io_update(struct iio_dev *indio_dev)
 }
 
 static int ad9523_vco_out_map(struct iio_dev *indio_dev,
-			      unsigned int ch, unsigned int out)
+			      unsigned ch, unsigned out)
 {
 	struct ad9523_state *st = iio_priv(indio_dev);
 	int ret;
-	unsigned int mask;
+	unsigned mask;
 
 	switch (ch) {
 	case 0 ... 3:
@@ -419,7 +405,7 @@ static int ad9523_vco_out_map(struct iio_dev *indio_dev,
 }
 
 static int ad9523_set_clock_provider(struct iio_dev *indio_dev,
-			      unsigned int ch, unsigned long freq)
+			      unsigned ch, unsigned long freq)
 {
 	struct ad9523_state *st = iio_priv(indio_dev);
 	long tmp1, tmp2;
@@ -513,7 +499,6 @@ static ssize_t ad9523_store(struct device *dev,
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
-	struct ad9523_state *st = iio_priv(indio_dev);
 	bool state;
 	int ret;
 
@@ -522,9 +507,9 @@ static ssize_t ad9523_store(struct device *dev,
 		return ret;
 
 	if (!state)
-		return len;
+		return 0;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	switch ((u32)this_attr->address) {
 	case AD9523_SYNC:
 		ret = ad9523_sync(indio_dev);
@@ -535,7 +520,7 @@ static ssize_t ad9523_store(struct device *dev,
 	default:
 		ret = -ENODEV;
 	}
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret ? ret : len;
 }
@@ -546,16 +531,15 @@ static ssize_t ad9523_show(struct device *dev,
 {
 	struct iio_dev *indio_dev = dev_to_iio_dev(dev);
 	struct iio_dev_attr *this_attr = to_iio_dev_attr(attr);
-	struct ad9523_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	ret = ad9523_read(indio_dev, AD9523_READBACK_0);
 	if (ret >= 0) {
 		ret = sprintf(buf, "%d\n", !!(ret & (1 <<
 			(u32)this_attr->address)));
 	}
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
 }
@@ -635,12 +619,12 @@ static int ad9523_read_raw(struct iio_dev *indio_dev,
 			   long m)
 {
 	struct ad9523_state *st = iio_priv(indio_dev);
-	unsigned int code;
+	unsigned code;
 	int ret;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	ret = ad9523_read(indio_dev, AD9523_CHANNEL_CLOCK_DIST(chan->channel));
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	if (ret < 0)
 		return ret;
@@ -657,7 +641,7 @@ static int ad9523_read_raw(struct iio_dev *indio_dev,
 		code = (AD9523_CLK_DIST_DIV_PHASE_REV(ret) * 3141592) /
 			AD9523_CLK_DIST_DIV_REV(ret);
 		*val = code / 1000000;
-		*val2 = code % 1000000;
+		*val2 = (code % 1000000) * 10;
 		return IIO_VAL_INT_PLUS_MICRO;
 	default:
 		return -EINVAL;
@@ -671,10 +655,10 @@ static int ad9523_write_raw(struct iio_dev *indio_dev,
 			    long mask)
 {
 	struct ad9523_state *st = iio_priv(indio_dev);
-	unsigned int reg;
+	unsigned reg;
 	int ret, tmp, code;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	ret = ad9523_read(indio_dev, AD9523_CHANNEL_CLOCK_DIST(chan->channel));
 	if (ret < 0)
 		goto out;
@@ -720,18 +704,17 @@ static int ad9523_write_raw(struct iio_dev *indio_dev,
 
 	ad9523_io_update(indio_dev);
 out:
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 	return ret;
 }
 
 static int ad9523_reg_access(struct iio_dev *indio_dev,
-			      unsigned int reg, unsigned int writeval,
-			      unsigned int *readval)
+			      unsigned reg, unsigned writeval,
+			      unsigned *readval)
 {
-	struct ad9523_state *st = iio_priv(indio_dev);
 	int ret;
 
-	mutex_lock(&st->lock);
+	mutex_lock(&indio_dev->mlock);
 	if (readval == NULL) {
 		ret = ad9523_write(indio_dev, reg | AD9523_R1B, writeval);
 		ad9523_io_update(indio_dev);
@@ -744,7 +727,7 @@ static int ad9523_reg_access(struct iio_dev *indio_dev,
 	}
 
 out_unlock:
-	mutex_unlock(&st->lock);
+	mutex_unlock(&indio_dev->mlock);
 
 	return ret;
 }
@@ -754,6 +737,7 @@ static const struct iio_info ad9523_info = {
 	.write_raw = &ad9523_write_raw,
 	.debugfs_reg_access = &ad9523_reg_access,
 	.attrs = &ad9523_attribute_group,
+	.driver_module = THIS_MODULE,
 };
 
 static int ad9523_setup(struct iio_dev *indio_dev)
@@ -983,39 +967,11 @@ static int ad9523_probe(struct spi_device *spi)
 
 	st = iio_priv(indio_dev);
 
-	mutex_init(&st->lock);
-
 	st->reg = devm_regulator_get(&spi->dev, "vcc");
 	if (!IS_ERR(st->reg)) {
 		ret = regulator_enable(st->reg);
 		if (ret)
 			return ret;
-	}
-
-	st->pwrdown_gpio = devm_gpiod_get_optional(&spi->dev, "powerdown",
-		GPIOD_OUT_HIGH);
-	if (IS_ERR(st->pwrdown_gpio)) {
-		ret = PTR_ERR(st->pwrdown_gpio);
-		goto error_disable_reg;
-	}
-
-	st->reset_gpio = devm_gpiod_get_optional(&spi->dev, "reset",
-		GPIOD_OUT_LOW);
-	if (IS_ERR(st->reset_gpio)) {
-		ret = PTR_ERR(st->reset_gpio);
-		goto error_disable_reg;
-	}
-
-	if (st->reset_gpio) {
-		udelay(1);
-		gpiod_direction_output(st->reset_gpio, 1);
-	}
-
-	st->sync_gpio = devm_gpiod_get_optional(&spi->dev, "sync",
-		GPIOD_OUT_HIGH);
-	if (IS_ERR(st->sync_gpio)) {
-		ret = PTR_ERR(st->sync_gpio);
-		goto error_disable_reg;
 	}
 
 	spi_set_drvdata(spi, indio_dev);
@@ -1071,6 +1027,7 @@ MODULE_DEVICE_TABLE(spi, ad9523_id);
 static struct spi_driver ad9523_driver = {
 	.driver = {
 		.name	= "ad9523",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= ad9523_probe,
 	.remove		= ad9523_remove,

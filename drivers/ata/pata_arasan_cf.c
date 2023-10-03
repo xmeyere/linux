@@ -4,7 +4,7 @@
  * Arasan Compact Flash host controller source file
  *
  * Copyright (C) 2011 ST Microelectronics
- * Viresh Kumar <vireshk@kernel.org>
+ * Viresh Kumar <viresh.linux@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -565,7 +565,7 @@ chan_request_fail:
 	qc->ap->hsm_task_state = HSM_ST_ERR;
 
 	cf_ctrl_reset(acdev);
-	spin_unlock_irqrestore(&acdev->host->lock, flags);
+	spin_unlock_irqrestore(qc->ap->lock, flags);
 sff_intr:
 	dma_complete(acdev);
 }
@@ -796,7 +796,7 @@ static int arasan_cf_probe(struct platform_device *pdev)
 	struct resource *res;
 	u32 quirk;
 	irq_handler_t irq_handler = NULL;
-	int ret;
+	int ret = 0;
 
 	res = platform_get_resource(pdev, IORESOURCE_MEM, 0);
 	if (!res)
@@ -809,27 +809,22 @@ static int arasan_cf_probe(struct platform_device *pdev)
 	}
 
 	acdev = devm_kzalloc(&pdev->dev, sizeof(*acdev), GFP_KERNEL);
-	if (!acdev)
+	if (!acdev) {
+		dev_warn(&pdev->dev, "kzalloc fail\n");
 		return -ENOMEM;
+	}
 
 	if (pdata)
 		quirk = pdata->quirk;
 	else
 		quirk = CF_BROKEN_UDMA; /* as it is on spear1340 */
 
-	/*
-	 * If there's an error getting IRQ (or we do get IRQ0),
-	 * support only PIO
-	 */
-	ret = platform_get_irq(pdev, 0);
-	if (ret > 0) {
-		acdev->irq = ret;
+	/* if irq is 0, support only PIO */
+	acdev->irq = platform_get_irq(pdev, 0);
+	if (acdev->irq)
 		irq_handler = arasan_cf_interrupt;
-	} else	if (ret == -EPROBE_DEFER) {
-		return ret;
-	} else	{
+	else
 		quirk |= CF_BROKEN_MWDMA | CF_BROKEN_UDMA;
-	}
 
 	acdev->pbase = res->start;
 	acdev->vbase = devm_ioremap_nocache(&pdev->dev, res->start,
@@ -839,7 +834,7 @@ static int arasan_cf_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
-	acdev->clk = devm_clk_get(&pdev->dev, NULL);
+	acdev->clk = clk_get(&pdev->dev, NULL);
 	if (IS_ERR(acdev->clk)) {
 		dev_warn(&pdev->dev, "Clock not found\n");
 		return PTR_ERR(acdev->clk);
@@ -848,8 +843,9 @@ static int arasan_cf_probe(struct platform_device *pdev)
 	/* allocate host */
 	host = ata_host_alloc(&pdev->dev, 1);
 	if (!host) {
+		ret = -ENOMEM;
 		dev_warn(&pdev->dev, "alloc host fail\n");
-		return -ENOMEM;
+		goto free_clk;
 	}
 
 	ap = host->ports[0];
@@ -898,7 +894,7 @@ static int arasan_cf_probe(struct platform_device *pdev)
 
 	ret = cf_init(acdev);
 	if (ret)
-		return ret;
+		goto free_clk;
 
 	cf_card_detect(acdev, 0);
 
@@ -908,7 +904,8 @@ static int arasan_cf_probe(struct platform_device *pdev)
 		return 0;
 
 	cf_exit(acdev);
-
+free_clk:
+	clk_put(acdev->clk);
 	return ret;
 }
 
@@ -919,6 +916,7 @@ static int arasan_cf_remove(struct platform_device *pdev)
 
 	ata_host_detach(host);
 	cf_exit(acdev);
+	clk_put(acdev->clk);
 
 	return 0;
 }
@@ -970,7 +968,7 @@ static struct platform_driver arasan_cf_driver = {
 
 module_platform_driver(arasan_cf_driver);
 
-MODULE_AUTHOR("Viresh Kumar <vireshk@kernel.org>");
+MODULE_AUTHOR("Viresh Kumar <viresh.linux@gmail.com>");
 MODULE_DESCRIPTION("Arasan ATA Compact Flash driver");
 MODULE_LICENSE("GPL");
 MODULE_ALIAS("platform:" DRIVER_NAME);

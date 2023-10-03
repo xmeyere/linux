@@ -139,7 +139,6 @@ static bool mrst_sdvo_find_best_pll(const struct gma_limit_t *limit,
 	s32 freq_error, min_error = 100000;
 
 	memset(best_clock, 0, sizeof(*best_clock));
-	memset(&clock, 0, sizeof(clock));
 
 	for (clock.m = limit->m.min; clock.m <= limit->m.max; clock.m++) {
 		for (clock.n = limit->n.min; clock.n <= limit->n.max;
@@ -196,7 +195,6 @@ static bool mrst_lvds_find_best_pll(const struct gma_limit_t *limit,
 	int err = target;
 
 	memset(best_clock, 0, sizeof(*best_clock));
-	memset(&clock, 0, sizeof(clock));
 
 	for (clock.m = limit->m.min; clock.m <= limit->m.max; clock.m++) {
 		for (clock.p1 = limit->p1.min; clock.p1 <= limit->p1.max;
@@ -485,7 +483,7 @@ static int oaktrail_crtc_mode_set(struct drm_crtc *crtc,
 
 	/* Flush the plane changes */
 	{
-		const struct drm_crtc_helper_funcs *crtc_funcs =
+		struct drm_crtc_helper_funcs *crtc_funcs =
 		    crtc->helper_private;
 		crtc_funcs->mode_set_base(crtc, x, y, old_fb);
 	}
@@ -601,7 +599,7 @@ static int oaktrail_pipe_set_base(struct drm_crtc *crtc,
 	struct drm_device *dev = crtc->dev;
 	struct drm_psb_private *dev_priv = dev->dev_private;
 	struct gma_crtc *gma_crtc = to_gma_crtc(crtc);
-	struct drm_framebuffer *fb = crtc->primary->fb;
+	struct psb_framebuffer *psbfb = to_psb_fb(crtc->primary->fb);
 	int pipe = gma_crtc->pipe;
 	const struct psb_offset *map = &dev_priv->regmap[pipe];
 	unsigned long start, offset;
@@ -610,7 +608,7 @@ static int oaktrail_pipe_set_base(struct drm_crtc *crtc,
 	int ret = 0;
 
 	/* no fb bound */
-	if (!fb) {
+	if (!crtc->primary->fb) {
 		dev_dbg(dev->dev, "No FB bound\n");
 		return 0;
 	}
@@ -618,20 +616,20 @@ static int oaktrail_pipe_set_base(struct drm_crtc *crtc,
 	if (!gma_power_begin(dev, true))
 		return 0;
 
-	start = to_gtt_range(fb->obj[0])->offset;
-	offset = y * fb->pitches[0] + x * fb->format->cpp[0];
+	start = psbfb->gtt->offset;
+	offset = y * crtc->primary->fb->pitches[0] + x * (crtc->primary->fb->bits_per_pixel / 8);
 
-	REG_WRITE(map->stride, fb->pitches[0]);
+	REG_WRITE(map->stride, crtc->primary->fb->pitches[0]);
 
 	dspcntr = REG_READ(map->cntr);
 	dspcntr &= ~DISPPLANE_PIXFORMAT_MASK;
 
-	switch (fb->format->cpp[0] * 8) {
+	switch (crtc->primary->fb->bits_per_pixel) {
 	case 8:
 		dspcntr |= DISPPLANE_8BPP;
 		break;
 	case 16:
-		if (fb->format->depth == 15)
+		if (crtc->primary->fb->depth == 15)
 			dspcntr |= DISPPLANE_15_16BPP;
 		else
 			dspcntr |= DISPPLANE_16BPP;
@@ -659,6 +657,7 @@ pipe_set_base_exit:
 
 const struct drm_crtc_helper_funcs oaktrail_helper_funcs = {
 	.dpms = oaktrail_crtc_dpms,
+	.mode_fixup = gma_crtc_mode_fixup,
 	.mode_set = oaktrail_crtc_mode_set,
 	.mode_set_base = oaktrail_pipe_set_base,
 	.prepare = gma_crtc_prepare,

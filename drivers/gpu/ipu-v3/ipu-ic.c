@@ -17,7 +17,6 @@
 #include <linux/bitrev.h>
 #include <linux/io.h>
 #include <linux/err.h>
-#include <linux/sizes.h>
 #include "ipu-prv.h"
 
 /* IC Register Offsets */
@@ -161,7 +160,6 @@ struct ipu_ic_priv {
 	spinlock_t lock;
 	struct ipu_soc *ipu;
 	int use_count;
-	int irt_use_count;
 	struct ipu_ic task[IC_NUM_TASKS];
 };
 
@@ -257,7 +255,7 @@ static int init_csc(struct ipu_ic *ic,
 	writel(param, base++);
 
 	param = ((a[0] & 0x1fe0) >> 5) | (params->scale << 8) |
-		(params->sat << 10);
+		(params->sat << 9);
 	writel(param, base++);
 
 	param = ((a[1] & 0x1f) << 27) | ((c[0][1] & 0x1ff) << 18) |
@@ -299,8 +297,8 @@ static int calc_resize_coeffs(struct ipu_ic *ic,
 		return -EINVAL;
 	}
 
-	/* Cannot downsize more than 4:1 */
-	if ((out_size << 2) < in_size) {
+	/* Cannot downsize more than 8:1 */
+	if ((out_size << 3) < in_size) {
 		dev_err(ipu->dev, "Unsupported downsize\n");
 		return -EINVAL;
 	}
@@ -380,6 +378,8 @@ void ipu_ic_task_disable(struct ipu_ic *ic)
 		ic_conf &= ~ic->bit->ic_conf_cmb_en;
 
 	ipu_ic_write(ic, ic_conf, IC_CONF);
+
+	ic->rotation = ic->graphics = false;
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 }
@@ -620,7 +620,7 @@ int ipu_ic_task_idma_init(struct ipu_ic *ic, struct ipuv3_channel *channel,
 	ipu_ic_write(ic, ic_idmac_2, IC_IDMAC_2);
 	ipu_ic_write(ic, ic_idmac_3, IC_IDMAC_3);
 
-	if (ipu_rot_mode_is_irt(rot))
+	if (rot >= IPU_ROTATE_90_RIGHT)
 		ic->rotation = true;
 
 unlock:
@@ -629,40 +629,21 @@ unlock:
 }
 EXPORT_SYMBOL_GPL(ipu_ic_task_idma_init);
 
-static void ipu_irt_enable(struct ipu_ic *ic)
-{
-	struct ipu_ic_priv *priv = ic->priv;
-
-	if (!priv->irt_use_count)
-		ipu_module_enable(priv->ipu, IPU_CONF_ROT_EN);
-
-	priv->irt_use_count++;
-}
-
-static void ipu_irt_disable(struct ipu_ic *ic)
-{
-	struct ipu_ic_priv *priv = ic->priv;
-
-	if (priv->irt_use_count) {
-		if (!--priv->irt_use_count)
-			ipu_module_disable(priv->ipu, IPU_CONF_ROT_EN);
-	}
-}
-
 int ipu_ic_enable(struct ipu_ic *ic)
 {
 	struct ipu_ic_priv *priv = ic->priv;
 	unsigned long flags;
+	u32 module = IPU_CONF_IC_EN;
 
 	spin_lock_irqsave(&priv->lock, flags);
 
+	if (ic->rotation)
+		module |= IPU_CONF_ROT_EN;
+
 	if (!priv->use_count)
-		ipu_module_enable(priv->ipu, IPU_CONF_IC_EN);
+		ipu_module_enable(priv->ipu, module);
 
 	priv->use_count++;
-
-	if (ic->rotation)
-		ipu_irt_enable(ic);
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 
@@ -674,21 +655,17 @@ int ipu_ic_disable(struct ipu_ic *ic)
 {
 	struct ipu_ic_priv *priv = ic->priv;
 	unsigned long flags;
+	u32 module = IPU_CONF_IC_EN | IPU_CONF_ROT_EN;
 
 	spin_lock_irqsave(&priv->lock, flags);
 
 	priv->use_count--;
 
 	if (!priv->use_count)
-		ipu_module_disable(priv->ipu, IPU_CONF_IC_EN);
+		ipu_module_disable(priv->ipu, module);
 
 	if (priv->use_count < 0)
 		priv->use_count = 0;
-
-	if (ic->rotation)
-		ipu_irt_disable(ic);
-
-	ic->rotation = ic->graphics = false;
 
 	spin_unlock_irqrestore(&priv->lock, flags);
 

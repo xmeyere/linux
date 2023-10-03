@@ -32,11 +32,7 @@
 #include "prm2xxx_3xxx.h"
 #include "prm2xxx.h"
 #include "prm3xxx.h"
-#include "prm33xx.h"
 #include "prm44xx.h"
-#include "prm54xx.h"
-#include "prm7xx.h"
-#include "prcm43xx.h"
 #include "common.h"
 #include "clock.h"
 #include "cm.h"
@@ -66,7 +62,7 @@ static struct irq_chip_generic **prcm_irq_chips;
 static struct omap_prcm_irq_setup *prcm_irq_setup;
 
 /* prm_base: base virtual address of the PRM IP block */
-struct omap_domain_base prm_base;
+void __iomem *prm_base;
 
 u16 prm_features;
 
@@ -102,7 +98,7 @@ static void omap_prcm_events_filter_priority(unsigned long *events,
  * dispatched accordingly. Clearing of the wakeup events should be
  * done by the SoC specific individual handlers.
  */
-static void omap_prcm_irq_handler(struct irq_desc *desc)
+static void omap_prcm_irq_handler(unsigned int irq, struct irq_desc *desc)
 {
 	unsigned long pending[OMAP_PRCM_MAX_NR_PENDING_REG];
 	unsigned long priority_pending[OMAP_PRCM_MAX_NR_PENDING_REG];
@@ -218,7 +214,10 @@ void omap_prcm_irq_cleanup(void)
 	kfree(prcm_irq_setup->priority_mask);
 	prcm_irq_setup->priority_mask = NULL;
 
-	irq = prcm_irq_setup->irq;
+	if (prcm_irq_setup->xlate_irq)
+		irq = prcm_irq_setup->xlate_irq(prcm_irq_setup->irq);
+	else
+		irq = prcm_irq_setup->irq;
 	irq_set_chained_handler(irq, NULL);
 
 	if (prcm_irq_setup->base_irq > 0)
@@ -264,9 +263,10 @@ int omap_prcm_register_chain_handler(struct omap_prcm_irq_setup *irq_setup)
 {
 	int nr_regs;
 	u32 mask[OMAP_PRCM_MAX_NR_PENDING_REG];
-	int offset, i, irq;
+	int offset, i;
 	struct irq_chip_generic *gc;
 	struct irq_chip_type *ct;
+	unsigned int irq;
 
 	if (!irq_setup)
 		return -EINVAL;
@@ -285,15 +285,16 @@ int omap_prcm_register_chain_handler(struct omap_prcm_irq_setup *irq_setup)
 
 	prcm_irq_setup = irq_setup;
 
-	prcm_irq_chips = kcalloc(nr_regs, sizeof(void *), GFP_KERNEL);
-	prcm_irq_setup->saved_mask = kcalloc(nr_regs, sizeof(u32),
-					     GFP_KERNEL);
-	prcm_irq_setup->priority_mask = kcalloc(nr_regs, sizeof(u32),
-						GFP_KERNEL);
+	prcm_irq_chips = kzalloc(sizeof(void *) * nr_regs, GFP_KERNEL);
+	prcm_irq_setup->saved_mask = kzalloc(sizeof(u32) * nr_regs, GFP_KERNEL);
+	prcm_irq_setup->priority_mask = kzalloc(sizeof(u32) * nr_regs,
+		GFP_KERNEL);
 
 	if (!prcm_irq_chips || !prcm_irq_setup->saved_mask ||
-	    !prcm_irq_setup->priority_mask)
+	    !prcm_irq_setup->priority_mask) {
+		pr_err("PRCM: kzalloc failed\n");
 		goto err;
+	}
 
 	memset(mask, 0, sizeof(mask));
 
@@ -305,7 +306,10 @@ int omap_prcm_register_chain_handler(struct omap_prcm_irq_setup *irq_setup)
 				1 << (offset & 0x1f);
 	}
 
-	irq = irq_setup->irq;
+	if (irq_setup->xlate_irq)
+		irq = irq_setup->xlate_irq(irq_setup->irq);
+	else
+		irq = irq_setup->irq;
 	irq_set_chained_handler(irq, omap_prcm_irq_handler);
 
 	irq_setup->base_irq = irq_alloc_descs(-1, 0, irq_setup->nr_regs * 32,
@@ -319,7 +323,7 @@ int omap_prcm_register_chain_handler(struct omap_prcm_irq_setup *irq_setup)
 
 	for (i = 0; i < irq_setup->nr_regs; i++) {
 		gc = irq_alloc_generic_chip("PRCM", 1,
-			irq_setup->base_irq + i * 32, prm_base.va,
+			irq_setup->base_irq + i * 32, prm_base,
 			handle_level_irq);
 
 		if (!gc) {
@@ -338,8 +342,10 @@ int omap_prcm_register_chain_handler(struct omap_prcm_irq_setup *irq_setup)
 		prcm_irq_chips[i] = gc;
 	}
 
-	irq = omap_prcm_event_to_irq("io");
-	omap_pcs_legacy_init(irq, irq_setup->reconfigure_io_chain);
+	if (of_have_populated_dt()) {
+		int irq = omap_prcm_event_to_irq("io");
+		omap_pcs_legacy_init(irq, irq_setup->reconfigure_io_chain);
+	}
 
 	return 0;
 
@@ -356,7 +362,7 @@ err:
  */
 void __init omap2_set_globals_prm(void __iomem *prm)
 {
-	prm_base.va = prm;
+	prm_base = prm;
 }
 
 /**
@@ -523,65 +529,8 @@ void omap_prm_reset_system(void)
 
 	prm_ll_data->reset_system();
 
-	while (1) {
+	while (1)
 		cpu_relax();
-		wfe();
-	}
-}
-
-/**
- * omap_prm_clear_mod_irqs - clear wake-up events from PRCM interrupt
- * @module: PRM module to clear wakeups from
- * @regs: register to clear
- * @wkst_mask: wkst bits to clear
- *
- * Clears any wakeup events for the module and register set defined.
- * Uses SoC specific implementation to do the actual wakeup status
- * clearing.
- */
-int omap_prm_clear_mod_irqs(s16 module, u8 regs, u32 wkst_mask)
-{
-	if (!prm_ll_data->clear_mod_irqs) {
-		WARN_ONCE(1, "prm: %s: no mapping function defined\n",
-			  __func__);
-		return -EINVAL;
-	}
-
-	return prm_ll_data->clear_mod_irqs(module, regs, wkst_mask);
-}
-
-/**
- * omap_prm_vp_check_txdone - check voltage processor TX done status
- *
- * Checks if voltage processor transmission has been completed.
- * Returns non-zero if a transmission has completed, 0 otherwise.
- */
-u32 omap_prm_vp_check_txdone(u8 vp_id)
-{
-	if (!prm_ll_data->vp_check_txdone) {
-		WARN_ONCE(1, "prm: %s: no mapping function defined\n",
-			  __func__);
-		return 0;
-	}
-
-	return prm_ll_data->vp_check_txdone(vp_id);
-}
-
-/**
- * omap_prm_vp_clear_txdone - clears voltage processor TX done status
- *
- * Clears the status bit for completed voltage processor transmission
- * returned by prm_vp_check_txdone.
- */
-void omap_prm_vp_clear_txdone(u8 vp_id)
-{
-	if (!prm_ll_data->vp_clear_txdone) {
-		WARN_ONCE(1, "prm: %s: no mapping function defined\n",
-			  __func__);
-		return;
-	}
-
-	prm_ll_data->vp_clear_txdone(vp_id);
 }
 
 /**
@@ -629,187 +578,78 @@ int prm_unregister(struct prm_ll_data *pld)
 	return 0;
 }
 
-#ifdef CONFIG_ARCH_OMAP2
-static struct omap_prcm_init_data omap2_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = omap2xxx_prm_init,
-};
-#endif
-
-#ifdef CONFIG_ARCH_OMAP3
-static struct omap_prcm_init_data omap3_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = omap3xxx_prm_init,
-
-	/*
-	 * IVA2 offset is a negative value, must offset the prm_base
-	 * address by this to get it to positive
-	 */
-	.offset = -OMAP3430_IVA2_MOD,
-};
-#endif
-
-#if defined(CONFIG_SOC_AM33XX) || defined(CONFIG_SOC_TI81XX)
-static struct omap_prcm_init_data am3_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = am33xx_prm_init,
-};
-#endif
-
-#ifdef CONFIG_SOC_TI81XX
-static struct omap_prcm_init_data dm814_pllss_data __initdata = {
-	.index = TI_CLKM_PLLSS,
-	.init = am33xx_prm_init,
-};
-#endif
-
-#ifdef CONFIG_ARCH_OMAP4
-static struct omap_prcm_init_data omap4_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = omap44xx_prm_init,
-	.device_inst_offset = OMAP4430_PRM_DEVICE_INST,
-	.flags = PRM_HAS_IO_WAKEUP | PRM_HAS_VOLTAGE,
-};
-#endif
-
-#ifdef CONFIG_SOC_OMAP5
-static struct omap_prcm_init_data omap5_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = omap44xx_prm_init,
-	.device_inst_offset = OMAP54XX_PRM_DEVICE_INST,
-	.flags = PRM_HAS_IO_WAKEUP | PRM_HAS_VOLTAGE,
-};
-#endif
-
-#ifdef CONFIG_SOC_DRA7XX
-static struct omap_prcm_init_data dra7_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = omap44xx_prm_init,
-	.device_inst_offset = DRA7XX_PRM_DEVICE_INST,
-	.flags = PRM_HAS_IO_WAKEUP,
-};
-#endif
-
-#ifdef CONFIG_SOC_AM43XX
-static struct omap_prcm_init_data am4_prm_data __initdata = {
-	.index = TI_CLKM_PRM,
-	.init = omap44xx_prm_init,
-	.device_inst_offset = AM43XX_PRM_DEVICE_INST,
-	.flags = PRM_HAS_IO_WAKEUP,
-};
-#endif
-
-#if defined(CONFIG_ARCH_OMAP4) || defined(CONFIG_SOC_OMAP5)
-static struct omap_prcm_init_data scrm_data __initdata = {
-	.index = TI_CLKM_SCRM,
-};
-#endif
-
-static const struct of_device_id omap_prcm_dt_match_table[] __initconst = {
-#ifdef CONFIG_SOC_AM33XX
-	{ .compatible = "ti,am3-prcm", .data = &am3_prm_data },
-#endif
-#ifdef CONFIG_SOC_AM43XX
-	{ .compatible = "ti,am4-prcm", .data = &am4_prm_data },
-#endif
-#ifdef CONFIG_SOC_TI81XX
-	{ .compatible = "ti,dm814-prcm", .data = &am3_prm_data },
-	{ .compatible = "ti,dm814-pllss", .data = &dm814_pllss_data },
-	{ .compatible = "ti,dm816-prcm", .data = &am3_prm_data },
-#endif
-#ifdef CONFIG_ARCH_OMAP2
-	{ .compatible = "ti,omap2-prcm", .data = &omap2_prm_data },
-#endif
-#ifdef CONFIG_ARCH_OMAP3
-	{ .compatible = "ti,omap3-prm", .data = &omap3_prm_data },
-#endif
-#ifdef CONFIG_ARCH_OMAP4
-	{ .compatible = "ti,omap4-prm", .data = &omap4_prm_data },
-	{ .compatible = "ti,omap4-scrm", .data = &scrm_data },
-#endif
-#ifdef CONFIG_SOC_OMAP5
-	{ .compatible = "ti,omap5-prm", .data = &omap5_prm_data },
-	{ .compatible = "ti,omap5-scrm", .data = &scrm_data },
-#endif
-#ifdef CONFIG_SOC_DRA7XX
-	{ .compatible = "ti,dra7-prm", .data = &dra7_prm_data },
-#endif
+static const struct of_device_id omap_prcm_dt_match_table[] = {
+	{ .compatible = "ti,am3-prcm" },
+	{ .compatible = "ti,am3-scrm" },
+	{ .compatible = "ti,am4-prcm" },
+	{ .compatible = "ti,am4-scrm" },
+	{ .compatible = "ti,dm814-prcm" },
+	{ .compatible = "ti,dm814-scrm" },
+	{ .compatible = "ti,dm816-prcm" },
+	{ .compatible = "ti,dm816-scrm" },
+	{ .compatible = "ti,omap2-prcm" },
+	{ .compatible = "ti,omap2-scrm" },
+	{ .compatible = "ti,omap3-prm" },
+	{ .compatible = "ti,omap3-cm" },
+	{ .compatible = "ti,omap3-scrm" },
+	{ .compatible = "ti,omap4-cm1" },
+	{ .compatible = "ti,omap4-prm" },
+	{ .compatible = "ti,omap4-cm2" },
+	{ .compatible = "ti,omap4-scrm" },
+	{ .compatible = "ti,omap5-prm" },
+	{ .compatible = "ti,omap5-cm-core-aon" },
+	{ .compatible = "ti,omap5-scrm" },
+	{ .compatible = "ti,omap5-cm-core" },
+	{ .compatible = "ti,dra7-prm" },
+	{ .compatible = "ti,dra7-cm-core-aon" },
+	{ .compatible = "ti,dra7-cm-core" },
 	{ }
 };
 
-/**
- * omap2_prm_base_init - initialize iomappings for the PRM driver
- *
- * Detects and initializes the iomappings for the PRM driver, based
- * on the DT data. Returns 0 in success, negative error value
- * otherwise.
- */
-int __init omap2_prm_base_init(void)
+static struct clk_hw_omap memmap_dummy_ck = {
+	.flags = MEMMAP_ADDRESSING,
+};
+
+static u32 prm_clk_readl(void __iomem *reg)
+{
+	return omap2_clk_readl(&memmap_dummy_ck, reg);
+}
+
+static void prm_clk_writel(u32 val, void __iomem *reg)
+{
+	omap2_clk_writel(val, &memmap_dummy_ck, reg);
+}
+
+static struct ti_clk_ll_ops omap_clk_ll_ops = {
+	.clk_readl = prm_clk_readl,
+	.clk_writel = prm_clk_writel,
+};
+
+int __init of_prcm_init(void)
 {
 	struct device_node *np;
-	const struct of_device_id *match;
-	struct omap_prcm_init_data *data;
-	struct resource res;
-	int ret;
+	void __iomem *mem;
+	int memmap_index = 0;
 
-	for_each_matching_node_and_match(np, omap_prcm_dt_match_table, &match) {
-		data = (struct omap_prcm_init_data *)match->data;
+	ti_clk_ll_ops = &omap_clk_ll_ops;
 
-		ret = of_address_to_resource(np, 0, &res);
-		if (ret)
-			return ret;
-
-		data->mem = ioremap(res.start, resource_size(&res));
-
-		if (data->index == TI_CLKM_PRM) {
-			prm_base.va = data->mem + data->offset;
-			prm_base.pa = res.start + data->offset;
-		}
-
-		data->np = np;
-
-		if (data->init)
-			data->init(data);
+	for_each_matching_node(np, omap_prcm_dt_match_table) {
+		mem = of_iomap(np, 0);
+		clk_memmaps[memmap_index] = mem;
+		ti_dt_clk_init_provider(np, memmap_index);
+		memmap_index++;
 	}
 
 	return 0;
 }
 
-int __init omap2_prcm_base_init(void)
+void __init omap3_prcm_legacy_iomaps_init(void)
 {
-	int ret;
+	ti_clk_ll_ops = &omap_clk_ll_ops;
 
-	ret = omap2_prm_base_init();
-	if (ret)
-		return ret;
-
-	return omap2_cm_base_init();
-}
-
-/**
- * omap_prcm_init - low level init for the PRCM drivers
- *
- * Initializes the low level clock infrastructure for PRCM drivers.
- * Returns 0 in success, negative error value in failure.
- */
-int __init omap_prcm_init(void)
-{
-	struct device_node *np;
-	const struct of_device_id *match;
-	const struct omap_prcm_init_data *data;
-	int ret;
-
-	for_each_matching_node_and_match(np, omap_prcm_dt_match_table, &match) {
-		data = match->data;
-
-		ret = omap2_clk_provider_init(np, data->index, NULL, data->mem);
-		if (ret)
-			return ret;
-	}
-
-	omap_cm_init();
-
-	return 0;
+	clk_memmaps[TI_CLKM_CM] = cm_base + OMAP3430_IVA2_MOD;
+	clk_memmaps[TI_CLKM_PRM] = prm_base + OMAP3430_IVA2_MOD;
+	clk_memmaps[TI_CLKM_SCRM] = omap_ctrl_base_get();
 }
 
 static int __init prm_late_init(void)

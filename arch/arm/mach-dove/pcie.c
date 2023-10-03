@@ -152,23 +152,20 @@ static void rc_pci_fixup(struct pci_dev *dev)
 }
 DECLARE_PCI_FIXUP_HEADER(PCI_VENDOR_ID_MARVELL, PCI_ANY_ID, rc_pci_fixup);
 
-static int __init
-dove_pcie_scan_bus(int nr, struct pci_host_bridge *bridge)
+static struct pci_bus __init *
+dove_pcie_scan_bus(int nr, struct pci_sys_data *sys)
 {
-	struct pci_sys_data *sys = pci_host_bridge_priv(bridge);
+	struct pci_bus *bus;
 
-	if (nr >= num_pcie_ports) {
+	if (nr < num_pcie_ports) {
+		bus = pci_scan_root_bus(NULL, sys->busnr, &pcie_ops, sys,
+					&sys->resources);
+	} else {
+		bus = NULL;
 		BUG();
-		return -EINVAL;
 	}
 
-	list_splice_init(&sys->resources, &bridge->windows);
-	bridge->dev.parent = NULL;
-	bridge->sysdata = sys;
-	bridge->busnr = sys->busnr;
-	bridge->ops = &pcie_ops;
-
-	return pci_scan_root_bus_bridge(bridge);
+	return bus;
 }
 
 static int __init dove_pcie_map_irq(const struct pci_dev *dev, u8 slot, u8 pin)

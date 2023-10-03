@@ -1,16 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
-#include <errno.h>
-#include <inttypes.h>
-/* For the CLR_() macros */
-#include <pthread.h>
-
 #include "evlist.h"
 #include "evsel.h"
 #include "thread_map.h"
 #include "cpumap.h"
 #include "tests.h"
-#include <linux/err.h>
-#include <linux/kernel.h>
 
 /*
  * This test will generate random numbers of calls to some getpid syscalls,
@@ -23,7 +15,7 @@
  * Then it checks if the number of syscalls reported as perf events by
  * the kernel corresponds to the number of syscalls made.
  */
-int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unused)
+int test__basic_mmap(void)
 {
 	int err = -1;
 	union perf_event *event;
@@ -31,14 +23,15 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 	struct cpu_map *cpus;
 	struct perf_evlist *evlist;
 	cpu_set_t cpu_set;
-	const char *syscall_names[] = { "getsid", "getppid", "getpgid", };
-	pid_t (*syscalls[])(void) = { (void *)getsid, getppid, (void*)getpgid };
+	const char *syscall_names[] = { "getsid", "getppid", "getpgrp",
+					"getpgid", };
+	pid_t (*syscalls[])(void) = { (void *)getsid, getppid, getpgrp,
+				      (void*)getpgid };
 #define nsyscalls ARRAY_SIZE(syscall_names)
 	unsigned int nr_events[nsyscalls],
 		     expected_nr_events[nsyscalls], i, j;
 	struct perf_evsel *evsels[nsyscalls], *evsel;
 	char sbuf[STRERR_BUFSIZE];
-	struct perf_mmap *md;
 
 	threads = thread_map__new(-1, getpid(), UINT_MAX);
 	if (threads == NULL) {
@@ -57,7 +50,7 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 	sched_setaffinity(0, sizeof(cpu_set), &cpu_set);
 	if (sched_setaffinity(0, sizeof(cpu_set), &cpu_set) < 0) {
 		pr_debug("sched_setaffinity() failed on CPU %d: %s ",
-			 cpus->map[0], str_error_r(errno, sbuf, sizeof(sbuf)));
+			 cpus->map[0], strerror_r(errno, sbuf, sizeof(sbuf)));
 		goto out_free_cpus;
 	}
 
@@ -74,8 +67,8 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 
 		snprintf(name, sizeof(name), "sys_enter_%s", syscall_names[i]);
 		evsels[i] = perf_evsel__newtp("syscalls", name);
-		if (IS_ERR(evsels[i])) {
-			pr_debug("perf_evsel__new(%s)\n", name);
+		if (evsels[i] == NULL) {
+			pr_debug("perf_evsel__new\n");
 			goto out_delete_evlist;
 		}
 
@@ -87,7 +80,7 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 		if (perf_evsel__open(evsels[i], cpus, threads) < 0) {
 			pr_debug("failed to open counter: %s, "
 				 "tweak /proc/sys/kernel/perf_event_paranoid?\n",
-				 str_error_r(errno, sbuf, sizeof(sbuf)));
+				 strerror_r(errno, sbuf, sizeof(sbuf)));
 			goto out_delete_evlist;
 		}
 
@@ -95,9 +88,9 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 		expected_nr_events[i] = 1 + rand() % 127;
 	}
 
-	if (perf_evlist__mmap(evlist, 128) < 0) {
+	if (perf_evlist__mmap(evlist, 128, true) < 0) {
 		pr_debug("failed to mmap events: %d (%s)\n", errno,
-			 str_error_r(errno, sbuf, sizeof(sbuf)));
+			 strerror_r(errno, sbuf, sizeof(sbuf)));
 		goto out_delete_evlist;
 	}
 
@@ -107,11 +100,7 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 			++foo;
 		}
 
-	md = &evlist->mmap[0];
-	if (perf_mmap__read_init(md) < 0)
-		goto out_init;
-
-	while ((event = perf_mmap__read_event(md)) != NULL) {
+	while ((event = perf_evlist__mmap_read(evlist, 0)) != NULL) {
 		struct perf_sample sample;
 
 		if (event->header.type != PERF_RECORD_SAMPLE) {
@@ -134,13 +123,11 @@ int test__basic_mmap(struct test *test __maybe_unused, int subtest __maybe_unuse
 			goto out_delete_evlist;
 		}
 		nr_events[evsel->idx]++;
-		perf_mmap__consume(md);
+		perf_evlist__mmap_consume(evlist, 0);
 	}
-	perf_mmap__read_done(md);
 
-out_init:
 	err = 0;
-	evlist__for_each_entry(evlist, evsel) {
+	evlist__for_each(evlist, evsel) {
 		if (nr_events[evsel->idx] != expected_nr_events[evsel->idx]) {
 			pr_debug("expected %d %s events, got %d\n",
 				 expected_nr_events[evsel->idx],
@@ -155,8 +142,8 @@ out_delete_evlist:
 	cpus	= NULL;
 	threads = NULL;
 out_free_cpus:
-	cpu_map__put(cpus);
+	cpu_map__delete(cpus);
 out_free_threads:
-	thread_map__put(threads);
+	thread_map__delete(threads);
 	return err;
 }

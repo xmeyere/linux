@@ -81,7 +81,7 @@ static inline void nci_push_data_hdr(struct nci_dev *ndev,
 	struct nci_data_hdr *hdr;
 	int plen = skb->len;
 
-	hdr = skb_push(skb, NCI_DATA_HDR_SIZE);
+	hdr = (struct nci_data_hdr *) skb_push(skb, NCI_DATA_HDR_SIZE);
 	hdr->conn_id = conn_id;
 	hdr->rfu = 0;
 	hdr->plen = plen;
@@ -89,18 +89,6 @@ static inline void nci_push_data_hdr(struct nci_dev *ndev,
 	nci_mt_set((__u8 *)hdr, NCI_MT_DATA_PKT);
 	nci_pbf_set((__u8 *)hdr, pbf);
 }
-
-int nci_conn_max_data_pkt_payload_size(struct nci_dev *ndev, __u8 conn_id)
-{
-	struct nci_conn_info *conn_info;
-
-	conn_info = nci_get_conn_info_by_conn_id(ndev, conn_id);
-	if (!conn_info)
-		return -EPROTO;
-
-	return conn_info->max_pkt_payload_len;
-}
-EXPORT_SYMBOL(nci_conn_max_data_pkt_payload_size);
 
 static int nci_queue_tx_data_frags(struct nci_dev *ndev,
 				   __u8 conn_id,
@@ -119,7 +107,7 @@ static int nci_queue_tx_data_frags(struct nci_dev *ndev,
 	conn_info = nci_get_conn_info_by_conn_id(ndev, conn_id);
 	if (!conn_info) {
 		rc = -EPROTO;
-		goto exit;
+		goto free_exit;
 	}
 
 	__skb_queue_head_init(&frags_q);
@@ -130,7 +118,7 @@ static int nci_queue_tx_data_frags(struct nci_dev *ndev,
 
 		skb_frag = nci_skb_alloc(ndev,
 					 (NCI_DATA_HDR_SIZE + frag_len),
-					 GFP_ATOMIC);
+					 GFP_KERNEL);
 		if (skb_frag == NULL) {
 			rc = -ENOMEM;
 			goto free_exit;
@@ -138,7 +126,7 @@ static int nci_queue_tx_data_frags(struct nci_dev *ndev,
 		skb_reserve(skb_frag, NCI_DATA_HDR_SIZE);
 
 		/* first, copy the data */
-		skb_put_data(skb_frag, data, frag_len);
+		memcpy(skb_put(skb_frag, frag_len), data, frag_len);
 
 		/* second, set the header */
 		nci_push_data_hdr(ndev, conn_id, skb_frag,
@@ -215,7 +203,6 @@ free_exit:
 exit:
 	return rc;
 }
-EXPORT_SYMBOL(nci_send_data);
 
 /* ----------------- NCI RX Data ----------------- */
 
@@ -291,10 +278,8 @@ void nci_rx_data_packet(struct nci_dev *ndev, struct sk_buff *skb)
 		 nci_plen(skb->data));
 
 	conn_info = nci_get_conn_info_by_conn_id(ndev, nci_conn_id(skb->data));
-	if (!conn_info) {
-		kfree_skb(skb);
+	if (!conn_info)
 		return;
-	}
 
 	/* strip the nci data header */
 	skb_pull(skb, NCI_DATA_HDR_SIZE);

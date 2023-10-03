@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * linux/include/linux/lockd/lockd.h
  *
@@ -17,7 +16,6 @@
 #include <net/ipv6.h>
 #include <linux/fs.h>
 #include <linux/kref.h>
-#include <linux/refcount.h>
 #include <linux/utsname.h>
 #include <linux/lockd/bind.h>
 #include <linux/lockd/xdr.h>
@@ -59,7 +57,7 @@ struct nlm_host {
 	u32			h_state;	/* pseudo-state counter */
 	u32			h_nsmstate;	/* true remote NSM state */
 	u32			h_pidcount;	/* Pseudopids */
-	refcount_t		h_count;	/* reference count */
+	atomic_t		h_count;	/* reference count */
 	struct mutex		h_mutex;	/* mutex for pmap binding */
 	unsigned long		h_nextrebind;	/* next portmap call */
 	unsigned long		h_expires;	/* eligible for GC */
@@ -70,8 +68,6 @@ struct nlm_host {
 	struct nsm_handle	*h_nsmhandle;	/* NSM status handle */
 	char			*h_addrbuf;	/* address eyecatcher */
 	struct net		*net;		/* host net */
-	char			nodename[UNX_MAXNODENAME + 1];
-	const struct nlmclnt_operations	*h_nlmclnt_ops;	/* Callback ops for NLM users */
 };
 
 /*
@@ -84,7 +80,7 @@ struct nlm_host {
 
 struct nsm_handle {
 	struct list_head	sm_link;
-	refcount_t		sm_count;
+	atomic_t		sm_count;
 	char			*sm_mon_name;
 	char			*sm_name;
 	struct sockaddr_storage	sm_addr;
@@ -123,7 +119,7 @@ static inline struct sockaddr *nlm_srcaddr(const struct nlm_host *host)
  */
 struct nlm_lockowner {
 	struct list_head list;
-	refcount_t count;
+	atomic_t count;
 
 	struct nlm_host *host;
 	fl_owner_t owner;
@@ -137,7 +133,7 @@ struct nlm_wait;
  */
 #define NLMCLNT_OHSIZE		((__NEW_UTS_LEN) + 10u)
 struct nlm_rqst {
-	refcount_t		a_count;
+	atomic_t		a_count;
 	unsigned int		a_flags;	/* initial RPC task flags */
 	struct nlm_host *	a_host;		/* host handle */
 	struct nlm_args		a_args;		/* arguments */
@@ -145,7 +141,6 @@ struct nlm_rqst {
 	struct nlm_block *	a_block;
 	unsigned int		a_retries;	/* Retry count */
 	u8			a_owner[NLMCLNT_OHSIZE];
-	void *	a_callback_data; /* sent to nlmclnt_operations callbacks */
 };
 
 /*
@@ -194,9 +189,9 @@ struct nlm_block {
  * Global variables
  */
 extern const struct rpc_program	nlm_program;
-extern const struct svc_procedure nlmsvc_procedures[];
+extern struct svc_procedure	nlmsvc_procedures[];
 #ifdef CONFIG_LOCKD_V4
-extern const struct svc_procedure nlmsvc_procedures4[];
+extern struct svc_procedure	nlmsvc_procedures4[];
 #endif
 extern int			nlmsvc_grace_period;
 extern unsigned long		nlmsvc_timeout;
@@ -240,8 +235,7 @@ void		  nlm_rebind_host(struct nlm_host *);
 struct nlm_host * nlm_get_host(struct nlm_host *);
 void		  nlm_shutdown_hosts(void);
 void		  nlm_shutdown_hosts_net(struct net *net);
-void		  nlm_host_rebooted(const struct net *net,
-					const struct nlm_reboot *);
+void		  nlm_host_rebooted(const struct nlm_reboot *);
 
 /*
  * Host monitoring
@@ -249,13 +243,11 @@ void		  nlm_host_rebooted(const struct net *net,
 int		  nsm_monitor(const struct nlm_host *host);
 void		  nsm_unmonitor(const struct nlm_host *host);
 
-struct nsm_handle *nsm_get_handle(const struct net *net,
-					const struct sockaddr *sap,
+struct nsm_handle *nsm_get_handle(const struct sockaddr *sap,
 					const size_t salen,
 					const char *hostname,
 					const size_t hostname_len);
-struct nsm_handle *nsm_reboot_lookup(const struct net *net,
-					const struct nlm_reboot *info);
+struct nsm_handle *nsm_reboot_lookup(const struct nlm_reboot *info);
 void		  nsm_release(struct nsm_handle *nsm);
 
 /*
@@ -299,7 +291,7 @@ int           nlmsvc_unlock_all_by_ip(struct sockaddr *server_addr);
 
 static inline struct inode *nlmsvc_file_inode(struct nlm_file *file)
 {
-	return locks_inode(file->f_file);
+	return file_inode(file->f_file);
 }
 
 static inline int __nlm_privileged_request4(const struct sockaddr *sap)
@@ -359,8 +351,7 @@ static inline int nlm_privileged_requester(const struct svc_rqst *rqstp)
 static inline int nlm_compare_locks(const struct file_lock *fl1,
 				    const struct file_lock *fl2)
 {
-	return locks_inode(fl1->fl_file) == locks_inode(fl2->fl_file)
-	     && fl1->fl_pid   == fl2->fl_pid
+	return	fl1->fl_pid   == fl2->fl_pid
 	     && fl1->fl_owner == fl2->fl_owner
 	     && fl1->fl_start == fl2->fl_start
 	     && fl1->fl_end   == fl2->fl_end

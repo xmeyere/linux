@@ -1,11 +1,45 @@
-// SPDX-License-Identifier: BSD-3-Clause OR GPL-2.0
 /******************************************************************************
  *
  * Module Name: nsdump - table dumping routines for debug
  *
- * Copyright (C) 2000 - 2018, Intel Corp.
- *
  *****************************************************************************/
+
+/*
+ * Copyright (C) 2000 - 2015, Intel Corp.
+ * All rights reserved.
+ *
+ * Redistribution and use in source and binary forms, with or without
+ * modification, are permitted provided that the following conditions
+ * are met:
+ * 1. Redistributions of source code must retain the above copyright
+ *    notice, this list of conditions, and the following disclaimer,
+ *    without modification.
+ * 2. Redistributions in binary form must reproduce at minimum a disclaimer
+ *    substantially similar to the "NO WARRANTY" disclaimer below
+ *    ("Disclaimer") and any redistribution must be conditioned upon
+ *    including a substantially similar Disclaimer requirement for further
+ *    binary redistribution.
+ * 3. Neither the names of the above-listed copyright holders nor the names
+ *    of any contributors may be used to endorse or promote products derived
+ *    from this software without specific prior written permission.
+ *
+ * Alternatively, this software may be distributed under the terms of the
+ * GNU General Public License ("GPL") version 2 as published by the Free
+ * Software Foundation.
+ *
+ * NO WARRANTY
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+ * "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+ * LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTIBILITY AND FITNESS FOR
+ * A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+ * HOLDERS OR CONTRIBUTORS BE LIABLE FOR SPECIAL, EXEMPLARY, OR CONSEQUENTIAL
+ * DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS
+ * OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION)
+ * HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT,
+ * STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING
+ * IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+ * POSSIBILITY OF SUCH DAMAGES.
+ */
 
 #include <acpi/acpi.h>
 #include "accommon.h"
@@ -26,6 +60,7 @@ acpi_ns_dump_one_device(acpi_handle obj_handle,
 
 #if defined(ACPI_DEBUG_OUTPUT) || defined(ACPI_DEBUGGER)
 
+#ifdef	ACPI_FUTURE_USAGE
 static acpi_status
 acpi_ns_dump_one_object_path(acpi_handle obj_handle,
 			     u32 level, void *context, void **return_value);
@@ -33,6 +68,7 @@ acpi_ns_dump_one_object_path(acpi_handle obj_handle,
 static acpi_status
 acpi_ns_get_max_depth(acpi_handle obj_handle,
 		      u32 level, void *context, void **return_value);
+#endif				/* ACPI_FUTURE_USAGE */
 
 /*******************************************************************************
  *
@@ -47,7 +83,7 @@ acpi_ns_get_max_depth(acpi_handle obj_handle,
  *
  ******************************************************************************/
 
-void acpi_ns_print_pathname(u32 num_segments, const char *pathname)
+void acpi_ns_print_pathname(u32 num_segments, char *pathname)
 {
 	u32 i;
 
@@ -65,7 +101,7 @@ void acpi_ns_print_pathname(u32 num_segments, const char *pathname)
 
 	while (num_segments) {
 		for (i = 0; i < 4; i++) {
-			isprint((int)pathname[i]) ?
+			ACPI_IS_PRINT(pathname[i]) ?
 			    acpi_os_printf("%c", pathname[i]) :
 			    acpi_os_printf("?");
 		}
@@ -79,9 +115,6 @@ void acpi_ns_print_pathname(u32 num_segments, const char *pathname)
 
 	acpi_os_printf("]\n");
 }
-
-#ifdef ACPI_OBSOLETE_FUNCTIONS
-/* Not used at this time, perhaps later */
 
 /*******************************************************************************
  *
@@ -100,8 +133,7 @@ void acpi_ns_print_pathname(u32 num_segments, const char *pathname)
  ******************************************************************************/
 
 void
-acpi_ns_dump_pathname(acpi_handle handle,
-		      const char *msg, u32 level, u32 component)
+acpi_ns_dump_pathname(acpi_handle handle, char *msg, u32 level, u32 component)
 {
 
 	ACPI_FUNCTION_TRACE(ns_dump_pathname);
@@ -118,7 +150,6 @@ acpi_ns_dump_pathname(acpi_handle handle,
 	acpi_os_printf("\n");
 	return_VOID;
 }
-#endif
 
 /*******************************************************************************
  *
@@ -170,7 +201,6 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 	}
 
 	type = this_node->type;
-	info->count++;
 
 	/* Check if the owner matches */
 
@@ -241,11 +271,12 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 		switch (type) {
 		case ACPI_TYPE_PROCESSOR:
 
-			acpi_os_printf("ID %02X Len %02X Addr %8.8X%8.8X\n",
+			acpi_os_printf("ID %02X Len %02X Addr %p\n",
 				       obj_desc->processor.proc_id,
 				       obj_desc->processor.length,
-				       ACPI_FORMAT_UINT64(obj_desc->processor.
-							  address));
+				       ACPI_CAST_PTR(void,
+						     obj_desc->processor.
+						     address));
 			break;
 
 		case ACPI_TYPE_DEVICE:
@@ -305,7 +336,7 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 		case ACPI_TYPE_STRING:
 
 			acpi_os_printf("Len %.2X ", obj_desc->string.length);
-			acpi_ut_print_string(obj_desc->string.pointer, 80);
+			acpi_ut_print_string(obj_desc->string.pointer, 32);
 			acpi_os_printf("\n");
 			break;
 
@@ -316,9 +347,8 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 							       space_id));
 			if (obj_desc->region.flags & AOPOBJ_DATA_VALID) {
 				acpi_os_printf(" Addr %8.8X%8.8X Len %.4X\n",
-					       ACPI_FORMAT_UINT64(obj_desc->
-								  region.
-								  address),
+					       ACPI_FORMAT_NATIVE_UINT
+					       (obj_desc->region.address),
 					       obj_desc->region.length);
 			} else {
 				acpi_os_printf
@@ -511,13 +541,11 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 				acpi_os_printf
 				    ("(Pointer to ACPI Object type %.2X [UNKNOWN])\n",
 				     obj_type);
-
 				bytes_to_dump = 32;
 			} else {
 				acpi_os_printf
 				    ("(Pointer to ACPI Object type %.2X [%s])\n",
 				     obj_type, acpi_ut_get_type_name(obj_type));
-
 				bytes_to_dump =
 				    sizeof(union acpi_operand_object);
 			}
@@ -547,7 +575,6 @@ acpi_ns_dump_one_object(acpi_handle obj_handle,
 			 */
 			bytes_to_dump = obj_desc->string.length;
 			obj_desc = (void *)obj_desc->string.pointer;
-
 			acpi_os_printf("(Buffer/String pointer %p length %X)\n",
 				       obj_desc, bytes_to_dump);
 			ACPI_DUMP_BUFFER(obj_desc, bytes_to_dump);
@@ -598,6 +625,7 @@ cleanup:
 	return (AE_OK);
 }
 
+#ifdef ACPI_FUTURE_USAGE
 /*******************************************************************************
  *
  * FUNCTION:    acpi_ns_dump_objects
@@ -640,7 +668,6 @@ acpi_ns_dump_objects(acpi_object_type type,
 		return;
 	}
 
-	info.count = 0;
 	info.debug_level = ACPI_LV_TABLES;
 	info.owner_id = owner_id;
 	info.display_type = display_type;
@@ -651,10 +678,11 @@ acpi_ns_dump_objects(acpi_object_type type,
 				     acpi_ns_dump_one_object, NULL,
 				     (void *)&info, NULL);
 
-	acpi_os_printf("\nNamespace node count: %u\n\n", info.count);
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 }
+#endif				/* ACPI_FUTURE_USAGE */
 
+#ifdef	ACPI_FUTURE_USAGE
 /*******************************************************************************
  *
  * FUNCTION:    acpi_ns_dump_one_object_path, acpi_ns_get_max_depth
@@ -694,7 +722,7 @@ acpi_ns_dump_one_object_path(acpi_handle obj_handle,
 		return (AE_OK);
 	}
 
-	pathname = acpi_ns_get_normalized_pathname(node, TRUE);
+	pathname = acpi_ns_get_external_pathname(node);
 
 	path_indent = 1;
 	if (level <= max_level) {
@@ -782,6 +810,7 @@ acpi_ns_dump_object_paths(acpi_object_type type,
 
 	(void)acpi_ut_release_mutex(ACPI_MTX_NAMESPACE);
 }
+#endif				/* ACPI_FUTURE_USAGE */
 
 /*******************************************************************************
  *

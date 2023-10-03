@@ -12,10 +12,9 @@
 #include <asm/ppc_asm.h>
 #include <asm/processor.h>
 #include <asm/bug.h>
-#include <asm/export.h>
 
 #define DCR_ACCESS_PROLOG(table) \
-	cmplwi	cr0,r3,1024;	 \
+	cmpli	cr0,r3,1024;	 \
 	rlwinm  r3,r3,4,18,27;   \
 	lis     r5,table@h;      \
 	ori     r5,r5,table@l;   \
@@ -29,11 +28,9 @@
 
 _GLOBAL(__mfdcr)
 	DCR_ACCESS_PROLOG(__mfdcr_table)
-EXPORT_SYMBOL(__mfdcr)
 
 _GLOBAL(__mtdcr)
 	DCR_ACCESS_PROLOG(__mtdcr_table)
-EXPORT_SYMBOL(__mtdcr)
 
 __mfdcr_table:
 	mfdcr  r3,0; blr

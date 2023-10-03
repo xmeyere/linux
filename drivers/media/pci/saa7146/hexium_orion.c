@@ -25,9 +25,8 @@
 
 #define DEBUG_VARIABLE debug
 
-#include <media/drv-intf/saa7146_vv.h>
+#include <media/saa7146_vv.h>
 #include <linux/module.h>
-#include <linux/kernel.h>
 
 static int debug;
 module_param(debug, int, 0);
@@ -64,7 +63,7 @@ struct hexium_data
 struct hexium
 {
 	int type;
-	struct video_device	video_dev;
+	struct video_device	*video_dev;
 	struct i2c_adapter	i2c_adapter;
 
 	int cur_input;	/* current input */
@@ -188,19 +187,19 @@ static struct {
 
 static struct saa7146_standard hexium_standards[] = {
 	{
-		.name	= "PAL",	.id	= V4L2_STD_PAL,
-		.v_offset	= 16,	.v_field	= 288,
-		.h_offset	= 1,	.h_pixels	= 680,
+		.name	= "PAL", 	.id	= V4L2_STD_PAL,
+		.v_offset	= 16,	.v_field 	= 288,
+		.h_offset	= 1,	.h_pixels 	= 680,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}, {
-		.name	= "NTSC",	.id	= V4L2_STD_NTSC,
-		.v_offset	= 16,	.v_field	= 240,
-		.h_offset	= 1,	.h_pixels	= 640,
+		.name	= "NTSC", 	.id	= V4L2_STD_NTSC,
+		.v_offset	= 16,	.v_field 	= 240,
+		.h_offset	= 1,	.h_pixels 	= 640,
 		.v_max_out	= 480,	.h_max_out	= 640,
 	}, {
-		.name	= "SECAM",	.id	= V4L2_STD_SECAM,
-		.v_offset	= 16,	.v_field	= 288,
-		.h_offset	= 1,	.h_pixels	= 720,
+		.name	= "SECAM", 	.id	= V4L2_STD_SECAM,
+		.v_offset	= 16,	.v_field 	= 288,
+		.h_offset	= 1,	.h_pixels 	= 720,
 		.v_max_out	= 576,	.h_max_out	= 768,
 	}
 };
@@ -220,9 +219,11 @@ static int hexium_probe(struct saa7146_dev *dev)
 		return -EFAULT;
 	}
 
-	hexium = kzalloc(sizeof(*hexium), GFP_KERNEL);
-	if (!hexium)
+	hexium = kzalloc(sizeof(struct hexium), GFP_KERNEL);
+	if (NULL == hexium) {
+		pr_err("hexium_probe: not enough kernel memory\n");
 		return -ENOMEM;
+	}
 
 	/* enable i2c-port pins */
 	saa7146_write(dev, MC1, (MASK_08 | MASK_24 | MASK_10 | MASK_26));
@@ -231,8 +232,9 @@ static int hexium_probe(struct saa7146_dev *dev)
 	saa7146_write(dev, DD1_STREAM_B, 0x00000000);
 	saa7146_write(dev, MC2, (MASK_09 | MASK_25 | MASK_10 | MASK_26));
 
-	strscpy(hexium->i2c_adapter.name, "hexium orion",
-		sizeof(hexium->i2c_adapter.name));
+	hexium->i2c_adapter = (struct i2c_adapter) {
+		.name = "hexium orion",
+	};
 	saa7146_i2c_adapter_prepare(dev, &hexium->i2c_adapter, SAA7146_I2C_BUS_BIT_RATE_480);
 	if (i2c_add_adapter(&hexium->i2c_adapter) < 0) {
 		DEB_S("cannot register i2c-device. skipping.\n");
@@ -266,9 +268,7 @@ static int hexium_probe(struct saa7146_dev *dev)
 
 	/* check if this is an old hexium Orion card by looking at
 	   a saa7110 at address 0x4e */
-	err = i2c_smbus_xfer(&hexium->i2c_adapter, 0x4e, 0, I2C_SMBUS_READ,
-			     0x00, I2C_SMBUS_BYTE_DATA, &data);
-	if (err == 0) {
+	if (0 == (err = i2c_smbus_xfer(&hexium->i2c_adapter, 0x4e, 0, I2C_SMBUS_READ, 0x00, I2C_SMBUS_BYTE_DATA, &data))) {
 		pr_info("device is a Hexium HV-PCI6/Orion (old)\n");
 		/* we store the pointer in our private data field */
 		dev->ext_priv = hexium;
@@ -367,16 +367,10 @@ static struct saa7146_ext_vv vv_data;
 static int hexium_attach(struct saa7146_dev *dev, struct saa7146_pci_extension_data *info)
 {
 	struct hexium *hexium = (struct hexium *) dev->ext_priv;
-	int ret;
 
 	DEB_EE("\n");
 
-	ret = saa7146_vv_init(dev, &vv_data);
-	if (ret) {
-		pr_err("Error in saa7146_vv_init()\n");
-		return ret;
-	}
-
+	saa7146_vv_init(dev, &vv_data);
 	vv_data.vid_ops.vidioc_enum_input = vidioc_enum_input;
 	vv_data.vid_ops.vidioc_g_input = vidioc_g_input;
 	vv_data.vid_ops.vidioc_s_input = vidioc_s_input;
@@ -433,7 +427,7 @@ static struct saa7146_pci_extension_data hexium_orion_4bnc = {
 	.ext = &extension,
 };
 
-static const struct pci_device_id pci_tbl[] = {
+static struct pci_device_id pci_tbl[] = {
 	{
 	 .vendor = PCI_VENDOR_ID_PHILIPS,
 	 .device = PCI_DEVICE_ID_PHILIPS_SAA7146,
@@ -466,7 +460,7 @@ static struct saa7146_ext_vv vv_data = {
 	.inputs = HEXIUM_INPUTS,
 	.capabilities = 0,
 	.stds = &hexium_standards[0],
-	.num_stds = ARRAY_SIZE(hexium_standards),
+	.num_stds = sizeof(hexium_standards) / sizeof(struct saa7146_standard),
 	.std_callback = &std_callback,
 };
 

@@ -1,7 +1,16 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * comedi/drivers/dyna_pci10xx.c
  * Copyright (C) 2011 Prashant Shah, pshah.mumbai@gmail.com
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
  */
 
 /*
@@ -25,9 +34,10 @@
 
 #include <linux/module.h>
 #include <linux/delay.h>
+#include <linux/pci.h>
 #include <linux/mutex.h>
 
-#include "../comedi_pci.h"
+#include "../comedidev.h"
 
 #define READ_TIMEOUT 50
 
@@ -60,9 +70,8 @@ static int dyna_pci10xx_ai_eoc(struct comedi_device *dev,
 }
 
 static int dyna_pci10xx_insn_read_ai(struct comedi_device *dev,
-				     struct comedi_subdevice *s,
-				     struct comedi_insn *insn,
-				     unsigned int *data)
+			struct comedi_subdevice *s,
+			struct comedi_insn *insn, unsigned int *data)
 {
 	struct dyna_pci10xx_private *devpriv = dev->private;
 	int n;
@@ -80,7 +89,7 @@ static int dyna_pci10xx_insn_read_ai(struct comedi_device *dev,
 		/* trigger conversion */
 		smp_mb();
 		outw_p(0x0000 + range + chan, dev->iobase + 2);
-		usleep_range(10, 20);
+		udelay(10);
 
 		ret = comedi_timeout(dev, s, insn, dyna_pci10xx_ai_eoc, 0);
 		if (ret)
@@ -100,9 +109,8 @@ static int dyna_pci10xx_insn_read_ai(struct comedi_device *dev,
 
 /* analog output callback */
 static int dyna_pci10xx_insn_write_ao(struct comedi_device *dev,
-				      struct comedi_subdevice *s,
-				      struct comedi_insn *insn,
-				      unsigned int *data)
+				 struct comedi_subdevice *s,
+				 struct comedi_insn *insn, unsigned int *data)
 {
 	struct dyna_pci10xx_private *devpriv = dev->private;
 	int n;
@@ -116,7 +124,7 @@ static int dyna_pci10xx_insn_write_ao(struct comedi_device *dev,
 		smp_mb();
 		/* trigger conversion and write data */
 		outw_p(data[n], dev->iobase);
-		usleep_range(10, 20);
+		udelay(10);
 	}
 	mutex_unlock(&devpriv->mutex);
 	return n;
@@ -124,9 +132,8 @@ static int dyna_pci10xx_insn_write_ao(struct comedi_device *dev,
 
 /* digital input bit interface */
 static int dyna_pci10xx_di_insn_bits(struct comedi_device *dev,
-				     struct comedi_subdevice *s,
-				     struct comedi_insn *insn,
-				     unsigned int *data)
+			      struct comedi_subdevice *s,
+			      struct comedi_insn *insn, unsigned int *data)
 {
 	struct dyna_pci10xx_private *devpriv = dev->private;
 	u16 d = 0;
@@ -134,7 +141,7 @@ static int dyna_pci10xx_di_insn_bits(struct comedi_device *dev,
 	mutex_lock(&devpriv->mutex);
 	smp_mb();
 	d = inw_p(devpriv->BADR3);
-	usleep_range(10, 100);
+	udelay(10);
 
 	/* on return the data[0] contains output and data[1] contains input */
 	data[1] = d;
@@ -154,7 +161,7 @@ static int dyna_pci10xx_do_insn_bits(struct comedi_device *dev,
 	if (comedi_dio_update_state(s, data)) {
 		smp_mb();
 		outw_p(s->state, devpriv->BADR3);
-		usleep_range(10, 100);
+		udelay(10);
 	}
 
 	data[1] = s->state;
@@ -164,7 +171,7 @@ static int dyna_pci10xx_do_insn_bits(struct comedi_device *dev,
 }
 
 static int dyna_pci10xx_auto_attach(struct comedi_device *dev,
-				    unsigned long context_unused)
+					      unsigned long context_unused)
 {
 	struct pci_dev *pcidev = comedi_to_pci_dev(dev);
 	struct dyna_pci10xx_private *devpriv;

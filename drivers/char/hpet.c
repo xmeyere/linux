@@ -12,6 +12,7 @@
  */
 
 #include <linux/interrupt.h>
+#include <linux/module.h>
 #include <linux/kernel.h>
 #include <linux/types.h>
 #include <linux/miscdevice.h>
@@ -25,7 +26,6 @@
 #include <linux/spinlock.h>
 #include <linux/sysctl.h>
 #include <linux/wait.h>
-#include <linux/sched/signal.h>
 #include <linux/bcd.h>
 #include <linux/seq_file.h>
 #include <linux/bitops.h>
@@ -43,7 +43,7 @@
 /*
  * The High Precision Event Timer driver.
  * This driver is closely modelled after the rtc.c driver.
- * See HPET spec revision 1.
+ * http://www.intel.com/hardwaredesign/hpetspec_1.pdf
  */
 #define	HPET_USER_FREQ	(64)
 #define	HPET_DRIFT	(500)
@@ -70,9 +70,9 @@ static u32 hpet_nhpet, hpet_max_freq = HPET_USER_FREQ;
 #ifdef CONFIG_IA64
 static void __iomem *hpet_mctr;
 
-static u64 read_hpet(struct clocksource *cs)
+static cycle_t read_hpet(struct clocksource *cs)
 {
-	return (u64)read_counter((void __iomem *)hpet_mctr);
+	return (cycle_t)read_counter((void __iomem *)hpet_mctr);
 }
 
 static struct clocksource clocksource_hpet = {
@@ -342,7 +342,7 @@ out:
 	return retval;
 }
 
-static __poll_t hpet_poll(struct file *file, poll_table * wait)
+static unsigned int hpet_poll(struct file *file, poll_table * wait)
 {
 	unsigned long v;
 	struct hpet_dev *devp;
@@ -359,7 +359,7 @@ static __poll_t hpet_poll(struct file *file, poll_table * wait)
 	spin_unlock_irq(&hpet_lock);
 
 	if (v != 0)
-		return EPOLLIN | EPOLLRDNORM;
+		return POLLIN | POLLRDNORM;
 
 	return 0;
 }
@@ -377,7 +377,7 @@ static __init int hpet_mmap_enable(char *str)
 	pr_info("HPET mmap %s\n", hpet_mmap_enabled ? "enabled" : "disabled");
 	return 1;
 }
-__setup("hpet_mmap=", hpet_mmap_enable);
+__setup("hpet_mmap", hpet_mmap_enable);
 
 static int hpet_mmap(struct file *file, struct vm_area_struct *vma)
 {
@@ -570,14 +570,16 @@ static inline unsigned long hpet_time_div(struct hpets *hpets,
 	unsigned long long m;
 
 	m = hpets->hp_tick_freq + (dis >> 1);
-	return div64_ul(m, dis);
+	do_div(m, dis);
+	return (unsigned long)m;
 }
 
 static int
-hpet_ioctl_common(struct hpet_dev *devp, unsigned int cmd, unsigned long arg,
+hpet_ioctl_common(struct hpet_dev *devp, int cmd, unsigned long arg,
 		  struct hpet_info *info)
 {
 	struct hpet_timer __iomem *timer;
+	struct hpet __iomem *hpet;
 	struct hpets *hpetp;
 	int err;
 	unsigned long v;
@@ -589,6 +591,7 @@ hpet_ioctl_common(struct hpet_dev *devp, unsigned int cmd, unsigned long arg,
 	case HPET_DPI:
 	case HPET_IRQFREQ:
 		timer = devp->hd_timer;
+		hpet = devp->hd_hpet;
 		hpetp = devp->hd_hpets;
 		break;
 	case HPET_IE_ON:
@@ -975,8 +978,6 @@ static acpi_status hpet_resources(struct acpi_resource *res, void *data)
 	if (ACPI_SUCCESS(status)) {
 		hdp->hd_phys_address = addr.address.minimum;
 		hdp->hd_address = ioremap(addr.address.minimum, addr.address.address_length);
-		if (!hdp->hd_address)
-			return AE_ERROR;
 
 		if (hpet_is_known(hdp)) {
 			iounmap(hdp->hd_address);
@@ -990,8 +991,6 @@ static acpi_status hpet_resources(struct acpi_resource *res, void *data)
 		hdp->hd_phys_address = fixmem32->address;
 		hdp->hd_address = ioremap(fixmem32->address,
 						HPET_RANGE_SIZE);
-		if (!hdp->hd_address)
-			return AE_ERROR;
 
 		if (hpet_is_known(hdp)) {
 			iounmap(hdp->hd_address);
@@ -1044,16 +1043,24 @@ static int hpet_acpi_add(struct acpi_device *device)
 	return hpet_alloc(&data);
 }
 
+static int hpet_acpi_remove(struct acpi_device *device)
+{
+	/* XXX need to unregister clocksource, dealloc mem, etc */
+	return -EINVAL;
+}
+
 static const struct acpi_device_id hpet_device_ids[] = {
 	{"PNP0103", 0},
 	{"", 0},
 };
+MODULE_DEVICE_TABLE(acpi, hpet_device_ids);
 
 static struct acpi_driver hpet_acpi_driver = {
 	.name = "hpet",
 	.ids = hpet_device_ids,
 	.ops = {
 		.add = hpet_acpi_add,
+		.remove = hpet_acpi_remove,
 		},
 };
 
@@ -1079,9 +1086,19 @@ static int __init hpet_init(void)
 
 	return 0;
 }
-device_initcall(hpet_init);
 
-/*
+static void __exit hpet_exit(void)
+{
+	acpi_bus_unregister_driver(&hpet_acpi_driver);
+
+	if (sysctl_header)
+		unregister_sysctl_table(sysctl_header);
+	misc_deregister(&hpet_misc);
+
+	return;
+}
+
+module_init(hpet_init);
+module_exit(hpet_exit);
 MODULE_AUTHOR("Bob Picco <Robert.Picco@hp.com>");
 MODULE_LICENSE("GPL");
-*/

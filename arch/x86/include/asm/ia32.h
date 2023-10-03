@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_X86_IA32_H
 #define _ASM_X86_IA32_H
 
@@ -11,7 +10,7 @@
  * 32 bit structures for IA32 support.
  */
 
-#include <uapi/asm/sigcontext.h>
+#include <asm/sigcontext32.h>
 
 /* signal.h */
 
@@ -19,7 +18,16 @@ struct ucontext_ia32 {
 	unsigned int	  uc_flags;
 	unsigned int 	  uc_link;
 	compat_stack_t	  uc_stack;
-	struct sigcontext_32 uc_mcontext;
+	struct sigcontext_ia32 uc_mcontext;
+	compat_sigset_t	  uc_sigmask;	/* mask last for extensibility */
+};
+
+struct ucontext_x32 {
+	unsigned int	  uc_flags;
+	unsigned int 	  uc_link;
+	compat_stack_t	  uc_stack;
+	unsigned int	  uc__pad0;     /* needed for alignment */
+	struct sigcontext uc_mcontext;  /* the 64-bit sigcontext type */
 	compat_sigset_t	  uc_sigmask;	/* mask last for extensibility */
 };
 

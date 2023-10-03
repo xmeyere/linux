@@ -1,21 +1,31 @@
-/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * vivid-core.h - core datastructures
  *
  * Copyright 2014 Cisco Systems, Inc. and/or its affiliates. All rights reserved.
+ *
+ * This program is free software; you may redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; version 2 of the License.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+ * NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS
+ * BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN
+ * ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
  */
 
 #ifndef _VIVID_CORE_H_
 #define _VIVID_CORE_H_
 
 #include <linux/fb.h>
-#include <linux/workqueue.h>
-#include <media/cec.h>
-#include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-core.h>
 #include <media/v4l2-device.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-ctrls.h>
-#include <media/tpg/v4l2-tpg.h>
+#include "vivid-tpg.h"
 #include "vivid-rds-gen.h"
 #include "vivid-vbi-gen.h"
 
@@ -67,15 +77,14 @@ extern const struct v4l2_rect vivid_max_rect;
 extern unsigned vivid_debug;
 
 struct vivid_fmt {
+	const char *name;
 	u32	fourcc;          /* v4l2 format id */
-	enum	tgp_color_enc color_enc;
+	u8	depth;
+	bool	is_yuv;
 	bool	can_do_overlay;
-	u8	vdownsampling[TPG_MAX_PLANES];
 	u32	alpha_mask;
 	u8	planes;
-	u8	buffers;
-	u32	data_offset[TPG_MAX_PLANES];
-	u32	bit_depth[TPG_MAX_PLANES];
+	u32	data_offset[2];
 };
 
 extern struct vivid_fmt vivid_formats[];
@@ -83,7 +92,7 @@ extern struct vivid_fmt vivid_formats[];
 /* buffer for one video frame */
 struct vivid_buffer {
 	/* common v4l buffer stuff -- must be first */
-	struct vb2_v4l2_buffer vb;
+	struct vb2_buffer	vb;
 	struct list_head	list;
 };
 
@@ -111,9 +120,8 @@ enum vivid_colorspace {
 	VIVID_CS_170M,
 	VIVID_CS_709,
 	VIVID_CS_SRGB,
-	VIVID_CS_OPRGB,
+	VIVID_CS_ADOBERGB,
 	VIVID_CS_2020,
-	VIVID_CS_DCI_P3,
 	VIVID_CS_240M,
 	VIVID_CS_SYS_M,
 	VIVID_CS_SYS_BG,
@@ -121,17 +129,6 @@ enum vivid_colorspace {
 
 #define VIVID_INVALID_SIGNAL(mode) \
 	((mode) == NO_SIGNAL || (mode) == NO_LOCK || (mode) == OUT_OF_RANGE)
-
-struct vivid_cec_work {
-	struct list_head	list;
-	struct delayed_work	work;
-	struct cec_adapter	*adap;
-	struct vivid_dev	*dev;
-	unsigned int		usecs;
-	unsigned int		timeout_ms;
-	u8			tx_status;
-	struct cec_msg		msg;
-};
 
 struct vivid_dev {
 	unsigned			inst;
@@ -141,8 +138,7 @@ struct vivid_dev {
 	struct v4l2_ctrl_handler	ctrl_hdl_user_aud;
 	struct v4l2_ctrl_handler	ctrl_hdl_streaming;
 	struct v4l2_ctrl_handler	ctrl_hdl_sdtv_cap;
-	struct v4l2_ctrl_handler	ctrl_hdl_loop_cap;
-	struct v4l2_ctrl_handler	ctrl_hdl_fb;
+	struct v4l2_ctrl_handler	ctrl_hdl_loop_out;
 	struct video_device		vid_cap_dev;
 	struct v4l2_ctrl_handler	ctrl_hdl_vid_cap;
 	struct video_device		vid_out_dev;
@@ -266,7 +262,6 @@ struct vivid_dev {
 	bool				vflip;
 	bool				vbi_cap_interlaced;
 	bool				loop_video;
-	bool				reduced_fps;
 
 	/* Framebuffer */
 	unsigned long			video_pbase;
@@ -288,7 +283,7 @@ struct vivid_dev {
 	bool				dqbuf_error;
 	bool				seq_wrap;
 	bool				time_wrap;
-	u64				time_wrap_offset;
+	__kernel_time_t			time_wrap_offset;
 	unsigned			perc_dropped_buffers;
 	enum vivid_signal_mode		std_signal_mode;
 	unsigned			query_std_last;
@@ -335,11 +330,9 @@ struct vivid_dev {
 	struct v4l2_dv_timings		dv_timings_out;
 	u32				colorspace_out;
 	u32				ycbcr_enc_out;
-	u32				hsv_enc_out;
 	u32				quantization_out;
-	u32				xfer_func_out;
 	u32				service_set_out;
-	unsigned			bytesperline_out[TPG_MAX_PLANES];
+	u32				bytesperline_out[2];
 	unsigned			tv_field_out;
 	unsigned			tv_audio_output;
 	bool				vbi_out_have_wss;
@@ -452,11 +445,8 @@ struct vivid_dev {
 	/* SDR capture */
 	struct vb2_queue		vb_sdr_cap_q;
 	struct list_head		sdr_cap_active;
-	u32				sdr_pixelformat; /* v4l2 format id */
-	unsigned			sdr_buffersize;
 	unsigned			sdr_adc_freq;
 	unsigned			sdr_fm_freq;
-	unsigned			sdr_fm_deviation;
 	int				sdr_fixp_src_phase;
 	int				sdr_fixp_mod_phase;
 
@@ -499,21 +489,7 @@ struct vivid_dev {
 
 	/* Shared between radio receiver and transmitter */
 	bool				radio_rds_loop;
-	ktime_t				radio_rds_init_time;
-
-	/* CEC */
-	struct cec_adapter		*cec_rx_adap;
-	struct cec_adapter		*cec_tx_adap[MAX_OUTPUTS];
-	struct workqueue_struct		*cec_workqueue;
-	spinlock_t			cec_slock;
-	struct list_head		cec_work_list;
-	unsigned int			cec_xfer_time_jiffies;
-	unsigned long			cec_xfer_start_jiffies;
-	u8				cec_output2bus_map[MAX_OUTPUTS];
-
-	/* CEC OSD String */
-	char				osd[14];
-	unsigned long			osd_jiffies;
+	struct timespec			radio_rds_init_ts;
 };
 
 static inline bool vivid_is_webcam(const struct vivid_dev *dev)
@@ -550,7 +526,5 @@ static inline bool vivid_is_hdmi_out(const struct vivid_dev *dev)
 {
 	return dev->output_type[dev->output] == HDMI;
 }
-
-bool vivid_validate_fb(const struct v4l2_framebuffer *a);
 
 #endif

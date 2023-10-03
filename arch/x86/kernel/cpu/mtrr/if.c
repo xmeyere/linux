@@ -1,8 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/capability.h>
 #include <linux/seq_file.h>
 #include <linux/uaccess.h>
 #include <linux/proc_fs.h>
+#include <linux/module.h>
 #include <linux/ctype.h>
 #include <linux/string.h>
 #include <linux/slab.h>
@@ -43,7 +43,7 @@ mtrr_file_add(unsigned long base, unsigned long size,
 
 	max = num_var_ranges;
 	if (fcount == NULL) {
-		fcount = kcalloc(max, sizeof(*fcount), GFP_KERNEL);
+		fcount = kzalloc(max * sizeof *fcount, GFP_KERNEL);
 		if (!fcount)
 			return -ENOMEM;
 		FILE_FCOUNT(file) = fcount;
@@ -106,10 +106,17 @@ mtrr_write(struct file *file, const char __user *buf, size_t len, loff_t * ppos)
 
 	memset(line, 0, LINE_SIZE);
 
-	len = min_t(size_t, len, LINE_SIZE - 1);
-	length = strncpy_from_user(line, buf, len);
+	length = len;
+	length--;
+
+	if (length > LINE_SIZE - 1)
+		length = LINE_SIZE - 1;
+
 	if (length < 0)
-		return length;
+		return -EINVAL;
+
+	if (copy_from_user(line, buf, length))
+		return -EFAULT;
 
 	linelen = strlen(line);
 	ptr = line + linelen - 1;
@@ -142,16 +149,17 @@ mtrr_write(struct file *file, const char __user *buf, size_t len, loff_t * ppos)
 		return -EINVAL;
 	ptr = skip_spaces(ptr + 5);
 
-	i = match_string(mtrr_strings, MTRR_NUM_TYPES, ptr);
-	if (i < 0)
-		return i;
-
-	base >>= PAGE_SHIFT;
-	size >>= PAGE_SHIFT;
-	err = mtrr_add_page((unsigned long)base, (unsigned long)size, i, true);
-	if (err < 0)
-		return err;
-	return len;
+	for (i = 0; i < MTRR_NUM_TYPES; ++i) {
+		if (strcmp(ptr, mtrr_strings[i]))
+			continue;
+		base >>= PAGE_SHIFT;
+		size >>= PAGE_SHIFT;
+		err = mtrr_add_page((unsigned long)base, (unsigned long)size, i, true);
+		if (err < 0)
+			return err;
+		return len;
+	}
+	return -EINVAL;
 }
 
 static long
@@ -164,8 +172,6 @@ mtrr_ioctl(struct file *file, unsigned int cmd, unsigned long __arg)
 	struct mtrr_sentry sentry;
 	struct mtrr_gentry gentry;
 	void __user *arg = (void __user *) __arg;
-
-	memset(&gentry, 0, sizeof(gentry));
 
 	switch (cmd) {
 	case MTRRIOC_ADD_ENTRY:
@@ -398,10 +404,11 @@ static const struct file_operations mtrr_fops = {
 static int mtrr_seq_show(struct seq_file *seq, void *offset)
 {
 	char factor;
-	int i, max;
+	int i, max, len;
 	mtrr_type type;
 	unsigned long base, size;
 
+	len = 0;
 	max = num_var_ranges;
 	for (i = 0; i < max; i++) {
 		mtrr_if->get(i, &base, &size, &type);
@@ -418,10 +425,11 @@ static int mtrr_seq_show(struct seq_file *seq, void *offset)
 			size >>= 20 - PAGE_SHIFT;
 		}
 		/* Base can be > 32bit */
-		seq_printf(seq, "reg%02i: base=0x%06lx000 (%5luMB), size=%5lu%cB, count=%d: %s\n",
-			   i, base, base >> (20 - PAGE_SHIFT),
-			   size, factor,
-			   mtrr_usage_table[i], mtrr_attrib_to_str(type));
+		len += seq_printf(seq, "reg%02i: base=0x%06lx000 "
+			"(%5luMB), size=%5lu%cB, count=%d: %s\n",
+			i, base, base >> (20 - PAGE_SHIFT), size,
+			factor, mtrr_usage_table[i],
+			mtrr_attrib_to_str(type));
 	}
 	return 0;
 }

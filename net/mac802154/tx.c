@@ -30,28 +30,49 @@
 #include "ieee802154_i.h"
 #include "driver-ops.h"
 
-void ieee802154_xmit_worker(struct work_struct *work)
+/* IEEE 802.15.4 transceivers can sleep during the xmit session, so process
+ * packets through the workqueue.
+ */
+struct ieee802154_xmit_cb {
+	struct sk_buff *skb;
+	struct work_struct work;
+	struct ieee802154_local *local;
+};
+
+static struct ieee802154_xmit_cb ieee802154_xmit_cb;
+
+static void ieee802154_xmit_worker(struct work_struct *work)
 {
-	struct ieee802154_local *local =
-		container_of(work, struct ieee802154_local, tx_work);
-	struct sk_buff *skb = local->tx_skb;
+	struct ieee802154_xmit_cb *cb =
+		container_of(work, struct ieee802154_xmit_cb, work);
+	struct ieee802154_local *local = cb->local;
+	struct sk_buff *skb = cb->skb;
 	struct net_device *dev = skb->dev;
 	int res;
+
+	rtnl_lock();
+
+	/* check if ifdown occurred while schedule */
+	if (!netif_running(dev))
+		goto err_tx;
 
 	res = drv_xmit_sync(local, skb);
 	if (res)
 		goto err_tx;
 
+	ieee802154_xmit_complete(&local->hw, skb, false);
+
 	dev->stats.tx_packets++;
 	dev->stats.tx_bytes += skb->len;
 
-	ieee802154_xmit_complete(&local->hw, skb, false);
+	rtnl_unlock();
 
 	return;
 
 err_tx:
 	/* Restart the netif queue on each sub_if_data object. */
 	ieee802154_wake_queue(&local->hw);
+	rtnl_unlock();
 	kfree_skb(skb);
 	netdev_dbg(dev, "transmission failed\n");
 }
@@ -63,31 +84,19 @@ ieee802154_tx(struct ieee802154_local *local, struct sk_buff *skb)
 	int ret;
 
 	if (!(local->hw.flags & IEEE802154_HW_TX_OMIT_CKSUM)) {
-		struct sk_buff *nskb;
-		u16 crc;
+		u16 crc = crc_ccitt(0, skb->data, skb->len);
 
-		if (unlikely(skb_tailroom(skb) < IEEE802154_FCS_LEN)) {
-			nskb = skb_copy_expand(skb, 0, IEEE802154_FCS_LEN,
-					       GFP_ATOMIC);
-			if (likely(nskb)) {
-				consume_skb(skb);
-				skb = nskb;
-			} else {
-				goto err_tx;
-			}
-		}
-
-		crc = crc_ccitt(0, skb->data, skb->len);
 		put_unaligned_le16(crc, skb_put(skb, 2));
 	}
+
+	if (skb_cow_head(skb, local->hw.extra_tx_headroom))
+		goto err_tx;
 
 	/* Stop the netif queue on each sub_if_data object. */
 	ieee802154_stop_queue(&local->hw);
 
 	/* async is priority, otherwise sync is fallback */
 	if (local->ops->xmit_async) {
-		unsigned int len = skb->len;
-
 		ret = drv_xmit_async(local, skb);
 		if (ret) {
 			ieee802154_wake_queue(&local->hw);
@@ -95,10 +104,13 @@ ieee802154_tx(struct ieee802154_local *local, struct sk_buff *skb)
 		}
 
 		dev->stats.tx_packets++;
-		dev->stats.tx_bytes += len;
+		dev->stats.tx_bytes += skb->len;
 	} else {
-		local->tx_skb = skb;
-		queue_work(local->workqueue, &local->tx_work);
+		INIT_WORK(&ieee802154_xmit_cb.work, ieee802154_xmit_worker);
+		ieee802154_xmit_cb.skb = skb;
+		ieee802154_xmit_cb.local = local;
+
+		queue_work(local->workqueue, &ieee802154_xmit_cb.work);
 	}
 
 	return NETDEV_TX_OK;
@@ -124,10 +136,6 @@ ieee802154_subif_start_xmit(struct sk_buff *skb, struct net_device *dev)
 	struct ieee802154_sub_if_data *sdata = IEEE802154_DEV_TO_SUB_IF(dev);
 	int rc;
 
-	/* TODO we should move it to wpan_dev_hard_header and dev_hard_header
-	 * functions. The reason is wireshark will show a mac header which is
-	 * with security fields but the payload is not encrypted.
-	 */
 	rc = mac802154_llsec_encrypt(&sdata->sec, skb);
 	if (rc) {
 		netdev_warn(dev, "encryption failed: %i\n", rc);

@@ -1,8 +1,20 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2000,2002-2003,2005 Silicon Graphics, Inc.
  * Copyright (c) 2013 Red Hat, Inc.
  * All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 #ifndef __XFS_ATTR_LEAF_H__
 #define	__XFS_ATTR_LEAF_H__
@@ -36,13 +48,12 @@ void	xfs_attr_shortform_create(struct xfs_da_args *args);
 void	xfs_attr_shortform_add(struct xfs_da_args *args, int forkoff);
 int	xfs_attr_shortform_lookup(struct xfs_da_args *args);
 int	xfs_attr_shortform_getvalue(struct xfs_da_args *args);
-int	xfs_attr_shortform_to_leaf(struct xfs_da_args *args,
-			struct xfs_buf **leaf_bp);
+int	xfs_attr_shortform_to_leaf(struct xfs_da_args *args);
 int	xfs_attr_shortform_remove(struct xfs_da_args *args);
+int	xfs_attr_shortform_list(struct xfs_attr_list_context *context);
 int	xfs_attr_shortform_allfit(struct xfs_buf *bp, struct xfs_inode *dp);
-int	xfs_attr_shortform_bytesfit(struct xfs_inode *dp, int bytes);
-xfs_failaddr_t xfs_attr_shortform_verify(struct xfs_inode *ip);
-void	xfs_attr_fork_remove(struct xfs_inode *ip, struct xfs_trans *tp);
+int	xfs_attr_shortform_bytesfit(xfs_inode_t *dp, int bytes);
+
 
 /*
  * Internal routines when attribute fork size == XFS_LBSIZE(mp).
@@ -67,7 +78,7 @@ int	xfs_attr3_leaf_add(struct xfs_buf *leaf_buffer,
 				 struct xfs_da_args *args);
 int	xfs_attr3_leaf_remove(struct xfs_buf *leaf_buffer,
 				    struct xfs_da_args *args);
-void	xfs_attr3_leaf_list_int(struct xfs_buf *bp,
+int	xfs_attr3_leaf_list_int(struct xfs_buf *bp,
 				      struct xfs_attr_list_context *context);
 
 /*
@@ -77,6 +88,8 @@ int	xfs_attr3_leaf_toosmall(struct xfs_da_state *state, int *retval);
 void	xfs_attr3_leaf_unbalance(struct xfs_da_state *state,
 				       struct xfs_da_state_blk *drop_blk,
 				       struct xfs_da_state_blk *save_blk);
+int	xfs_attr3_root_inactive(struct xfs_trans **trans, struct xfs_inode *dp);
+
 /*
  * Utility routines.
  */
@@ -87,11 +100,9 @@ int	xfs_attr_leaf_newentsize(struct xfs_da_args *args, int *local);
 int	xfs_attr3_leaf_read(struct xfs_trans *tp, struct xfs_inode *dp,
 			xfs_dablk_t bno, xfs_daddr_t mappedbno,
 			struct xfs_buf **bpp);
-void	xfs_attr3_leaf_hdr_from_disk(struct xfs_da_geometry *geo,
-				     struct xfs_attr3_icleaf_hdr *to,
+void	xfs_attr3_leaf_hdr_from_disk(struct xfs_attr3_icleaf_hdr *to,
 				     struct xfs_attr_leafblock *from);
-void	xfs_attr3_leaf_hdr_to_disk(struct xfs_da_geometry *geo,
-				   struct xfs_attr_leafblock *to,
+void	xfs_attr3_leaf_hdr_to_disk(struct xfs_attr_leafblock *to,
 				   struct xfs_attr3_icleaf_hdr *from);
 
 #endif	/* __XFS_ATTR_LEAF_H__ */

@@ -17,6 +17,7 @@
 #include <linux/platform_device.h>
 #include <linux/list.h>
 #include <linux/pm.h>
+#include <asm/olpc.h>
 
 /*
  * The default port config.
@@ -115,7 +116,7 @@ EXPORT_SYMBOL_GPL(viafb_irq_disable);
  * most viafb systems will not need to have this extra code for a while.
  * As soon as another user comes long, the ifdef can be removed.
  */
-#if IS_ENABLED(CONFIG_VIDEO_VIA_CAMERA)
+#if defined(CONFIG_VIDEO_VIA_CAMERA) || defined(CONFIG_VIDEO_VIA_CAMERA_MODULE)
 /*
  * Access to the DMA engine.  This currently provides what the camera
  * driver needs (i.e. outgoing only) but is easily expandable if need
@@ -541,7 +542,7 @@ static struct viafb_subdev_info {
 	{
 		.name = "viafb-i2c",
 	},
-#if IS_ENABLED(CONFIG_VIDEO_VIA_CAMERA)
+#if defined(CONFIG_VIDEO_VIA_CAMERA) || defined(CONFIG_VIDEO_VIA_CAMERA_MODULE)
 	{
 		.name = "viafb-camera",
 	},
@@ -723,7 +724,7 @@ static void via_pci_remove(struct pci_dev *pdev)
 }
 
 
-static const struct pci_device_id via_pci_table[] = {
+static struct pci_device_id via_pci_table[] = {
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, UNICHROME_CLE266_DID),
 	  .driver_data = UNICHROME_CLE266 },
 	{ PCI_DEVICE(PCI_VENDOR_ID_VIA, UNICHROME_K400_DID),
@@ -774,14 +775,7 @@ static int __init via_core_init(void)
 		return ret;
 	viafb_i2c_init();
 	viafb_gpio_init();
-	ret = pci_register_driver(&via_driver);
-	if (ret) {
-		viafb_gpio_exit();
-		viafb_i2c_exit();
-		return ret;
-	}
-
-	return 0;
+	return pci_register_driver(&via_driver);
 }
 
 static void __exit via_core_exit(void)

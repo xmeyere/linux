@@ -41,6 +41,7 @@ static void __iomem *gpio_regs;
 struct gpio_priv {
 	int mdc_pin;
 	int mdio_pin;
+	int mdio_irqs[PHY_MAX_ADDR];
 };
 
 #define MDC_PIN(bus)	(((struct gpio_priv *)bus->priv)->mdc_pin)
@@ -244,6 +245,8 @@ static int gpio_mdio_probe(struct platform_device *ofdev)
 	snprintf(new_bus->id, MII_BUS_ID_SIZE, "%x", *prop);
 	new_bus->priv = priv;
 
+	new_bus->irq = priv->mdio_irqs;
+
 	prop = of_get_property(np, "mdc-pin", NULL);
 	priv->mdc_pin = *prop;
 
@@ -256,7 +259,7 @@ static int gpio_mdio_probe(struct platform_device *ofdev)
 	err = of_mdiobus_register(new_bus, np);
 
 	if (err != 0) {
-		pr_err("%s: Cannot register as MDIO bus, err %d\n",
+		printk(KERN_ERR "%s: Cannot register as MDIO bus, err %d\n",
 				new_bus->name, err);
 		goto out_free_irq;
 	}
@@ -306,7 +309,7 @@ static struct platform_driver gpio_mdio_driver =
 	},
 };
 
-static int gpio_mdio_init(void)
+int gpio_mdio_init(void)
 {
 	struct device_node *np;
 
@@ -326,7 +329,7 @@ static int gpio_mdio_init(void)
 }
 module_init(gpio_mdio_init);
 
-static void gpio_mdio_exit(void)
+void gpio_mdio_exit(void)
 {
 	platform_driver_unregister(&gpio_mdio_driver);
 	if (gpio_regs)

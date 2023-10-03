@@ -11,17 +11,13 @@
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
-#include <elf.h>
-#include <fcntl.h>
-#include <link.h>
-#include <sys/stat.h>
 
 #include "subunit.h"
 #include "utils.h"
 
+#define TIMEOUT		120
 #define KILL_TIMEOUT	5
 
-static uint64_t timeout = 120;
 
 int run_test(int (test_function)(void), char *name)
 {
@@ -44,7 +40,7 @@ int run_test(int (test_function)(void), char *name)
 	setpgid(pid, pid);
 
 	/* Wake us up in timeout seconds */
-	alarm(timeout);
+	alarm(TIMEOUT);
 	terminated = false;
 
 wait:
@@ -85,19 +81,14 @@ wait:
 	return status;
 }
 
-static void sig_handler(int signum)
+static void alarm_handler(int signum)
 {
-	/* Just wake us up from waitpid */
+	/* Jut wake us up from waitpid */
 }
 
-static struct sigaction sig_action = {
-	.sa_handler = sig_handler,
+static struct sigaction alarm_action = {
+	.sa_handler = alarm_handler,
 };
-
-void test_harness_set_timeout(uint64_t time)
-{
-	timeout = time;
-}
 
 int test_harness(int (test_function)(void), char *name)
 {
@@ -106,25 +97,17 @@ int test_harness(int (test_function)(void), char *name)
 	test_start(name);
 	test_set_git_version(GIT_VERSION);
 
-	if (sigaction(SIGINT, &sig_action, NULL)) {
-		perror("sigaction (sigint)");
-		test_error(name);
-		return 1;
-	}
-
-	if (sigaction(SIGALRM, &sig_action, NULL)) {
-		perror("sigaction (sigalrm)");
+	if (sigaction(SIGALRM, &alarm_action, NULL)) {
+		perror("sigaction");
 		test_error(name);
 		return 1;
 	}
 
 	rc = run_test(test_function, name);
 
-	if (rc == MAGIC_SKIP_RETURN_VALUE) {
+	if (rc == MAGIC_SKIP_RETURN_VALUE)
 		test_skip(name);
-		/* so that skipped test is not marked as failed */
-		rc = 0;
-	} else
+	else
 		test_finish(name, rc);
 
 	return rc;

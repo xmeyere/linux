@@ -91,7 +91,7 @@ static void wf_lm87_release(struct wf_sensor *sr)
 	kfree(lm);
 }
 
-static const struct wf_sensor_ops wf_lm87_ops = {
+static struct wf_sensor_ops wf_lm87_ops = {
 	.get_value	= wf_lm87_get,
 	.release	= wf_lm87_release,
 	.owner		= THIS_MODULE,
@@ -126,8 +126,8 @@ static int wf_lm87_probe(struct i2c_client *client,
 		}
 	}
 	if (!name) {
-		pr_warning("wf_lm87: Unsupported sensor %pOF\n",
-			   client->dev.of_node);
+		pr_warning("wf_lm87: Unsupported sensor %s\n",
+			   client->dev.of_node->full_name);
 		return -ENODEV;
 	}
 
@@ -168,16 +168,9 @@ static const struct i2c_device_id wf_lm87_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, wf_lm87_id);
 
-static const struct of_device_id wf_lm87_of_id[] = {
-	{ .compatible = "lm87cimt", },
-	{ }
-};
-MODULE_DEVICE_TABLE(of, wf_lm87_of_id);
-
 static struct i2c_driver wf_lm87_driver = {
 	.driver = {
 		.name	= "wf_lm87",
-		.of_match_table = wf_lm87_of_id,
 	},
 	.probe		= wf_lm87_probe,
 	.remove		= wf_lm87_remove,

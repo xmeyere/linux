@@ -13,12 +13,10 @@
  */
 #include <linux/kernel.h>
 #include <linux/mm.h>
-#include <linux/sched/signal.h>
 #include <linux/hardirq.h>
 #include <linux/kprobes.h>
 #include <linux/perf_event.h>
 #include <linux/kdebug.h>
-#include <linux/uaccess.h>
 #include <asm/io_trapped.h>
 #include <asm/mmu_context.h>
 #include <asm/tlbflush.h>
@@ -42,7 +40,14 @@ static void
 force_sig_info_fault(int si_signo, int si_code, unsigned long address,
 		     struct task_struct *tsk)
 {
-	force_sig_fault(si_signo, si_code, (void __user *)address, tsk);
+	siginfo_t info;
+
+	info.si_signo	= si_signo;
+	info.si_errno	= 0;
+	info.si_code	= si_code;
+	info.si_addr	= (void __user *)address;
+
+	force_sig_info(si_signo, &info, tsk);
 }
 
 /*
@@ -313,7 +318,7 @@ do_sigbus(struct pt_regs *regs, unsigned long error_code, unsigned long address)
 
 static noinline int
 mm_fault_error(struct pt_regs *regs, unsigned long error_code,
-	       unsigned long address, vm_fault_t fault)
+	       unsigned long address, unsigned int fault)
 {
 	/*
 	 * Pagefault was interrupted by SIGKILL. We have no reason to
@@ -396,7 +401,7 @@ asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,
 	struct task_struct *tsk;
 	struct mm_struct *mm;
 	struct vm_area_struct * vma;
-	vm_fault_t fault;
+	int fault;
 	unsigned int flags = FAULT_FLAG_ALLOW_RETRY | FAULT_FLAG_KILLABLE;
 
 	tsk = current;
@@ -433,9 +438,9 @@ asmlinkage void __kprobes do_page_fault(struct pt_regs *regs,
 
 	/*
 	 * If we're in an interrupt, have no user context or are running
-	 * with pagefaults disabled then we must not take the fault:
+	 * in an atomic region then we must not take the fault:
 	 */
-	if (unlikely(faulthandler_disabled() || !mm)) {
+	if (unlikely(in_atomic() || !mm)) {
 		bad_area_nosemaphore(regs, error_code, address);
 		return;
 	}
@@ -481,7 +486,7 @@ good_area:
 	 * make sure we exit gracefully rather than endlessly redo
 	 * the fault.
 	 */
-	fault = handle_mm_fault(vma, address, flags);
+	fault = handle_mm_fault(mm, vma, address, flags);
 
 	if (unlikely(fault & (VM_FAULT_RETRY | VM_FAULT_ERROR)))
 		if (mm_fault_error(regs, error_code, address, fault))

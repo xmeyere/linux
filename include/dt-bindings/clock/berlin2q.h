@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * Berlin2 BG2Q clock tree IDs
  */
@@ -30,4 +29,3 @@
 #define CLKID_SMEMC		24
 #define CLKID_PCIE		25
 #define CLKID_TWD		26
-#define CLKID_CPU		27

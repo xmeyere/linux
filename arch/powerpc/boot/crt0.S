@@ -15,7 +15,7 @@
 RELA = 7
 RELACOUNT = 0x6ffffff9
 
-	.data
+	.text
 	/* A procedure descriptor used when booting this as a COFF file.
 	 * When making COFF, this comes first in the link and we're
 	 * linked at 0x500000.
@@ -23,22 +23,20 @@ RELACOUNT = 0x6ffffff9
 	.globl	_zimage_start_opd
 _zimage_start_opd:
 	.long	0x500000, 0, 0, 0
-	.text
-	b	_zimage_start
 
 #ifdef __powerpc64__
 .balign 8
-p_start:	.8byte	_start
-p_etext:	.8byte	_etext
-p_bss_start:	.8byte	__bss_start
-p_end:		.8byte	_end
+p_start:	.llong	_start
+p_etext:	.llong	_etext
+p_bss_start:	.llong	__bss_start
+p_end:		.llong	_end
 
-p_toc:		.8byte	__toc_start + 0x8000 - p_base
-p_dyn:		.8byte	__dynamic_start - p_base
-p_rela:		.8byte	__rela_dyn_start - p_base
-p_prom:		.8byte	0
+p_toc:		.llong	__toc_start + 0x8000 - p_base
+p_dyn:		.llong	__dynamic_start - p_base
+p_rela:		.llong	__rela_dyn_start - p_base
+p_prom:		.llong	0
 	.weak	_platform_stack_top
-p_pstack:	.8byte	_platform_stack_top
+p_pstack:	.llong	_platform_stack_top
 #else
 p_start:	.long	_start
 p_etext:	.long	_etext
@@ -50,6 +48,7 @@ p_pstack:	.long	_platform_stack_top
 #endif
 
 	.weak	_zimage_start
+	.globl	_zimage_start
 _zimage_start:
 	.globl	_zimage_start_lib
 _zimage_start_lib:
@@ -156,29 +155,29 @@ p_base:	mflr	r10		/* r10 now points to runtime addr of p_base */
 	ld	r9,(p_rela-p_base)(r10)
 	add	r9,r9,r10
 
-	li	r13,0
+	li	r7,0
 	li	r8,0
-9:	ld	r12,0(r11)       /* get tag */
-	cmpdi	r12,0
+9:	ld	r6,0(r11)       /* get tag */
+	cmpdi	r6,0
 	beq	12f              /* end of list */
-	cmpdi	r12,RELA
+	cmpdi	r6,RELA
 	bne	10f
-	ld	r13,8(r11)       /* get RELA pointer in r13 */
+	ld	r7,8(r11)       /* get RELA pointer in r7 */
 	b	11f
-10:	addis	r12,r12,(-RELACOUNT)@ha
-	cmpdi	r12,RELACOUNT@l
+10:	addis	r6,r6,(-RELACOUNT)@ha
+	cmpdi	r6,RELACOUNT@l
 	bne	11f
 	ld	r8,8(r11)       /* get RELACOUNT value in r8 */
 11:	addi	r11,r11,16
 	b	9b
 12:
-	cmpdi	r13,0            /* check we have both RELA and RELACOUNT */
+	cmpdi	r7,0            /* check we have both RELA and RELACOUNT */
 	cmpdi	cr1,r8,0
 	beq	3f
 	beq	cr1,3f
 
 	/* Calcuate the runtime offset. */
-	subf	r13,r13,r9
+	subf	r7,r7,r9
 
 	/* Run through the list of relocations and process the
 	 * R_PPC64_RELATIVE ones. */
@@ -186,10 +185,10 @@ p_base:	mflr	r10		/* r10 now points to runtime addr of p_base */
 13:	ld	r0,8(r9)        /* ELF64_R_TYPE(reloc->r_info) */
 	cmpdi	r0,22           /* R_PPC64_RELATIVE */
 	bne	3f
-	ld	r12,0(r9)        /* reloc->r_offset */
+	ld	r6,0(r9)        /* reloc->r_offset */
 	ld	r0,16(r9)       /* reloc->r_addend */
-	add	r0,r0,r13
-	stdx	r0,r13,r12
+	add	r0,r0,r7
+	stdx	r0,r7,r6
 	addi	r9,r9,24
 	bdnz	13b
 
@@ -219,7 +218,7 @@ p_base:	mflr	r10		/* r10 now points to runtime addr of p_base */
 	beq	6f
 	ld	r1,0(r8)
 	li	r0,0
-	stdu	r0,-112(r1)	/* establish a stack frame */
+	stdu	r0,-16(r1)	/* establish a stack frame */
 6:
 #endif  /* __powerpc64__ */
 	/* Call platform_init() */

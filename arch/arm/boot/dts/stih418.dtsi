@@ -17,22 +17,17 @@
 			device_type = "cpu";
 			compatible = "arm,cortex-a9";
 			reg = <2>;
-			/* u-boot puts hpen in SBC dmem at 0xa4 offset */
-			cpu-release-addr = <0x94100A4>;
 		};
 		cpu@3 {
 			device_type = "cpu";
 			compatible = "arm,cortex-a9";
 			reg = <3>;
-			/* u-boot puts hpen in SBC dmem at 0xa4 offset */
-			cpu-release-addr = <0x94100A4>;
 		};
 	};
 
 	soc {
-		usb2_picophy1: phy2@0 {
+		usb2_picophy1: phy2 {
 			compatible = "st,stih407-usb2-phy";
-			reg = <0 0>;
 			#phy-cells = <0>;
 			st,syscfg = <&syscfg_core 0xf8 0xf4>;
 			resets = <&softreset STIH407_PICOPHY_SOFTRESET>,
@@ -40,9 +35,8 @@
 			reset-names = "global", "port";
 		};
 
-		usb2_picophy2: phy3@0 {
+		usb2_picophy2: phy3 {
 			compatible = "st,stih407-usb2-phy";
-			reg = <0 0>;
 			#phy-cells = <0>;
 			st,syscfg = <&syscfg_core 0xfc 0xf4>;
 			resets = <&softreset STIH407_PICOPHY_SOFTRESET>,
@@ -100,12 +94,6 @@
 			reset-names = "power", "softreset";
 			phys = <&usb2_picophy2>;
 			phy-names = "usb";
-		};
-
-		mmc0: sdhci@9060000 {
-			assigned-clocks = <&clk_s_c0_flexgen CLK_MMC_0>;
-			assigned-clock-parents = <&clk_s_c0_pll1 0>;
-			assigned-clock-rates = <200000000>;
 		};
 	};
 };

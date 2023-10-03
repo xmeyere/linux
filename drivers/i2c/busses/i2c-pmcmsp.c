@@ -329,8 +329,10 @@ static int pmcmsptwi_probe(struct platform_device *pldev)
 	i2c_set_adapdata(&pmcmsptwi_adapter, &pmcmsptwi_data);
 
 	rc = i2c_add_adapter(&pmcmsptwi_adapter);
-	if (rc)
+	if (rc) {
+		dev_err(&pldev->dev, "Unable to register I2C adapter\n");
 		goto ret_unmap;
+	}
 
 	return 0;
 
@@ -444,6 +446,24 @@ static enum pmcmsptwi_xfer_result pmcmsptwi_xfer_cmd(
 {
 	enum pmcmsptwi_xfer_result retval;
 
+	if ((cmd->type == MSP_TWI_CMD_WRITE && cmd->write_len == 0) ||
+	    (cmd->type == MSP_TWI_CMD_READ && cmd->read_len == 0) ||
+	    (cmd->type == MSP_TWI_CMD_WRITE_READ &&
+	    (cmd->read_len == 0 || cmd->write_len == 0))) {
+		dev_err(&pmcmsptwi_adapter.dev,
+			"%s: Cannot transfer less than 1 byte\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (cmd->read_len > MSP_MAX_BYTES_PER_RW ||
+	    cmd->write_len > MSP_MAX_BYTES_PER_RW) {
+		dev_err(&pmcmsptwi_adapter.dev,
+			"%s: Cannot transfer more than %d bytes\n",
+			__func__, MSP_MAX_BYTES_PER_RW);
+		return -EINVAL;
+	}
+
 	mutex_lock(&data->lock);
 	dev_dbg(&pmcmsptwi_adapter.dev,
 		"Setting address to 0x%04x\n", cmd->addr);
@@ -500,14 +520,25 @@ static int pmcmsptwi_master_xfer(struct i2c_adapter *adap,
 	struct pmcmsptwi_cfg oldcfg, newcfg;
 	int ret;
 
-	if (num == 2) {
+	if (num > 2) {
+		dev_dbg(&adap->dev, "%d messages unsupported\n", num);
+		return -EINVAL;
+	} else if (num == 2) {
+		/* Check for a dual write-then-read command */
 		struct i2c_msg *nextmsg = msg + 1;
-
-		cmd.type = MSP_TWI_CMD_WRITE_READ;
-		cmd.write_len = msg->len;
-		cmd.write_data = msg->buf;
-		cmd.read_len = nextmsg->len;
-		cmd.read_data = nextmsg->buf;
+		if (!(msg->flags & I2C_M_RD) &&
+		    (nextmsg->flags & I2C_M_RD) &&
+		    msg->addr == nextmsg->addr) {
+			cmd.type = MSP_TWI_CMD_WRITE_READ;
+			cmd.write_len = msg->len;
+			cmd.write_data = msg->buf;
+			cmd.read_len = nextmsg->len;
+			cmd.read_data = nextmsg->buf;
+		} else {
+			dev_dbg(&adap->dev,
+				"Non write-read dual messages unsupported\n");
+			return -EINVAL;
+		}
 	} else if (msg->flags & I2C_M_RD) {
 		cmd.type = MSP_TWI_CMD_READ;
 		cmd.read_len = msg->len;
@@ -520,6 +551,11 @@ static int pmcmsptwi_master_xfer(struct i2c_adapter *adap,
 		cmd.read_data = NULL;
 		cmd.write_len = msg->len;
 		cmd.write_data = msg->buf;
+	}
+
+	if (msg->len == 0) {
+		dev_err(&adap->dev, "Zero-byte messages unsupported\n");
+		return -EINVAL;
 	}
 
 	cmd.addr = msg->addr;
@@ -549,10 +585,10 @@ static int pmcmsptwi_master_xfer(struct i2c_adapter *adap,
 		 * TODO: We could potentially loop and retry in the case
 		 * of MSP_TWI_XFER_TIMEOUT.
 		 */
-		return -EIO;
+		return -1;
 	}
 
-	return num;
+	return 0;
 }
 
 static u32 pmcmsptwi_i2c_func(struct i2c_adapter *adapter)
@@ -562,17 +598,9 @@ static u32 pmcmsptwi_i2c_func(struct i2c_adapter *adapter)
 		I2C_FUNC_SMBUS_WORD_DATA | I2C_FUNC_SMBUS_PROC_CALL;
 }
 
-static const struct i2c_adapter_quirks pmcmsptwi_i2c_quirks = {
-	.flags = I2C_AQ_COMB_WRITE_THEN_READ | I2C_AQ_NO_ZERO_LEN,
-	.max_write_len = MSP_MAX_BYTES_PER_RW,
-	.max_read_len = MSP_MAX_BYTES_PER_RW,
-	.max_comb_1st_msg_len = MSP_MAX_BYTES_PER_RW,
-	.max_comb_2nd_msg_len = MSP_MAX_BYTES_PER_RW,
-};
-
 /* -- Initialization -- */
 
-static const struct i2c_algorithm pmcmsptwi_algo = {
+static struct i2c_algorithm pmcmsptwi_algo = {
 	.master_xfer	= pmcmsptwi_master_xfer,
 	.functionality	= pmcmsptwi_i2c_func,
 };
@@ -581,7 +609,6 @@ static struct i2c_adapter pmcmsptwi_adapter = {
 	.owner		= THIS_MODULE,
 	.class		= I2C_CLASS_HWMON | I2C_CLASS_SPD,
 	.algo		= &pmcmsptwi_algo,
-	.quirks		= &pmcmsptwi_i2c_quirks,
 	.name		= DRV_NAME,
 };
 

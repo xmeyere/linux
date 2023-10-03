@@ -1,11 +1,10 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #undef TRACE_SYSTEM
 #define TRACE_SYSTEM sched
 
 #if !defined(_TRACE_SCHED_H) || defined(TRACE_HEADER_MULTI_READ)
 #define _TRACE_SCHED_H
 
-#include <linux/sched/numa_balancing.h>
+#include <linux/sched.h>
 #include <linux/tracepoint.h>
 #include <linux/binfmts.h>
 
@@ -56,9 +55,9 @@ TRACE_EVENT(sched_kthread_stop_ret,
  */
 DECLARE_EVENT_CLASS(sched_wakeup_template,
 
-	TP_PROTO(struct task_struct *p),
+	TP_PROTO(struct task_struct *p, int success),
 
-	TP_ARGS(__perf_task(p)),
+	TP_ARGS(__perf_task(p), success),
 
 	TP_STRUCT__entry(
 		__array(	char,	comm,	TASK_COMM_LEN	)
@@ -71,64 +70,44 @@ DECLARE_EVENT_CLASS(sched_wakeup_template,
 	TP_fast_assign(
 		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
 		__entry->pid		= p->pid;
-		__entry->prio		= p->prio; /* XXX SCHED_DEADLINE */
-		__entry->success	= 1; /* rudiment, kill when possible */
+		__entry->prio		= p->prio;
+		__entry->success	= success;
 		__entry->target_cpu	= task_cpu(p);
 	),
 
-	TP_printk("comm=%s pid=%d prio=%d target_cpu=%03d",
+	TP_printk("comm=%s pid=%d prio=%d success=%d target_cpu=%03d",
 		  __entry->comm, __entry->pid, __entry->prio,
-		  __entry->target_cpu)
+		  __entry->success, __entry->target_cpu)
 );
 
-/*
- * Tracepoint called when waking a task; this tracepoint is guaranteed to be
- * called from the waking context.
- */
-DEFINE_EVENT(sched_wakeup_template, sched_waking,
-	     TP_PROTO(struct task_struct *p),
-	     TP_ARGS(p));
-
-/*
- * Tracepoint called when the task is actually woken; p->state == TASK_RUNNNG.
- * It it not always called from the waking context.
- */
 DEFINE_EVENT(sched_wakeup_template, sched_wakeup,
-	     TP_PROTO(struct task_struct *p),
-	     TP_ARGS(p));
+	     TP_PROTO(struct task_struct *p, int success),
+	     TP_ARGS(p, success));
 
 /*
  * Tracepoint for waking up a new task:
  */
 DEFINE_EVENT(sched_wakeup_template, sched_wakeup_new,
-	     TP_PROTO(struct task_struct *p),
-	     TP_ARGS(p));
+	     TP_PROTO(struct task_struct *p, int success),
+	     TP_ARGS(p, success));
 
 #ifdef CREATE_TRACE_POINTS
-static inline long __trace_sched_switch_state(bool preempt, struct task_struct *p)
+static inline long __trace_sched_switch_state(struct task_struct *p)
 {
-	unsigned int state;
+	long state = p->state;
 
+#ifdef CONFIG_PREEMPT
 #ifdef CONFIG_SCHED_DEBUG
 	BUG_ON(p != current);
 #endif /* CONFIG_SCHED_DEBUG */
-
 	/*
-	 * Preemption ignores task state, therefore preempted tasks are always
-	 * RUNNING (we will not have dequeued if state != RUNNING).
+	 * For all intents and purposes a preempted task is a running task.
 	 */
-	if (preempt)
-		return TASK_REPORT_MAX;
+	if (preempt_count() & PREEMPT_ACTIVE)
+		state = TASK_RUNNING | TASK_STATE_MAX;
+#endif /* CONFIG_PREEMPT */
 
-	/*
-	 * task_state_index() uses fls() and returns a value from 0-8 range.
-	 * Decrement it by 1 (except TASK_RUNNING state i.e 0) before using
-	 * it for left shift operation to get the correct task->state
-	 * mapping.
-	 */
-	state = task_state_index(p);
-
-	return state ? (1 << (state - 1)) : state;
+	return state;
 }
 #endif /* CREATE_TRACE_POINTS */
 
@@ -137,11 +116,10 @@ static inline long __trace_sched_switch_state(bool preempt, struct task_struct *
  */
 TRACE_EVENT(sched_switch,
 
-	TP_PROTO(bool preempt,
-		 struct task_struct *prev,
+	TP_PROTO(struct task_struct *prev,
 		 struct task_struct *next),
 
-	TP_ARGS(preempt, prev, next),
+	TP_ARGS(prev, next),
 
 	TP_STRUCT__entry(
 		__array(	char,	prev_comm,	TASK_COMM_LEN	)
@@ -157,29 +135,20 @@ TRACE_EVENT(sched_switch,
 		memcpy(__entry->next_comm, next->comm, TASK_COMM_LEN);
 		__entry->prev_pid	= prev->pid;
 		__entry->prev_prio	= prev->prio;
-		__entry->prev_state	= __trace_sched_switch_state(preempt, prev);
+		__entry->prev_state	= __trace_sched_switch_state(prev);
 		memcpy(__entry->prev_comm, prev->comm, TASK_COMM_LEN);
 		__entry->next_pid	= next->pid;
 		__entry->next_prio	= next->prio;
-		/* XXX SCHED_DEADLINE */
 	),
 
 	TP_printk("prev_comm=%s prev_pid=%d prev_prio=%d prev_state=%s%s ==> next_comm=%s next_pid=%d next_prio=%d",
 		__entry->prev_comm, __entry->prev_pid, __entry->prev_prio,
-
-		(__entry->prev_state & (TASK_REPORT_MAX - 1)) ?
-		  __print_flags(__entry->prev_state & (TASK_REPORT_MAX - 1), "|",
-				{ TASK_INTERRUPTIBLE, "S" },
-				{ TASK_UNINTERRUPTIBLE, "D" },
-				{ __TASK_STOPPED, "T" },
-				{ __TASK_TRACED, "t" },
-				{ EXIT_DEAD, "X" },
-				{ EXIT_ZOMBIE, "Z" },
-				{ TASK_PARKED, "P" },
-				{ TASK_DEAD, "I" }) :
-		  "R",
-
-		__entry->prev_state & TASK_REPORT_MAX ? "+" : "",
+		__entry->prev_state & (TASK_STATE_MAX-1) ?
+		  __print_flags(__entry->prev_state & (TASK_STATE_MAX-1), "|",
+				{ 1, "S"} , { 2, "D" }, { 4, "T" }, { 8, "t" },
+				{ 16, "Z" }, { 32, "X" }, { 64, "x" },
+				{ 128, "K" }, { 256, "W" }, { 512, "P" }) : "R",
+		__entry->prev_state & TASK_STATE_MAX ? "+" : "",
 		__entry->next_comm, __entry->next_pid, __entry->next_prio)
 );
 
@@ -203,7 +172,7 @@ TRACE_EVENT(sched_migrate_task,
 	TP_fast_assign(
 		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
 		__entry->pid		= p->pid;
-		__entry->prio		= p->prio; /* XXX SCHED_DEADLINE */
+		__entry->prio		= p->prio;
 		__entry->orig_cpu	= task_cpu(p);
 		__entry->dest_cpu	= dest_cpu;
 	),
@@ -228,7 +197,7 @@ DECLARE_EVENT_CLASS(sched_process_template,
 	TP_fast_assign(
 		memcpy(__entry->comm, p->comm, TASK_COMM_LEN);
 		__entry->pid		= p->pid;
-		__entry->prio		= p->prio; /* XXX SCHED_DEADLINE */
+		__entry->prio		= p->prio;
 	),
 
 	TP_printk("comm=%s pid=%d prio=%d",
@@ -275,7 +244,7 @@ TRACE_EVENT(sched_process_wait,
 	TP_fast_assign(
 		memcpy(__entry->comm, current->comm, TASK_COMM_LEN);
 		__entry->pid		= pid_nr(pid);
-		__entry->prio		= current->prio; /* XXX SCHED_DEADLINE */
+		__entry->prio		= current->prio;
 	),
 
 	TP_printk("comm=%s pid=%d prio=%d",
@@ -435,9 +404,9 @@ DEFINE_EVENT(sched_stat_runtime, sched_stat_runtime,
  */
 TRACE_EVENT(sched_pi_setprio,
 
-	TP_PROTO(struct task_struct *tsk, struct task_struct *pi_task),
+	TP_PROTO(struct task_struct *tsk, int newprio),
 
-	TP_ARGS(tsk, pi_task),
+	TP_ARGS(tsk, newprio),
 
 	TP_STRUCT__entry(
 		__array( char,	comm,	TASK_COMM_LEN	)
@@ -450,10 +419,7 @@ TRACE_EVENT(sched_pi_setprio,
 		memcpy(__entry->comm, tsk->comm, TASK_COMM_LEN);
 		__entry->pid		= tsk->pid;
 		__entry->oldprio	= tsk->prio;
-		__entry->newprio	= pi_task ?
-				min(tsk->normal_prio, pi_task->prio) :
-				tsk->normal_prio;
-		/* XXX SCHED_DEADLINE bits missing */
+		__entry->newprio	= newprio;
 	),
 
 	TP_printk("comm=%s pid=%d oldprio=%d newprio=%d",

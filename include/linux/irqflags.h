@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * include/linux/irqflags.h
  *
@@ -15,45 +14,25 @@
 #include <linux/typecheck.h>
 #include <asm/irqflags.h>
 
-/* Currently trace_softirqs_on/off is used only by lockdep */
-#ifdef CONFIG_PROVE_LOCKING
+#ifdef CONFIG_TRACE_IRQFLAGS
   extern void trace_softirqs_on(unsigned long ip);
   extern void trace_softirqs_off(unsigned long ip);
-  extern void lockdep_hardirqs_on(unsigned long ip);
-  extern void lockdep_hardirqs_off(unsigned long ip);
-#else
-  static inline void trace_softirqs_on(unsigned long ip) { }
-  static inline void trace_softirqs_off(unsigned long ip) { }
-  static inline void lockdep_hardirqs_on(unsigned long ip) { }
-  static inline void lockdep_hardirqs_off(unsigned long ip) { }
-#endif
-
-#ifdef CONFIG_TRACE_IRQFLAGS
   extern void trace_hardirqs_on(void);
   extern void trace_hardirqs_off(void);
 # define trace_hardirq_context(p)	((p)->hardirq_context)
 # define trace_softirq_context(p)	((p)->softirq_context)
 # define trace_hardirqs_enabled(p)	((p)->hardirqs_enabled)
 # define trace_softirqs_enabled(p)	((p)->softirqs_enabled)
-# define trace_hardirq_enter()			\
-do {						\
-	current->hardirq_context++;		\
-} while (0)
-# define trace_hardirq_exit()			\
-do {						\
-	current->hardirq_context--;		\
-} while (0)
-# define lockdep_softirq_enter()		\
-do {						\
-	current->softirq_context++;		\
-} while (0)
-# define lockdep_softirq_exit()			\
-do {						\
-	current->softirq_context--;		\
-} while (0)
+# define trace_hardirq_enter()	do { current->hardirq_context++; } while (0)
+# define trace_hardirq_exit()	do { current->hardirq_context--; } while (0)
+# define lockdep_softirq_enter()	do { current->softirq_context++; } while (0)
+# define lockdep_softirq_exit()	do { current->softirq_context--; } while (0)
+# define INIT_TRACE_IRQFLAGS	.softirqs_enabled = 1,
 #else
 # define trace_hardirqs_on()		do { } while (0)
 # define trace_hardirqs_off()		do { } while (0)
+# define trace_softirqs_on(ip)		do { } while (0)
+# define trace_softirqs_off(ip)		do { } while (0)
 # define trace_hardirq_context(p)	0
 # define trace_softirq_context(p)	0
 # define trace_hardirqs_enabled(p)	0
@@ -62,6 +41,7 @@ do {						\
 # define trace_hardirq_exit()		do { } while (0)
 # define lockdep_softirq_enter()	do { } while (0)
 # define lockdep_softirq_exit()		do { } while (0)
+# define INIT_TRACE_IRQFLAGS
 #endif
 
 #if defined(CONFIG_IRQSOFF_TRACER) || \
@@ -105,7 +85,7 @@ do {						\
  * The local_irq_*() APIs are equal to the raw_local_irq*()
  * if !TRACE_IRQFLAGS.
  */
-#ifdef CONFIG_TRACE_IRQFLAGS
+#ifdef CONFIG_TRACE_IRQFLAGS_SUPPORT
 #define local_irq_enable() \
 	do { trace_hardirqs_on(); raw_local_irq_enable(); } while (0)
 #define local_irq_disable() \
@@ -127,6 +107,22 @@ do {						\
 			raw_local_irq_restore(flags);	\
 		}					\
 	} while (0)
+#define local_save_flags(flags)				\
+	do {						\
+		raw_local_save_flags(flags);		\
+	} while (0)
+
+#define irqs_disabled_flags(flags)			\
+	({						\
+		raw_irqs_disabled_flags(flags);		\
+	})
+
+#define irqs_disabled()					\
+	({						\
+		unsigned long _flags;			\
+		raw_local_save_flags(_flags);		\
+		raw_irqs_disabled_flags(_flags);	\
+	})
 
 #define safe_halt()				\
 	do {					\
@@ -135,7 +131,7 @@ do {						\
 	} while (0)
 
 
-#else /* !CONFIG_TRACE_IRQFLAGS */
+#else /* !CONFIG_TRACE_IRQFLAGS_SUPPORT */
 
 #define local_irq_enable()	do { raw_local_irq_enable(); } while (0)
 #define local_irq_disable()	do { raw_local_irq_disable(); } while (0)
@@ -144,28 +140,11 @@ do {						\
 		raw_local_irq_save(flags);			\
 	} while (0)
 #define local_irq_restore(flags) do { raw_local_irq_restore(flags); } while (0)
+#define local_save_flags(flags)	do { raw_local_save_flags(flags); } while (0)
+#define irqs_disabled()		(raw_irqs_disabled())
+#define irqs_disabled_flags(flags) (raw_irqs_disabled_flags(flags))
 #define safe_halt()		do { raw_safe_halt(); } while (0)
 
-#endif /* CONFIG_TRACE_IRQFLAGS */
-
-#define local_save_flags(flags)	raw_local_save_flags(flags)
-
-/*
- * Some architectures don't define arch_irqs_disabled(), so even if either
- * definition would be fine we need to use different ones for the time being
- * to avoid build issues.
- */
-#ifdef CONFIG_TRACE_IRQFLAGS_SUPPORT
-#define irqs_disabled()					\
-	({						\
-		unsigned long _flags;			\
-		raw_local_save_flags(_flags);		\
-		raw_irqs_disabled_flags(_flags);	\
-	})
-#else /* !CONFIG_TRACE_IRQFLAGS_SUPPORT */
-#define irqs_disabled()	raw_irqs_disabled()
 #endif /* CONFIG_TRACE_IRQFLAGS_SUPPORT */
-
-#define irqs_disabled_flags(flags) raw_irqs_disabled_flags(flags)
 
 #endif

@@ -83,8 +83,11 @@ static int eem_bind(struct usbnet *dev, struct usb_interface *intf)
 	int status = 0;
 
 	status = usbnet_get_endpoints(dev, intf);
-	if (status < 0)
+	if (status < 0) {
+		usb_set_intfdata(intf, NULL);
+		usb_driver_release_interface(driver_of(intf), intf);
 		return status;
+	}
 
 	/* no jumbogram (16K) support for now */
 
@@ -135,10 +138,10 @@ static struct sk_buff *eem_tx_fixup(struct usbnet *dev, struct sk_buff *skb,
 	}
 
 	skb2 = skb_copy_expand(skb, EEM_HEAD, ETH_FCS_LEN + padlen, flags);
-	dev_kfree_skb_any(skb);
 	if (!skb2)
 		return NULL;
 
+	dev_kfree_skb_any(skb);
 	skb = skb2;
 
 done:

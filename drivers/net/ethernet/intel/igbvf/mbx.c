@@ -1,5 +1,29 @@
-// SPDX-License-Identifier: GPL-2.0
-/* Copyright(c) 2009 - 2018 Intel Corporation. */
+/*******************************************************************************
+
+  Intel(R) 82576 Virtual Function Linux driver
+  Copyright(c) 2009 - 2012 Intel Corporation.
+
+  This program is free software; you can redistribute it and/or modify it
+  under the terms and conditions of the GNU General Public License,
+  version 2, as published by the Free Software Foundation.
+
+  This program is distributed in the hope it will be useful, but WITHOUT
+  ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+  FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
+  more details.
+
+  You should have received a copy of the GNU General Public License along with
+  this program; if not, write to the Free Software Foundation, Inc.,
+  51 Franklin St - Fifth Floor, Boston, MA 02110-1301 USA.
+
+  The full GNU General Public License is included in this distribution in
+  the file called "COPYING".
+
+  Contact Information:
+  e1000-devel Mailing List <e1000-devel@lists.sourceforge.net>
+  Intel Corporation, 5200 N.E. Elam Young Parkway, Hillsboro, OR 97124-6497
+
+*******************************************************************************/
 
 #include "mbx.h"
 
@@ -30,10 +54,10 @@ out:
 }
 
 /**
- *  e1000_poll_for_ack - Wait for message acknowledgment
+ *  e1000_poll_for_ack - Wait for message acknowledgement
  *  @hw: pointer to the HW structure
  *
- *  returns SUCCESS if it successfully received a message acknowledgment
+ *  returns SUCCESS if it successfully received a message acknowledgement
  **/
 static s32 e1000_poll_for_ack(struct e1000_hw *hw)
 {
@@ -194,7 +218,7 @@ static s32 e1000_check_for_rst_vf(struct e1000_hw *hw)
 	s32 ret_val = -E1000_ERR_MBX;
 
 	if (!e1000_check_for_bit_vf(hw, (E1000_V2PMAILBOX_RSTD |
-					 E1000_V2PMAILBOX_RSTI))) {
+	                                 E1000_V2PMAILBOX_RSTI))) {
 		ret_val = E1000_SUCCESS;
 		hw->mbx.stats.rsts++;
 	}
@@ -211,19 +235,13 @@ static s32 e1000_check_for_rst_vf(struct e1000_hw *hw)
 static s32 e1000_obtain_mbx_lock_vf(struct e1000_hw *hw)
 {
 	s32 ret_val = -E1000_ERR_MBX;
-	int count = 10;
 
-	do {
-		/* Take ownership of the buffer */
-		ew32(V2PMAILBOX(0), E1000_V2PMAILBOX_VFU);
+	/* Take ownership of the buffer */
+	ew32(V2PMAILBOX(0), E1000_V2PMAILBOX_VFU);
 
-		/* reserve mailbox for VF use */
-		if (e1000_read_v2p_mailbox(hw) & E1000_V2PMAILBOX_VFU) {
-			ret_val = 0;
-			break;
-		}
-		udelay(1000);
-	} while (count-- > 0);
+	/* reserve mailbox for vf use */
+	if (e1000_read_v2p_mailbox(hw) & E1000_V2PMAILBOX_VFU)
+		ret_val = E1000_SUCCESS;
 
 	return ret_val;
 }
@@ -240,8 +258,6 @@ static s32 e1000_write_mbx_vf(struct e1000_hw *hw, u32 *msg, u16 size)
 {
 	s32 err;
 	u16 i;
-
-	WARN_ON_ONCE(!spin_is_locked(&hw->mbx_lock));
 
 	/* lock the mailbox to prevent pf/vf race condition */
 	err = e1000_obtain_mbx_lock_vf(hw);
@@ -267,7 +283,7 @@ out_no_write:
 }
 
 /**
- *  e1000_read_mbx_vf - Reads a message from the inbox intended for VF
+ *  e1000_read_mbx_vf - Reads a message from the inbox intended for vf
  *  @hw: pointer to the HW structure
  *  @msg: The message buffer
  *  @size: Length of buffer
@@ -278,8 +294,6 @@ static s32 e1000_read_mbx_vf(struct e1000_hw *hw, u32 *msg, u16 size)
 {
 	s32 err;
 	u16 i;
-
-	WARN_ON_ONCE(!spin_is_locked(&hw->mbx_lock));
 
 	/* lock the mailbox to prevent pf/vf race condition */
 	err = e1000_obtain_mbx_lock_vf(hw);
@@ -301,18 +315,17 @@ out_no_read:
 }
 
 /**
- *  e1000_init_mbx_params_vf - set initial values for VF mailbox
+ *  e1000_init_mbx_params_vf - set initial values for vf mailbox
  *  @hw: pointer to the HW structure
  *
- *  Initializes the hw->mbx struct to correct values for VF mailbox
+ *  Initializes the hw->mbx struct to correct values for vf mailbox
  */
 s32 e1000_init_mbx_params_vf(struct e1000_hw *hw)
 {
 	struct e1000_mbx_info *mbx = &hw->mbx;
 
 	/* start mailbox as timed out and let the reset_hw call set the timeout
-	 * value to being communications
-	 */
+	 * value to being communications */
 	mbx->timeout = 0;
 	mbx->usec_delay = E1000_VF_MBX_INIT_DELAY;
 
@@ -334,3 +347,4 @@ s32 e1000_init_mbx_params_vf(struct e1000_hw *hw)
 
 	return E1000_SUCCESS;
 }
+

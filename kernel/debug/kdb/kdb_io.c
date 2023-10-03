@@ -30,7 +30,6 @@
 char kdb_prompt_str[CMD_BUFLEN];
 
 int kdb_trap_printk;
-int kdb_printf_cpu = -1;
 
 static int kgdb_transition_check(char *buffer)
 {
@@ -216,7 +215,7 @@ static char *kdb_read(char *buffer, size_t bufsize)
 	int count;
 	int i;
 	int diag, dtab_count;
-	int key, buf_size, ret;
+	int key;
 
 
 	diag = kdbgetintenv("DTABCOUNT", &dtab_count);
@@ -336,8 +335,9 @@ poll_again:
 		else
 			p_tmp = tmpbuffer;
 		len = strlen(p_tmp);
-		buf_size = sizeof(tmpbuffer) - (p_tmp - tmpbuffer);
-		count = kallsyms_symbol_complete(p_tmp, buf_size);
+		count = kallsyms_symbol_complete(p_tmp,
+						 sizeof(tmpbuffer) -
+						 (p_tmp - tmpbuffer));
 		if (tab == 2 && count > 0) {
 			kdb_printf("\n%d symbols are found.", count);
 			if (count > dtab_count) {
@@ -349,13 +349,9 @@ poll_again:
 			}
 			kdb_printf("\n");
 			for (i = 0; i < count; i++) {
-				ret = kallsyms_symbol_next(p_tmp, i, buf_size);
-				if (WARN_ON(!ret))
+				if (kallsyms_symbol_next(p_tmp, i) < 0)
 					break;
-				if (ret != -E2BIG)
-					kdb_printf("%s ", p_tmp);
-				else
-					kdb_printf("%s... ", p_tmp);
+				kdb_printf("%s ", p_tmp);
 				*(p_tmp + len) = '\0';
 			}
 			if (i >= dtab_count)
@@ -558,26 +554,31 @@ int vkdb_printf(enum kdb_msgsrc src, const char *fmt, va_list ap)
 	int linecount;
 	int colcount;
 	int logging, saved_loglevel = 0;
+	int saved_trap_printk;
+	int got_printf_lock = 0;
 	int retlen = 0;
 	int fnd, len;
-	int this_cpu, old_cpu;
 	char *cp, *cp2, *cphold = NULL, replaced_byte = ' ';
 	char *moreprompt = "more> ";
 	struct console *c = console_drivers;
+	static DEFINE_SPINLOCK(kdb_printf_lock);
 	unsigned long uninitialized_var(flags);
+
+	preempt_disable();
+	saved_trap_printk = kdb_trap_printk;
+	kdb_trap_printk = 0;
 
 	/* Serialize kdb_printf if multiple cpus try to write at once.
 	 * But if any cpu goes recursive in kdb, just print the output,
 	 * even if it is interleaved with any other text.
 	 */
-	local_irq_save(flags);
-	this_cpu = smp_processor_id();
-	for (;;) {
-		old_cpu = cmpxchg(&kdb_printf_cpu, -1, this_cpu);
-		if (old_cpu == -1 || old_cpu == this_cpu)
-			break;
-
-		cpu_relax();
+	if (!KDB_STATE(PRINTF_LOCK)) {
+		KDB_STATE_SET(PRINTF_LOCK);
+		spin_lock_irqsave(&kdb_printf_lock, flags);
+		got_printf_lock = 1;
+		atomic_inc(&kdb_event);
+	} else {
+		__acquire(kdb_printf_lock);
 	}
 
 	diag = kdbgetintenv("LINES", &linecount);
@@ -679,16 +680,12 @@ int vkdb_printf(enum kdb_msgsrc src, const char *fmt, va_list ap)
 			size_avail = sizeof(kdb_buffer) - len;
 			goto kdb_print_out;
 		}
-		if (kdb_grepping_flag >= KDB_GREPPING_FLAG_SEARCH) {
+		if (kdb_grepping_flag >= KDB_GREPPING_FLAG_SEARCH)
 			/*
 			 * This was a interactive search (using '/' at more
-			 * prompt) and it has completed. Replace the \0 with
-			 * its original value to ensure multi-line strings
-			 * are handled properly, and return to normal mode.
+			 * prompt) and it has completed. Clear the flag.
 			 */
-			*cphold = replaced_byte;
 			kdb_grepping_flag = 0;
-		}
 		/*
 		 * at this point the string is a full line and
 		 * should be printed, up to the null.
@@ -700,7 +697,7 @@ kdb_printit:
 	 * Write to all consoles.
 	 */
 	retlen = strlen(kdb_buffer);
-	cp = (char *) printk_skip_headers(kdb_buffer);
+	cp = (char *) printk_skip_level(kdb_buffer);
 	if (!dbg_kdb_mode && kgdb_connected) {
 		gdbstub_msg_write(cp, retlen - (cp - kdb_buffer));
 	} else {
@@ -850,9 +847,16 @@ kdb_print_out:
 	suspend_grep = 0; /* end of what may have been a recursive call */
 	if (logging)
 		console_loglevel = saved_loglevel;
-	/* kdb_printf_cpu locked the code above. */
-	smp_store_release(&kdb_printf_cpu, old_cpu);
-	local_irq_restore(flags);
+	if (KDB_STATE(PRINTF_LOCK) && got_printf_lock) {
+		got_printf_lock = 0;
+		spin_unlock_irqrestore(&kdb_printf_lock, flags);
+		KDB_STATE_CLEAR(PRINTF_LOCK);
+		atomic_dec(&kdb_event);
+	} else {
+		__release(kdb_printf_lock);
+	}
+	kdb_trap_printk = saved_trap_printk;
+	preempt_enable();
 	return retlen;
 }
 

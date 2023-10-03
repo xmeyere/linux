@@ -1,9 +1,8 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 
 #include <asm/cache.h>
 
 #include "entry.h"
-#include <asm/native/inst.h>
+#include "paravirt_inst.h"
 
 #ifdef CONFIG_VIRT_CPU_ACCOUNTING_NATIVE
 /* read ar.itc in advance, and use it before leaving bank 0 */

@@ -1,8 +1,17 @@
 CFLAGS += -I$(CURDIR)
 
-TEST_GEN_PROGS := load_unaligned_zeropad
+PROGS := load_unaligned_zeropad
 
-top_srcdir = ../../../../..
-include ../../lib.mk
+all: $(PROGS)
 
-$(TEST_GEN_PROGS): ../harness.c
+$(PROGS): ../harness.c
+
+run_tests: all
+	@-for PROG in $(PROGS); do \
+		./$$PROG; \
+	done;
+
+clean:
+	rm -f $(PROGS) *.o
+
+.PHONY: all run_tests clean

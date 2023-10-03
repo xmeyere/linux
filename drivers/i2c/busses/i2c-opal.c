@@ -71,7 +71,7 @@ static int i2c_opal_send_request(u32 bus_id, struct opal_i2c_request *req)
 	if (rc)
 		goto exit;
 
-	rc = opal_get_async_rc(msg);
+	rc = be64_to_cpu(msg.params[1]);
 	if (rc != OPAL_SUCCESS) {
 		rc = i2c_opal_translate_error(rc);
 		goto exit;
@@ -94,6 +94,8 @@ static int i2c_opal_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 	 */
 	memset(&req, 0, sizeof(req));
 	switch(num) {
+	case 0:
+		return 0;
 	case 1:
 		req.type = (msgs[0].flags & I2C_M_RD) ?
 			OPAL_I2C_RAW_READ : OPAL_I2C_RAW_WRITE;
@@ -102,8 +104,18 @@ static int i2c_opal_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 		req.buffer_ra = cpu_to_be64(__pa(msgs[0].buf));
 		break;
 	case 2:
-		req.type = (msgs[1].flags & I2C_M_RD) ?
-			OPAL_I2C_SM_READ : OPAL_I2C_SM_WRITE;
+		/* For two messages, we basically support only simple
+		 * smbus transactions of a write plus a read. We might
+		 * want to allow also two writes but we'd have to bounce
+		 * the data into a single buffer.
+		 */
+		if ((msgs[0].flags & I2C_M_RD) || !(msgs[1].flags & I2C_M_RD))
+			return -EOPNOTSUPP;
+		if (msgs[0].len > 4)
+			return -EOPNOTSUPP;
+		if (msgs[0].addr != msgs[1].addr)
+			return -EOPNOTSUPP;
+		req.type = OPAL_I2C_SM_READ;
 		req.addr = cpu_to_be16(msgs[0].addr);
 		req.subaddr_sz = msgs[0].len;
 		for (i = 0; i < msgs[0].len; i++)
@@ -112,6 +124,8 @@ static int i2c_opal_master_xfer(struct i2c_adapter *adap, struct i2c_msg *msgs,
 		req.size = cpu_to_be32(msgs[1].len);
 		req.buffer_ra = cpu_to_be64(__pa(msgs[1].buf));
 		break;
+	default:
+		return -EOPNOTSUPP;
 	}
 
 	rc = i2c_opal_send_request(opal_id, &req);
@@ -196,15 +210,6 @@ static const struct i2c_algorithm i2c_opal_algo = {
 	.functionality	= i2c_opal_func,
 };
 
-/*
- * For two messages, we basically support simple smbus transactions of a
- * write-then-anything.
- */
-static const struct i2c_adapter_quirks i2c_opal_quirks = {
-	.flags = I2C_AQ_COMB | I2C_AQ_COMB_WRITE_FIRST | I2C_AQ_COMB_SAME_ADDR,
-	.max_comb_1st_msg_len = 4,
-};
-
 static int i2c_opal_probe(struct platform_device *pdev)
 {
 	struct i2c_adapter	*adapter;
@@ -227,7 +232,6 @@ static int i2c_opal_probe(struct platform_device *pdev)
 
 	adapter->algo = &i2c_opal_algo;
 	adapter->algo_data = (void *)(unsigned long)opal_id;
-	adapter->quirks = &i2c_opal_quirks;
 	adapter->dev.parent = &pdev->dev;
 	adapter->dev.of_node = of_node_get(pdev->dev.of_node);
 	pname = of_get_property(pdev->dev.of_node, "ibm,port-name", NULL);

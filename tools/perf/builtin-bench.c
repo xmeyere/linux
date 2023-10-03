@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * builtin-bench.c
  *
@@ -17,7 +16,7 @@
  */
 #include "perf.h"
 #include "util/util.h"
-#include <subcmd/parse-options.h>
+#include "util/parse-options.h"
 #include "builtin.h"
 #include "bench/bench.h"
 
@@ -26,7 +25,7 @@
 #include <string.h>
 #include <sys/prctl.h>
 
-typedef int (*bench_fn_t)(int argc, const char **argv);
+typedef int (*bench_fn_t)(int argc, const char **argv, const char *prefix);
 
 struct bench {
 	const char	*name;
@@ -37,7 +36,7 @@ struct bench {
 #ifdef HAVE_LIBNUMA_SUPPORT
 static struct bench numa_benchmarks[] = {
 	{ "mem",	"Benchmark for NUMA workloads",			bench_numa		},
-	{ "all",	"Run all NUMA benchmarks",			NULL			},
+	{ "all",	"Test all NUMA benchmarks",			NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 #endif
@@ -45,25 +44,22 @@ static struct bench numa_benchmarks[] = {
 static struct bench sched_benchmarks[] = {
 	{ "messaging",	"Benchmark for scheduling and IPC",		bench_sched_messaging	},
 	{ "pipe",	"Benchmark for pipe() between two processes",	bench_sched_pipe	},
-	{ "all",	"Run all scheduler benchmarks",		NULL			},
+	{ "all",	"Test all scheduler benchmarks",		NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 
 static struct bench mem_benchmarks[] = {
-	{ "memcpy",	"Benchmark for memcpy() functions",		bench_mem_memcpy	},
-	{ "memset",	"Benchmark for memset() functions",		bench_mem_memset	},
-	{ "all",	"Run all memory access benchmarks",		NULL			},
+	{ "memcpy",	"Benchmark for memcpy()",			bench_mem_memcpy	},
+	{ "memset",	"Benchmark for memset() tests",			bench_mem_memset	},
+	{ "all",	"Test all memory benchmarks",			NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 
 static struct bench futex_benchmarks[] = {
 	{ "hash",	"Benchmark for futex hash table",               bench_futex_hash	},
 	{ "wake",	"Benchmark for futex wake calls",               bench_futex_wake	},
-	{ "wake-parallel", "Benchmark for parallel futex wake calls",   bench_futex_wake_parallel },
 	{ "requeue",	"Benchmark for futex requeue calls",            bench_futex_requeue	},
-	/* pi-futexes */
-	{ "lock-pi",	"Benchmark for futex lock_pi calls",            bench_futex_lock_pi	},
-	{ "all",	"Run all futex benchmarks",			NULL			},
+	{ "all",	"Test all futex benchmarks",			NULL			},
 	{ NULL,		NULL,						NULL			}
 };
 
@@ -111,7 +107,7 @@ int bench_format = BENCH_FORMAT_DEFAULT;
 unsigned int bench_repeat = 10; /* default number of times to repeat the run */
 
 static const struct option bench_options[] = {
-	OPT_STRING('f', "format", &bench_format_str, "default|simple", "Specify the output formatting style"),
+	OPT_STRING('f', "format", &bench_format_str, "default", "Specify format style"),
 	OPT_UINTEGER('r', "repeat",  &bench_repeat,   "Specify amount of times to repeat the run"),
 	OPT_END()
 };
@@ -156,7 +152,7 @@ static int bench_str2int(const char *str)
  * to something meaningful:
  */
 static int run_bench(const char *coll_name, const char *bench_name, bench_fn_t fn,
-		     int argc, const char **argv)
+		     int argc, const char **argv, const char *prefix)
 {
 	int size;
 	char *name;
@@ -172,7 +168,7 @@ static int run_bench(const char *coll_name, const char *bench_name, bench_fn_t f
 	prctl(PR_SET_NAME, name);
 	argv[0] = name;
 
-	ret = fn(argc, argv);
+	ret = fn(argc, argv, prefix);
 
 	free(name);
 
@@ -199,7 +195,7 @@ static void run_collection(struct collection *coll)
 		fflush(stdout);
 
 		argv[1] = bench->name;
-		run_bench(coll->name, bench->name, bench->fn, 1, argv);
+		run_bench(coll->name, bench->name, bench->fn, 1, argv, NULL);
 		printf("\n");
 	}
 }
@@ -212,7 +208,7 @@ static void run_all_collections(void)
 		run_collection(coll);
 }
 
-int cmd_bench(int argc, const char **argv)
+int cmd_bench(int argc, const char **argv, const char *prefix __maybe_unused)
 {
 	struct collection *coll;
 	int ret = 0;
@@ -271,7 +267,7 @@ int cmd_bench(int argc, const char **argv)
 			if (bench_format == BENCH_FORMAT_DEFAULT)
 				printf("# Running '%s/%s' benchmark:\n", coll->name, bench->name);
 			fflush(stdout);
-			ret = run_bench(coll->name, bench->name, bench->fn, argc-1, argv+1);
+			ret = run_bench(coll->name, bench->name, bench->fn, argc-1, argv+1, prefix);
 			goto end;
 		}
 

@@ -21,7 +21,7 @@
       supports a variety of varients of Interphase ATM PCI (i)Chip adapter 
       card family (See www.iphase.com/products/ClassSheet.cfm?ClassID=ATM) 
       in terms of PHY type, the size of control memory and the size of 
-      packet memory. The following are the change log and history:
+      packet memory. The followings are the change log and history:
      
           Bugfix the Mona's UBR driver.
           Modify the basic memory allocation and dma logic.
@@ -58,12 +58,11 @@
 #include <linux/slab.h>
 #include <asm/io.h>  
 #include <linux/atomic.h>
-#include <linux/uaccess.h>  
+#include <asm/uaccess.h>  
 #include <asm/string.h>  
 #include <asm/byteorder.h>  
 #include <linux/vmalloc.h>
 #include <linux/jiffies.h>
-#include <linux/nospec.h>
 #include "iphase.h"		  
 #include "suni.h"		  
 #define swap_byte_order(x) (((x & 0xff) << 8) | ((x & 0xff00) >> 8))
@@ -76,8 +75,8 @@ static void desc_dbg(IADEV *iadev);
 static IADEV *ia_dev[8];
 static struct atm_dev *_ia_dev[8];
 static int iadev_count;
-static void ia_led_timer(struct timer_list *unused);
-static DEFINE_TIMER(ia_timer, ia_led_timer);
+static void ia_led_timer(unsigned long arg);
+static DEFINE_TIMER(ia_timer, ia_led_timer, 0, 0);
 static int IA_TX_BUF = DFL_TX_BUFFERS, IA_TX_BUF_SZ = DFL_TX_BUF_SZ;
 static int IA_RX_BUF = DFL_RX_BUFFERS, IA_RX_BUF_SZ = DFL_RX_BUF_SZ;
 static uint IADebugFlag = /* IF_IADBG_ERR | IF_IADBG_CBR| IF_IADBG_INIT_ADAPTER
@@ -113,8 +112,7 @@ static void ia_enque_head_rtn_q (IARTN_Q *que, IARTN_Q * data)
 
 static int ia_enque_rtn_q (IARTN_Q *que, struct desc_tbl_t data) {
    IARTN_Q *entry = kmalloc(sizeof(*entry), GFP_ATOMIC);
-   if (!entry)
-      return -ENOMEM;
+   if (!entry) return -1;
    entry->data = data;
    entry->next = NULL;
    if (que->next == NULL) 
@@ -672,7 +670,7 @@ static void ia_tx_poll (IADEV *iadev) {
           if ((vcc->pop) && (skb1->len != 0))
           {
              vcc->pop(vcc, skb1);
-             IF_EVENT(printk("Transmit Done - skb 0x%lx return\n",
+             IF_EVENT(printk("Tansmit Done - skb 0x%lx return\n",
                                                           (long)skb1);)
           }
           else 
@@ -881,7 +879,7 @@ static void ia_phy_write(struct iadev_priv *iadev,
 
 static void ia_suni_pm7345_init_ds3(struct iadev_priv *iadev)
 {
-	static const struct ia_reg suni_ds3_init[] = {
+	static const struct ia_reg suni_ds3_init [] = {
 		{ SUNI_DS3_FRM_INTR_ENBL,	0x17 },
 		{ SUNI_DS3_FRM_CFG,		0x01 },
 		{ SUNI_DS3_TRAN_CFG,		0x01 },
@@ -899,7 +897,7 @@ static void ia_suni_pm7345_init_ds3(struct iadev_priv *iadev)
 
 static void ia_suni_pm7345_init_e3(struct iadev_priv *iadev)
 {
-	static const struct ia_reg suni_e3_init[] = {
+	static const struct ia_reg suni_e3_init [] = {
 		{ SUNI_E3_FRM_FRAM_OPTIONS,		0x04 },
 		{ SUNI_E3_FRM_MAINT_OPTIONS,		0x20 },
 		{ SUNI_E3_FRM_FRAM_INTR_ENBL,		0x1d },
@@ -919,7 +917,7 @@ static void ia_suni_pm7345_init_e3(struct iadev_priv *iadev)
 
 static void ia_suni_pm7345_init(struct iadev_priv *iadev)
 {
-	static const struct ia_reg suni_init[] = {
+	static const struct ia_reg suni_init [] = {
 		/* Enable RSOP loss of signal interrupt. */
 		{ SUNI_INTR_ENBL,		0x28 },
 		/* Clear error counters. */
@@ -1129,7 +1127,7 @@ static int rx_pkt(struct atm_dev *dev)
 	/* make the ptr point to the corresponding buffer desc entry */  
 	buf_desc_ptr += desc;	  
         if (!desc || (desc > iadev->num_rx_desc) || 
-                      ((buf_desc_ptr->vc_index & 0xffff) >= iadev->num_vc)) {
+                      ((buf_desc_ptr->vc_index & 0xffff) > iadev->num_vc)) { 
             free_desc(dev, desc);
             IF_ERR(printk("IA: bad descriptor desc = %d \n", desc);)
             return -1;
@@ -1177,7 +1175,7 @@ static int rx_pkt(struct atm_dev *dev)
         if (!(skb = atm_alloc_charge(vcc, len, GFP_ATOMIC))) {
            if (vcc->vci < 32)
               printk("Drop control packets\n");
-	   goto out_free_desc;
+	      goto out_free_desc;
         }
 	skb_put(skb,len);  
         // pwang_test
@@ -1619,7 +1617,7 @@ static int rx_init(struct atm_dev *dev)
 	skb_queue_head_init(&iadev->rx_dma_q);  
 	iadev->rx_free_desc_qhead = NULL;   
 
-	iadev->rx_open = kcalloc(iadev->num_vc, sizeof(void *), GFP_KERNEL);
+	iadev->rx_open = kzalloc(4 * iadev->num_vc, GFP_KERNEL);
 	if (!iadev->rx_open) {
 		printk(KERN_ERR DEV_LABEL "itf %d couldn't get free page\n",
 		dev->number);  
@@ -1666,7 +1664,7 @@ static void tx_intr(struct atm_dev *dev)
 	status = readl(iadev->seg_reg+SEG_INTR_STATUS_REG);  
         if (status & TRANSMIT_DONE){
 
-           IF_EVENT(printk("Transmit Done Intr logic run\n");)
+           IF_EVENT(printk("Tansmit Done Intr logic run\n");)
            spin_lock_irqsave(&iadev->tx_lock, flags);
            ia_tx_poll(iadev);
            spin_unlock_irqrestore(&iadev->tx_lock, flags);
@@ -1886,9 +1884,9 @@ static int open_tx(struct atm_vcc *vcc)
                 if ((ret = ia_cbr_setup (iadev, vcc)) < 0) {     
                     return ret;
                 }
-	} else {
-		printk("iadev:  Non UBR, ABR and CBR traffic not supported\n");
-	}
+       } 
+	else  
+           printk("iadev:  Non UBR, ABR and CBR traffic not supportedn"); 
         
         iadev->testTable[vcc->vci]->vc_status |= VC_ACTIVE;
 	IF_EVENT(printk("ia open_tx returning \n");)  
@@ -1976,9 +1974,7 @@ static int tx_init(struct atm_dev *dev)
 		buf_desc_ptr++;		  
 		tx_pkt_start += iadev->tx_buf_sz;  
 	}  
-	iadev->tx_buf = kmalloc_array(iadev->num_tx_desc,
-				      sizeof(*iadev->tx_buf),
-				      GFP_KERNEL);
+        iadev->tx_buf = kmalloc(iadev->num_tx_desc*sizeof(struct cpcs_trailer_desc), GFP_KERNEL);
         if (!iadev->tx_buf) {
             printk(KERN_ERR DEV_LABEL " couldn't get mem\n");
 	    goto err_free_dle;
@@ -1998,9 +1994,8 @@ static int tx_init(struct atm_dev *dev)
 						       sizeof(*cpcs),
 						       DMA_TO_DEVICE);
         }
-	iadev->desc_tbl = kmalloc_array(iadev->num_tx_desc,
-					sizeof(*iadev->desc_tbl),
-					GFP_KERNEL);
+        iadev->desc_tbl = kmalloc(iadev->num_tx_desc *
+                                   sizeof(struct desc_tbl_t), GFP_KERNEL);
 	if (!iadev->desc_tbl) {
 		printk(KERN_ERR DEV_LABEL " couldn't get mem\n");
 		goto err_free_all_tx_bufs;
@@ -2128,9 +2123,7 @@ static int tx_init(struct atm_dev *dev)
 	memset((caddr_t)(iadev->seg_ram+i),  0, iadev->num_vc*4);
 	vc = (struct main_vc *)iadev->MAIN_VC_TABLE_ADDR;  
 	evc = (struct ext_vc *)iadev->EXT_VC_TABLE_ADDR;  
-	iadev->testTable = kmalloc_array(iadev->num_vc,
-					 sizeof(*iadev->testTable),
-					 GFP_KERNEL);
+        iadev->testTable = kmalloc(sizeof(long)*iadev->num_vc, GFP_KERNEL); 
         if (!iadev->testTable) {
            printk("Get freepage  failed\n");
 	   goto err_free_desc_tbl;
@@ -2433,7 +2426,7 @@ static void ia_update_stats(IADEV *iadev) {
     return;
 }
   
-static void ia_led_timer(struct timer_list *unused) {
+static void ia_led_timer(unsigned long arg) {
  	unsigned long flags;
   	static u_char blinking[8] = {0, 0, 0, 0, 0, 0, 0, 0};
         u_char i;
@@ -2625,7 +2618,7 @@ static void ia_close(struct atm_vcc *vcc)
         if (vcc->qos.txtp.traffic_class != ATM_NONE) {
            iadev->close_pending++;
 	   prepare_to_wait(&iadev->timeout_wait, &wait, TASK_UNINTERRUPTIBLE);
-	   schedule_timeout(msecs_to_jiffies(500));
+	   schedule_timeout(50);
 	   finish_wait(&iadev->timeout_wait, &wait);
            spin_lock_irqsave(&iadev->tx_lock, flags); 
            while((skb = skb_dequeue(&iadev->tx_backlog))) {
@@ -2761,11 +2754,8 @@ static int ia_ioctl(struct atm_dev *dev, unsigned int cmd, void __user *arg)
    }
    if (copy_from_user(&ia_cmds, arg, sizeof ia_cmds)) return -EFAULT; 
    board = ia_cmds.status;
-
-	if ((board < 0) || (board > iadev_count))
-		board = 0;
-	board = array_index_nospec(board, iadev_count + 1);
-
+   if ((board < 0) || (board > iadev_count))
+         board = 0;    
    iadev = ia_dev[board];
    switch (ia_cmds.cmd) {
    case MEMDUMP:
@@ -3151,7 +3141,7 @@ static int ia_proc_read(struct atm_dev *dev,loff_t *pos,char *page)
                            "  Size of Tx Buffer  :  %u\n"
                            "  Number of Rx Buffer:  %u\n"
                            "  Size of Rx Buffer  :  %u\n"
-                           "  Packets Received   :  %u\n"
+                           "  Packets Receiverd  :  %u\n"
                            "  Packets Transmitted:  %u\n"
                            "  Cells Received     :  %u\n"
                            "  Cells Transmitted  :  %u\n"
@@ -3270,7 +3260,7 @@ static void ia_remove_one(struct pci_dev *pdev)
       	kfree(iadev);
 }
 
-static const struct pci_device_id ia_pci_tbl[] = {
+static struct pci_device_id ia_pci_tbl[] = {
 	{ PCI_VENDOR_ID_IPHASE, 0x0008, PCI_ANY_ID, PCI_ANY_ID, },
 	{ PCI_VENDOR_ID_IPHASE, 0x0009, PCI_ANY_ID, PCI_ANY_ID, },
 	{ 0,}
@@ -3301,7 +3291,7 @@ static void __exit ia_module_exit(void)
 {
 	pci_unregister_driver(&ia_driver);
 
-	del_timer_sync(&ia_timer);
+        del_timer(&ia_timer);
 }
 
 module_init(ia_module_init);

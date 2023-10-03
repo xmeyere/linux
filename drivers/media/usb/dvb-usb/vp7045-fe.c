@@ -1,7 +1,7 @@
 /* DVB frontend part of the Linux driver for TwinhanDTV Alpha/MagicBoxII USB2.0
  * DVB-T receiver.
  *
- * Copyright (C) 2004-5 Patrick Boettcher (patrick.boettcher@posteo.de)
+ * Copyright (C) 2004-5 Patrick Boettcher (patrick.boettcher@desy.de)
  *
  * Thanks to Twinhan who kindly provided hardware and information.
  *
@@ -9,7 +9,7 @@
  *	under the terms of the GNU General Public License as published by the Free
  *	Software Foundation, version 2.
  *
- * see Documentation/media/dvb-drivers/dvb-usb.rst for more information
+ * see Documentation/dvb/README.dvb-usb for more information
  *
  */
 #include "vp7045.h"
@@ -26,8 +26,7 @@ struct vp7045_fe_state {
 	struct dvb_usb_device *d;
 };
 
-static int vp7045_fe_read_status(struct dvb_frontend *fe,
-				 enum fe_status *status)
+static int vp7045_fe_read_status(struct dvb_frontend* fe, fe_status_t *status)
 {
 	struct vp7045_fe_state *state = fe->demodulator_priv;
 	u8 s0 = vp7045_read_reg(state->d,0x00),
@@ -140,7 +139,7 @@ static void vp7045_fe_release(struct dvb_frontend* fe)
 	kfree(state);
 }
 
-static const struct dvb_frontend_ops vp7045_fe_ops;
+static struct dvb_frontend_ops vp7045_fe_ops;
 
 struct dvb_frontend * vp7045_fe_attach(struct dvb_usb_device *d)
 {
@@ -158,13 +157,13 @@ error:
 }
 
 
-static const struct dvb_frontend_ops vp7045_fe_ops = {
+static struct dvb_frontend_ops vp7045_fe_ops = {
 	.delsys = { SYS_DVBT },
 	.info = {
 		.name			= "Twinhan VP7045/46 USB DVB-T",
-		.frequency_min_hz	=  44250 * kHz,
-		.frequency_max_hz	= 867250 * kHz,
-		.frequency_stepsize_hz	=      1 * kHz,
+		.frequency_min		= 44250000,
+		.frequency_max		= 867250000,
+		.frequency_stepsize	= 1000,
 		.caps = FE_CAN_INVERSION_AUTO |
 				FE_CAN_FEC_1_2 | FE_CAN_FEC_2_3 | FE_CAN_FEC_3_4 |
 				FE_CAN_FEC_5_6 | FE_CAN_FEC_7_8 | FE_CAN_FEC_AUTO |

@@ -136,7 +136,8 @@ static int fm3130_get_time(struct device *dev, struct rtc_time *t)
 		t->tm_hour, t->tm_mday,
 		t->tm_mon, t->tm_year, t->tm_wday);
 
-	return 0;
+	/* initial clock setting can be undefined */
+	return rtc_valid_tm(t);
 }
 
 
@@ -522,6 +523,7 @@ exit_free:
 static struct i2c_driver fm3130_driver = {
 	.driver = {
 		.name	= "rtc-fm3130",
+		.owner	= THIS_MODULE,
 	},
 	.probe		= fm3130_probe,
 	.id_table	= fm3130_id,

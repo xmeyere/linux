@@ -1102,27 +1102,17 @@ static int tps65910_probe(struct platform_device *pdev)
 	platform_set_drvdata(pdev, pmic);
 
 	/* Give control of all register to control port */
-	err = tps65910_reg_set_bits(pmic->mfd, TPS65910_DEVCTRL,
+	tps65910_reg_set_bits(pmic->mfd, TPS65910_DEVCTRL,
 				DEVCTRL_SR_CTL_I2C_SEL_MASK);
-	if (err < 0)
-		return err;
 
 	switch (tps65910_chip_id(tps65910)) {
 	case TPS65910:
-		BUILD_BUG_ON(TPS65910_NUM_REGS < ARRAY_SIZE(tps65910_regs));
 		pmic->get_ctrl_reg = &tps65910_get_ctrl_register;
 		pmic->num_regulators = ARRAY_SIZE(tps65910_regs);
 		pmic->ext_sleep_control = tps65910_ext_sleep_control;
 		info = tps65910_regs;
-		/* Work around silicon erratum SWCZ010: output programmed
-		 * voltage level can go higher than expected or crash
-		 * Workaround: use no synchronization of DCDC clocks
-		 */
-		tps65910_reg_clear_bits(pmic->mfd, TPS65910_DCDCCTRL,
-					DCDCCTRL_DCDCCKSYNC_MASK);
 		break;
 	case TPS65911:
-		BUILD_BUG_ON(TPS65910_NUM_REGS < ARRAY_SIZE(tps65911_regs));
 		pmic->get_ctrl_reg = &tps65911_get_ctrl_register;
 		pmic->num_regulators = ARRAY_SIZE(tps65911_regs);
 		pmic->ext_sleep_control = tps65911_ext_sleep_control;
@@ -1133,28 +1123,23 @@ static int tps65910_probe(struct platform_device *pdev)
 		return -ENODEV;
 	}
 
-	pmic->desc = devm_kcalloc(&pdev->dev,
-				  pmic->num_regulators,
-				  sizeof(struct regulator_desc),
-				  GFP_KERNEL);
+	pmic->desc = devm_kzalloc(&pdev->dev, pmic->num_regulators *
+			sizeof(struct regulator_desc), GFP_KERNEL);
 	if (!pmic->desc)
 		return -ENOMEM;
 
-	pmic->info = devm_kcalloc(&pdev->dev,
-				  pmic->num_regulators,
-				  sizeof(struct tps_info *),
-				  GFP_KERNEL);
+	pmic->info = devm_kzalloc(&pdev->dev, pmic->num_regulators *
+			sizeof(struct tps_info *), GFP_KERNEL);
 	if (!pmic->info)
 		return -ENOMEM;
 
-	pmic->rdev = devm_kcalloc(&pdev->dev,
-				  pmic->num_regulators,
-				  sizeof(struct regulator_dev *),
-				  GFP_KERNEL);
+	pmic->rdev = devm_kzalloc(&pdev->dev, pmic->num_regulators *
+			sizeof(struct regulator_dev *), GFP_KERNEL);
 	if (!pmic->rdev)
 		return -ENOMEM;
 
-	for (i = 0; i < pmic->num_regulators; i++, info++) {
+	for (i = 0; i < pmic->num_regulators && i < TPS65910_NUM_REGS;
+			i++, info++) {
 		/* Register the regulators */
 		pmic->info[i] = info;
 

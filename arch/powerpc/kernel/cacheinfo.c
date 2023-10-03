@@ -61,21 +61,11 @@ struct cache_type_info {
 };
 
 /* These are used to index the cache_type_info array. */
-#define CACHE_TYPE_UNIFIED     0 /* cache-size, cache-block-size, etc. */
-#define CACHE_TYPE_UNIFIED_D   1 /* d-cache-size, d-cache-block-size, etc */
-#define CACHE_TYPE_INSTRUCTION 2
-#define CACHE_TYPE_DATA        3
+#define CACHE_TYPE_UNIFIED     0
+#define CACHE_TYPE_INSTRUCTION 1
+#define CACHE_TYPE_DATA        2
 
 static const struct cache_type_info cache_type_info[] = {
-	{
-		/* Embedded systems that use cache-size, cache-block-size,
-		 * etc. for the Unified (typically L2) cache. */
-		.name            = "Unified",
-		.size_prop       = "cache-size",
-		.line_size_props = { "cache-line-size",
-				     "cache-block-size", },
-		.nr_sets_prop    = "cache-sets",
-	},
 	{
 		/* PowerPC Processor binding says the [di]-cache-*
 		 * must be equal on unified caches, so just use
@@ -167,10 +157,10 @@ static void release_cache_debugcheck(struct cache *cache)
 
 	list_for_each_entry(iter, &cache_list, list)
 		WARN_ONCE(iter->next_local == cache,
-			  "cache for %pOF(%s) refers to cache for %pOF(%s)\n",
-			  iter->ofnode,
+			  "cache for %s(%s) refers to cache for %s(%s)\n",
+			  iter->ofnode->full_name,
 			  cache_type_string(iter),
-			  cache->ofnode,
+			  cache->ofnode->full_name,
 			  cache_type_string(cache));
 }
 
@@ -179,8 +169,8 @@ static void release_cache(struct cache *cache)
 	if (!cache)
 		return;
 
-	pr_debug("freeing L%d %s cache for %pOF\n", cache->level,
-		 cache_type_string(cache), cache->ofnode);
+	pr_debug("freeing L%d %s cache for %s\n", cache->level,
+		 cache_type_string(cache), cache->ofnode->full_name);
 
 	release_cache_debugcheck(cache);
 	list_del(&cache->list);
@@ -194,8 +184,8 @@ static void cache_cpu_set(struct cache *cache, int cpu)
 
 	while (next) {
 		WARN_ONCE(cpumask_test_cpu(cpu, &next->shared_cpu_map),
-			  "CPU %i already accounted in %pOF(%s)\n",
-			  cpu, next->ofnode,
+			  "CPU %i already accounted in %s(%s)\n",
+			  cpu, next->ofnode->full_name,
 			  cache_type_string(next));
 		cpumask_set_cpu(cpu, &next->shared_cpu_map);
 		next = next->next_local;
@@ -303,8 +293,7 @@ static struct cache *cache_find_first_sibling(struct cache *cache)
 {
 	struct cache *iter;
 
-	if (cache->type == CACHE_TYPE_UNIFIED ||
-	    cache->type == CACHE_TYPE_UNIFIED_D)
+	if (cache->type == CACHE_TYPE_UNIFIED)
 		return cache;
 
 	list_for_each_entry(iter, &cache_list, list)
@@ -335,29 +324,16 @@ static bool cache_node_is_unified(const struct device_node *np)
 	return of_get_property(np, "cache-unified", NULL);
 }
 
-/*
- * Unified caches can have two different sets of tags.  Most embedded
- * use cache-size, etc. for the unified cache size, but open firmware systems
- * use d-cache-size, etc.   Check on initialization for which type we have, and
- * return the appropriate structure type.  Assume it's embedded if it isn't
- * open firmware.  If it's yet a 3rd type, then there will be missing entries
- * in /sys/devices/system/cpu/cpu0/cache/index2/, and this code will need
- * to be extended further.
- */
-static int cache_is_unified_d(const struct device_node *np)
+static struct cache *cache_do_one_devnode_unified(struct device_node *node,
+						  int level)
 {
-	return of_get_property(np,
-		cache_type_info[CACHE_TYPE_UNIFIED_D].size_prop, NULL) ?
-		CACHE_TYPE_UNIFIED_D : CACHE_TYPE_UNIFIED;
-}
+	struct cache *cache;
 
-/*
- */
-static struct cache *cache_do_one_devnode_unified(struct device_node *node, int level)
-{
-	pr_debug("creating L%d ucache for %pOF\n", level, node);
+	pr_debug("creating L%d ucache for %s\n", level, node->full_name);
 
-	return new_cache(cache_is_unified_d(node), level, node);
+	cache = new_cache(CACHE_TYPE_UNIFIED, level, node);
+
+	return cache;
 }
 
 static struct cache *cache_do_one_devnode_split(struct device_node *node,
@@ -365,8 +341,8 @@ static struct cache *cache_do_one_devnode_split(struct device_node *node,
 {
 	struct cache *dcache, *icache;
 
-	pr_debug("creating L%d dcache and icache for %pOF\n", level,
-		 node);
+	pr_debug("creating L%d dcache and icache for %s\n", level,
+		 node->full_name);
 
 	dcache = new_cache(CACHE_TYPE_DATA, level, node);
 	icache = new_cache(CACHE_TYPE_INSTRUCTION, level, node);
@@ -679,6 +655,7 @@ static struct kobj_type cache_index_type = {
 
 static void cacheinfo_create_index_opt_attrs(struct cache_index_dir *dir)
 {
+	const char *cache_name;
 	const char *cache_type;
 	struct cache *cache;
 	char *buf;
@@ -689,6 +666,7 @@ static void cacheinfo_create_index_opt_attrs(struct cache_index_dir *dir)
 		return;
 
 	cache = dir->cache;
+	cache_name = cache->ofnode->full_name;
 	cache_type = cache_type_string(cache);
 
 	/* We don't want to create an attribute that can't provide a
@@ -705,14 +683,14 @@ static void cacheinfo_create_index_opt_attrs(struct cache_index_dir *dir)
 		rc = attr->show(&dir->kobj, attr, buf);
 		if (rc <= 0) {
 			pr_debug("not creating %s attribute for "
-				 "%pOF(%s) (rc = %zd)\n",
-				 attr->attr.name, cache->ofnode,
+				 "%s(%s) (rc = %zd)\n",
+				 attr->attr.name, cache_name,
 				 cache_type, rc);
 			continue;
 		}
 		if (sysfs_create_file(&dir->kobj, &attr->attr))
-			pr_debug("could not create %s attribute for %pOF(%s)\n",
-				 attr->attr.name, cache->ofnode, cache_type);
+			pr_debug("could not create %s attribute for %s(%s)\n",
+				 attr->attr.name, cache_name, cache_type);
 	}
 
 	kfree(buf);
@@ -829,8 +807,8 @@ static void cache_cpu_clear(struct cache *cache, int cpu)
 		struct cache *next = cache->next_local;
 
 		WARN_ONCE(!cpumask_test_cpu(cpu, &cache->shared_cpu_map),
-			  "CPU %i not accounted in %pOF(%s)\n",
-			  cpu, cache->ofnode,
+			  "CPU %i not accounted in %s(%s)\n",
+			  cpu, cache->ofnode->full_name,
 			  cache_type_string(cache));
 
 		cpumask_clear_cpu(cpu, &cache->shared_cpu_map);
@@ -865,25 +843,4 @@ void cacheinfo_cpu_offline(unsigned int cpu_id)
 	if (cache)
 		cache_cpu_clear(cache, cpu_id);
 }
-
-void cacheinfo_teardown(void)
-{
-	unsigned int cpu;
-
-	lockdep_assert_cpus_held();
-
-	for_each_online_cpu(cpu)
-		cacheinfo_cpu_offline(cpu);
-}
-
-void cacheinfo_rebuild(void)
-{
-	unsigned int cpu;
-
-	lockdep_assert_cpus_held();
-
-	for_each_online_cpu(cpu)
-		cacheinfo_cpu_online(cpu);
-}
-
 #endif /* (CONFIG_PPC_PSERIES && CONFIG_SUSPEND) || CONFIG_HOTPLUG_CPU */

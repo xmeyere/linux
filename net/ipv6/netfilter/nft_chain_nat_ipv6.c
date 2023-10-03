@@ -24,29 +24,56 @@
 #include <net/netfilter/nf_nat_l3proto.h>
 #include <net/ipv6.h>
 
-static unsigned int nft_nat_do_chain(void *priv,
+static unsigned int nft_nat_do_chain(const struct nf_hook_ops *ops,
 				     struct sk_buff *skb,
-				     const struct nf_hook_state *state)
+				     const struct net_device *in,
+				     const struct net_device *out,
+				     struct nf_conn *ct)
 {
 	struct nft_pktinfo pkt;
 
-	nft_set_pktinfo(&pkt, skb, state);
-	nft_set_pktinfo_ipv6(&pkt, skb);
+	nft_set_pktinfo_ipv6(&pkt, ops, skb, in, out);
 
-	return nft_do_chain(&pkt, priv);
+	return nft_do_chain(&pkt, ops);
 }
 
-static int nft_nat_ipv6_reg(struct net *net, const struct nf_hook_ops *ops)
+static unsigned int nft_nat_ipv6_fn(const struct nf_hook_ops *ops,
+				    struct sk_buff *skb,
+				    const struct net_device *in,
+				    const struct net_device *out,
+				    int (*okfn)(struct sk_buff *))
 {
-	return nf_nat_l3proto_ipv6_register_fn(net, ops);
+	return nf_nat_ipv6_fn(ops, skb, in, out, nft_nat_do_chain);
 }
 
-static void nft_nat_ipv6_unreg(struct net *net, const struct nf_hook_ops *ops)
+static unsigned int nft_nat_ipv6_in(const struct nf_hook_ops *ops,
+				    struct sk_buff *skb,
+				    const struct net_device *in,
+				    const struct net_device *out,
+				    int (*okfn)(struct sk_buff *))
 {
-	nf_nat_l3proto_ipv6_unregister_fn(net, ops);
+	return nf_nat_ipv6_in(ops, skb, in, out, nft_nat_do_chain);
 }
 
-static const struct nft_chain_type nft_chain_nat_ipv6 = {
+static unsigned int nft_nat_ipv6_out(const struct nf_hook_ops *ops,
+				     struct sk_buff *skb,
+				     const struct net_device *in,
+				     const struct net_device *out,
+				     int (*okfn)(struct sk_buff *))
+{
+	return nf_nat_ipv6_out(ops, skb, in, out, nft_nat_do_chain);
+}
+
+static unsigned int nft_nat_ipv6_local_fn(const struct nf_hook_ops *ops,
+					  struct sk_buff *skb,
+					  const struct net_device *in,
+					  const struct net_device *out,
+					  int (*okfn)(struct sk_buff *))
+{
+	return nf_nat_ipv6_local_fn(ops, skb, in, out, nft_nat_do_chain);
+}
+
+static const struct nf_chain_type nft_chain_nat_ipv6 = {
 	.name		= "nat",
 	.type		= NFT_CHAIN_T_NAT,
 	.family		= NFPROTO_IPV6,
@@ -56,18 +83,20 @@ static const struct nft_chain_type nft_chain_nat_ipv6 = {
 			  (1 << NF_INET_LOCAL_OUT) |
 			  (1 << NF_INET_LOCAL_IN),
 	.hooks		= {
-		[NF_INET_PRE_ROUTING]	= nft_nat_do_chain,
-		[NF_INET_POST_ROUTING]	= nft_nat_do_chain,
-		[NF_INET_LOCAL_OUT]	= nft_nat_do_chain,
-		[NF_INET_LOCAL_IN]	= nft_nat_do_chain,
+		[NF_INET_PRE_ROUTING]	= nft_nat_ipv6_in,
+		[NF_INET_POST_ROUTING]	= nft_nat_ipv6_out,
+		[NF_INET_LOCAL_OUT]	= nft_nat_ipv6_local_fn,
+		[NF_INET_LOCAL_IN]	= nft_nat_ipv6_fn,
 	},
-	.ops_register		= nft_nat_ipv6_reg,
-	.ops_unregister		= nft_nat_ipv6_unreg,
 };
 
 static int __init nft_chain_nat_ipv6_init(void)
 {
-	nft_register_chain_type(&nft_chain_nat_ipv6);
+	int err;
+
+	err = nft_register_chain_type(&nft_chain_nat_ipv6);
+	if (err < 0)
+		return err;
 
 	return 0;
 }

@@ -1,18 +1,19 @@
-# SPDX-License-Identifier: GPL-2.0
+ifeq ($(filter y, $(CONFIG_ARM) $(CONFIG_ARM64)),)
 obj-$(CONFIG_HOTPLUG_CPU)		+= cpu_hotplug.o
+endif
 obj-$(CONFIG_X86)			+= fallback.o
-obj-y	+= grant-table.o features.o balloon.o manage.o preempt.o time.o
-obj-y	+= mem-reservation.o
+obj-y	+= grant-table.o features.o balloon.o manage.o preempt.o
 obj-y	+= events/
 obj-y	+= xenbus/
 
 nostackp := $(call cc-option, -fno-stack-protector)
 CFLAGS_features.o			:= $(nostackp)
 
-dom0-$(CONFIG_ARM64) += arm-device.o
+CFLAGS_efi.o				+= -fshort-wchar
+
 dom0-$(CONFIG_PCI) += pci.o
 dom0-$(CONFIG_USB_SUPPORT) += dbgp.o
-dom0-$(CONFIG_XEN_ACPI) += acpi.o $(xen-pad-y)
+dom0-$(CONFIG_ACPI) += acpi.o $(xen-pad-y)
 xen-pad-$(CONFIG_X86) += xen-acpi-pad.o
 dom0-$(CONFIG_X86) += pcpu.o
 obj-$(CONFIG_XEN_DOM0)			+= $(dom0-y)
@@ -36,11 +37,7 @@ obj-$(CONFIG_XEN_ACPI_HOTPLUG_CPU)	+= xen-acpi-cpuhotplug.o
 obj-$(CONFIG_XEN_ACPI_PROCESSOR)	+= xen-acpi-processor.o
 obj-$(CONFIG_XEN_EFI)			+= efi.o
 obj-$(CONFIG_XEN_SCSI_BACKEND)		+= xen-scsiback.o
-obj-$(CONFIG_XEN_AUTO_XLATE)		+= xlate_mmu.o
-obj-$(CONFIG_XEN_PVCALLS_BACKEND)	+= pvcalls-back.o
-obj-$(CONFIG_XEN_PVCALLS_FRONTEND)	+= pvcalls-front.o
 xen-evtchn-y				:= evtchn.o
 xen-gntdev-y				:= gntdev.o
-xen-gntdev-$(CONFIG_XEN_GNTDEV_DMABUF)	+= gntdev-dmabuf.o
 xen-gntalloc-y				:= gntalloc.o
-xen-privcmd-y				:= privcmd.o privcmd-buf.o
+xen-privcmd-y				:= privcmd.o

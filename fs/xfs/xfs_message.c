@@ -1,11 +1,22 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (c) 2011 Red Hat, Inc.  All Rights Reserved.
+ *
+ * This program is free software; you can redistribute it and/or
+ * modify it under the terms of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it would be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write the Free Software Foundation,
+ * Inc.,  51 Franklin St, Fifth Floor, Boston, MA  02110-1301  USA
  */
 
 #include "xfs.h"
 #include "xfs_fs.h"
-#include "xfs_error.h"
 #include "xfs_format.h"
 #include "xfs_log_format.h"
 #include "xfs_trans_resv.h"
@@ -32,7 +43,6 @@ void func(const struct xfs_mount *mp, const char *fmt, ...)	\
 {								\
 	struct va_format	vaf;				\
 	va_list			args;				\
-	int			level;				\
 								\
 	va_start(args, fmt);					\
 								\
@@ -41,11 +51,6 @@ void func(const struct xfs_mount *mp, const char *fmt, ...)	\
 								\
 	__xfs_printk(kern_level, mp, &vaf);			\
 	va_end(args);						\
-								\
-	if (!kstrtoint(kern_level, 0, &level) &&		\
-	    level <= LOGLEVEL_ERR &&				\
-	    xfs_error_level >= XFS_ERRLEVEL_HIGH)		\
-		xfs_stack_trace();				\
 }								\
 
 define_xfs_printk_level(xfs_emerg, KERN_EMERG);
@@ -98,10 +103,7 @@ assfail(char *expr, char *file, int line)
 {
 	xfs_emerg(NULL, "Assertion failed: %s, file: %s, line: %d",
 		expr, file, line);
-	if (xfs_globals.bug_on_assert)
-		BUG();
-	else
-		WARN_ON(1);
+	BUG();
 }
 
 void

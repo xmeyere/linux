@@ -19,6 +19,7 @@
 #include <linux/cpuidle.h>
 #include <linux/io.h>
 #include <linux/export.h>
+#include <asm/proc-fns.h>
 #include <asm/cpuidle.h>
 
 #define AT91_MAX_STATES	2
@@ -62,4 +63,5 @@ static struct platform_driver at91_cpuidle_driver = {
 	},
 	.probe = at91_cpuidle_probe,
 };
-builtin_platform_driver(at91_cpuidle_driver);
+
+module_platform_driver(at91_cpuidle_driver);

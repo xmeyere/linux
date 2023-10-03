@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 menu "Device Drivers"
 
 source "drivers/amba/Kconfig"
@@ -9,8 +8,6 @@ source "drivers/bus/Kconfig"
 
 source "drivers/connector/Kconfig"
 
-source "drivers/gnss/Kconfig"
-
 source "drivers/mtd/Kconfig"
 
 source "drivers/of/Kconfig"
@@ -20,8 +17,6 @@ source "drivers/parport/Kconfig"
 source "drivers/pnp/Kconfig"
 
 source "drivers/block/Kconfig"
-
-source "drivers/nvme/Kconfig"
 
 # misc before ide - BLK_DEV_SGIIOC4 depends on SGI_IOC4
 
@@ -46,8 +41,6 @@ source "drivers/macintosh/Kconfig"
 source "drivers/net/Kconfig"
 
 source "drivers/isdn/Kconfig"
-
-source "drivers/lightnvm/Kconfig"
 
 # input before char - char/joystick depends on it. As does USB.
 
@@ -117,8 +110,6 @@ source "drivers/rtc/Kconfig"
 
 source "drivers/dma/Kconfig"
 
-source "drivers/dma-buf/Kconfig"
-
 source "drivers/dca/Kconfig"
 
 source "drivers/auxdisplay/Kconfig"
@@ -155,8 +146,6 @@ source "drivers/remoteproc/Kconfig"
 
 source "drivers/rpmsg/Kconfig"
 
-source "drivers/soundwire/Kconfig"
-
 source "drivers/soc/Kconfig"
 
 source "drivers/devfreq/Kconfig"
@@ -187,36 +176,10 @@ source "drivers/powercap/Kconfig"
 
 source "drivers/mcb/Kconfig"
 
-source "drivers/perf/Kconfig"
-
 source "drivers/ras/Kconfig"
 
 source "drivers/thunderbolt/Kconfig"
 
 source "drivers/android/Kconfig"
-
-source "drivers/nvdimm/Kconfig"
-
-source "drivers/dax/Kconfig"
-
-source "drivers/nvmem/Kconfig"
-
-source "drivers/hwtracing/Kconfig"
-
-source "drivers/fpga/Kconfig"
-
-source "drivers/fsi/Kconfig"
-
-source "drivers/tee/Kconfig"
-
-source "drivers/mux/Kconfig"
-
-source "drivers/opp/Kconfig"
-
-source "drivers/visorbus/Kconfig"
-
-source "drivers/siox/Kconfig"
-
-source "drivers/slimbus/Kconfig"
 
 endmenu

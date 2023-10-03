@@ -5,10 +5,8 @@
  * it under the terms of the GNU General Public License version 2 as
  * published by the Free Software Foundation.
  */
-
 #define pr_fmt(fmt) KBUILD_MODNAME ": " fmt
 
-#include <linux/kernel.h>
 #include <linux/module.h>
 #include <linux/spinlock.h>
 #include <linux/skbuff.h>
@@ -24,18 +22,18 @@
 #include <linux/netfilter/xt_LOG.h>
 #include <net/netfilter/nf_log.h>
 
-static const struct nf_loginfo default_loginfo = {
+static struct nf_loginfo default_loginfo = {
 	.type	= NF_LOG_TYPE_LOG,
 	.u = {
 		.log = {
-			.level	  = LOGLEVEL_NOTICE,
-			.logflags = NF_LOG_DEFAULT_MASK,
+			.level	  = 5,
+			.logflags = NF_LOG_MASK,
 		},
 	},
 };
 
 /* One level of recursion won't kill us */
-static void dump_ipv4_packet(struct net *net, struct nf_log_buf *m,
+static void dump_ipv4_packet(struct nf_log_buf *m,
 			     const struct nf_loginfo *info,
 			     const struct sk_buff *skb, unsigned int iphoff)
 {
@@ -46,7 +44,7 @@ static void dump_ipv4_packet(struct net *net, struct nf_log_buf *m,
 	if (info->type == NF_LOG_TYPE_LOG)
 		logflags = info->u.log.logflags;
 	else
-		logflags = NF_LOG_DEFAULT_MASK;
+		logflags = NF_LOG_MASK;
 
 	ih = skb_header_pointer(skb, iphoff, sizeof(_iph), &_iph);
 	if (ih == NULL) {
@@ -76,7 +74,7 @@ static void dump_ipv4_packet(struct net *net, struct nf_log_buf *m,
 	if (ntohs(ih->frag_off) & IP_OFFSET)
 		nf_log_buf_add(m, "FRAG:%u ", ntohs(ih->frag_off) & IP_OFFSET);
 
-	if ((logflags & NF_LOG_IPOPT) &&
+	if ((logflags & XT_LOG_IPOPT) &&
 	    ih->ihl * 4 > sizeof(struct iphdr)) {
 		const unsigned char *op;
 		unsigned char _opt[4 * 15 - sizeof(struct iphdr)];
@@ -183,7 +181,7 @@ static void dump_ipv4_packet(struct net *net, struct nf_log_buf *m,
 			/* Max length: 3+maxlen */
 			if (!iphoff) { /* Only recurse once. */
 				nf_log_buf_add(m, "[");
-				dump_ipv4_packet(net, m, info, skb,
+				dump_ipv4_packet(m, info, skb,
 					    iphoff + ih->ihl*4+sizeof(_icmph));
 				nf_log_buf_add(m, "] ");
 			}
@@ -250,8 +248,8 @@ static void dump_ipv4_packet(struct net *net, struct nf_log_buf *m,
 	}
 
 	/* Max length: 15 "UID=4294967295 " */
-	if ((logflags & NF_LOG_UID) && !iphoff)
-		nf_log_dump_sk_uid_gid(net, m, skb->sk);
+	if ((logflags & XT_LOG_UID) && !iphoff)
+		nf_log_dump_sk_uid_gid(m, skb->sk);
 
 	/* Max length: 16 "MARK=0xFFFFFFFF " */
 	if (!iphoff && skb->mark)
@@ -282,15 +280,13 @@ static void dump_ipv4_mac_header(struct nf_log_buf *m,
 	if (info->type == NF_LOG_TYPE_LOG)
 		logflags = info->u.log.logflags;
 
-	if (!(logflags & NF_LOG_MACDECODE))
+	if (!(logflags & XT_LOG_MACDECODE))
 		goto fallback;
 
 	switch (dev->type) {
 	case ARPHRD_ETHER:
-		nf_log_buf_add(m, "MACSRC=%pM MACDST=%pM ",
-			       eth_hdr(skb)->h_source, eth_hdr(skb)->h_dest);
-		nf_log_dump_vlan(m, skb);
-		nf_log_buf_add(m, "MACPROTO=%04x ",
+		nf_log_buf_add(m, "MACSRC=%pM MACDST=%pM MACPROTO=%04x ",
+			       eth_hdr(skb)->h_source, eth_hdr(skb)->h_dest,
 			       ntohs(eth_hdr(skb)->h_proto));
 		return;
 	default:
@@ -321,7 +317,7 @@ static void nf_log_ip_packet(struct net *net, u_int8_t pf,
 	struct nf_log_buf *m;
 
 	/* FIXME: Disabled from containers until syslog ns is supported */
-	if (!net_eq(net, &init_net) && !sysctl_nf_log_all_netns)
+	if (!net_eq(net, &init_net))
 		return;
 
 	m = nf_log_buf_open();
@@ -335,7 +331,7 @@ static void nf_log_ip_packet(struct net *net, u_int8_t pf,
 	if (in != NULL)
 		dump_ipv4_mac_header(m, loginfo, skb);
 
-	dump_ipv4_packet(net, m, loginfo, skb, 0);
+	dump_ipv4_packet(m, loginfo, skb, 0);
 
 	nf_log_buf_close(m);
 }
@@ -349,7 +345,8 @@ static struct nf_logger nf_ip_logger __read_mostly = {
 
 static int __net_init nf_log_ipv4_net_init(struct net *net)
 {
-	return nf_log_set(net, NFPROTO_IPV4, &nf_ip_logger);
+	nf_log_set(net, NFPROTO_IPV4, &nf_ip_logger);
+	return 0;
 }
 
 static void __net_exit nf_log_ipv4_net_exit(struct net *net)

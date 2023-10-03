@@ -3,13 +3,13 @@
  *
  * dvb-usb-init.c
  *
- * Copyright (C) 2004-6 Patrick Boettcher (patrick.boettcher@posteo.de)
+ * Copyright (C) 2004-6 Patrick Boettcher (patrick.boettcher@desy.de)
  *
  *	This program is free software; you can redistribute it and/or modify it
  *	under the terms of the GNU General Public License as published by the Free
  *	Software Foundation, version 2.
  *
- * see Documentation/media/dvb-drivers/dvb-usb.rst for more information
+ * see Documentation/dvb/README.dvb-usb for more information
  */
 #include "dvb-usb-common.h"
 
@@ -82,17 +82,11 @@ static int dvb_usb_adapter_init(struct dvb_usb_device *d, short *adapter_nrs)
 			}
 		}
 
-		ret = dvb_usb_adapter_stream_init(adap);
-		if (ret)
-			goto stream_init_err;
-
-		ret = dvb_usb_adapter_dvb_init(adap, adapter_nrs);
-		if (ret)
-			goto dvb_init_err;
-
-		ret = dvb_usb_adapter_frontend_init(adap);
-		if (ret)
-			goto frontend_init_err;
+		if ((ret = dvb_usb_adapter_stream_init(adap)) ||
+			(ret = dvb_usb_adapter_dvb_init(adap, adapter_nrs)) ||
+			(ret = dvb_usb_adapter_frontend_init(adap))) {
+			return ret;
+		}
 
 		/* use exclusive FE lock if there is multiple shared FEs */
 		if (adap->fe_adap[1].fe)
@@ -112,14 +106,6 @@ static int dvb_usb_adapter_init(struct dvb_usb_device *d, short *adapter_nrs)
 	}
 
 	return 0;
-
-frontend_init_err:
-	dvb_usb_adapter_dvb_exit(adap);
-dvb_init_err:
-	dvb_usb_adapter_stream_exit(adap);
-stream_init_err:
-	kfree(adap->priv);
-	return ret;
 }
 
 static int dvb_usb_adapter_exit(struct dvb_usb_device *d)
@@ -156,7 +142,6 @@ static int dvb_usb_init(struct dvb_usb_device *d, short *adapter_nums)
 {
 	int ret = 0;
 
-	mutex_init(&d->data_mutex);
 	mutex_init(&d->usb_mutex);
 	mutex_init(&d->i2c_mutex);
 
@@ -301,15 +286,12 @@ EXPORT_SYMBOL(dvb_usb_device_init);
 void dvb_usb_device_exit(struct usb_interface *intf)
 {
 	struct dvb_usb_device *d = usb_get_intfdata(intf);
-	const char *default_name = "generic DVB-USB module";
-	char name[40];
+	const char *name = "generic DVB-USB module";
 
 	usb_set_intfdata(intf, NULL);
 	if (d != NULL && d->desc != NULL) {
-		strscpy(name, d->desc->name, sizeof(name));
+		name = d->desc->name;
 		dvb_usb_exit(d);
-	} else {
-		strscpy(name, default_name, sizeof(name));
 	}
 	info("%s successfully deinitialized and disconnected.", name);
 
@@ -317,6 +299,6 @@ void dvb_usb_device_exit(struct usb_interface *intf)
 EXPORT_SYMBOL(dvb_usb_device_exit);
 
 MODULE_VERSION("1.0");
-MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@posteo.de>");
+MODULE_AUTHOR("Patrick Boettcher <patrick.boettcher@desy.de>");
 MODULE_DESCRIPTION("A library module containing commonly used USB and DVB function USB DVB devices");
 MODULE_LICENSE("GPL");

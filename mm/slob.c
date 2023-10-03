@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * SLOB Allocator: Simple List Of Blocks
  *
@@ -46,7 +45,7 @@
  * NUMA support in SLOB is fairly simplistic, pushing most of the real
  * logic down to the page allocator, and simply doing the node accounting
  * on the upper levels. In the event that a node id is explicitly
- * provided, __alloc_pages_node() with the specified node id is used
+ * provided, alloc_pages_exact_node() with the specified node id is used
  * instead. The common case (or when the node id isn't explicitly provided)
  * will default to the current node, as per numa_node_id().
  *
@@ -127,7 +126,7 @@ static inline void clear_slob_page_free(struct page *sp)
 
 /*
  * struct slob_rcu is inserted at the tail of allocated slob blocks, which
- * were created with a SLAB_TYPESAFE_BY_RCU slab. slob_rcu is used to free
+ * were created with a SLAB_DESTROY_BY_RCU slab. slob_rcu is used to free
  * the block using call_rcu.
  */
 struct slob_rcu {
@@ -194,7 +193,7 @@ static void *slob_new_pages(gfp_t gfp, int order, int node)
 
 #ifdef CONFIG_NUMA
 	if (node != NUMA_NO_NODE)
-		page = __alloc_pages_node(node, gfp, order);
+		page = alloc_pages_exact_node(node, gfp, order);
 	else
 #endif
 		page = alloc_pages(gfp, order);
@@ -330,7 +329,7 @@ static void *slob_alloc(size_t size, gfp_t gfp, int align, int node)
 		BUG_ON(!b);
 		spin_unlock_irqrestore(&slob_lock, flags);
 	}
-	if (unlikely(gfp & __GFP_ZERO))
+	if (unlikely((gfp & __GFP_ZERO) && b))
 		memset(b, 0, size);
 	return b;
 }
@@ -433,8 +432,7 @@ __do_kmalloc_node(size_t size, gfp_t gfp, int node, unsigned long caller)
 
 	gfp &= gfp_allowed_mask;
 
-	fs_reclaim_acquire(gfp);
-	fs_reclaim_release(gfp);
+	lockdep_trace_alloc(gfp);
 
 	if (size < PAGE_SIZE - align) {
 		if (!size)
@@ -524,9 +522,9 @@ size_t ksize(const void *block)
 }
 EXPORT_SYMBOL(ksize);
 
-int __kmem_cache_create(struct kmem_cache *c, slab_flags_t flags)
+int __kmem_cache_create(struct kmem_cache *c, unsigned long flags)
 {
-	if (flags & SLAB_TYPESAFE_BY_RCU) {
+	if (flags & SLAB_DESTROY_BY_RCU) {
 		/* leave room for rcu footer at the end of object */
 		c->size += sizeof(struct slob_rcu);
 	}
@@ -534,14 +532,13 @@ int __kmem_cache_create(struct kmem_cache *c, slab_flags_t flags)
 	return 0;
 }
 
-static void *slob_alloc_node(struct kmem_cache *c, gfp_t flags, int node)
+void *slob_alloc_node(struct kmem_cache *c, gfp_t flags, int node)
 {
 	void *b;
 
 	flags &= gfp_allowed_mask;
 
-	fs_reclaim_acquire(flags);
-	fs_reclaim_release(flags);
+	lockdep_trace_alloc(flags);
 
 	if (c->size < PAGE_SIZE) {
 		b = slob_alloc(c->size, flags, c->align, node);
@@ -555,14 +552,13 @@ static void *slob_alloc_node(struct kmem_cache *c, gfp_t flags, int node)
 					    flags, node);
 	}
 
-	if (b && c->ctor) {
-		WARN_ON_ONCE(flags & __GFP_ZERO);
+	if (b && c->ctor)
 		c->ctor(b);
-	}
 
 	kmemleak_alloc_recursive(b, c->size, 1, c->flags, flags);
 	return b;
 }
+EXPORT_SYMBOL(slob_alloc_node);
 
 void *kmem_cache_alloc(struct kmem_cache *cachep, gfp_t flags)
 {
@@ -603,7 +599,7 @@ static void kmem_rcu_free(struct rcu_head *head)
 void kmem_cache_free(struct kmem_cache *c, void *b)
 {
 	kmemleak_free_recursive(b, c->flags);
-	if (unlikely(c->flags & SLAB_TYPESAFE_BY_RCU)) {
+	if (unlikely(c->flags & SLAB_DESTROY_BY_RCU)) {
 		struct slob_rcu *slob_rcu;
 		slob_rcu = b + (c->size - sizeof(struct slob_rcu));
 		slob_rcu->size = c->size;
@@ -616,30 +612,13 @@ void kmem_cache_free(struct kmem_cache *c, void *b)
 }
 EXPORT_SYMBOL(kmem_cache_free);
 
-void kmem_cache_free_bulk(struct kmem_cache *s, size_t size, void **p)
-{
-	__kmem_cache_free_bulk(s, size, p);
-}
-EXPORT_SYMBOL(kmem_cache_free_bulk);
-
-int kmem_cache_alloc_bulk(struct kmem_cache *s, gfp_t flags, size_t size,
-								void **p)
-{
-	return __kmem_cache_alloc_bulk(s, flags, size, p);
-}
-EXPORT_SYMBOL(kmem_cache_alloc_bulk);
-
 int __kmem_cache_shutdown(struct kmem_cache *c)
 {
 	/* No way to check for remaining objects */
 	return 0;
 }
 
-void __kmem_cache_release(struct kmem_cache *c)
-{
-}
-
-int __kmem_cache_shrink(struct kmem_cache *d)
+int __kmem_cache_shrink(struct kmem_cache *d, bool deactivate)
 {
 	return 0;
 }

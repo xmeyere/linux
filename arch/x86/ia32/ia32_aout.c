@@ -26,9 +26,8 @@
 #include <linux/init.h>
 #include <linux/jiffies.h>
 #include <linux/perf_event.h>
-#include <linux/sched/task_stack.h>
 
-#include <linux/uaccess.h>
+#include <asm/uaccess.h>
 #include <asm/pgalloc.h>
 #include <asm/cacheflush.h>
 #include <asm/user32.h>
@@ -51,7 +50,7 @@ static unsigned long get_dr(int n)
 /*
  * fill in the user structure for a core dump..
  */
-static void fill_dump(struct pt_regs *regs, struct user32 *dump)
+static void dump_thread32(struct pt_regs *regs, struct user32 *dump)
 {
 	u32 fs, gs;
 	memset(dump, 0, sizeof(*dump));
@@ -117,13 +116,13 @@ static struct linux_binfmt aout_format = {
 	.min_coredump	= PAGE_SIZE
 };
 
-static int set_brk(unsigned long start, unsigned long end)
+static void set_brk(unsigned long start, unsigned long end)
 {
 	start = PAGE_ALIGN(start);
 	end = PAGE_ALIGN(end);
 	if (end <= start)
-		return 0;
-	return vm_brk(start, end - start);
+		return;
+	vm_brk(start, end - start);
 }
 
 #ifdef CONFIG_COREDUMP
@@ -157,12 +156,10 @@ static int aout_core_dump(struct coredump_params *cprm)
 	fs = get_fs();
 	set_fs(KERNEL_DS);
 	has_dumped = 1;
-
-	fill_dump(cprm->regs, &dump);
-
 	strncpy(dump.u_comm, current->comm, sizeof(current->comm));
 	dump.u_ar0 = offsetof(struct user32, regs);
 	dump.signal = cprm->siginfo->si_signo;
+	dump_thread32(cprm->regs, &dump);
 
 	/*
 	 * If the size of the dump file exceeds the rlimit, then see
@@ -298,7 +295,6 @@ static int load_aout_binary(struct linux_binprm *bprm)
 	set_personality_ia32(false);
 
 	setup_new_exec(bprm);
-	install_exec_creds(bprm);
 
 	regs->cs = __USER32_CS;
 	regs->r8 = regs->r9 = regs->r10 = regs->r11 = regs->r12 =
@@ -315,6 +311,8 @@ static int load_aout_binary(struct linux_binprm *bprm)
 	if (retval < 0)
 		return retval;
 
+	install_exec_creds(bprm);
+
 	if (N_MAGIC(ex) == OMAGIC) {
 		unsigned long text_addr, map_size;
 
@@ -323,7 +321,7 @@ static int load_aout_binary(struct linux_binprm *bprm)
 
 		error = vm_brk(text_addr & PAGE_MASK, map_size);
 
-		if (error)
+		if (error != (text_addr & PAGE_MASK))
 			return error;
 
 		error = read_code(bprm->file, text_addr, 32,
@@ -351,10 +349,7 @@ static int load_aout_binary(struct linux_binprm *bprm)
 #endif
 
 		if (!bprm->file->f_op->mmap || (fd_offset & ~PAGE_MASK) != 0) {
-			error = vm_brk(N_TXTADDR(ex), ex.a_text+ex.a_data);
-			if (error)
-				return error;
-
+			vm_brk(N_TXTADDR(ex), ex.a_text+ex.a_data);
 			read_code(bprm->file, N_TXTADDR(ex), fd_offset,
 					ex.a_text+ex.a_data);
 			goto beyond_if;
@@ -377,13 +372,10 @@ static int load_aout_binary(struct linux_binprm *bprm)
 		if (error != N_DATADDR(ex))
 			return error;
 	}
-
 beyond_if:
-	error = set_brk(current->mm->start_brk, current->mm->brk);
-	if (error)
-		return error;
-
 	set_binfmt(&aout_format);
+
+	set_brk(current->mm->start_brk, current->mm->brk);
 
 	current->mm->start_stack =
 		(unsigned long)create_aout_tables((char __user *)bprm->p, bprm);
@@ -408,10 +400,10 @@ static int load_aout_library(struct file *file)
 	unsigned long bss, start_addr, len, error;
 	int retval;
 	struct exec ex;
-	loff_t pos = 0;
+
 
 	retval = -ENOEXEC;
-	error = kernel_read(file, &ex, sizeof(ex), &pos);
+	error = kernel_read(file, 0, (char *) &ex, sizeof(ex));
 	if (error != sizeof(ex))
 		goto out;
 
@@ -442,9 +434,7 @@ static int load_aout_library(struct file *file)
 			error_time = jiffies;
 		}
 #endif
-		retval = vm_brk(start_addr, ex.a_text + ex.a_data + ex.a_bss);
-		if (retval)
-			goto out;
+		vm_brk(start_addr, ex.a_text + ex.a_data + ex.a_bss);
 
 		read_code(file, start_addr, N_TXTOFF(ex),
 			  ex.a_text + ex.a_data);
@@ -463,8 +453,9 @@ static int load_aout_library(struct file *file)
 	len = PAGE_ALIGN(ex.a_text + ex.a_data);
 	bss = ex.a_text + ex.a_data + ex.a_bss;
 	if (bss > len) {
-		retval = vm_brk(start_addr + len, bss - len);
-		if (retval)
+		error = vm_brk(start_addr + len, bss - len);
+		retval = error;
+		if (error != start_addr + len)
 			goto out;
 	}
 	retval = 0;

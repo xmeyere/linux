@@ -31,7 +31,7 @@ module_param(force, int, 0444);
 MODULE_PARM_DESC(force, "Force loading i2sbus even when"
 			" no layout-id property is present");
 
-static const struct of_device_id i2sbus_match[] = {
+static struct of_device_id i2sbus_match[] = {
 	{ .name = "i2s" },
 	{ }
 };
@@ -148,7 +148,6 @@ static int i2sbus_get_and_fixup_rsrc(struct device_node *np, int index,
 	return rc;
 }
 
-/* Returns 1 if added, 0 for otherwise; don't return a negative value! */
 /* FIXME: look at device node refcounting */
 static int i2sbus_add_dev(struct macio_dev *macio,
 			  struct i2sbus_control *control,
@@ -198,7 +197,7 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 			 * so restrict to those we do handle for now.
 			 */
 			if (id && (*id == 22 || *id == 14 || *id == 35 ||
-				   *id == 31 || *id == 44)) {
+				   *id == 44)) {
 				snprintf(dev->sound.modalias, 32,
 					 "aoa-device-id-%d", *id);
 				ok = 1;
@@ -214,7 +213,7 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 	 * either as the second one in that case is just a modem. */
 	if (!ok) {
 		kfree(dev);
-		return 0;
+		return -ENODEV;
 	}
 
 	mutex_init(&dev->lock);
@@ -303,10 +302,6 @@ static int i2sbus_add_dev(struct macio_dev *macio,
 
 	if (soundbus_add_one(&dev->sound)) {
 		printk(KERN_DEBUG "i2sbus: device registration error!\n");
-		if (dev->sound.ofdev.dev.kobj.state_initialized) {
-			soundbus_dev_put(&dev->sound);
-			return 0;
-		}
 		goto err;
 	}
 

@@ -80,9 +80,9 @@ static void n810_ext_control(struct snd_soc_dapm_context *dapm)
 	else
 		snd_soc_dapm_disable_pin_unlocked(dapm, "Headphone Jack");
 	if (line1l)
-		snd_soc_dapm_enable_pin_unlocked(dapm, "HS Mic");
+		snd_soc_dapm_enable_pin_unlocked(dapm, "LINE1L");
 	else
-		snd_soc_dapm_disable_pin_unlocked(dapm, "HS Mic");
+		snd_soc_dapm_disable_pin_unlocked(dapm, "LINE1L");
 
 	if (n810_dmic_func)
 		snd_soc_dapm_enable_pin_unlocked(dapm, "DMic");
@@ -98,10 +98,12 @@ static int n810_startup(struct snd_pcm_substream *substream)
 {
 	struct snd_pcm_runtime *runtime = substream->runtime;
 	struct snd_soc_pcm_runtime *rtd = substream->private_data;
+	struct snd_soc_codec *codec = rtd->codec;
 
-	snd_pcm_hw_constraint_single(runtime, SNDRV_PCM_HW_PARAM_CHANNELS, 2);
+	snd_pcm_hw_constraint_minmax(runtime,
+				     SNDRV_PCM_HW_PARAM_CHANNELS, 2, 2);
 
-	n810_ext_control(&rtd->card->dapm);
+	n810_ext_control(&codec->dapm);
 	return clk_prepare_enable(sys_clkout2);
 }
 
@@ -124,7 +126,7 @@ static int n810_hw_params(struct snd_pcm_substream *substream,
 	return err;
 }
 
-static const struct snd_soc_ops n810_ops = {
+static struct snd_soc_ops n810_ops = {
 	.startup = n810_startup,
 	.hw_params = n810_hw_params,
 	.shutdown = n810_shutdown,
@@ -133,7 +135,7 @@ static const struct snd_soc_ops n810_ops = {
 static int n810_get_spk(struct snd_kcontrol *kcontrol,
 			struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.enumerated.item[0] = n810_spk_func;
+	ucontrol->value.integer.value[0] = n810_spk_func;
 
 	return 0;
 }
@@ -143,10 +145,10 @@ static int n810_set_spk(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card =  snd_kcontrol_chip(kcontrol);
 
-	if (n810_spk_func == ucontrol->value.enumerated.item[0])
+	if (n810_spk_func == ucontrol->value.integer.value[0])
 		return 0;
 
-	n810_spk_func = ucontrol->value.enumerated.item[0];
+	n810_spk_func = ucontrol->value.integer.value[0];
 	n810_ext_control(&card->dapm);
 
 	return 1;
@@ -155,7 +157,7 @@ static int n810_set_spk(struct snd_kcontrol *kcontrol,
 static int n810_get_jack(struct snd_kcontrol *kcontrol,
 			 struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.enumerated.item[0] = n810_jack_func;
+	ucontrol->value.integer.value[0] = n810_jack_func;
 
 	return 0;
 }
@@ -165,10 +167,10 @@ static int n810_set_jack(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card =  snd_kcontrol_chip(kcontrol);
 
-	if (n810_jack_func == ucontrol->value.enumerated.item[0])
+	if (n810_jack_func == ucontrol->value.integer.value[0])
 		return 0;
 
-	n810_jack_func = ucontrol->value.enumerated.item[0];
+	n810_jack_func = ucontrol->value.integer.value[0];
 	n810_ext_control(&card->dapm);
 
 	return 1;
@@ -177,7 +179,7 @@ static int n810_set_jack(struct snd_kcontrol *kcontrol,
 static int n810_get_input(struct snd_kcontrol *kcontrol,
 			  struct snd_ctl_elem_value *ucontrol)
 {
-	ucontrol->value.enumerated.item[0] = n810_dmic_func;
+	ucontrol->value.integer.value[0] = n810_dmic_func;
 
 	return 0;
 }
@@ -187,10 +189,10 @@ static int n810_set_input(struct snd_kcontrol *kcontrol,
 {
 	struct snd_soc_card *card =  snd_kcontrol_chip(kcontrol);
 
-	if (n810_dmic_func == ucontrol->value.enumerated.item[0])
+	if (n810_dmic_func == ucontrol->value.integer.value[0])
 		return 0;
 
-	n810_dmic_func = ucontrol->value.enumerated.item[0];
+	n810_dmic_func = ucontrol->value.integer.value[0];
 	n810_ext_control(&card->dapm);
 
 	return 1;
@@ -222,7 +224,6 @@ static const struct snd_soc_dapm_widget aic33_dapm_widgets[] = {
 	SND_SOC_DAPM_SPK("Ext Spk", n810_spk_event),
 	SND_SOC_DAPM_HP("Headphone Jack", n810_jack_event),
 	SND_SOC_DAPM_MIC("DMic", NULL),
-	SND_SOC_DAPM_MIC("HS Mic", NULL),
 };
 
 static const struct snd_soc_dapm_route audio_map[] = {
@@ -232,14 +233,8 @@ static const struct snd_soc_dapm_route audio_map[] = {
 	{"Ext Spk", NULL, "LLOUT"},
 	{"Ext Spk", NULL, "RLOUT"},
 
-	{"DMic Rate 64", NULL, "DMic"},
-	{"DMic", NULL, "Mic Bias"},
-
-	/*
-	 * Note that the mic bias is coming from Retu/Vilma and we don't have
-	 * control over it atm. The analog HS mic is not working. <- TODO
-	 */
-	{"LINE1L", NULL, "HS Mic"},
+	{"DMic Rate 64", NULL, "Mic Bias"},
+	{"Mic Bias", NULL, "DMic"},
 };
 
 static const char *spk_function[] = {"Off", "On"};
@@ -260,16 +255,35 @@ static const struct snd_kcontrol_new aic33_n810_controls[] = {
 		     n810_get_input, n810_set_input),
 };
 
+static int n810_aic33_init(struct snd_soc_pcm_runtime *rtd)
+{
+	struct snd_soc_codec *codec = rtd->codec;
+	struct snd_soc_dapm_context *dapm = &codec->dapm;
+
+	/* Not connected */
+	snd_soc_dapm_nc_pin(dapm, "MONO_LOUT");
+	snd_soc_dapm_nc_pin(dapm, "HPLCOM");
+	snd_soc_dapm_nc_pin(dapm, "HPRCOM");
+	snd_soc_dapm_nc_pin(dapm, "MIC3L");
+	snd_soc_dapm_nc_pin(dapm, "MIC3R");
+	snd_soc_dapm_nc_pin(dapm, "LINE1R");
+	snd_soc_dapm_nc_pin(dapm, "LINE2L");
+	snd_soc_dapm_nc_pin(dapm, "LINE2R");
+
+	return 0;
+}
+
 /* Digital audio interface glue - connects codec <--> CPU */
 static struct snd_soc_dai_link n810_dai = {
 	.name = "TLV320AIC33",
 	.stream_name = "AIC33",
-	.cpu_dai_name = "48076000.mcbsp",
-	.platform_name = "48076000.mcbsp",
-	.codec_name = "tlv320aic3x-codec.1-0018",
+	.cpu_dai_name = "omap-mcbsp.2",
+	.platform_name = "omap-mcbsp.2",
+	.codec_name = "tlv320aic3x-codec.2-0018",
 	.codec_dai_name = "tlv320aic3x-hifi",
 	.dai_fmt = SND_SOC_DAIFMT_I2S | SND_SOC_DAIFMT_NB_NF |
 		   SND_SOC_DAIFMT_CBM_CFM,
+	.init = n810_aic33_init,
 	.ops = &n810_ops,
 };
 
@@ -286,7 +300,6 @@ static struct snd_soc_card snd_soc_n810 = {
 	.num_dapm_widgets = ARRAY_SIZE(aic33_dapm_widgets),
 	.dapm_routes = audio_map,
 	.num_dapm_routes = ARRAY_SIZE(audio_map),
-	.fully_routed = true,
 };
 
 static struct platform_device *n810_snd_device;

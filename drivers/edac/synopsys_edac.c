@@ -23,7 +23,7 @@
 #include <linux/module.h>
 #include <linux/platform_device.h>
 
-#include "edac_module.h"
+#include "edac_core.h"
 
 /* Number of cs_rows needed per memory controller */
 #define SYNPS_EDAC_NR_CSROWS	1
@@ -371,7 +371,7 @@ static int synps_edac_init_csrows(struct mem_ctl_info *mci)
 
 		for (j = 0; j < csi->nr_channels; j++) {
 			dimm            = csi->channels[j]->dimm;
-			dimm->edac_mode = EDAC_SECDED;
+			dimm->edac_mode = EDAC_FLAG_SECDED;
 			dimm->mtype     = synps_edac_get_mtype(priv->baseaddr);
 			dimm->nr_pages  = (size >> PAGE_SHIFT) / csi->nr_channels;
 			dimm->grain     = SYNPS_EDAC_ERR_GRAIN;
@@ -413,6 +413,7 @@ static int synps_edac_mc_init(struct mem_ctl_info *mci,
 	mci->ctl_name = "synps_ddr_controller";
 	mci->dev_name = SYNPS_EDAC_MOD_STRING;
 	mci->mod_name = SYNPS_EDAC_MOD_VER;
+	mci->mod_ver = "1";
 
 	edac_op_state = EDAC_OPSTATE_POLL;
 	mci->edac_check = synps_edac_check;
@@ -511,7 +512,7 @@ static int synps_edac_mc_remove(struct platform_device *pdev)
 	return 0;
 }
 
-static const struct of_device_id synps_edac_match[] = {
+static struct of_device_id synps_edac_match[] = {
 	{ .compatible = "xlnx,zynq-ddrc-a05", },
 	{ /* end of table */ }
 };

@@ -1,12 +1,27 @@
-/* SPDX-License-Identifier: GPL-2.0
- *
+/*
  *  compress_driver.h - compress offload driver definations
  *
  *  Copyright (C) 2011 Intel Corporation
  *  Authors:	Vinod Koul <vinod.koul@linux.intel.com>
  *		Pierre-Louis Bossart <pierre-louis.bossart@linux.intel.com>
+ *  ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
+ *  This program is free software; you can redistribute it and/or modify
+ *  it under the terms of the GNU General Public License as published by
+ *  the Free Software Foundation; version 2 of the License.
+ *
+ *  This program is distributed in the hope that it will be useful, but
+ *  WITHOUT ANY WARRANTY; without even the implied warranty of
+ *  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+ *  General Public License for more details.
+ *
+ *  You should have received a copy of the GNU General Public License along
+ *  with this program; if not, write to the Free Software Foundation, Inc.,
+ *  59 Temple Place, Suite 330, Boston, MA 02111-1307 USA.
+ *
+ * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+ *
  */
-
 #ifndef __COMPRESS_DRIVER_H
 #define __COMPRESS_DRIVER_H
 
@@ -53,11 +68,9 @@ struct snd_compr_runtime {
  * @ops: pointer to DSP callbacks
  * @runtime: pointer to runtime structure
  * @device: device pointer
- * @error_work: delayed work used when closing the stream due to an error
  * @direction: stream direction, playback/recording
  * @metadata_set: metadata set flag, true when set
- * @next_track: has userspace signal next track transition, true when set
- * @partial_drain: undergoing partial_drain for stream, true when set
+ * @next_track: has userspace signall next track transistion, true when set
  * @private_data: pointer to DSP private data
  */
 struct snd_compr_stream {
@@ -65,11 +78,9 @@ struct snd_compr_stream {
 	struct snd_compr_ops *ops;
 	struct snd_compr_runtime *runtime;
 	struct snd_compr *device;
-	struct delayed_work error_work;
 	enum snd_compr_direction direction;
 	bool metadata_set;
 	bool next_track;
-	bool partial_drain;
 	void *private_data;
 };
 
@@ -84,7 +95,7 @@ struct snd_compr_stream {
  * and the stream properties
  * @get_params: retrieve the codec parameters, mandatory
  * @set_metadata: Set the metadata values for a stream
- * @get_metadata: retrieves the requested metadata values from stream
+ * @get_metadata: retreives the requested metadata values from stream
  * @trigger: Trigger operations like start, pause, resume, drain, stop.
  * This callback is mandatory
  * @pointer: Retrieve current h/w pointer information. Mandatory
@@ -141,19 +152,13 @@ struct snd_compr {
 	unsigned int direction;
 	struct mutex lock;
 	int device;
-#ifdef CONFIG_SND_VERBOSE_PROCFS
-	/* private: */
-	char id[64];
-	struct snd_info_entry *proc_root;
-	struct snd_info_entry *proc_info_entry;
-#endif
 };
 
 /* compress device register APIs */
 int snd_compress_register(struct snd_compr *device);
 int snd_compress_deregister(struct snd_compr *device);
 int snd_compress_new(struct snd_card *card, int device,
-			int type, const char *id, struct snd_compr *compr);
+			int type, struct snd_compr *compr);
 
 /* dsp driver callback apis
  * For playback: driver should call snd_compress_fragment_elapsed() to let the
@@ -173,18 +178,8 @@ static inline void snd_compr_drain_notify(struct snd_compr_stream *stream)
 	if (snd_BUG_ON(!stream))
 		return;
 
-	/* for partial_drain case we are back to running state on success */
-	if (stream->partial_drain) {
-		stream->runtime->state = SNDRV_PCM_STATE_RUNNING;
-		stream->partial_drain = false; /* clear this flag as well */
-	} else {
-		stream->runtime->state = SNDRV_PCM_STATE_SETUP;
-	}
-
+	stream->runtime->state = SNDRV_PCM_STATE_SETUP;
 	wake_up(&stream->runtime->sleep);
 }
-
-int snd_compr_stop_error(struct snd_compr_stream *stream,
-			 snd_pcm_state_t state);
 
 #endif

@@ -425,6 +425,7 @@ static const struct iio_info ad5360_info = {
 	.read_raw = ad5360_read_raw,
 	.write_raw = ad5360_write_raw,
 	.attrs = &ad5360_attribute_group,
+	.driver_module = THIS_MODULE,
 };
 
 static const char * const ad5360_vref_name[] = {
@@ -548,6 +549,7 @@ MODULE_DEVICE_TABLE(spi, ad5360_ids);
 static struct spi_driver ad5360_driver = {
 	.driver = {
 		   .name = "ad5360",
+		   .owner = THIS_MODULE,
 	},
 	.probe = ad5360_probe,
 	.remove = ad5360_remove,

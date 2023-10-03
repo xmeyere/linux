@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * System call table for UML/i386, copied from arch/x86/kernel/syscall_*.c
  * with some changes for UML.
@@ -8,7 +7,6 @@
 #include <linux/sys.h>
 #include <linux/cache.h>
 #include <generated/user_constants.h>
-#include <asm/syscall.h>
 
 #define __NO_STUBS
 
@@ -26,13 +24,15 @@
 
 #define old_mmap sys_old_mmap
 
-#define __SYSCALL_I386(nr, sym, qual) extern asmlinkage long sym(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long) ;
+#define __SYSCALL_I386(nr, sym, compat) extern asmlinkage void sym(void) ;
 #include <asm/syscalls_32.h>
 
 #undef __SYSCALL_I386
-#define __SYSCALL_I386(nr, sym, qual) [ nr ] = sym,
+#define __SYSCALL_I386(nr, sym, compat) [ nr ] = sym,
 
-extern asmlinkage long sys_ni_syscall(unsigned long, unsigned long, unsigned long, unsigned long, unsigned long, unsigned long);
+typedef asmlinkage void (*sys_call_ptr_t)(void);
+
+extern asmlinkage void sys_ni_syscall(void);
 
 const sys_call_ptr_t sys_call_table[] ____cacheline_aligned = {
 	/*

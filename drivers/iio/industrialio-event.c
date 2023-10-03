@@ -32,7 +32,6 @@
  * @dev_attr_list:	list of event interface sysfs attribute
  * @flags:		file operations related flags including busy flag.
  * @group:		event interface sysfs attribute group
- * @read_lock:		lock to protect kfifo read operations
  */
 struct iio_event_interface {
 	wait_queue_head_t	wait;
@@ -44,11 +43,6 @@ struct iio_event_interface {
 	struct mutex		read_lock;
 };
 
-bool iio_event_enabled(const struct iio_event_interface *ev_int)
-{
-	return !!test_bit(IIO_BUSY_BIT_POS, &ev_int->flags);
-}
-
 /**
  * iio_push_event() - try to add event to the list for userspace reading
  * @indio_dev:		IIO device structure
@@ -57,11 +51,6 @@ bool iio_event_enabled(const struct iio_event_interface *ev_int)
  *
  * Note: The caller must make sure that this function is not running
  * concurrently for the same indio_dev more than once.
- *
- * This function may be safely used as soon as a valid reference to iio_dev has
- * been obtained via iio_device_alloc(), but any events that are submitted
- * before iio_device_register() has successfully completed will be silently
- * discarded.
  **/
 int iio_push_event(struct iio_dev *indio_dev, u64 ev_code, s64 timestamp)
 {
@@ -69,18 +58,15 @@ int iio_push_event(struct iio_dev *indio_dev, u64 ev_code, s64 timestamp)
 	struct iio_event_data ev;
 	int copied;
 
-	if (!ev_int)
-		return 0;
-
 	/* Does anyone care? */
-	if (iio_event_enabled(ev_int)) {
+	if (test_bit(IIO_BUSY_BIT_POS, &ev_int->flags)) {
 
 		ev.id = ev_code;
 		ev.timestamp = timestamp;
 
 		copied = kfifo_put(&ev_int->det_events, ev);
 		if (copied != 0)
-			wake_up_poll(&ev_int->wait, EPOLLIN);
+			wake_up_poll(&ev_int->wait, POLLIN);
 	}
 
 	return 0;
@@ -89,26 +75,21 @@ EXPORT_SYMBOL(iio_push_event);
 
 /**
  * iio_event_poll() - poll the event queue to find out if it has data
- * @filep:	File structure pointer to identify the device
- * @wait:	Poll table pointer to add the wait queue on
- *
- * Return: (EPOLLIN | EPOLLRDNORM) if data is available for reading
- *	   or a negative error code on failure
  */
-static __poll_t iio_event_poll(struct file *filep,
+static unsigned int iio_event_poll(struct file *filep,
 			     struct poll_table_struct *wait)
 {
 	struct iio_dev *indio_dev = filep->private_data;
 	struct iio_event_interface *ev_int = indio_dev->event_interface;
-	__poll_t events = 0;
+	unsigned int events = 0;
 
 	if (!indio_dev->info)
-		return events;
+		return -ENODEV;
 
 	poll_wait(filep, &ev_int->wait, wait);
 
 	if (!kfifo_is_empty(&ev_int->det_events))
-		events = EPOLLIN | EPOLLRDNORM;
+		events = POLLIN | POLLRDNORM;
 
 	return events;
 }
@@ -193,14 +174,8 @@ int iio_event_getfd(struct iio_dev *indio_dev)
 	if (ev_int == NULL)
 		return -ENODEV;
 
-	fd = mutex_lock_interruptible(&indio_dev->mlock);
-	if (fd)
-		return fd;
-
-	if (test_and_set_bit(IIO_BUSY_BIT_POS, &ev_int->flags)) {
-		fd = -EBUSY;
-		goto unlock;
-	}
+	if (test_and_set_bit(IIO_BUSY_BIT_POS, &ev_int->flags))
+		return -EBUSY;
 
 	iio_device_get(indio_dev);
 
@@ -213,8 +188,6 @@ int iio_event_getfd(struct iio_dev *indio_dev)
 		kfifo_reset_out(&ev_int->det_events);
 	}
 
-unlock:
-	mutex_unlock(&indio_dev->mlock);
 	return fd;
 }
 
@@ -238,8 +211,6 @@ static const char * const iio_ev_info_text[] = {
 	[IIO_EV_INFO_VALUE] = "value",
 	[IIO_EV_INFO_HYSTERESIS] = "hysteresis",
 	[IIO_EV_INFO_PERIOD] = "period",
-	[IIO_EV_INFO_HIGH_PASS_FILTER_3DB] = "high_pass_filter_3db",
-	[IIO_EV_INFO_LOW_PASS_FILTER_3DB] = "low_pass_filter_3db",
 };
 
 static enum iio_event_direction iio_ev_attr_dir(struct iio_dev_attr *attr)

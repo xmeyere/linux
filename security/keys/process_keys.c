@@ -12,15 +12,13 @@
 #include <linux/module.h>
 #include <linux/init.h>
 #include <linux/sched.h>
-#include <linux/sched/user.h>
 #include <linux/keyctl.h>
 #include <linux/fs.h>
 #include <linux/err.h>
 #include <linux/mutex.h>
 #include <linux/security.h>
 #include <linux/user_namespace.h>
-#include <linux/uaccess.h>
-#include <keys/request_key_auth-type.h>
+#include <asm/uaccess.h>
 #include "internal.h"
 
 /* Session keyring create vs join semaphore */
@@ -31,7 +29,7 @@ static DEFINE_MUTEX(key_user_keyring_mutex);
 
 /* The root user's tracking struct */
 struct key_user root_key_user = {
-	.usage		= REFCOUNT_INIT(3),
+	.usage		= ATOMIC_INIT(3),
 	.cons_lock	= __MUTEX_INITIALIZER(root_key_user.cons_lock),
 	.lock		= __SPIN_LOCK_UNLOCKED(root_key_user.lock),
 	.nkeys		= ATOMIC_INIT(2),
@@ -78,9 +76,7 @@ int install_user_keyrings(void)
 		if (IS_ERR(uid_keyring)) {
 			uid_keyring = keyring_alloc(buf, user->uid, INVALID_GID,
 						    cred, user_keyring_perm,
-						    KEY_ALLOC_UID_KEYRING |
-							KEY_ALLOC_IN_QUOTA,
-						    NULL, NULL);
+						    KEY_ALLOC_IN_QUOTA, NULL);
 			if (IS_ERR(uid_keyring)) {
 				ret = PTR_ERR(uid_keyring);
 				goto error;
@@ -96,9 +92,7 @@ int install_user_keyrings(void)
 			session_keyring =
 				keyring_alloc(buf, user->uid, INVALID_GID,
 					      cred, user_keyring_perm,
-					      KEY_ALLOC_UID_KEYRING |
-						  KEY_ALLOC_IN_QUOTA,
-					      NULL, NULL);
+					      KEY_ALLOC_IN_QUOTA, NULL);
 			if (IS_ERR(session_keyring)) {
 				ret = PTR_ERR(session_keyring);
 				goto error_release;
@@ -131,22 +125,16 @@ error:
 }
 
 /*
- * Install a thread keyring to the given credentials struct if it didn't have
- * one already.  This is allowed to overrun the quota.
- *
- * Return: 0 if a thread keyring is now present; -errno on failure.
+ * Install a fresh thread keyring directly to new credentials.  This keyring is
+ * allowed to overrun the quota.
  */
 int install_thread_keyring_to_cred(struct cred *new)
 {
 	struct key *keyring;
 
-	if (new->thread_keyring)
-		return 0;
-
 	keyring = keyring_alloc("_tid", new->uid, new->gid, new,
 				KEY_POS_ALL | KEY_USR_VIEW,
-				KEY_ALLOC_QUOTA_OVERRUN,
-				NULL, NULL);
+				KEY_ALLOC_QUOTA_OVERRUN, NULL);
 	if (IS_ERR(keyring))
 		return PTR_ERR(keyring);
 
@@ -155,9 +143,7 @@ int install_thread_keyring_to_cred(struct cred *new)
 }
 
 /*
- * Install a thread keyring to the current task if it didn't have one already.
- *
- * Return: 0 if a thread keyring is now present; -errno on failure.
+ * Install a fresh thread keyring, discarding the old one.
  */
 static int install_thread_keyring(void)
 {
@@ -167,6 +153,8 @@ static int install_thread_keyring(void)
 	new = prepare_creds();
 	if (!new)
 		return -ENOMEM;
+
+	BUG_ON(new->thread_keyring);
 
 	ret = install_thread_keyring_to_cred(new);
 	if (ret < 0) {
@@ -178,22 +166,21 @@ static int install_thread_keyring(void)
 }
 
 /*
- * Install a process keyring to the given credentials struct if it didn't have
- * one already.  This is allowed to overrun the quota.
+ * Install a process keyring directly to a credentials struct.
  *
- * Return: 0 if a process keyring is now present; -errno on failure.
+ * Returns -EEXIST if there was already a process keyring, 0 if one installed,
+ * and other value on any other error
  */
 int install_process_keyring_to_cred(struct cred *new)
 {
 	struct key *keyring;
 
 	if (new->process_keyring)
-		return 0;
+		return -EEXIST;
 
 	keyring = keyring_alloc("_pid", new->uid, new->gid, new,
 				KEY_POS_ALL | KEY_USR_VIEW,
-				KEY_ALLOC_QUOTA_OVERRUN,
-				NULL, NULL);
+				KEY_ALLOC_QUOTA_OVERRUN, NULL);
 	if (IS_ERR(keyring))
 		return PTR_ERR(keyring);
 
@@ -202,9 +189,11 @@ int install_process_keyring_to_cred(struct cred *new)
 }
 
 /*
- * Install a process keyring to the current task if it didn't have one already.
+ * Make sure a process keyring is installed for the current process.  The
+ * existing process keyring is not replaced.
  *
- * Return: 0 if a process keyring is now present; -errno on failure.
+ * Returns 0 if there is a process keyring by the end of this function, some
+ * error otherwise.
  */
 static int install_process_keyring(void)
 {
@@ -218,18 +207,14 @@ static int install_process_keyring(void)
 	ret = install_process_keyring_to_cred(new);
 	if (ret < 0) {
 		abort_creds(new);
-		return ret;
+		return ret != -EEXIST ? ret : 0;
 	}
 
 	return commit_creds(new);
 }
 
 /*
- * Install the given keyring as the session keyring of the given credentials
- * struct, replacing the existing one if any.  If the given keyring is NULL,
- * then install a new anonymous session keyring.
- *
- * Return: 0 on success; -errno on failure.
+ * Install a session keyring directly to a credentials struct.
  */
 int install_session_keyring_to_cred(struct cred *cred, struct key *keyring)
 {
@@ -246,7 +231,7 @@ int install_session_keyring_to_cred(struct cred *cred, struct key *keyring)
 
 		keyring = keyring_alloc("_ses", cred->uid, cred->gid, cred,
 					KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ,
-					flags, NULL, NULL);
+					flags, NULL);
 		if (IS_ERR(keyring))
 			return PTR_ERR(keyring);
 	} else {
@@ -264,11 +249,8 @@ int install_session_keyring_to_cred(struct cred *cred, struct key *keyring)
 }
 
 /*
- * Install the given keyring as the session keyring of the current task,
- * replacing the existing one if any.  If the given keyring is NULL, then
- * install a new anonymous session keyring.
- *
- * Return: 0 on success; -errno on failure.
+ * Install a session keyring, discarding the old one.  If a keyring is not
+ * supplied, an empty one is invented.
  */
 static int install_session_keyring(struct key *keyring)
 {
@@ -475,7 +457,7 @@ key_ref_t search_process_keyrings(struct keyring_search_context *ctx)
 		down_read(&cred->request_key_auth->sem);
 
 		if (key_validate(ctx->cred->request_key_auth) == 0) {
-			rka = ctx->cred->request_key_auth->payload.data[0];
+			rka = ctx->cred->request_key_auth->payload.data;
 
 			ctx->cred = rka->cred;
 			key_ref = search_process_keyrings(ctx);
@@ -665,7 +647,7 @@ try_again:
 			key_ref = ERR_PTR(-EKEYREVOKED);
 			key = NULL;
 		} else {
-			rka = ctx.cred->request_key_auth->payload.data[0];
+			rka = ctx.cred->request_key_auth->payload.data;
 			key = rka->dest_keyring;
 			__key_get(key);
 		}
@@ -731,7 +713,7 @@ try_again:
 
 	ret = -EIO;
 	if (!(lflags & KEY_LOOKUP_PARTIAL) &&
-	    key_read_state(key) == KEY_IS_UNINSTANTIATED)
+	    !test_bit(KEY_FLAG_INSTANTIATED, &key->flags))
 		goto invalid_key;
 
 	/* check the permissions */
@@ -739,7 +721,7 @@ try_again:
 	if (ret < 0)
 		goto invalid_key;
 
-	key->last_used_at = ktime_get_real_seconds();
+	key->last_used_at = current_kernel_time().tv_sec;
 
 error:
 	put_cred(ctx.cred);
@@ -803,7 +785,7 @@ long join_session_keyring(const char *name)
 		keyring = keyring_alloc(
 			name, old->uid, old->gid, old,
 			KEY_POS_ALL | KEY_USR_VIEW | KEY_USR_READ | KEY_USR_LINK,
-			KEY_ALLOC_IN_QUOTA, NULL, NULL);
+			KEY_ALLOC_IN_QUOTA, NULL);
 		if (IS_ERR(keyring)) {
 			ret = PTR_ERR(keyring);
 			goto error2;
@@ -813,13 +795,13 @@ long join_session_keyring(const char *name)
 		goto error2;
 	} else if (keyring == new->session_keyring) {
 		ret = 0;
-		goto error3;
+		goto error2;
 	}
 
 	/* we've got a keyring - now to install it */
 	ret = install_session_keyring_to_cred(new, keyring);
 	if (ret < 0)
-		goto error3;
+		goto error2;
 
 	commit_creds(new);
 	mutex_unlock(&key_session_mutex);
@@ -829,8 +811,6 @@ long join_session_keyring(const char *name)
 okay:
 	return ret;
 
-error3:
-	key_put(keyring);
 error2:
 	mutex_unlock(&key_session_mutex);
 error:
@@ -868,7 +848,6 @@ void key_change_session_keyring(struct callback_head *twork)
 	new->cap_inheritable	= old->cap_inheritable;
 	new->cap_permitted	= old->cap_permitted;
 	new->cap_effective	= old->cap_effective;
-	new->cap_ambient	= old->cap_ambient;
 	new->cap_bset		= old->cap_bset;
 
 	new->jit_keyring	= old->jit_keyring;

@@ -103,24 +103,21 @@
 #include <linux/delay.h>
 #include <linux/kthread.h>
 #include <linux/module.h>
-#include <linux/sched/task.h>
-
 #include <asm/sections.h>
 
-#define v1printk(a...) do {		\
-	if (verbose)			\
-		printk(KERN_INFO a);	\
-} while (0)
-#define v2printk(a...) do {		\
-	if (verbose > 1) {		\
-		printk(KERN_INFO a);	\
-	}				\
-	touch_nmi_watchdog();		\
-} while (0)
-#define eprintk(a...) do {		\
-	printk(KERN_ERR a);		\
-	WARN_ON(1);			\
-} while (0)
+#define v1printk(a...) do { \
+	if (verbose) \
+		printk(KERN_INFO a); \
+	} while (0)
+#define v2printk(a...) do { \
+	if (verbose > 1) \
+		printk(KERN_INFO a); \
+		touch_nmi_watchdog();	\
+	} while (0)
+#define eprintk(a...) do { \
+		printk(KERN_ERR a); \
+		WARN_ON(1); \
+	} while (0)
 #define MAX_CONFIG_LEN		40
 
 static struct kgdb_io kgdbts_io_ops;
@@ -223,7 +220,7 @@ static unsigned long lookup_addr(char *arg)
 	else if (!strcmp(arg, "sys_open"))
 		addr = (unsigned long)do_sys_open;
 	else if (!strcmp(arg, "do_fork"))
-		addr = (unsigned long)_do_fork;
+		addr = (unsigned long)do_fork;
 	else if (!strcmp(arg, "hw_break_val"))
 		addr = (unsigned long)&hw_break_val;
 	addr = (unsigned long) dereference_function_descriptor((void *)addr);
@@ -401,14 +398,10 @@ static void skip_back_repeat_test(char *arg)
 	int go_back = simple_strtol(arg, NULL, 10);
 
 	repeat_test--;
-	if (repeat_test <= 0) {
+	if (repeat_test <= 0)
 		ts.idx++;
-	} else {
-		if (repeat_test % 100 == 0)
-			v1printk("kgdbts:RUN ... %d remaining\n", repeat_test);
-
+	else
 		ts.idx -= go_back;
-	}
 	fill_get_buf(ts.tst[ts.idx].get);
 }
 
@@ -986,12 +979,6 @@ static void kgdbts_run_tests(void)
 	int nmi_sleep = 0;
 	int i;
 
-	verbose = 0;
-	if (strstr(config, "V1"))
-		verbose = 1;
-	if (strstr(config, "V2"))
-		verbose = 2;
-
 	ptr = strchr(config, 'F');
 	if (ptr)
 		fork_test = simple_strtol(ptr + 1, NULL, 10);
@@ -1072,10 +1059,17 @@ static int kgdbts_option_setup(char *opt)
 {
 	if (strlen(opt) >= MAX_CONFIG_LEN) {
 		printk(KERN_ERR "kgdbts: config string too long\n");
-		return 1;
+		return -ENOSPC;
 	}
 	strcpy(config, opt);
-	return 1;
+
+	verbose = 0;
+	if (strstr(config, "V1"))
+		verbose = 1;
+	if (strstr(config, "V2"))
+		verbose = 2;
+
+	return 0;
 }
 
 __setup("kgdbts=", kgdbts_option_setup);
@@ -1085,6 +1079,9 @@ static int configure_kgdbts(void)
 	int err = 0;
 
 	if (!strlen(config) || isspace(config[0]))
+		goto noconfig;
+	err = kgdbts_option_setup(config);
+	if (err)
 		goto noconfig;
 
 	final_ack = 0;
@@ -1115,7 +1112,6 @@ static int __init init_kgdbts(void)
 
 	return configure_kgdbts();
 }
-device_initcall(init_kgdbts);
 
 static int kgdbts_get_char(void)
 {
@@ -1133,10 +1129,9 @@ static void kgdbts_put_char(u8 chr)
 		ts.run_test(0, chr);
 }
 
-static int param_set_kgdbts_var(const char *kmessage,
-				const struct kernel_param *kp)
+static int param_set_kgdbts_var(const char *kmessage, struct kernel_param *kp)
 {
-	size_t len = strlen(kmessage);
+	int len = strlen(kmessage);
 
 	if (len >= MAX_CONFIG_LEN) {
 		printk(KERN_ERR "kgdbts: config string too long\n");
@@ -1156,7 +1151,7 @@ static int param_set_kgdbts_var(const char *kmessage,
 
 	strcpy(config, kmessage);
 	/* Chop out \n char as a result of echo */
-	if (len && config[len - 1] == '\n')
+	if (config[len - 1] == '\n')
 		config[len - 1] = '\0';
 
 	/* Go and configure with the new params. */
@@ -1185,9 +1180,10 @@ static struct kgdb_io kgdbts_io_ops = {
 	.post_exception		= kgdbts_post_exp_handler,
 };
 
-/*
- * not really modular, but the easiest way to keep compat with existing
- * bootargs behaviour is to continue using module_param here.
- */
+module_init(init_kgdbts);
 module_param_call(kgdbts, param_set_kgdbts_var, param_get_string, &kps, 0644);
 MODULE_PARM_DESC(kgdbts, "<A|V1|V2>[F#|S#][N#]");
+MODULE_DESCRIPTION("KGDB Test Suite");
+MODULE_LICENSE("GPL");
+MODULE_AUTHOR("Wind River Systems, Inc.");
+

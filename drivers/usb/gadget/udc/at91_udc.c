@@ -1,10 +1,14 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  * at91_udc -- driver for at91-series USB peripheral controller
  *
  * Copyright (C) 2004 by Thomas Rathbone
  * Copyright (C) 2005 by HP Labs
  * Copyright (C) 2005 by David Brownell
+ *
+ * This program is free software; you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation; either version 2 of the License, or
+ * (at your option) any later version.
  */
 
 #undef	VERBOSE_DEBUG
@@ -55,34 +59,15 @@
 #define	DRIVER_VERSION	"3 May 2006"
 
 static const char driver_name [] = "at91_udc";
-
-static const struct {
-	const char *name;
-	const struct usb_ep_caps caps;
-} ep_info[] = {
-#define EP_INFO(_name, _caps) \
-	{ \
-		.name = _name, \
-		.caps = _caps, \
-	}
-
-	EP_INFO("ep0",
-		USB_EP_CAPS(USB_EP_CAPS_TYPE_CONTROL, USB_EP_CAPS_DIR_ALL)),
-	EP_INFO("ep1",
-		USB_EP_CAPS(USB_EP_CAPS_TYPE_ALL, USB_EP_CAPS_DIR_ALL)),
-	EP_INFO("ep2",
-		USB_EP_CAPS(USB_EP_CAPS_TYPE_ALL, USB_EP_CAPS_DIR_ALL)),
-	EP_INFO("ep3-int",
-		USB_EP_CAPS(USB_EP_CAPS_TYPE_INT, USB_EP_CAPS_DIR_ALL)),
-	EP_INFO("ep4",
-		USB_EP_CAPS(USB_EP_CAPS_TYPE_ALL, USB_EP_CAPS_DIR_ALL)),
-	EP_INFO("ep5",
-		USB_EP_CAPS(USB_EP_CAPS_TYPE_ALL, USB_EP_CAPS_DIR_ALL)),
-
-#undef EP_INFO
+static const char * const ep_names[] = {
+	"ep0",
+	"ep1",
+	"ep2",
+	"ep3-int",
+	"ep4",
+	"ep5",
 };
-
-#define ep0name		ep_info[0].name
+#define ep0name		ep_names[0]
 
 #define VBUS_POLL_TIMEOUT	msecs_to_jiffies(1000)
 
@@ -234,10 +219,22 @@ static int proc_udc_show(struct seq_file *s, void *unused)
 	return 0;
 }
 
+static int proc_udc_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, proc_udc_show, PDE_DATA(inode));
+}
+
+static const struct file_operations proc_ops = {
+	.owner		= THIS_MODULE,
+	.open		= proc_udc_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
+
 static void create_debug_file(struct at91_udc *udc)
 {
-	udc->pde = proc_create_single_data(debug_filename, 0, NULL,
-			proc_udc_show, udc);
+	udc->pde = proc_create_data(debug_filename, 0, NULL, &proc_ops, udc);
 }
 
 static void remove_debug_file(struct at91_udc *udc)
@@ -828,7 +825,6 @@ static void udc_reinit(struct at91_udc *udc)
 
 	INIT_LIST_HEAD(&udc->gadget.ep_list);
 	INIT_LIST_HEAD(&udc->gadget.ep0->ep_list);
-	udc->gadget.quirk_stall_not_supp = 1;
 
 	for (i = 0; i < NUM_ENDPOINTS; i++) {
 		struct at91_ep *ep = &udc->ep[i];
@@ -1538,9 +1534,9 @@ static void at91_vbus_timer_work(struct work_struct *work)
 		mod_timer(&udc->vbus_timer, jiffies + VBUS_POLL_TIMEOUT);
 }
 
-static void at91_vbus_timer(struct timer_list *t)
+static void at91_vbus_timer(unsigned long data)
 {
-	struct at91_udc *udc = from_timer(udc, t, vbus_timer);
+	struct at91_udc *udc = (struct at91_udc *)data;
 
 	/*
 	 * If we are polling vbus it is likely that the gpio is on an
@@ -1710,7 +1706,10 @@ static int at91sam9261_udc_init(struct at91_udc *udc)
 
 	udc->matrix = syscon_regmap_lookup_by_phandle(udc->pdev->dev.of_node,
 						      "atmel,matrix");
-	return PTR_ERR_OR_ZERO(udc->matrix);
+	if (IS_ERR(udc->matrix))
+		return PTR_ERR(udc->matrix);
+
+	return 0;
 }
 
 static void at91sam9261_udc_pullup(struct at91_udc *udc, int is_on)
@@ -1831,8 +1830,7 @@ static int at91udc_probe(struct platform_device *pdev)
 
 	for (i = 0; i < NUM_ENDPOINTS; i++) {
 		ep = &udc->ep[i];
-		ep->ep.name = ep_info[i].name;
-		ep->ep.caps = ep_info[i].caps;
+		ep->ep.name = ep_names[i];
 		ep->ep.ops = &at91_ep_ops;
 		ep->udc = udc;
 		ep->int_mask = BIT(i);
@@ -1879,9 +1877,7 @@ static int at91udc_probe(struct platform_device *pdev)
 	clk_disable(udc->iclk);
 
 	/* request UDC and maybe VBUS irqs */
-	udc->udp_irq = retval = platform_get_irq(pdev, 0);
-	if (retval < 0)
-		goto err_unprepare_iclk;
+	udc->udp_irq = platform_get_irq(pdev, 0);
 	retval = devm_request_irq(dev, udc->udp_irq, at91_udc_irq, 0,
 				  driver_name, udc);
 	if (retval) {
@@ -1908,7 +1904,8 @@ static int at91udc_probe(struct platform_device *pdev)
 
 		if (udc->board.vbus_polled) {
 			INIT_WORK(&udc->vbus_timer_work, at91_vbus_timer_work);
-			timer_setup(&udc->vbus_timer, at91_vbus_timer, 0);
+			setup_timer(&udc->vbus_timer, at91_vbus_timer,
+				    (unsigned long)udc);
 			mod_timer(&udc->vbus_timer,
 				  jiffies + VBUS_POLL_TIMEOUT);
 		} else {
@@ -1945,7 +1942,7 @@ err_unprepare_fclk:
 	return retval;
 }
 
-static int at91udc_remove(struct platform_device *pdev)
+static int __exit at91udc_remove(struct platform_device *pdev)
 {
 	struct at91_udc *udc = platform_get_drvdata(pdev);
 	unsigned long	flags;
@@ -2021,7 +2018,7 @@ static int at91udc_resume(struct platform_device *pdev)
 #endif
 
 static struct platform_driver at91_udc_driver = {
-	.remove		= at91udc_remove,
+	.remove		= __exit_p(at91udc_remove),
 	.shutdown	= at91udc_shutdown,
 	.suspend	= at91udc_suspend,
 	.resume		= at91udc_resume,

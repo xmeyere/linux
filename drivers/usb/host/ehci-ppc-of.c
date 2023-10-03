@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-1.0+
 /*
  * EHCI HCD (Host Controller Driver) for USB.
  *
@@ -148,7 +147,6 @@ static int ehci_hcd_ppc_of_probe(struct platform_device *op)
 		} else {
 			ehci->has_amcc_usb23 = 1;
 		}
-		of_node_put(np);
 	}
 
 	if (of_get_property(dn, "big-endian", NULL)) {

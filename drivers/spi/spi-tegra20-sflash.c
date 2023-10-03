@@ -341,7 +341,7 @@ static int tegra_sflash_transfer_one_message(struct spi_master *master,
 						SPI_DMA_TIMEOUT);
 		if (WARN_ON(ret == 0)) {
 			dev_err(tsd->dev,
-				"spi transfer timeout, err %d\n", ret);
+				"spi trasfer timeout, err %d\n", ret);
 			ret = -EIO;
 			goto exit;
 		}
@@ -469,11 +469,7 @@ static int tegra_sflash_probe(struct platform_device *pdev)
 		goto exit_free_master;
 	}
 
-	ret = platform_get_irq(pdev, 0);
-	if (ret < 0)
-		goto exit_free_master;
-	tsd->irq = ret;
-
+	tsd->irq = platform_get_irq(pdev, 0);
 	ret = request_irq(tsd->irq, tegra_sflash_isr, 0,
 			dev_name(&pdev->dev), tsd);
 	if (ret < 0) {
@@ -489,7 +485,7 @@ static int tegra_sflash_probe(struct platform_device *pdev)
 		goto exit_free_irq;
 	}
 
-	tsd->rst = devm_reset_control_get_exclusive(&pdev->dev, "spi");
+	tsd->rst = devm_reset_control_get(&pdev->dev, "spi");
 	if (IS_ERR(tsd->rst)) {
 		dev_err(&pdev->dev, "can not get reset\n");
 		ret = PTR_ERR(tsd->rst);
@@ -568,7 +564,6 @@ static int tegra_sflash_resume(struct device *dev)
 
 	ret = pm_runtime_get_sync(dev);
 	if (ret < 0) {
-		pm_runtime_put_noidle(dev);
 		dev_err(dev, "pm runtime failed, e = %d\n", ret);
 		return ret;
 	}

@@ -172,11 +172,10 @@ static int cx82310_bind(struct usbnet *dev, struct usb_interface *intf)
 		if (!ret && link[0] == 1 && link[2] == 1)
 			break;
 		msleep(500);
-	}
+	};
 	if (!timeout) {
 		dev_err(&udev->dev, "firmware not ready in time\n");
-		ret = -ETIMEDOUT;
-		goto err;
+		return -ETIMEDOUT;
 	}
 
 	/* enable ethernet mode (?) */
@@ -294,9 +293,12 @@ static struct sk_buff *cx82310_tx_fixup(struct usbnet *dev, struct sk_buff *skb,
 {
 	int len = skb->len;
 
-	if (skb_cow_head(skb, 2)) {
+	if (skb_headroom(skb) < 2) {
+		struct sk_buff *skb2 = skb_copy_expand(skb, 2, 0, flags);
 		dev_kfree_skb_any(skb);
-		return NULL;
+		skb = skb2;
+		if (!skb)
+			return NULL;
 	}
 	skb_push(skb, 2);
 

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Copyright (C) 2009 Daniel Hellstrom (daniel@gaisler.com) Aeroflex Gaisler AB
  * Copyright (C) 2009 Konrad Eisele (konrad@gaisler.com) Aeroflex Gaisler AB
@@ -54,7 +53,7 @@ static inline unsigned int leon_eirq_get(int cpu)
 }
 
 /* Handle one or multiple IRQs from the extended interrupt controller */
-static void leon_handle_ext_irq(struct irq_desc *desc)
+static void leon_handle_ext_irq(unsigned int irq, struct irq_desc *desc)
 {
 	unsigned int eirq;
 	struct irq_bucket *p;
@@ -127,7 +126,7 @@ static int leon_set_affinity(struct irq_data *data, const struct cpumask *dest,
 	int oldcpu, newcpu;
 
 	mask = (unsigned long)data->chip_data;
-	oldcpu = irq_choose_cpu(irq_data_get_affinity_mask(data));
+	oldcpu = irq_choose_cpu(data->affinity);
 	newcpu = irq_choose_cpu(dest);
 
 	if (oldcpu == newcpu)
@@ -150,7 +149,7 @@ static void leon_unmask_irq(struct irq_data *data)
 	int cpu;
 
 	mask = (unsigned long)data->chip_data;
-	cpu = irq_choose_cpu(irq_data_get_affinity_mask(data));
+	cpu = irq_choose_cpu(data->affinity);
 	spin_lock_irqsave(&leon_irq_lock, flags);
 	oldmask = LEON3_BYPASS_LOAD_PA(LEON_IMASK(cpu));
 	LEON3_BYPASS_STORE_PA(LEON_IMASK(cpu), (oldmask | mask));
@@ -163,7 +162,7 @@ static void leon_mask_irq(struct irq_data *data)
 	int cpu;
 
 	mask = (unsigned long)data->chip_data;
-	cpu = irq_choose_cpu(irq_data_get_affinity_mask(data));
+	cpu = irq_choose_cpu(data->affinity);
 	spin_lock_irqsave(&leon_irq_lock, flags);
 	oldmask = LEON3_BYPASS_LOAD_PA(LEON_IMASK(cpu));
 	LEON3_BYPASS_STORE_PA(LEON_IMASK(cpu), (oldmask & ~mask));
@@ -204,7 +203,7 @@ static struct irq_chip leon_irq = {
 
 /*
  * Build a LEON IRQ for the edge triggered LEON IRQ controller:
- *  Edge (normal) IRQ           - handle_simple_irq, ack=DON'T-CARE, never ack
+ *  Edge (normal) IRQ           - handle_simple_irq, ack=DONT-CARE, never ack
  *  Level IRQ (PCI|Level-GPIO)  - handle_fasteoi_irq, ack=1, ack after ISR
  *  Per-CPU Edge                - handle_percpu_irq, ack=0
  */
@@ -350,37 +349,37 @@ void __init leon_init_timers(void)
 
 	/* Find GPTIMER Timer Registers base address otherwise bail out. */
 	nnp = rootnp;
-
-retry:
-	np = of_find_node_by_name(nnp, "GAISLER_GPTIMER");
-	if (!np) {
-		np = of_find_node_by_name(nnp, "01_011");
-		if (!np)
-			goto bad;
-	}
-
-	ampopts = 0;
-	pp = of_find_property(np, "ampopts", &len);
-	if (pp) {
-		ampopts = *(int *)pp->value;
-		if (ampopts == 0) {
-			/* Skip this instance, resource already
-			 * allocated by other OS */
-			nnp = np;
-			goto retry;
+	do {
+		np = of_find_node_by_name(nnp, "GAISLER_GPTIMER");
+		if (!np) {
+			np = of_find_node_by_name(nnp, "01_011");
+			if (!np)
+				goto bad;
 		}
-	}
 
-	/* Select Timer-Instance on Timer Core. Default is zero */
-	leon3_gptimer_idx = ampopts & 0x7;
+		ampopts = 0;
+		pp = of_find_property(np, "ampopts", &len);
+		if (pp) {
+			ampopts = *(int *)pp->value;
+			if (ampopts == 0) {
+				/* Skip this instance, resource already
+				 * allocated by other OS */
+				nnp = np;
+				continue;
+			}
+		}
 
-	pp = of_find_property(np, "reg", &len);
-	if (pp)
-		leon3_gptimer_regs = *(struct leon3_gptimer_regs_map **)
-					pp->value;
-	pp = of_find_property(np, "interrupts", &len);
-	if (pp)
-		leon3_gptimer_irq = *(unsigned int *)pp->value;
+		/* Select Timer-Instance on Timer Core. Default is zero */
+		leon3_gptimer_idx = ampopts & 0x7;
+
+		pp = of_find_property(np, "reg", &len);
+		if (pp)
+			leon3_gptimer_regs = *(struct leon3_gptimer_regs_map **)
+						pp->value;
+		pp = of_find_property(np, "interrupts", &len);
+		if (pp)
+			leon3_gptimer_irq = *(unsigned int *)pp->value;
+	} while (0);
 
 	if (!(leon3_gptimer_regs && leon3_irqctrl_regs && leon3_gptimer_irq))
 		goto bad;

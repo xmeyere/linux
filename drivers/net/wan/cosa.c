@@ -78,7 +78,7 @@
 
 #include <linux/module.h>
 #include <linux/kernel.h>
-#include <linux/sched/signal.h>
+#include <linux/sched.h>
 #include <linux/slab.h>
 #include <linux/poll.h>
 #include <linux/fs.h>
@@ -232,11 +232,11 @@ static int irq[MAX_CARDS+1] = { -1, -1, -1, -1, -1, -1, 0, };
 static struct class *cosa_class;
 
 #ifdef MODULE
-module_param_hw_array(io, int, ioport, NULL, 0);
+module_param_array(io, int, NULL, 0);
 MODULE_PARM_DESC(io, "The I/O bases of the COSA or SRP cards");
-module_param_hw_array(irq, int, irq, NULL, 0);
+module_param_array(irq, int, NULL, 0);
 MODULE_PARM_DESC(irq, "The IRQ lines of the COSA or SRP cards");
-module_param_hw_array(dma, int, dma, NULL, 0);
+module_param_array(dma, int, NULL, 0);
 MODULE_PARM_DESC(dma, "The DMA channels of the COSA or SRP cards");
 
 MODULE_AUTHOR("Jan \"Yenya\" Kasprzak, <kas@fi.muni.cz>");
@@ -432,6 +432,7 @@ module_exit(cosa_exit);
 static const struct net_device_ops cosa_ops = {
 	.ndo_open       = cosa_net_open,
 	.ndo_stop       = cosa_net_close,
+	.ndo_change_mtu = hdlc_change_mtu,
 	.ndo_start_xmit = hdlc_start_xmit,
 	.ndo_do_ioctl   = cosa_net_ioctl,
 	.ndo_tx_timeout = cosa_net_timeout,
@@ -516,7 +517,7 @@ static int cosa_probe(int base, int irq, int dma)
 		 */
 		set_current_state(TASK_INTERRUPTIBLE);
 		cosa_putstatus(cosa, SR_TX_INT_ENA);
-		schedule_timeout(msecs_to_jiffies(300));
+		schedule_timeout(30);
 		irq = probe_irq_off(irqs);
 		/* Disable all IRQs from the card */
 		cosa_putstatus(cosa, 0);
@@ -578,7 +579,6 @@ static int cosa_probe(int base, int irq, int dma)
 		/* Register the network interface */
 		if (!(chan->netdev = alloc_hdlcdev(chan))) {
 			pr_warn("%s: alloc_hdlcdev failed\n", chan->name);
-			err = -ENOMEM;
 			goto err_hdlcdev;
 		}
 		dev_to_hdlc(chan->netdev)->attach = cosa_net_attach;
@@ -588,8 +588,7 @@ static int cosa_probe(int base, int irq, int dma)
 		chan->netdev->base_addr = chan->cosa->datareg;
 		chan->netdev->irq = chan->cosa->irq;
 		chan->netdev->dma = chan->cosa->dma;
-		err = register_hdlc_device(chan->netdev);
-		if (err) {
+		if (register_hdlc_device(chan->netdev)) {
 			netdev_warn(chan->netdev,
 				    "register_hdlc_device() failed\n");
 			free_netdev(chan->netdev);
@@ -738,7 +737,7 @@ static char *cosa_net_setup_rx(struct channel_data *chan, int size)
 		chan->netdev->stats.rx_dropped++;
 		return NULL;
 	}
-	netif_trans_update(chan->netdev);
+	chan->netdev->trans_start = jiffies;
 	return skb_put(chan->rx_skb, size);
 }
 
@@ -902,7 +901,6 @@ static ssize_t cosa_write(struct file *file,
 			chan->tx_status = 1;
 			spin_unlock_irqrestore(&cosa->lock, flags);
 			up(&chan->wsem);
-			kfree(kbuf);
 			return -ERESTARTSYS;
 		}
 	}
@@ -925,7 +923,7 @@ static int chrdev_tx_done(struct channel_data *chan, int size)
 	return 1;
 }
 
-static __poll_t cosa_poll(struct file *file, poll_table *poll)
+static unsigned int cosa_poll(struct file *file, poll_table *poll)
 {
 	pr_info("cosa_poll is here\n");
 	return 0;

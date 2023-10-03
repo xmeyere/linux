@@ -51,8 +51,9 @@ static void qce_ahash_done(void *data)
 	if (error)
 		dev_dbg(qce->dev, "ahash dma termination error (%d)\n", error);
 
-	dma_unmap_sg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE);
-	dma_unmap_sg(qce->dev, &rctx->result_sg, 1, DMA_FROM_DEVICE);
+	qce_unmapsg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE,
+		    rctx->src_chained);
+	qce_unmapsg(qce->dev, &rctx->result_sg, 1, DMA_FROM_DEVICE, 0);
 
 	memcpy(rctx->digest, result->auth_iv, digestsize);
 	if (req->result)
@@ -91,19 +92,16 @@ static int qce_ahash_async_req_handle(struct crypto_async_request *async_req)
 		rctx->authklen = AES_KEYSIZE_128;
 	}
 
-	rctx->src_nents = sg_nents_for_len(req->src, req->nbytes);
-	if (rctx->src_nents < 0) {
-		dev_err(qce->dev, "Invalid numbers of src SG.\n");
-		return rctx->src_nents;
-	}
-
-	ret = dma_map_sg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE);
+	rctx->src_nents = qce_countsg(req->src, req->nbytes,
+				      &rctx->src_chained);
+	ret = qce_mapsg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE,
+			rctx->src_chained);
 	if (ret < 0)
 		return ret;
 
 	sg_init_one(&rctx->result_sg, qce->dma.result_buf, QCE_RESULT_BUF_SZ);
 
-	ret = dma_map_sg(qce->dev, &rctx->result_sg, 1, DMA_FROM_DEVICE);
+	ret = qce_mapsg(qce->dev, &rctx->result_sg, 1, DMA_FROM_DEVICE, 0);
 	if (ret < 0)
 		goto error_unmap_src;
 
@@ -123,9 +121,10 @@ static int qce_ahash_async_req_handle(struct crypto_async_request *async_req)
 error_terminate:
 	qce_dma_terminate_all(&qce->dma);
 error_unmap_dst:
-	dma_unmap_sg(qce->dev, &rctx->result_sg, 1, DMA_FROM_DEVICE);
+	qce_unmapsg(qce->dev, &rctx->result_sg, 1, DMA_FROM_DEVICE, 0);
 error_unmap_src:
-	dma_unmap_sg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE);
+	qce_unmapsg(qce->dev, req->src, rctx->src_nents, DMA_TO_DEVICE,
+		    rctx->src_chained);
 	return ret;
 }
 
@@ -297,7 +296,7 @@ static int qce_ahash_update(struct ahash_request *req)
 	if (rctx->buflen) {
 		sg_init_table(rctx->sg, 2);
 		sg_set_buf(rctx->sg, rctx->tmpbuf, rctx->buflen);
-		sg_chain(rctx->sg, 2, req->src);
+		scatterwalk_sg_chain(rctx->sg, 2, req->src);
 		req->src = rctx->sg;
 	}
 
@@ -349,12 +348,28 @@ static int qce_ahash_digest(struct ahash_request *req)
 	return qce->async_req_enqueue(tmpl->qce, &req->base);
 }
 
+struct qce_ahash_result {
+	struct completion completion;
+	int error;
+};
+
+static void qce_digest_complete(struct crypto_async_request *req, int error)
+{
+	struct qce_ahash_result *result = req->data;
+
+	if (error == -EINPROGRESS)
+		return;
+
+	result->error = error;
+	complete(&result->completion);
+}
+
 static int qce_ahash_hmac_setkey(struct crypto_ahash *tfm, const u8 *key,
 				 unsigned int keylen)
 {
 	unsigned int digestsize = crypto_ahash_digestsize(tfm);
 	struct qce_sha_ctx *ctx = crypto_tfm_ctx(&tfm->base);
-	struct crypto_wait wait;
+	struct qce_ahash_result result;
 	struct ahash_request *req;
 	struct scatterlist sg;
 	unsigned int blocksize;
@@ -378,7 +393,8 @@ static int qce_ahash_hmac_setkey(struct crypto_ahash *tfm, const u8 *key,
 	else
 		return -EINVAL;
 
-	ahash_tfm = crypto_alloc_ahash(alg_name, 0, 0);
+	ahash_tfm = crypto_alloc_ahash(alg_name, CRYPTO_ALG_TYPE_AHASH,
+				       CRYPTO_ALG_TYPE_AHASH_MASK);
 	if (IS_ERR(ahash_tfm))
 		return PTR_ERR(ahash_tfm);
 
@@ -388,9 +404,9 @@ static int qce_ahash_hmac_setkey(struct crypto_ahash *tfm, const u8 *key,
 		goto err_free_ahash;
 	}
 
-	crypto_init_wait(&wait);
+	init_completion(&result.completion);
 	ahash_request_set_callback(req, CRYPTO_TFM_REQ_MAY_BACKLOG,
-				   crypto_req_done, &wait);
+				   qce_digest_complete, &result);
 	crypto_ahash_clear_flags(ahash_tfm, ~0);
 
 	buf = kzalloc(keylen + QCE_MAX_ALIGN_SIZE, GFP_KERNEL);
@@ -403,7 +419,13 @@ static int qce_ahash_hmac_setkey(struct crypto_ahash *tfm, const u8 *key,
 	sg_init_one(&sg, buf, keylen);
 	ahash_request_set_crypt(req, &sg, ctx->authkey, keylen);
 
-	ret = crypto_wait_req(crypto_ahash_digest(req), &wait);
+	ret = crypto_ahash_digest(req);
+	if (ret == -EINPROGRESS || ret == -EBUSY) {
+		ret = wait_for_completion_interruptible(&result.completion);
+		if (!ret)
+			ret = result.error;
+	}
+
 	if (ret)
 		crypto_ahash_set_flags(tfm, CRYPTO_TFM_RES_BAD_KEY_LEN);
 
@@ -521,8 +543,8 @@ static int qce_ahash_register_one(const struct qce_ahash_def *def,
 
 	ret = crypto_register_ahash(alg);
 	if (ret) {
-		dev_err(qce->dev, "%s registration failed\n", base->cra_name);
 		kfree(tmpl);
+		dev_err(qce->dev, "%s registration failed\n", base->cra_name);
 		return ret;
 	}
 

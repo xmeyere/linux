@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #include <asm/assembler.h>
 
 /*
@@ -11,7 +10,7 @@
 	@
 	@ routine called with r0 = irq number, r1 = struct pt_regs *
 	@
-	badrne	lr, 1b
+	adrne	lr, BSYM(1b)
 	bne	asm_do_IRQ
 
 #ifdef CONFIG_SMP
@@ -24,7 +23,7 @@
 	ALT_SMP(test_for_ipi r0, r2, r6, lr)
 	ALT_UP_B(9997f)
 	movne	r1, sp
-	badrne	lr, 1b
+	adrne	lr, BSYM(1b)
 	bne	do_IPI
 #endif
 9997:

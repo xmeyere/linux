@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Simulated SCSI driver.
  *
@@ -369,4 +368,13 @@ simscsi_init(void)
 	scsi_host_put(host);
 	return error;
 }
-device_initcall(simscsi_init);
+
+static void __exit
+simscsi_exit(void)
+{
+	scsi_remove_host(host);
+	scsi_host_put(host);
+}
+
+module_init(simscsi_init);
+module_exit(simscsi_exit);

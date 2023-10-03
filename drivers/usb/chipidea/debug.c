@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/device.h>
 #include <linux/types.h>
@@ -11,11 +10,11 @@
 #include <linux/usb/phy.h>
 #include <linux/usb/otg.h>
 #include <linux/usb/otg-fsm.h>
-#include <linux/usb/chipidea.h>
 
 #include "ci.h"
 #include "udc.h"
 #include "bits.h"
+#include "debug.h"
 #include "otg.h"
 
 /**
@@ -45,7 +44,18 @@ static int ci_device_show(struct seq_file *s, void *data)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(ci_device);
+
+static int ci_device_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ci_device_show, inode->i_private);
+}
+
+static const struct file_operations ci_device_fops = {
+	.open		= ci_device_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /**
  * ci_port_test_show: reads port test mode
@@ -56,11 +66,9 @@ static int ci_port_test_show(struct seq_file *s, void *data)
 	unsigned long flags;
 	unsigned mode;
 
-	pm_runtime_get_sync(ci->dev);
 	spin_lock_irqsave(&ci->lock, flags);
 	mode = hw_port_test_get(ci);
 	spin_unlock_irqrestore(&ci->lock, flags);
-	pm_runtime_put_sync(ci->dev);
 
 	seq_printf(s, "mode = %u\n", mode);
 
@@ -80,24 +88,15 @@ static ssize_t ci_port_test_write(struct file *file, const char __user *ubuf,
 	char buf[32];
 	int ret;
 
-	count = min_t(size_t, sizeof(buf) - 1, count);
-	if (copy_from_user(buf, ubuf, count))
+	if (copy_from_user(buf, ubuf, min_t(size_t, sizeof(buf) - 1, count)))
 		return -EFAULT;
-
-	/* sscanf requires a zero terminated string */
-	buf[count] = '\0';
 
 	if (sscanf(buf, "%u", &mode) != 1)
 		return -EINVAL;
 
-	if (mode > 255)
-		return -EBADRQC;
-
-	pm_runtime_get_sync(ci->dev);
 	spin_lock_irqsave(&ci->lock, flags);
 	ret = hw_port_test_set(ci, mode);
 	spin_unlock_irqrestore(&ci->lock, flags);
-	pm_runtime_put_sync(ci->dev);
 
 	return ret ? ret : count;
 }
@@ -145,7 +144,18 @@ static int ci_qheads_show(struct seq_file *s, void *data)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(ci_qheads);
+
+static int ci_qheads_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ci_qheads_show, inode->i_private);
+}
+
+static const struct file_operations ci_qheads_fops = {
+	.open		= ci_qheads_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 /**
  * ci_requests_show: DMA contents of all requests currently queued (all endpts)
@@ -154,6 +164,7 @@ static int ci_requests_show(struct seq_file *s, void *data)
 {
 	struct ci_hdrc *ci = s->private;
 	unsigned long flags;
+	struct list_head   *ptr = NULL;
 	struct ci_hw_req *req = NULL;
 	struct td_node *node, *tmpnode;
 	unsigned i, j, qsize = sizeof(struct ci_hw_td)/sizeof(u32);
@@ -165,7 +176,9 @@ static int ci_requests_show(struct seq_file *s, void *data)
 
 	spin_lock_irqsave(&ci->lock, flags);
 	for (i = 0; i < ci->hw_ep_max; i++)
-		list_for_each_entry(req, &ci->ci_hw_ep[i].qh.queue, queue) {
+		list_for_each(ptr, &ci->ci_hw_ep[i].qh.queue) {
+			req = list_entry(ptr, struct ci_hw_req, queue);
+
 			list_for_each_entry_safe(node, tmpnode, &req->tds, td) {
 				seq_printf(s, "EP=%02i: TD=%08X %s\n",
 					   i % (ci->hw_ep_max / 2),
@@ -182,7 +195,18 @@ static int ci_requests_show(struct seq_file *s, void *data)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(ci_requests);
+
+static int ci_requests_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ci_requests_show, inode->i_private);
+}
+
+static const struct file_operations ci_requests_fops = {
+	.open		= ci_requests_open,
+	.read		= seq_read,
+	.llseek		= seq_lseek,
+	.release	= single_release,
+};
 
 static int ci_otg_show(struct seq_file *s, void *unused)
 {
@@ -245,14 +269,24 @@ static int ci_otg_show(struct seq_file *s, void *unused)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(ci_otg);
+
+static int ci_otg_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ci_otg_show, inode->i_private);
+}
+
+static const struct file_operations ci_otg_fops = {
+	.open			= ci_otg_open,
+	.read			= seq_read,
+	.llseek			= seq_lseek,
+	.release		= single_release,
+};
 
 static int ci_role_show(struct seq_file *s, void *data)
 {
 	struct ci_hdrc *ci = s->private;
 
-	if (ci->role != CI_ROLE_END)
-		seq_printf(s, "%s\n", ci_role(ci)->name);
+	seq_printf(s, "%s\n", ci_role(ci)->name);
 
 	return 0;
 }
@@ -278,12 +312,8 @@ static ssize_t ci_role_write(struct file *file, const char __user *ubuf,
 	if (role == CI_ROLE_END || role == ci->role)
 		return -EINVAL;
 
-	pm_runtime_get_sync(ci->dev);
-	disable_irq(ci->irq);
 	ci_role_stop(ci);
 	ret = ci_role_start(ci, role);
-	enable_irq(ci->irq);
-	pm_runtime_put_sync(ci->dev);
 
 	return ret ? ret : count;
 }
@@ -306,8 +336,8 @@ static int ci_registers_show(struct seq_file *s, void *unused)
 	struct ci_hdrc *ci = s->private;
 	u32 tmp_reg;
 
-	if (!ci || ci->in_lpm)
-		return -EPERM;
+	if (!ci)
+		return 0;
 
 	/* ------ Registers ----- */
 	tmp_reg = hw_read_intr_enable(ci);
@@ -332,7 +362,18 @@ static int ci_registers_show(struct seq_file *s, void *unused)
 
 	return 0;
 }
-DEFINE_SHOW_ATTRIBUTE(ci_registers);
+
+static int ci_registers_open(struct inode *inode, struct file *file)
+{
+	return single_open(file, ci_registers_show, inode->i_private);
+}
+
+static const struct file_operations ci_registers_fops = {
+	.open			= ci_registers_open,
+	.read			= seq_read,
+	.llseek			= seq_lseek,
+	.release		= single_release,
+};
 
 /**
  * dbg_create_files: initializes the attribute interface
@@ -340,28 +381,54 @@ DEFINE_SHOW_ATTRIBUTE(ci_registers);
  *
  * This function returns an error code
  */
-void dbg_create_files(struct ci_hdrc *ci)
+int dbg_create_files(struct ci_hdrc *ci)
 {
-	ci->debugfs = debugfs_create_dir(dev_name(ci->dev), NULL);
+	struct dentry *dent;
 
-	debugfs_create_file("device", S_IRUGO, ci->debugfs, ci,
-			    &ci_device_fops);
-	debugfs_create_file("port_test", S_IRUGO | S_IWUSR, ci->debugfs, ci,
-			    &ci_port_test_fops);
-	debugfs_create_file("qheads", S_IRUGO, ci->debugfs, ci,
-			    &ci_qheads_fops);
-	debugfs_create_file("requests", S_IRUGO, ci->debugfs, ci,
-			    &ci_requests_fops);
+	ci->debugfs = debugfs_create_dir(dev_name(ci->dev), NULL);
+	if (!ci->debugfs)
+		return -ENOMEM;
+
+	dent = debugfs_create_file("device", S_IRUGO, ci->debugfs, ci,
+				   &ci_device_fops);
+	if (!dent)
+		goto err;
+
+	dent = debugfs_create_file("port_test", S_IRUGO | S_IWUSR, ci->debugfs,
+				   ci, &ci_port_test_fops);
+	if (!dent)
+		goto err;
+
+	dent = debugfs_create_file("qheads", S_IRUGO, ci->debugfs, ci,
+				   &ci_qheads_fops);
+	if (!dent)
+		goto err;
+
+	dent = debugfs_create_file("requests", S_IRUGO, ci->debugfs, ci,
+				   &ci_requests_fops);
+	if (!dent)
+		goto err;
 
 	if (ci_otg_is_fsm_mode(ci)) {
-		debugfs_create_file("otg", S_IRUGO, ci->debugfs, ci,
-				    &ci_otg_fops);
+		dent = debugfs_create_file("otg", S_IRUGO, ci->debugfs, ci,
+					&ci_otg_fops);
+		if (!dent)
+			goto err;
 	}
 
-	debugfs_create_file("role", S_IRUGO | S_IWUSR, ci->debugfs, ci,
-			    &ci_role_fops);
-	debugfs_create_file("registers", S_IRUGO, ci->debugfs, ci,
-			    &ci_registers_fops);
+	dent = debugfs_create_file("role", S_IRUGO | S_IWUSR, ci->debugfs, ci,
+				   &ci_role_fops);
+	if (!dent)
+		goto err;
+
+	dent = debugfs_create_file("registers", S_IRUGO, ci->debugfs, ci,
+				&ci_registers_fops);
+
+	if (dent)
+		return 0;
+err:
+	debugfs_remove_recursive(ci->debugfs);
+	return -ENOMEM;
 }
 
 /**

@@ -7,9 +7,8 @@
  */
 
 #include <asm/cop2.h>
-#include <linux/export.h>
+#include <linux/module.h>
 #include <linux/interrupt.h>
-#include <linux/sched/task_stack.h>
 
 #include "octeon-crypto.h"
 
@@ -18,7 +17,7 @@
  * crypto operations in calls to octeon_crypto_enable/disable in order to make
  * sure the state of COP2 isn't corrupted if userspace is also performing
  * hardware crypto operations. Allocate the state parameter on the stack.
- * Returns with preemption disabled.
+ * Preemption must be disabled to prevent context switches.
  *
  * @state: Pointer to state structure to store current COP2 state in.
  *
@@ -29,7 +28,6 @@ unsigned long octeon_crypto_enable(struct octeon_cop2_state *state)
 	int status;
 	unsigned long flags;
 
-	preempt_disable();
 	local_irq_save(flags);
 	status = read_c0_status();
 	write_c0_status(status | ST0_CU2);
@@ -64,6 +62,5 @@ void octeon_crypto_disable(struct octeon_cop2_state *state,
 	else
 		write_c0_status(read_c0_status() & ~ST0_CU2);
 	local_irq_restore(flags);
-	preempt_enable();
 }
 EXPORT_SYMBOL_GPL(octeon_crypto_disable);

@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  *	drivers/video/aty/radeon_pm.c
  *
@@ -524,7 +523,7 @@ static void radeon_pm_enable_dynamic_mode(struct radeonfb_info *rinfo)
 	OUTPLL(pllVCLK_ECP_CNTL, tmp);
 
 	/* X doesn't do that ... hrm, we do on mobility && Macs */
-#ifdef CONFIG_PPC
+#ifdef CONFIG_PPC_OF
 	if (rinfo->is_mobility) {
 		tmp  = INPLL(pllMCLK_CNTL);
 		tmp &= ~(MCLK_CNTL__FORCE_MCLKA |
@@ -542,7 +541,7 @@ static void radeon_pm_enable_dynamic_mode(struct radeonfb_info *rinfo)
 		OUTPLL(pllMCLK_MISC, tmp);
 		radeon_msleep(15);
 	}
-#endif /* CONFIG_PPC */
+#endif /* CONFIG_PPC_OF */
 }
 
 #ifdef CONFIG_PM
@@ -1208,11 +1207,9 @@ static void radeon_pm_enable_dll_m10(struct radeonfb_info *rinfo)
 	case 1:
 		if (mc & 0x4)
 			break;
-		/* fall through */
 	case 2:
 		dll_sleep_mask |= MDLL_R300_RDCK__MRDCKB_SLEEP;
 		dll_reset_mask |= MDLL_R300_RDCK__MRDCKB_RESET;
-		/* fall through */
 	case 0:
 		dll_sleep_mask |= MDLL_R300_RDCK__MRDCKA_SLEEP;
 		dll_reset_mask |= MDLL_R300_RDCK__MRDCKA_RESET;
@@ -1221,7 +1218,6 @@ static void radeon_pm_enable_dll_m10(struct radeonfb_info *rinfo)
 	case 1:
 		if (!(mc & 0x4))
 			break;
-		/* fall through */
 	case 2:
 		dll_sleep_mask |= MDLL_R300_RDCK__MRDCKD_SLEEP;
 		dll_reset_mask |= MDLL_R300_RDCK__MRDCKD_RESET;
@@ -1292,7 +1288,7 @@ static void radeon_pm_full_reset_sdram(struct radeonfb_info *rinfo)
        		radeon_pm_enable_dll_m10(rinfo);
 		radeon_pm_yclk_mclk_sync_m10(rinfo);
 
-#ifdef CONFIG_PPC
+#ifdef CONFIG_PPC_OF
 		if (rinfo->of_node != NULL) {
 			int size;
 
@@ -1302,7 +1298,7 @@ static void radeon_pm_full_reset_sdram(struct radeonfb_info *rinfo)
 			else
 				mrtable = default_mrtable;
 		}
-#endif /* CONFIG_PPC */
+#endif /* CONFIG_PPC_OF */
 
 		/* Program the SDRAM */
 		sdram_mode_reg = mrtable[0];
@@ -1947,7 +1943,7 @@ static void radeon_reinitialize_M10(struct radeonfb_info *rinfo)
 }
 #endif
 
-#ifdef CONFIG_PPC
+#ifdef CONFIG_PPC_OF
 #ifdef CONFIG_PPC_PMAC
 static void radeon_pm_m9p_reconfigure_mc(struct radeonfb_info *rinfo)
 {
@@ -2516,7 +2512,7 @@ static void radeon_reinitialize_QW(struct radeonfb_info *rinfo)
 }
 #endif /* 0 */
 
-#endif /* CONFIG_PPC */
+#endif /* CONFIG_PPC_OF */
 
 static void radeonfb_whack_power_state(struct radeonfb_info *rinfo, pci_power_t state)
 {
@@ -2678,17 +2674,17 @@ int radeonfb_pci_suspend(struct pci_dev *pdev, pm_message_t mesg)
 		 * it, we'll restore the dynamic clocks state on wakeup
 		 */
 		radeon_pm_disable_dynamic_mode(rinfo);
-		msleep(50);
+		mdelay(50);
 		radeon_pm_save_regs(rinfo, 1);
 
 		if (rinfo->is_mobility && !(rinfo->pm_mode & radeon_pm_d2)) {
 			/* Switch off LVDS interface */
-			usleep_range(1000, 2000);
+			mdelay(1);
 			OUTREG(LVDS_GEN_CNTL, INREG(LVDS_GEN_CNTL) & ~(LVDS_BL_MOD_EN));
-			usleep_range(1000, 2000);
+			mdelay(1);
 			OUTREG(LVDS_GEN_CNTL, INREG(LVDS_GEN_CNTL) & ~(LVDS_EN | LVDS_ON));
 			OUTREG(LVDS_PLL_CNTL, (INREG(LVDS_PLL_CNTL) & ~30000) | 0x20000);
-			msleep(20);
+			mdelay(20);
 			OUTREG(LVDS_GEN_CNTL, INREG(LVDS_GEN_CNTL) & ~(LVDS_DIGON));
 		}
 		pci_disable_device(pdev);
@@ -2797,7 +2793,7 @@ int radeonfb_pci_resume(struct pci_dev *pdev)
 	return rc;
 }
 
-#ifdef CONFIG_PPC__disabled
+#ifdef CONFIG_PPC_OF__disabled
 static void radeonfb_early_resume(void *data)
 {
         struct radeonfb_info *rinfo = data;
@@ -2807,7 +2803,7 @@ static void radeonfb_early_resume(void *data)
 	radeonfb_pci_resume(rinfo->pdev);
 	rinfo->no_schedule = 0;
 }
-#endif /* CONFIG_PPC */
+#endif /* CONFIG_PPC_OF */
 
 #endif /* CONFIG_PM */
 

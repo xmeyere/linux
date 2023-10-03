@@ -208,7 +208,6 @@ int diUnmount(struct inode *ipimap, int mounterror)
 	 * free in-memory control structure
 	 */
 	kfree(imap);
-	JFS_IP(ipimap)->i_imap = NULL;
 
 	return (0);
 }
@@ -492,7 +491,13 @@ struct inode *diReadSpecial(struct super_block *sb, ino_t inum, int secondary)
 	/* release the page */
 	release_metapage(mp);
 
-	inode_fake_hash(ip);
+	/*
+	 * __mark_inode_dirty expects inodes to be hashed.  Since we don't
+	 * want special inodes in the fileset inode space, we make them
+	 * appear hashed, but do not put on any lists.  hlist_del()
+	 * will work fine and require no locking.
+	 */
+	hlist_add_fake(&ip->i_hash);
 
 	return (ip);
 }
@@ -529,7 +534,8 @@ void diWriteSpecial(struct inode *ip, int secondary)
 	/* read the page of fixed disk inode (AIT) in raw mode */
 	mp = read_metapage(ip, address << sbi->l2nbperpage, PSIZE, 1);
 	if (mp == NULL) {
-		jfs_err("diWriteSpecial: failed to read aggregate inode extent!");
+		jfs_err("diWriteSpecial: failed to read aggregate inode "
+			"extent!");
 		return;
 	}
 
@@ -3143,6 +3149,7 @@ static void copy_to_dinode(struct dinode * dip, struct inode *ip)
 	else
 		dip->di_gid = cpu_to_le32(from_kgid(&init_user_ns,
 						    jfs_ip->saved_gid));
+	jfs_get_inode_flags(jfs_ip);
 	/*
 	 * mode2 is only needed for storing the higher order bits.
 	 * Trust i_mode for the lower order ones

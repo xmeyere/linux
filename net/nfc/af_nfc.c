@@ -40,7 +40,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 
 	read_lock(&proto_tab_lock);
 	if (proto_tab[proto] &&	try_module_get(proto_tab[proto]->owner)) {
-		rc = proto_tab[proto]->create(net, sock, proto_tab[proto], kern);
+		rc = proto_tab[proto]->create(net, sock, proto_tab[proto]);
 		module_put(proto_tab[proto]->owner);
 	}
 	read_unlock(&proto_tab_lock);
@@ -48,7 +48,7 @@ static int nfc_sock_create(struct net *net, struct socket *sock, int proto,
 	return rc;
 }
 
-static const struct net_proto_family nfc_sock_family_ops = {
+static struct net_proto_family nfc_sock_family_ops = {
 	.owner  = THIS_MODULE,
 	.family = PF_NFC,
 	.create = nfc_sock_create,
@@ -71,9 +71,6 @@ int nfc_proto_register(const struct nfc_protocol *nfc_proto)
 	else
 		proto_tab[nfc_proto->id] = nfc_proto;
 	write_unlock(&proto_tab_lock);
-
-	if (rc)
-		proto_unregister(nfc_proto->proto);
 
 	return rc;
 }

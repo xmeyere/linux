@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Common support for CompuLab CM-T3x30 CoMs
  */
@@ -17,6 +16,7 @@
 		ti,model = "cm-t35";
 
 		ti,mcbsp = <&mcbsp2>;
+		ti,codec = <&twl_audio>;
 	};
 };
 

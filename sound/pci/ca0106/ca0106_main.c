@@ -296,7 +296,7 @@ static struct snd_ca0106_details ca0106_chip_details[] = {
 };
 
 /* hardware definition */
-static const struct snd_pcm_hardware snd_ca0106_playback_hw = {
+static struct snd_pcm_hardware snd_ca0106_playback_hw = {
 	.info =			SNDRV_PCM_INFO_MMAP | 
 				SNDRV_PCM_INFO_INTERLEAVED |
 				SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -317,7 +317,7 @@ static const struct snd_pcm_hardware snd_ca0106_playback_hw = {
 	.fifo_size =		0,
 };
 
-static const struct snd_pcm_hardware snd_ca0106_capture_hw = {
+static struct snd_pcm_hardware snd_ca0106_capture_hw = {
 	.info =			(SNDRV_PCM_INFO_MMAP | 
 				 SNDRV_PCM_INFO_INTERLEAVED |
 				 SNDRV_PCM_INFO_BLOCK_TRANSFER |
@@ -551,8 +551,7 @@ static int snd_ca0106_pcm_power_dac(struct snd_ca0106 *chip, int channel_id,
 		else
 			/* Power down */
 			chip->spi_dac_reg[reg] |= bit;
-		if (snd_ca0106_spi_write(chip, chip->spi_dac_reg[reg]) != 0)
-			return -ENXIO;
+		return snd_ca0106_spi_write(chip, chip->spi_dac_reg[reg]);
 	}
 	return 0;
 }
@@ -661,9 +660,11 @@ static int snd_ca0106_pcm_open_capture_channel(struct snd_pcm_substream *substre
 	int err;
 
 	epcm = kzalloc(sizeof(*epcm), GFP_KERNEL);
-	if (!epcm)
+	if (epcm == NULL) {
+		dev_err(chip->card->dev,
+			"open_capture_channel: failed epcm alloc\n");
 		return -ENOMEM;
-
+        }
 	epcm->emu = chip;
 	epcm->substream = substream;
         epcm->channel_id=channel_id;
@@ -1108,7 +1109,7 @@ snd_ca0106_pcm_pointer_capture(struct snd_pcm_substream *substream)
 }
 
 /* operators */
-static const struct snd_pcm_ops snd_ca0106_playback_front_ops = {
+static struct snd_pcm_ops snd_ca0106_playback_front_ops = {
 	.open =        snd_ca0106_pcm_open_playback_front,
 	.close =       snd_ca0106_pcm_close_playback,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -1119,7 +1120,7 @@ static const struct snd_pcm_ops snd_ca0106_playback_front_ops = {
 	.pointer =     snd_ca0106_pcm_pointer_playback,
 };
 
-static const struct snd_pcm_ops snd_ca0106_capture_0_ops = {
+static struct snd_pcm_ops snd_ca0106_capture_0_ops = {
 	.open =        snd_ca0106_pcm_open_0_capture,
 	.close =       snd_ca0106_pcm_close_capture,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -1130,7 +1131,7 @@ static const struct snd_pcm_ops snd_ca0106_capture_0_ops = {
 	.pointer =     snd_ca0106_pcm_pointer_capture,
 };
 
-static const struct snd_pcm_ops snd_ca0106_capture_1_ops = {
+static struct snd_pcm_ops snd_ca0106_capture_1_ops = {
 	.open =        snd_ca0106_pcm_open_1_capture,
 	.close =       snd_ca0106_pcm_close_capture,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -1141,7 +1142,7 @@ static const struct snd_pcm_ops snd_ca0106_capture_1_ops = {
 	.pointer =     snd_ca0106_pcm_pointer_capture,
 };
 
-static const struct snd_pcm_ops snd_ca0106_capture_2_ops = {
+static struct snd_pcm_ops snd_ca0106_capture_2_ops = {
 	.open =        snd_ca0106_pcm_open_2_capture,
 	.close =       snd_ca0106_pcm_close_capture,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -1152,7 +1153,7 @@ static const struct snd_pcm_ops snd_ca0106_capture_2_ops = {
 	.pointer =     snd_ca0106_pcm_pointer_capture,
 };
 
-static const struct snd_pcm_ops snd_ca0106_capture_3_ops = {
+static struct snd_pcm_ops snd_ca0106_capture_3_ops = {
 	.open =        snd_ca0106_pcm_open_3_capture,
 	.close =       snd_ca0106_pcm_close_capture,
 	.ioctl =       snd_pcm_lib_ioctl,
@@ -1163,7 +1164,7 @@ static const struct snd_pcm_ops snd_ca0106_capture_3_ops = {
 	.pointer =     snd_ca0106_pcm_pointer_capture,
 };
 
-static const struct snd_pcm_ops snd_ca0106_playback_center_lfe_ops = {
+static struct snd_pcm_ops snd_ca0106_playback_center_lfe_ops = {
         .open =         snd_ca0106_pcm_open_playback_center_lfe,
         .close =        snd_ca0106_pcm_close_playback,
         .ioctl =        snd_pcm_lib_ioctl,
@@ -1174,7 +1175,7 @@ static const struct snd_pcm_ops snd_ca0106_playback_center_lfe_ops = {
         .pointer =      snd_ca0106_pcm_pointer_playback, 
 };
 
-static const struct snd_pcm_ops snd_ca0106_playback_unknown_ops = {
+static struct snd_pcm_ops snd_ca0106_playback_unknown_ops = {
         .open =         snd_ca0106_pcm_open_playback_unknown,
         .close =        snd_ca0106_pcm_close_playback,
         .ioctl =        snd_pcm_lib_ioctl,
@@ -1185,7 +1186,7 @@ static const struct snd_pcm_ops snd_ca0106_playback_unknown_ops = {
         .pointer =      snd_ca0106_pcm_pointer_playback, 
 };
 
-static const struct snd_pcm_ops snd_ca0106_playback_rear_ops = {
+static struct snd_pcm_ops snd_ca0106_playback_rear_ops = {
         .open =         snd_ca0106_pcm_open_playback_rear,
         .close =        snd_ca0106_pcm_close_playback,
         .ioctl =        snd_pcm_lib_ioctl,
@@ -1675,8 +1676,8 @@ static int snd_ca0106_create(int dev, struct snd_card *card,
 	err = pci_enable_device(pci);
 	if (err < 0)
 		return err;
-	if (dma_set_mask(&pci->dev, DMA_BIT_MASK(32)) < 0 ||
-	    dma_set_coherent_mask(&pci->dev, DMA_BIT_MASK(32)) < 0) {
+	if (pci_set_dma_mask(pci, DMA_BIT_MASK(32)) < 0 ||
+	    pci_set_consistent_dma_mask(pci, DMA_BIT_MASK(32)) < 0) {
 		dev_err(card->dev, "error to set 32bit mask DMA\n");
 		pci_disable_device(pci);
 		return -ENXIO;
@@ -1884,7 +1885,7 @@ static int snd_ca0106_probe(struct pci_dev *pci,
 		goto error;
 	dev_dbg(card->dev, " done.\n");
 
-#ifdef CONFIG_SND_PROC_FS
+#ifdef CONFIG_PROC_FS
 	snd_ca0106_proc_init(chip);
 #endif
 

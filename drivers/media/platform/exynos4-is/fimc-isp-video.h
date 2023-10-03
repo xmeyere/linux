@@ -11,7 +11,7 @@
 #ifndef FIMC_ISP_VIDEO__
 #define FIMC_ISP_VIDEO__
 
-#include <media/videobuf2-v4l2.h>
+#include <media/videobuf2-core.h>
 #include "fimc-isp.h"
 
 #ifdef CONFIG_VIDEO_EXYNOS4_ISP_DMA_CAPTURE
@@ -35,7 +35,7 @@ static inline int fimc_isp_video_device_register(struct fimc_isp *isp,
 	return 0;
 }
 
-static inline void fimc_isp_video_device_unregister(struct fimc_isp *isp,
+void fimc_isp_video_device_unregister(struct fimc_isp *isp,
 				enum v4l2_buf_type type)
 {
 }

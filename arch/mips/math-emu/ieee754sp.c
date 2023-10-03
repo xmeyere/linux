@@ -30,42 +30,38 @@ int ieee754sp_class(union ieee754sp x)
 	return xc;
 }
 
-static inline int ieee754sp_isnan(union ieee754sp x)
+int ieee754sp_isnan(union ieee754sp x)
 {
-	return ieee754_class_nan(ieee754sp_class(x));
+	return ieee754sp_class(x) >= IEEE754_CLASS_SNAN;
 }
 
 static inline int ieee754sp_issnan(union ieee754sp x)
 {
-	int qbit;
-
 	assert(ieee754sp_isnan(x));
-	qbit = (SPMANT(x) & SP_MBIT(SP_FBITS - 1)) == SP_MBIT(SP_FBITS - 1);
-	return ieee754_csr.nan2008 ^ qbit;
+	return SPMANT(x) & SP_MBIT(SP_FBITS - 1);
 }
 
 
-/*
- * Raise the Invalid Operation IEEE 754 exception
- * and convert the signaling NaN supplied to a quiet NaN.
- */
 union ieee754sp __cold ieee754sp_nanxcpt(union ieee754sp r)
 {
-	assert(ieee754sp_issnan(r));
+	assert(ieee754sp_isnan(r));
 
-	ieee754_setcx(IEEE754_INVALID_OPERATION);
-	if (ieee754_csr.nan2008) {
-		SPMANT(r) |= SP_MBIT(SP_FBITS - 1);
-	} else {
-		SPMANT(r) &= ~SP_MBIT(SP_FBITS - 1);
-		if (!ieee754sp_isnan(r))
-			SPMANT(r) |= SP_MBIT(SP_FBITS - 2);
+	if (!ieee754sp_issnan(r))	/* QNAN does not cause invalid op !! */
+		return r;
+
+	if (!ieee754_setandtestcx(IEEE754_INVALID_OPERATION)) {
+		/* not enabled convert to a quiet NaN */
+		SPMANT(r) &= (~SP_MBIT(SP_FBITS-1));
+		if (ieee754sp_isnan(r))
+			return r;
+		else
+			return ieee754sp_indef();
 	}
 
 	return r;
 }
 
-static unsigned int ieee754sp_get_rounding(int sn, unsigned int xm)
+static unsigned ieee754sp_get_rounding(int sn, unsigned xm)
 {
 	/* inexact must round of 3 bits
 	 */
@@ -96,11 +92,11 @@ static unsigned int ieee754sp_get_rounding(int sn, unsigned int xm)
  * xe is an unbiased exponent
  * xm is 3bit extended precision value.
  */
-union ieee754sp ieee754sp_format(int sn, int xe, unsigned int xm)
+union ieee754sp ieee754sp_format(int sn, int xe, unsigned xm)
 {
 	assert(xm);		/* we don't gen exact zeros (probably should) */
 
-	assert((xm >> (SP_FBITS + 1 + 3)) == 0);	/* no excess */
+	assert((xm >> (SP_FBITS + 1 + 3)) == 0);	/* no execess */
 	assert(xm & (SP_HIDDEN_BIT << 3));
 
 	if (xe < SP_EMIN) {
@@ -141,8 +137,7 @@ union ieee754sp ieee754sp_format(int sn, int xe, unsigned int xm)
 		} else {
 			/* sticky right shift es bits
 			 */
-			xm = XSPSRS(xm, es);
-			xe += es;
+			SPXSRSXn(es);
 			assert((xm & (SP_HIDDEN_BIT << 3)) == 0);
 			assert(xe == SP_EMIN);
 		}
@@ -167,7 +162,7 @@ union ieee754sp ieee754sp_format(int sn, int xe, unsigned int xm)
 	/* strip grs bits */
 	xm >>= 3;
 
-	assert((xm >> (SP_FBITS + 1)) == 0);	/* no excess */
+	assert((xm >> (SP_FBITS + 1)) == 0);	/* no execess */
 	assert(xe >= SP_EMIN);
 
 	if (xe > SP_EMAX) {
@@ -200,7 +195,7 @@ union ieee754sp ieee754sp_format(int sn, int xe, unsigned int xm)
 			ieee754_setcx(IEEE754_UNDERFLOW);
 		return buildsp(sn, SP_EMIN - 1 + SP_EBIAS, xm);
 	} else {
-		assert((xm >> (SP_FBITS + 1)) == 0);	/* no excess */
+		assert((xm >> (SP_FBITS + 1)) == 0);	/* no execess */
 		assert(xm & SP_HIDDEN_BIT);
 
 		return buildsp(sn, xe + SP_EBIAS, xm & ~SP_HIDDEN_BIT);

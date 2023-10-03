@@ -24,7 +24,8 @@
 #include "gspca.h"
 
 MODULE_DESCRIPTION("Topro TP6800/6810 gspca webcam driver");
-MODULE_AUTHOR("Jean-Francois Moine <http://moinejf.free.fr>, Anders Blomdell <anders.blomdell@control.lth.se>");
+MODULE_AUTHOR("Jean-Francois Moine <http://moinejf.free.fr>, "
+		"Anders Blomdell <anders.blomdell@control.lth.se>");
 MODULE_LICENSE("GPL");
 
 static int force_sensor = -1;
@@ -173,8 +174,6 @@ static const u8 jpeg_q[17] = {
 #if BULK_OUT_SIZE > USB_BUF_SZ
 #error "USB buffer too small"
 #endif
-
-#define DEFAULT_FRAME_RATE 30
 
 static const u8 rates[] = {30, 20, 15, 10, 7, 5};
 static const struct framerates framerates[] = {
@@ -970,9 +969,7 @@ static void jpeg_set_qual(u8 *jpeg_hdr,
 {
 	int i, sc;
 
-	if (quality <= 0)
-		sc = 5000;
-	else if (quality < 50)
+	if (quality < 50)
 		sc = 5000 / quality;
 	else
 		sc = 200 - quality * 2;
@@ -1453,7 +1450,7 @@ static void set_dqt(struct gspca_dev *gspca_dev, u8 q)
 	struct sd *sd = (struct sd *) gspca_dev;
 
 	/* update the jpeg quantization tables */
-	gspca_dbg(gspca_dev, D_STREAM, "q %d -> %d\n", sd->quality, q);
+	PDEBUG(D_STREAM, "q %d -> %d", sd->quality, q);
 	sd->quality = q;
 	if (q > 16)
 		q = 16;
@@ -4021,7 +4018,7 @@ static int sd_config(struct gspca_dev *gspca_dev,
 	gspca_dev->cam.mode_framerates = sd->bridge == BRIDGE_TP6800 ?
 			framerates : framerates_6810;
 
-	sd->framerate = DEFAULT_FRAME_RATE;
+	sd->framerate = 30;		/* default: 30 fps */
 	return 0;
 }
 
@@ -4053,7 +4050,7 @@ static int sd_init(struct gspca_dev *gspca_dev)
 				ARRAY_SIZE(tp6810_preinit));
 	msleep(15);
 	reg_r(gspca_dev, TP6800_R18_GPIO_DATA);
-	gspca_dbg(gspca_dev, D_PROBE, "gpio: %02x\n", gspca_dev->usb_buf[0]);
+	PDEBUG(D_PROBE, "gpio: %02x", gspca_dev->usb_buf[0]);
 /* values:
  *	0x80: snapshot button
  *	0x40: LED
@@ -4627,7 +4624,7 @@ static void sd_pkt_scan(struct gspca_dev *gspca_dev,
 			if (*data == 0xaa || *data == 0x00)
 				return;
 			if (*data > 0xc0) {
-				gspca_dbg(gspca_dev, D_FRAM, "bad frame\n");
+				PDEBUG(D_FRAM, "bad frame");
 				gspca_dev->last_packet_type = DISCARD_PACKET;
 				return;
 			}
@@ -4780,6 +4777,7 @@ static void sd_get_streamparm(struct gspca_dev *gspca_dev,
 	struct v4l2_fract *tpf = &cp->timeperframe;
 	int fr, i;
 
+	cp->capability |= V4L2_CAP_TIMEPERFRAME;
 	tpf->numerator = 1;
 	i = get_fr_idx(gspca_dev);
 	if (i & 0x80) {
@@ -4802,11 +4800,7 @@ static void sd_set_streamparm(struct gspca_dev *gspca_dev,
 	struct v4l2_fract *tpf = &cp->timeperframe;
 	int fr, i;
 
-	if (tpf->numerator == 0 || tpf->denominator == 0)
-		sd->framerate = DEFAULT_FRAME_RATE;
-	else
-		sd->framerate = tpf->denominator / tpf->numerator;
-
+	sd->framerate = tpf->denominator / tpf->numerator;
 	if (gspca_dev->streaming)
 		setframerate(gspca_dev, v4l2_ctrl_g_ctrl(gspca_dev->exposure));
 

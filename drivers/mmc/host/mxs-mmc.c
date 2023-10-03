@@ -153,11 +153,7 @@ static void mxs_mmc_request_done(struct mxs_mmc_host *host)
 		}
 	}
 
-	if (cmd == mrq->sbc) {
-		/* Finished CMD23, now send actual command. */
-		mxs_mmc_start_cmd(host, mrq->cmd);
-		return;
-	} else if (data) {
+	if (data) {
 		dma_unmap_sg(mmc_dev(host->mmc), data->sg,
 			     data->sg_len, ssp->dma_dir);
 		/*
@@ -170,7 +166,7 @@ static void mxs_mmc_request_done(struct mxs_mmc_host *host)
 			data->bytes_xfered = 0;
 
 		host->data = NULL;
-		if (data->stop && (data->error || !mrq->sbc)) {
+		if (mrq->stop) {
 			mxs_mmc_start_cmd(host, mrq->stop);
 			return;
 		}
@@ -313,9 +309,6 @@ static void mxs_mmc_ac(struct mxs_mmc_host *host)
 	cmd0 = BF_SSP(cmd->opcode, CMD0_CMD);
 	cmd1 = cmd->arg;
 
-	if (cmd->opcode == MMC_STOP_TRANSMISSION)
-		cmd0 |= BM_SSP_CMD0_APPEND_8CYC;
-
 	if (host->sdio_irq_en) {
 		ctrl0 |= BM_SSP_CTRL0_SDIO_IRQ_CHECK;
 		cmd0 |= BM_SSP_CMD0_CONT_CLKING_EN | BM_SSP_CMD0_SLOW_CLKING_EN;
@@ -424,7 +417,8 @@ static void mxs_mmc_adtc(struct mxs_mmc_host *host)
 		       ssp->base + HW_SSP_BLOCK_SIZE);
 	}
 
-	if (cmd->opcode == SD_IO_RW_EXTENDED)
+	if ((cmd->opcode == MMC_STOP_TRANSMISSION) ||
+	    (cmd->opcode == SD_IO_RW_EXTENDED))
 		cmd0 |= BM_SSP_CMD0_APPEND_8CYC;
 
 	cmd1 = cmd->arg;
@@ -499,11 +493,7 @@ static void mxs_mmc_request(struct mmc_host *mmc, struct mmc_request *mrq)
 
 	WARN_ON(host->mrq != NULL);
 	host->mrq = mrq;
-
-	if (mrq->sbc)
-		mxs_mmc_start_cmd(host, mrq->sbc);
-	else
-		mxs_mmc_start_cmd(host, mrq->cmd);
+	mxs_mmc_start_cmd(host, mrq->cmd);
 }
 
 static void mxs_mmc_set_ios(struct mmc_host *mmc, struct mmc_ios *ios)
@@ -559,7 +549,7 @@ static const struct mmc_host_ops mxs_mmc_ops = {
 	.enable_sdio_irq = mxs_mmc_enable_sdio_irq,
 };
 
-static const struct platform_device_id mxs_ssp_ids[] = {
+static struct platform_device_id mxs_ssp_ids[] = {
 	{
 		.name = "imx23-mmc",
 		.driver_data = IMX23_SSP,
@@ -578,11 +568,6 @@ static const struct of_device_id mxs_mmc_dt_ids[] = {
 	{ /* sentinel */ }
 };
 MODULE_DEVICE_TABLE(of, mxs_mmc_dt_ids);
-
-static void mxs_mmc_regulator_disable(void *regulator)
-{
-	regulator_disable(regulator);
-}
 
 static int mxs_mmc_probe(struct platform_device *pdev)
 {
@@ -627,11 +612,6 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 				"Failed to enable vmmc regulator: %d\n", ret);
 			goto out_mmc_free;
 		}
-
-		ret = devm_add_action_or_reset(&pdev->dev, mxs_mmc_regulator_disable,
-					       reg_vmmc);
-		if (ret)
-			goto out_mmc_free;
 	}
 
 	ssp->clk = devm_clk_get(&pdev->dev, NULL);
@@ -660,7 +640,7 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 	/* set mmc core parameters */
 	mmc->ops = &mxs_mmc_ops;
 	mmc->caps = MMC_CAP_SD_HIGHSPEED | MMC_CAP_MMC_HIGHSPEED |
-		    MMC_CAP_SDIO_IRQ | MMC_CAP_NEEDS_POLL | MMC_CAP_CMD23;
+		    MMC_CAP_SDIO_IRQ | MMC_CAP_NEEDS_POLL;
 
 	host->broken_cd = of_property_read_bool(np, "broken-cd");
 
@@ -669,7 +649,7 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 
 	ret = mmc_of_parse(mmc);
 	if (ret)
-		goto out_free_dma;
+		goto out_clk_disable;
 
 	mmc->ocr_avail = MMC_VDD_32_33 | MMC_VDD_33_34;
 
@@ -681,12 +661,12 @@ static int mxs_mmc_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, mmc);
 
-	spin_lock_init(&host->lock);
-
 	ret = devm_request_irq(&pdev->dev, irq_err, mxs_mmc_irq_handler, 0,
 			       dev_name(&pdev->dev), host);
 	if (ret)
 		goto out_free_dma;
+
+	spin_lock_init(&host->lock);
 
 	ret = mmc_add_host(mmc);
 	if (ret)

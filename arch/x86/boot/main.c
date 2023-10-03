@@ -34,7 +34,7 @@ static void copy_boot_params(void)
 		u16 cl_offset;
 	};
 	const struct old_cmdline * const oldcmd =
-		absolute_pointer(OLD_CL_ADDRESS);
+		(const struct old_cmdline *)OLD_CL_ADDRESS;
 
 	BUILD_BUG_ON(sizeof boot_params != 4096);
 	memcpy(&boot_params.hdr, &hdr, sizeof hdr);
@@ -160,6 +160,9 @@ void main(void)
 
 	/* Set keyboard repeat rate (why?) and query the lock flags */
 	keyboard_init();
+
+	/* Query MCA information */
+	query_mca();
 
 	/* Query Intel SpeedStep (IST) information */
 	query_ist();

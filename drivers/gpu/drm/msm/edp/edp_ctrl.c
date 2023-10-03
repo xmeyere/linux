@@ -14,13 +14,15 @@
 #include <linux/clk.h>
 #include <linux/gpio/consumer.h>
 #include <linux/regulator/consumer.h>
-#include <drm/drm_crtc.h>
-#include <drm/drm_dp_helper.h>
-#include <drm/drm_edid.h>
 
+#include "drm_crtc.h"
+#include "drm_dp_helper.h"
+#include "drm_edid.h"
 #include "edp.h"
 #include "edp.xml.h"
 
+#define VDDA_MIN_UV		1800000	/* uV units */
+#define VDDA_MAX_UV		1800000	/* uV units */
 #define VDDA_UA_ON_LOAD		100000	/* uA units */
 #define VDDA_UA_OFF_LOAD	100	/* uA units */
 
@@ -65,7 +67,7 @@ struct edp_ctrl {
 	void __iomem *base;
 
 	/* regulators */
-	struct regulator *vdda_vreg;	/* 1.8 V */
+	struct regulator *vdda_vreg;
 	struct regulator *lvl_vreg;
 
 	/* clocks */
@@ -150,46 +152,46 @@ static const struct edp_pixel_clk_div clk_divs[2][EDP_PIXEL_CLK_NUM] = {
 
 static int edp_clk_init(struct edp_ctrl *ctrl)
 {
-	struct platform_device *pdev = ctrl->pdev;
+	struct device *dev = &ctrl->pdev->dev;
 	int ret;
 
-	ctrl->aux_clk = msm_clk_get(pdev, "core");
+	ctrl->aux_clk = devm_clk_get(dev, "core_clk");
 	if (IS_ERR(ctrl->aux_clk)) {
 		ret = PTR_ERR(ctrl->aux_clk);
-		pr_err("%s: Can't find core clock, %d\n", __func__, ret);
+		pr_err("%s: Can't find aux_clk, %d\n", __func__, ret);
 		ctrl->aux_clk = NULL;
 		return ret;
 	}
 
-	ctrl->pixel_clk = msm_clk_get(pdev, "pixel");
+	ctrl->pixel_clk = devm_clk_get(dev, "pixel_clk");
 	if (IS_ERR(ctrl->pixel_clk)) {
 		ret = PTR_ERR(ctrl->pixel_clk);
-		pr_err("%s: Can't find pixel clock, %d\n", __func__, ret);
+		pr_err("%s: Can't find pixel_clk, %d\n", __func__, ret);
 		ctrl->pixel_clk = NULL;
 		return ret;
 	}
 
-	ctrl->ahb_clk = msm_clk_get(pdev, "iface");
+	ctrl->ahb_clk = devm_clk_get(dev, "iface_clk");
 	if (IS_ERR(ctrl->ahb_clk)) {
 		ret = PTR_ERR(ctrl->ahb_clk);
-		pr_err("%s: Can't find iface clock, %d\n", __func__, ret);
+		pr_err("%s: Can't find ahb_clk, %d\n", __func__, ret);
 		ctrl->ahb_clk = NULL;
 		return ret;
 	}
 
-	ctrl->link_clk = msm_clk_get(pdev, "link");
+	ctrl->link_clk = devm_clk_get(dev, "link_clk");
 	if (IS_ERR(ctrl->link_clk)) {
 		ret = PTR_ERR(ctrl->link_clk);
-		pr_err("%s: Can't find link clock, %d\n", __func__, ret);
+		pr_err("%s: Can't find link_clk, %d\n", __func__, ret);
 		ctrl->link_clk = NULL;
 		return ret;
 	}
 
 	/* need mdp core clock to receive irq */
-	ctrl->mdp_core_clk = msm_clk_get(pdev, "mdp_core");
+	ctrl->mdp_core_clk = devm_clk_get(dev, "mdp_core_clk");
 	if (IS_ERR(ctrl->mdp_core_clk)) {
 		ret = PTR_ERR(ctrl->mdp_core_clk);
-		pr_err("%s: Can't find mdp_core clock, %d\n", __func__, ret);
+		pr_err("%s: Can't find mdp_core_clk, %d\n", __func__, ret);
 		ctrl->mdp_core_clk = NULL;
 		return ret;
 	}
@@ -300,24 +302,21 @@ static void edp_clk_disable(struct edp_ctrl *ctrl, u32 clk_mask)
 static int edp_regulator_init(struct edp_ctrl *ctrl)
 {
 	struct device *dev = &ctrl->pdev->dev;
-	int ret;
 
 	DBG("");
 	ctrl->vdda_vreg = devm_regulator_get(dev, "vdda");
-	ret = PTR_ERR_OR_ZERO(ctrl->vdda_vreg);
-	if (ret) {
-		pr_err("%s: Could not get vdda reg, ret = %d\n", __func__,
-				ret);
+	if (IS_ERR(ctrl->vdda_vreg)) {
+		pr_err("%s: Could not get vdda reg, ret = %ld\n", __func__,
+				PTR_ERR(ctrl->vdda_vreg));
 		ctrl->vdda_vreg = NULL;
-		return ret;
+		return PTR_ERR(ctrl->vdda_vreg);
 	}
 	ctrl->lvl_vreg = devm_regulator_get(dev, "lvl-vdd");
-	ret = PTR_ERR_OR_ZERO(ctrl->lvl_vreg);
-	if (ret) {
-		pr_err("%s: Could not get lvl-vdd reg, ret = %d\n", __func__,
-				ret);
+	if (IS_ERR(ctrl->lvl_vreg)) {
+		pr_err("Could not get lvl-vdd reg, %ld",
+				PTR_ERR(ctrl->lvl_vreg));
 		ctrl->lvl_vreg = NULL;
-		return ret;
+		return PTR_ERR(ctrl->lvl_vreg);
 	}
 
 	return 0;
@@ -327,7 +326,13 @@ static int edp_regulator_enable(struct edp_ctrl *ctrl)
 {
 	int ret;
 
-	ret = regulator_set_load(ctrl->vdda_vreg, VDDA_UA_ON_LOAD);
+	ret = regulator_set_voltage(ctrl->vdda_vreg, VDDA_MIN_UV, VDDA_MAX_UV);
+	if (ret) {
+		pr_err("%s:vdda_vreg set_voltage failed, %d\n", __func__, ret);
+		goto vdda_set_fail;
+	}
+
+	ret = regulator_set_optimum_mode(ctrl->vdda_vreg, VDDA_UA_ON_LOAD);
 	if (ret < 0) {
 		pr_err("%s: vdda_vreg set regulator mode failed.\n", __func__);
 		goto vdda_set_fail;
@@ -351,7 +356,7 @@ static int edp_regulator_enable(struct edp_ctrl *ctrl)
 lvl_enable_fail:
 	regulator_disable(ctrl->vdda_vreg);
 vdda_enable_fail:
-	regulator_set_load(ctrl->vdda_vreg, VDDA_UA_OFF_LOAD);
+	regulator_set_optimum_mode(ctrl->vdda_vreg, VDDA_UA_OFF_LOAD);
 vdda_set_fail:
 	return ret;
 }
@@ -360,7 +365,7 @@ static void edp_regulator_disable(struct edp_ctrl *ctrl)
 {
 	regulator_disable(ctrl->lvl_vreg);
 	regulator_disable(ctrl->vdda_vreg);
-	regulator_set_load(ctrl->vdda_vreg, VDDA_UA_OFF_LOAD);
+	regulator_set_optimum_mode(ctrl->vdda_vreg, VDDA_UA_OFF_LOAD);
 }
 
 static int edp_gpio_config(struct edp_ctrl *ctrl)
@@ -368,7 +373,7 @@ static int edp_gpio_config(struct edp_ctrl *ctrl)
 	struct device *dev = &ctrl->pdev->dev;
 	int ret;
 
-	ctrl->panel_hpd_gpio = devm_gpiod_get(dev, "panel-hpd", GPIOD_IN);
+	ctrl->panel_hpd_gpio = devm_gpiod_get(dev, "panel-hpd");
 	if (IS_ERR(ctrl->panel_hpd_gpio)) {
 		ret = PTR_ERR(ctrl->panel_hpd_gpio);
 		ctrl->panel_hpd_gpio = NULL;
@@ -376,11 +381,24 @@ static int edp_gpio_config(struct edp_ctrl *ctrl)
 		return ret;
 	}
 
-	ctrl->panel_en_gpio = devm_gpiod_get(dev, "panel-en", GPIOD_OUT_LOW);
+	ret = gpiod_direction_input(ctrl->panel_hpd_gpio);
+	if (ret) {
+		pr_err("%s: Set direction for hpd failed, %d\n", __func__, ret);
+		return ret;
+	}
+
+	ctrl->panel_en_gpio = devm_gpiod_get(dev, "panel-en");
 	if (IS_ERR(ctrl->panel_en_gpio)) {
 		ret = PTR_ERR(ctrl->panel_en_gpio);
 		ctrl->panel_en_gpio = NULL;
 		pr_err("%s: cannot get panel-en-gpios, %d\n", __func__, ret);
+		return ret;
+	}
+
+	ret = gpiod_direction_output(ctrl->panel_en_gpio, 0);
+	if (ret) {
+		pr_err("%s: Set direction for panel_en failed, %d\n",
+				__func__, ret);
 		return ret;
 	}
 
@@ -1000,7 +1018,7 @@ static void edp_ctrl_off_worker(struct work_struct *work)
 {
 	struct edp_ctrl *ctrl = container_of(
 				work, struct edp_ctrl, off_work);
-	unsigned long time_left;
+	int ret;
 
 	mutex_lock(&ctrl->dev_mutex);
 
@@ -1012,10 +1030,11 @@ static void edp_ctrl_off_worker(struct work_struct *work)
 	reinit_completion(&ctrl->idle_comp);
 	edp_state_ctrl(ctrl, EDP_STATE_CTRL_PUSH_IDLE);
 
-	time_left = wait_for_completion_timeout(&ctrl->idle_comp,
+	ret = wait_for_completion_timeout(&ctrl->idle_comp,
 						msecs_to_jiffies(500));
-	if (!time_left)
-		DBG("%s: idle pattern timedout\n", __func__);
+	if (ret <= 0)
+		DBG("%s: idle pattern timedout, %d\n",
+				__func__, ret);
 
 	edp_state_ctrl(ctrl, 0);
 
@@ -1090,7 +1109,7 @@ void msm_edp_ctrl_power(struct edp_ctrl *ctrl, bool on)
 int msm_edp_ctrl_init(struct msm_edp *edp)
 {
 	struct edp_ctrl *ctrl = NULL;
-	struct device *dev;
+	struct device *dev = &edp->pdev->dev;
 	int ret;
 
 	if (!edp) {
@@ -1098,7 +1117,6 @@ int msm_edp_ctrl_init(struct msm_edp *edp)
 		return -EINVAL;
 	}
 
-	dev = &edp->pdev->dev;
 	ctrl = devm_kzalloc(dev, sizeof(*ctrl), GFP_KERNEL);
 	if (!ctrl)
 		return -ENOMEM;
@@ -1131,13 +1149,12 @@ int msm_edp_ctrl_init(struct msm_edp *edp)
 	ctrl->aux = msm_edp_aux_init(dev, ctrl->base, &ctrl->drm_aux);
 	if (!ctrl->aux || !ctrl->drm_aux) {
 		pr_err("%s:failed to init aux\n", __func__);
-		return -ENOMEM;
+		return ret;
 	}
 
 	ctrl->phy = msm_edp_phy_init(dev, ctrl->base);
 	if (!ctrl->phy) {
 		pr_err("%s:failed to init phy\n", __func__);
-		ret = -ENOMEM;
 		goto err_destory_aux;
 	}
 

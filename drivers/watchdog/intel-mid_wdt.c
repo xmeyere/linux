@@ -43,7 +43,6 @@ static inline int wdt_command(int sub, u32 *in, int inlen)
 
 static int wdt_start(struct watchdog_device *wd)
 {
-	struct device *dev = watchdog_get_drvdata(wd);
 	int ret, in_size;
 	int timeout = wd->timeout;
 	struct ipc_wd_start {
@@ -58,32 +57,36 @@ static int wdt_start(struct watchdog_device *wd)
 	in_size = DIV_ROUND_UP(sizeof(ipc_wd_start), 4);
 
 	ret = wdt_command(SCU_WATCHDOG_START, (u32 *)&ipc_wd_start, in_size);
-	if (ret)
+	if (ret) {
+		struct device *dev = watchdog_get_drvdata(wd);
 		dev_crit(dev, "error starting watchdog: %d\n", ret);
+	}
 
 	return ret;
 }
 
 static int wdt_ping(struct watchdog_device *wd)
 {
-	struct device *dev = watchdog_get_drvdata(wd);
 	int ret;
 
 	ret = wdt_command(SCU_WATCHDOG_KEEPALIVE, NULL, 0);
-	if (ret)
-		dev_crit(dev, "Error executing keepalive: %d\n", ret);
+	if (ret) {
+		struct device *dev = watchdog_get_drvdata(wd);
+		dev_crit(dev, "Error executing keepalive: 0x%x\n", ret);
+	}
 
 	return ret;
 }
 
 static int wdt_stop(struct watchdog_device *wd)
 {
-	struct device *dev = watchdog_get_drvdata(wd);
 	int ret;
 
 	ret = wdt_command(SCU_WATCHDOG_STOP, NULL, 0);
-	if (ret)
-		dev_crit(dev, "Error stopping watchdog: %d\n", ret);
+	if (ret) {
+		struct device *dev = watchdog_get_drvdata(wd);
+		dev_crit(dev, "Error stopping watchdog: 0x%x\n", ret);
+	}
 
 	return ret;
 }
@@ -98,7 +101,7 @@ static irqreturn_t mid_wdt_irq(int irq, void *dev_id)
 
 static const struct watchdog_info mid_wdt_info = {
 	.identity = "Intel MID SCU watchdog",
-	.options = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT | WDIOF_MAGICCLOSE,
+	.options = WDIOF_KEEPALIVEPING | WDIOF_SETTIMEOUT,
 };
 
 static const struct watchdog_ops mid_wdt_ops = {
@@ -134,9 +137,9 @@ static int mid_wdt_probe(struct platform_device *pdev)
 	wdt_dev->min_timeout = MID_WDT_TIMEOUT_MIN;
 	wdt_dev->max_timeout = MID_WDT_TIMEOUT_MAX;
 	wdt_dev->timeout = MID_WDT_DEFAULT_TIMEOUT;
-	wdt_dev->parent = &pdev->dev;
 
 	watchdog_set_drvdata(wdt_dev, &pdev->dev);
+	platform_set_drvdata(pdev, wdt_dev);
 
 	ret = devm_request_irq(&pdev->dev, pdata->irq, mid_wdt_irq,
 			       IRQF_SHARED | IRQF_NO_SUSPEND, "watchdog",
@@ -147,23 +150,7 @@ static int mid_wdt_probe(struct platform_device *pdev)
 		return ret;
 	}
 
-	/*
-	 * The firmware followed by U-Boot leaves the watchdog running
-	 * with the default threshold which may vary. When we get here
-	 * we should make a decision to prevent any side effects before
-	 * user space daemon will take care of it. The best option,
-	 * taking into consideration that there is no way to read values
-	 * back from hardware, is to enforce watchdog being run with
-	 * deterministic values.
-	 */
-	ret = wdt_start(wdt_dev);
-	if (ret)
-		return ret;
-
-	/* Make sure the watchdog is serviced */
-	set_bit(WDOG_HW_RUNNING, &wdt_dev->status);
-
-	ret = devm_watchdog_register_device(&pdev->dev, wdt_dev);
+	ret = watchdog_register_device(wdt_dev);
 	if (ret) {
 		dev_err(&pdev->dev, "error registering watchdog device\n");
 		return ret;
@@ -174,8 +161,16 @@ static int mid_wdt_probe(struct platform_device *pdev)
 	return 0;
 }
 
+static int mid_wdt_remove(struct platform_device *pdev)
+{
+	struct watchdog_device *wd = platform_get_drvdata(pdev);
+	watchdog_unregister_device(wd);
+	return 0;
+}
+
 static struct platform_driver mid_wdt_driver = {
 	.probe		= mid_wdt_probe,
+	.remove		= mid_wdt_remove,
 	.driver		= {
 		.name	= "intel_mid_wdt",
 	},
@@ -186,4 +181,3 @@ module_platform_driver(mid_wdt_driver);
 MODULE_AUTHOR("David Cohen <david.a.cohen@linux.intel.com>");
 MODULE_DESCRIPTION("Watchdog Driver for Intel MID platform");
 MODULE_LICENSE("GPL");
-MODULE_ALIAS("platform:intel_mid_wdt");

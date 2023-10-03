@@ -1,5 +1,8 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
+ * This file is subject to the terms and conditions of the GNU General Public
+ * License.  See the file "COPYING" in the main directory of this archive
+ * for more details.
+ *
  * Copyright (C) 2003-2006 Silicon Graphics, Inc.  All Rights Reserved.
  */
 
@@ -207,7 +210,7 @@
 #define IOC4_SSCR_PAUSE_STATE   0x40000000  /* Sets when PAUSE takes effect */
 #define IOC4_SSCR_RESET	        0x80000000  /* Reset DMA channels */
 
-/* All producer/consumer pointers are the same bitfield */
+/* All producer/comsumer pointers are the same bitfield */
 #define IOC4_PROD_CONS_PTR_4K   0x00000ff8	/* For 4K buffers */
 #define IOC4_PROD_CONS_PTR_1K   0x000003f8	/* For 1K buffers */
 #define IOC4_PROD_CONS_PTR_OFF           3
@@ -821,7 +824,7 @@ pending_intrs(struct ioc4_soft *soft, int type)
  *			called per port from attach...
  * @port: port to initialize
  */
-static inline int port_init(struct ioc4_port *port)
+static int inline port_init(struct ioc4_port *port)
 {
 	uint32_t sio_cr;
 	struct hooks *hooks = port->ip_hooks;
@@ -1008,8 +1011,7 @@ static irqreturn_t ioc4_intr(int irq, void *arg)
 		 */
 		for (xx = 0; xx < num_intrs; xx++) {
 			intr_info = &soft->is_intr_type[intr_type].is_intr_info[xx];
-			this_mir = this_ir & intr_info->sd_bits;
-			if (this_mir) {
+			if ((this_mir = this_ir & intr_info->sd_bits)) {
 				/* Disable owned interrupts, call handler */
 				handled++;
 				write_ireg(soft, intr_info->sd_bits, IOC4_W_IEC,
@@ -1045,7 +1047,7 @@ static irqreturn_t ioc4_intr(int irq, void *arg)
  *			IOC4 with serial ports in the system.
  * @idd: Master module data for this IOC4
  */
-static inline int ioc4_attach_local(struct ioc4_driver_data *idd)
+static int inline ioc4_attach_local(struct ioc4_driver_data *idd)
 {
 	struct ioc4_port *port;
 	struct ioc4_port *ports[IOC4_NUM_SERIAL_PORTS];
@@ -1079,7 +1081,7 @@ static inline int ioc4_attach_local(struct ioc4_driver_data *idd)
 		if (!port) {
 			printk(KERN_WARNING
 				"IOC4 serial memory not available for port\n");
-			goto free;
+			return -ENOMEM;
 		}
 		spin_lock_init(&port->ip_lock);
 
@@ -1187,11 +1189,6 @@ static inline int ioc4_attach_local(struct ioc4_driver_data *idd)
 				handle_dma_error_intr, port);
 	}
 	return 0;
-
-free:
-	while (port_number)
-		kfree(ports[--port_number]);
-	return -ENOMEM;
 }
 
 /**
@@ -2593,7 +2590,7 @@ static int ic4_request_port(struct uart_port *port)
 
 /* Associate the uart functions above - given to serial core */
 
-static const struct uart_ops ioc4_ops = {
+static struct uart_ops ioc4_ops = {
 	.tx_empty	= ic4_tx_empty,
 	.set_mctrl	= ic4_set_mctrl,
 	.get_mctrl	= ic4_get_mctrl,
@@ -2868,12 +2865,10 @@ ioc4_serial_attach_one(struct ioc4_driver_data *idd)
 
 	/* register port with the serial core - 1 rs232, 1 rs422 */
 
-	ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS232);
-	if (ret)
+	if ((ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS232)))
 		goto out4;
 
-	ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS422);
-	if (ret)
+	if ((ret = ioc4_serial_core_attach(idd->idd_pdev, PROTO_RS422)))
 		goto out5;
 
 	Num_of_ioc4_cards++;

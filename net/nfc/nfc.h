@@ -25,15 +25,12 @@
 #include <net/nfc/nfc.h>
 #include <net/sock.h>
 
-#define NFC_TARGET_MODE_IDLE 0
-#define NFC_TARGET_MODE_SLEEP 1
-
 struct nfc_protocol {
 	int id;
 	struct proto *proto;
 	struct module *owner;
 	int (*create)(struct net *net, struct socket *sock,
-		      const struct nfc_protocol *nfc_proto, int kern);
+		      const struct nfc_protocol *nfc_proto);
 };
 
 struct nfc_rawsock {
@@ -60,7 +57,7 @@ void nfc_llcp_mac_is_up(struct nfc_dev *dev, u32 target_idx,
 			u8 comm_mode, u8 rf_mode);
 int nfc_llcp_register_device(struct nfc_dev *dev);
 void nfc_llcp_unregister_device(struct nfc_dev *dev);
-int nfc_llcp_set_remote_gb(struct nfc_dev *dev, const u8 *gb, u8 gb_len);
+int nfc_llcp_set_remote_gb(struct nfc_dev *dev, u8 *gb, u8 gb_len);
 u8 *nfc_llcp_general_bytes(struct nfc_dev *dev, size_t *general_bytes_len);
 int nfc_llcp_data_received(struct nfc_dev *dev, struct sk_buff *skb);
 struct nfc_llcp_local *nfc_llcp_find_local(struct nfc_dev *dev);
@@ -105,7 +102,6 @@ int nfc_genl_se_added(struct nfc_dev *dev, u32 se_idx, u16 type);
 int nfc_genl_se_removed(struct nfc_dev *dev, u32 se_idx);
 int nfc_genl_se_transaction(struct nfc_dev *dev, u8 se_idx,
 			    struct nfc_evt_transaction *evt_transaction);
-int nfc_genl_se_connectivity(struct nfc_dev *dev, u8 se_idx);
 
 struct nfc_dev *nfc_get_device(unsigned int idx);
 
@@ -151,7 +147,7 @@ int nfc_dep_link_down(struct nfc_dev *dev);
 
 int nfc_activate_target(struct nfc_dev *dev, u32 target_idx, u32 protocol);
 
-int nfc_deactivate_target(struct nfc_dev *dev, u32 target_idx, u8 mode);
+int nfc_deactivate_target(struct nfc_dev *dev, u32 target_idx);
 
 int nfc_data_exchange(struct nfc_dev *dev, u32 target_idx, struct sk_buff *skb,
 		      data_exchange_cb_t cb, void *cb_context);

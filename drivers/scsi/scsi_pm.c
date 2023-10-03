@@ -79,22 +79,8 @@ static int scsi_dev_type_resume(struct device *dev,
 
 	if (err == 0) {
 		pm_runtime_disable(dev);
-		err = pm_runtime_set_active(dev);
+		pm_runtime_set_active(dev);
 		pm_runtime_enable(dev);
-
-		/*
-		 * Forcibly set runtime PM status of request queue to "active"
-		 * to make sure we can again get requests from the queue
-		 * (see also blk_pm_peek_request()).
-		 *
-		 * The resume hook will correct runtime PM status of the disk.
-		 */
-		if (!err && scsi_is_sdev_device(dev)) {
-			struct scsi_device *sdev = to_scsi_device(dev);
-
-			if (sdev->request_queue->dev)
-				blk_set_runtime_active(sdev->request_queue);
-		}
 	}
 
 	return err;
@@ -231,7 +217,7 @@ static int sdev_runtime_suspend(struct device *dev)
 {
 	const struct dev_pm_ops *pm = dev->driver ? dev->driver->pm : NULL;
 	struct scsi_device *sdev = to_scsi_device(dev);
-	int err = 0;
+	int err;
 
 	err = blk_pre_runtime_suspend(sdev->request_queue);
 	if (err)

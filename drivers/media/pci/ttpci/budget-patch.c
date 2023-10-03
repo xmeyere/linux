@@ -20,11 +20,14 @@
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
  * GNU General Public License for more details.
  *
- * To obtain the license, point your browser to
- * http://www.gnu.org/copyleft/gpl.html
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program; if not, write to the Free Software
+ * Foundation, Inc., 59 Temple Place - Suite 330, Boston, MA 02111-1307, USA.
+ * Or, point your browser to http://www.gnu.org/copyleft/gpl.html
  *
  *
- * the project's page is at https://linuxtv.org
+ * the project's page is at http://www.linuxtv.org/ 
  */
 
 #include "av7110.h"
@@ -45,7 +48,7 @@ static struct saa7146_extension budget_extension;
 MAKE_BUDGET_INFO(ttbp, "TT-Budget/Patch DVB-S 1.x PCI", BUDGET_PATCH);
 //MAKE_BUDGET_INFO(satel,"TT-Budget/Patch SATELCO PCI", BUDGET_TT_HW_DISEQC);
 
-static const struct pci_device_id pci_tbl[] = {
+static struct pci_device_id pci_tbl[] = {
 	MAKE_EXTENSION_PCI(ttbp,0x13c2, 0x0000),
 //        MAKE_EXTENSION_PCI(satel, 0x13c2, 0x1013),
 	{
@@ -125,9 +128,9 @@ static int SendDiSEqCMsg (struct budget *budget, int len, u8 *msg, unsigned long
 	return 0;
 }
 
-/* shamelessly copy/pasted from budget.c */
-static int budget_set_tone(struct dvb_frontend *fe,
-			   enum fe_sec_tone_mode tone)
+/* shamelessly copy/pasted from budget.c
+*/
+static int budget_set_tone(struct dvb_frontend* fe, fe_sec_tone_mode_t tone)
 {
 	struct budget* budget = (struct budget*) fe->dvb->priv;
 
@@ -156,8 +159,7 @@ static int budget_diseqc_send_master_cmd(struct dvb_frontend* fe, struct dvb_dis
 	return 0;
 }
 
-static int budget_diseqc_send_burst(struct dvb_frontend *fe,
-				    enum fe_sec_mini_cmd minicmd)
+static int budget_diseqc_send_burst(struct dvb_frontend* fe, fe_sec_mini_cmd_t minicmd)
 {
 	struct budget* budget = (struct budget*) fe->dvb->priv;
 
@@ -221,8 +223,7 @@ static int av7110_send_diseqc_msg(struct budget_patch *budget, int len, u8 *msg,
 	return 0;
 }
 
-static int budget_patch_set_tone(struct dvb_frontend *fe,
-				 enum fe_sec_tone_mode tone)
+static int budget_patch_set_tone(struct dvb_frontend* fe, fe_sec_tone_mode_t tone)
 {
 	struct budget_patch* budget = (struct budget_patch*) fe->dvb->priv;
 
@@ -251,8 +252,7 @@ static int budget_patch_diseqc_send_master_cmd(struct dvb_frontend* fe, struct d
 	return 0;
 }
 
-static int budget_patch_diseqc_send_burst(struct dvb_frontend *fe,
-					  enum fe_sec_mini_cmd minicmd)
+static int budget_patch_diseqc_send_burst(struct dvb_frontend* fe, fe_sec_mini_cmd_t minicmd)
 {
 	struct budget_patch* budget = (struct budget_patch*) fe->dvb->priv;
 
@@ -676,4 +676,5 @@ module_exit(budget_patch_exit);
 
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Emard, Roberto Deza, Holger Waechtler, Michael Hunold, others");
-MODULE_DESCRIPTION("Driver for full TS modified DVB-S SAA7146+AV7110 based so-called Budget Patch cards");
+MODULE_DESCRIPTION("Driver for full TS modified DVB-S SAA7146+AV7110 "
+		   "based so-called Budget Patch cards");

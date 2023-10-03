@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * security/tomoyo/load_policy.c
  *
@@ -24,7 +23,7 @@ static const char *tomoyo_loader;
 static int __init tomoyo_loader_setup(char *str)
 {
 	tomoyo_loader = str;
-	return 1;
+	return 0;
 }
 
 __setup("TOMOYO_loader=", tomoyo_loader_setup);
@@ -63,7 +62,7 @@ static const char *tomoyo_trigger;
 static int __init tomoyo_trigger_setup(char *str)
 {
 	tomoyo_trigger = str;
-	return 1;
+	return 0;
 }
 
 __setup("TOMOYO_trigger=", tomoyo_trigger_setup);

@@ -26,29 +26,56 @@
 #include <net/netfilter/nf_nat_l3proto.h>
 #include <net/ip.h>
 
-static unsigned int nft_nat_do_chain(void *priv,
-				     struct sk_buff *skb,
-				     const struct nf_hook_state *state)
+static unsigned int nft_nat_do_chain(const struct nf_hook_ops *ops,
+				      struct sk_buff *skb,
+				      const struct net_device *in,
+				      const struct net_device *out,
+				      struct nf_conn *ct)
 {
 	struct nft_pktinfo pkt;
 
-	nft_set_pktinfo(&pkt, skb, state);
-	nft_set_pktinfo_ipv4(&pkt, skb);
+	nft_set_pktinfo_ipv4(&pkt, ops, skb, in, out);
 
-	return nft_do_chain(&pkt, priv);
+	return nft_do_chain(&pkt, ops);
 }
 
-static int nft_nat_ipv4_reg(struct net *net, const struct nf_hook_ops *ops)
+static unsigned int nft_nat_ipv4_fn(const struct nf_hook_ops *ops,
+				    struct sk_buff *skb,
+				    const struct net_device *in,
+				    const struct net_device *out,
+				    int (*okfn)(struct sk_buff *))
 {
-	return nf_nat_l3proto_ipv4_register_fn(net, ops);
+	return nf_nat_ipv4_fn(ops, skb, in, out, nft_nat_do_chain);
 }
 
-static void nft_nat_ipv4_unreg(struct net *net, const struct nf_hook_ops *ops)
+static unsigned int nft_nat_ipv4_in(const struct nf_hook_ops *ops,
+				    struct sk_buff *skb,
+				    const struct net_device *in,
+				    const struct net_device *out,
+				    int (*okfn)(struct sk_buff *))
 {
-	nf_nat_l3proto_ipv4_unregister_fn(net, ops);
+	return nf_nat_ipv4_in(ops, skb, in, out, nft_nat_do_chain);
 }
 
-static const struct nft_chain_type nft_chain_nat_ipv4 = {
+static unsigned int nft_nat_ipv4_out(const struct nf_hook_ops *ops,
+				     struct sk_buff *skb,
+				     const struct net_device *in,
+				     const struct net_device *out,
+				     int (*okfn)(struct sk_buff *))
+{
+	return nf_nat_ipv4_out(ops, skb, in, out, nft_nat_do_chain);
+}
+
+static unsigned int nft_nat_ipv4_local_fn(const struct nf_hook_ops *ops,
+					  struct sk_buff *skb,
+					  const struct net_device *in,
+					  const struct net_device *out,
+					  int (*okfn)(struct sk_buff *))
+{
+	return nf_nat_ipv4_local_fn(ops, skb, in, out, nft_nat_do_chain);
+}
+
+static const struct nf_chain_type nft_chain_nat_ipv4 = {
 	.name		= "nat",
 	.type		= NFT_CHAIN_T_NAT,
 	.family		= NFPROTO_IPV4,
@@ -58,18 +85,20 @@ static const struct nft_chain_type nft_chain_nat_ipv4 = {
 			  (1 << NF_INET_LOCAL_OUT) |
 			  (1 << NF_INET_LOCAL_IN),
 	.hooks		= {
-		[NF_INET_PRE_ROUTING]	= nft_nat_do_chain,
-		[NF_INET_POST_ROUTING]	= nft_nat_do_chain,
-		[NF_INET_LOCAL_OUT]	= nft_nat_do_chain,
-		[NF_INET_LOCAL_IN]	= nft_nat_do_chain,
+		[NF_INET_PRE_ROUTING]	= nft_nat_ipv4_in,
+		[NF_INET_POST_ROUTING]	= nft_nat_ipv4_out,
+		[NF_INET_LOCAL_OUT]	= nft_nat_ipv4_local_fn,
+		[NF_INET_LOCAL_IN]	= nft_nat_ipv4_fn,
 	},
-	.ops_register = nft_nat_ipv4_reg,
-	.ops_unregister = nft_nat_ipv4_unreg,
 };
 
 static int __init nft_chain_nat_init(void)
 {
-	nft_register_chain_type(&nft_chain_nat_ipv4);
+	int err;
+
+	err = nft_register_chain_type(&nft_chain_nat_ipv4);
+	if (err < 0)
+		return err;
 
 	return 0;
 }

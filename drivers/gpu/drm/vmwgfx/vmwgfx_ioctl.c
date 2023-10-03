@@ -1,7 +1,7 @@
-// SPDX-License-Identifier: GPL-2.0 OR MIT
 /**************************************************************************
  *
- * Copyright 2009-2015 VMware, Inc., Palo Alto, CA., USA
+ * Copyright © 2009 VMware, Inc., Palo Alto, CA., USA
+ * All Rights Reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
  * copy of this software and associated documentation files (the
@@ -28,7 +28,6 @@
 #include "vmwgfx_drv.h"
 #include <drm/vmwgfx_drm.h>
 #include "vmwgfx_kms.h"
-#include "device_include/svga3d_caps.h"
 
 struct svga_3d_compat_cap {
 	SVGA3dCapsRecordHeader header;
@@ -56,9 +55,6 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 	case DRM_VMW_PARAM_HW_CAPS:
 		param->value = dev_priv->capabilities;
 		break;
-	case DRM_VMW_PARAM_HW_CAPS2:
-		param->value = dev_priv->capabilities2;
-		break;
 	case DRM_VMW_PARAM_FIFO_CAPS:
 		param->value = dev_priv->fifo.capabilities;
 		break;
@@ -67,7 +63,7 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 		break;
 	case DRM_VMW_PARAM_FIFO_HW_VERSION:
 	{
-		u32 *fifo_mem = dev_priv->mmio_virt;
+		__le32 __iomem *fifo_mem = dev_priv->mmio_virt;
 		const struct vmw_fifo_state *fifo = &dev_priv->fifo;
 
 		if ((dev_priv->capabilities & SVGA_CAP_GBOBJECTS)) {
@@ -76,11 +72,11 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 		}
 
 		param->value =
-			vmw_mmio_read(fifo_mem +
-				      ((fifo->capabilities &
-					SVGA_FIFO_CAP_3D_HWVERSION_REVISED) ?
-				       SVGA_FIFO_3D_HWVERSION_REVISED :
-				       SVGA_FIFO_3D_HWVERSION));
+			ioread32(fifo_mem +
+				 ((fifo->capabilities &
+				   SVGA_FIFO_CAP_3D_HWVERSION_REVISED) ?
+				  SVGA_FIFO_3D_HWVERSION_REVISED :
+				  SVGA_FIFO_3D_HWVERSION));
 		break;
 	}
 	case DRM_VMW_PARAM_MAX_SURF_MEMORY:
@@ -109,34 +105,13 @@ int vmw_getparam_ioctl(struct drm_device *dev, void *data,
 	case DRM_VMW_PARAM_MAX_MOB_SIZE:
 		param->value = dev_priv->max_mob_size;
 		break;
-	case DRM_VMW_PARAM_SCREEN_TARGET:
-		param->value =
-			(dev_priv->active_display_unit == vmw_du_screen_target);
-		break;
-	case DRM_VMW_PARAM_DX:
-		param->value = dev_priv->has_dx;
-		break;
-	case DRM_VMW_PARAM_SM4_1:
-		param->value = dev_priv->has_sm4_1;
-		break;
 	default:
+		DRM_ERROR("Illegal vmwgfx get param request: %d\n",
+			  param->param);
 		return -EINVAL;
 	}
 
 	return 0;
-}
-
-static u32 vmw_mask_multisample(unsigned int cap, u32 fmt_value)
-{
-	/*
-	 * A version of user-space exists which use MULTISAMPLE_MASKABLESAMPLES
-	 * to check the sample count supported by virtual device. Since there
-	 * never was support for multisample count for backing MOB return 0.
-	 */
-	if (cap == SVGA3D_DEVCAP_MULTISAMPLE_MASKABLESAMPLES)
-		return 0;
-
-	return fmt_value;
 }
 
 static int vmw_fill_compat_cap(struct vmw_private *dev_priv, void *bounce,
@@ -164,8 +139,7 @@ static int vmw_fill_compat_cap(struct vmw_private *dev_priv, void *bounce,
 	for (i = 0; i < max_size; ++i) {
 		vmw_write(dev_priv, SVGA_REG_DEV_CAP, i);
 		compat_cap->pairs[i][0] = i;
-		compat_cap->pairs[i][1] = vmw_mask_multisample
-			(i, vmw_read(dev_priv, SVGA_REG_DEV_CAP));
+		compat_cap->pairs[i][1] = vmw_read(dev_priv, SVGA_REG_DEV_CAP);
 	}
 	spin_unlock(&dev_priv->cap_lock);
 
@@ -180,14 +154,14 @@ int vmw_get_cap_3d_ioctl(struct drm_device *dev, void *data,
 		(struct drm_vmw_get_3d_cap_arg *) data;
 	struct vmw_private *dev_priv = vmw_priv(dev);
 	uint32_t size;
-	u32 *fifo_mem;
+	__le32 __iomem *fifo_mem;
 	void __user *buffer = (void __user *)((unsigned long)(arg->buffer));
 	void *bounce;
 	int ret;
 	bool gb_objects = !!(dev_priv->capabilities & SVGA_CAP_GBOBJECTS);
 	struct vmw_fpriv *vmw_fp = vmw_fpriv(file_priv);
 
-	if (unlikely(arg->pad64 != 0 || arg->max_size == 0)) {
+	if (unlikely(arg->pad64 != 0)) {
 		DRM_ERROR("Illegal GET_3D_CAP argument.\n");
 		return -EINVAL;
 	}
@@ -220,8 +194,7 @@ int vmw_get_cap_3d_ioctl(struct drm_device *dev, void *data,
 		spin_lock(&dev_priv->cap_lock);
 		for (i = 0; i < num; ++i) {
 			vmw_write(dev_priv, SVGA_REG_DEV_CAP, i);
-			*bounce32++ = vmw_mask_multisample
-				(i, vmw_read(dev_priv, SVGA_REG_DEV_CAP));
+			*bounce32++ = vmw_read(dev_priv, SVGA_REG_DEV_CAP);
 		}
 		spin_unlock(&dev_priv->cap_lock);
 	} else if (gb_objects) {
@@ -230,7 +203,7 @@ int vmw_get_cap_3d_ioctl(struct drm_device *dev, void *data,
 			goto out_err;
 	} else {
 		fifo_mem = dev_priv->mmio_virt;
-		memcpy(bounce, &fifo_mem[SVGA_FIFO_3D_CAPS], size);
+		memcpy_fromio(bounce, &fifo_mem[SVGA_FIFO_3D_CAPS], size);
 	}
 
 	ret = copy_to_user(buffer, bounce, size);
@@ -262,7 +235,7 @@ int vmw_present_ioctl(struct drm_device *dev, void *data,
 	int ret;
 
 	num_clips = arg->num_clips;
-	clips_ptr = (struct drm_vmw_rect __user *)(unsigned long)arg->clips_ptr;
+	clips_ptr = (struct drm_vmw_rect *)(unsigned long)arg->clips_ptr;
 
 	if (unlikely(num_clips == 0))
 		return 0;
@@ -289,7 +262,7 @@ int vmw_present_ioctl(struct drm_device *dev, void *data,
 
 	drm_modeset_lock_all(dev);
 
-	fb = drm_framebuffer_lookup(dev, file_priv, arg->fb_id);
+	fb = drm_framebuffer_lookup(dev, arg->fb_id);
 	if (!fb) {
 		DRM_ERROR("Invalid framebuffer id.\n");
 		ret = -ENOENT;
@@ -319,7 +292,7 @@ int vmw_present_ioctl(struct drm_device *dev, void *data,
 out_no_surface:
 	ttm_read_unlock(&dev_priv->reservation_sem);
 out_no_ttm_lock:
-	drm_framebuffer_put(fb);
+	drm_framebuffer_unreference(fb);
 out_no_fb:
 	drm_modeset_unlock_all(dev);
 out_no_copy:
@@ -345,7 +318,7 @@ int vmw_present_readback_ioctl(struct drm_device *dev, void *data,
 	int ret;
 
 	num_clips = arg->num_clips;
-	clips_ptr = (struct drm_vmw_rect __user *)(unsigned long)arg->clips_ptr;
+	clips_ptr = (struct drm_vmw_rect *)(unsigned long)arg->clips_ptr;
 
 	if (unlikely(num_clips == 0))
 		return 0;
@@ -372,7 +345,7 @@ int vmw_present_readback_ioctl(struct drm_device *dev, void *data,
 
 	drm_modeset_lock_all(dev);
 
-	fb = drm_framebuffer_lookup(dev, file_priv, arg->fb_id);
+	fb = drm_framebuffer_lookup(dev, arg->fb_id);
 	if (!fb) {
 		DRM_ERROR("Invalid framebuffer id.\n");
 		ret = -ENOENT;
@@ -380,8 +353,8 @@ int vmw_present_readback_ioctl(struct drm_device *dev, void *data,
 	}
 
 	vfb = vmw_framebuffer_to_vfb(fb);
-	if (!vfb->bo) {
-		DRM_ERROR("Framebuffer not buffer backed.\n");
+	if (!vfb->dmabuf) {
+		DRM_ERROR("Framebuffer not dmabuf backed.\n");
 		ret = -EINVAL;
 		goto out_no_ttm_lock;
 	}
@@ -396,7 +369,7 @@ int vmw_present_readback_ioctl(struct drm_device *dev, void *data,
 
 	ttm_read_unlock(&dev_priv->reservation_sem);
 out_no_ttm_lock:
-	drm_framebuffer_put(fb);
+	drm_framebuffer_unreference(fb);
 out_no_fb:
 	drm_modeset_unlock_all(dev);
 out_no_copy:
@@ -415,7 +388,7 @@ out_clips:
  * Wrapper around the drm_poll function that makes sure the device is
  * processing the fifo if drm_poll decides to wait.
  */
-__poll_t vmw_fops_poll(struct file *filp, struct poll_table_struct *wait)
+unsigned int vmw_fops_poll(struct file *filp, struct poll_table_struct *wait)
 {
 	struct drm_file *file_priv = filp->private_data;
 	struct vmw_private *dev_priv =

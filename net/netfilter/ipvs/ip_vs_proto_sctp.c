@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 #include <linux/kernel.h>
 #include <linux/ip.h>
 #include <linux/sctp.h>
@@ -10,46 +9,35 @@
 #include <net/ip_vs.h>
 
 static int
-sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
-		   struct ip_vs_proto_data *pd,
+sctp_conn_schedule(int af, struct sk_buff *skb, struct ip_vs_proto_data *pd,
 		   int *verdict, struct ip_vs_conn **cpp,
 		   struct ip_vs_iphdr *iph)
 {
+	struct net *net;
 	struct ip_vs_service *svc;
-	struct sctp_chunkhdr _schunkh, *sch;
-	struct sctphdr *sh, _sctph;
-	__be16 _ports[2], *ports = NULL;
+	struct netns_ipvs *ipvs;
+	sctp_chunkhdr_t _schunkh, *sch;
+	sctp_sctphdr_t *sh, _sctph;
 
-	if (likely(!ip_vs_iph_icmp(iph))) {
-		sh = skb_header_pointer(skb, iph->len, sizeof(_sctph), &_sctph);
-		if (sh) {
-			sch = skb_header_pointer(skb, iph->len + sizeof(_sctph),
-						 sizeof(_schunkh), &_schunkh);
-			if (sch) {
-				if (sch->type == SCTP_CID_ABORT ||
-				    !(sysctl_sloppy_sctp(ipvs) ||
-				      sch->type == SCTP_CID_INIT))
-					return 1;
-				ports = &sh->source;
-			}
-		}
-	} else {
-		ports = skb_header_pointer(
-			skb, iph->len, sizeof(_ports), &_ports);
-	}
-
-	if (!ports) {
+	sh = skb_header_pointer(skb, iph->len, sizeof(_sctph), &_sctph);
+	if (sh == NULL) {
 		*verdict = NF_DROP;
 		return 0;
 	}
 
-	if (likely(!ip_vs_iph_inverse(iph)))
-		svc = ip_vs_service_find(ipvs, af, skb->mark, iph->protocol,
-					 &iph->daddr, ports[1]);
-	else
-		svc = ip_vs_service_find(ipvs, af, skb->mark, iph->protocol,
-					 &iph->saddr, ports[0]);
-	if (svc) {
+	sch = skb_header_pointer(skb, iph->len + sizeof(sctp_sctphdr_t),
+				 sizeof(_schunkh), &_schunkh);
+	if (sch == NULL) {
+		*verdict = NF_DROP;
+		return 0;
+	}
+
+	net = skb_net(skb);
+	ipvs = net_ipvs(net);
+	rcu_read_lock();
+	if ((sch->type == SCTP_CID_INIT || sysctl_sloppy_sctp(ipvs)) &&
+	    (svc = ip_vs_service_find(net, af, skb->mark, iph->protocol,
+				      &iph->daddr, sh->dest))) {
 		int ignored;
 
 		if (ip_vs_todrop(ipvs)) {
@@ -57,6 +45,7 @@ sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 			 * It seems that we are very loaded.
 			 * We have to drop this packet :(
 			 */
+			rcu_read_unlock();
 			*verdict = NF_DROP;
 			return 0;
 		}
@@ -70,14 +59,16 @@ sctp_conn_schedule(struct netns_ipvs *ipvs, int af, struct sk_buff *skb,
 				*verdict = ip_vs_leave(svc, skb, pd, iph);
 			else
 				*verdict = NF_DROP;
+			rcu_read_unlock();
 			return 0;
 		}
 	}
+	rcu_read_unlock();
 	/* NF_ACCEPT */
 	return 1;
 }
 
-static void sctp_nat_csum(struct sk_buff *skb, struct sctphdr *sctph,
+static void sctp_nat_csum(struct sk_buff *skb, sctp_sctphdr_t *sctph,
 			  unsigned int sctphoff)
 {
 	sctph->checksum = sctp_compute_cksum(skb, sctphoff);
@@ -88,7 +79,7 @@ static int
 sctp_snat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		  struct ip_vs_conn *cp, struct ip_vs_iphdr *iph)
 {
-	struct sctphdr *sctph;
+	sctp_sctphdr_t *sctph;
 	unsigned int sctphoff = iph->len;
 	bool payload_csum = false;
 
@@ -109,7 +100,7 @@ sctp_snat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 			return 0;
 
 		/* Call application helper if needed */
-		ret = ip_vs_app_pkt_out(cp, skb, iph);
+		ret = ip_vs_app_pkt_out(cp, skb);
 		if (ret == 0)
 			return 0;
 		/* ret=2: csum update is needed after payload mangling */
@@ -135,7 +126,7 @@ static int
 sctp_dnat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 		  struct ip_vs_conn *cp, struct ip_vs_iphdr *iph)
 {
-	struct sctphdr *sctph;
+	sctp_sctphdr_t *sctph;
 	unsigned int sctphoff = iph->len;
 	bool payload_csum = false;
 
@@ -156,7 +147,7 @@ sctp_dnat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 			return 0;
 
 		/* Call application helper if needed */
-		ret = ip_vs_app_pkt_in(cp, skb, iph);
+		ret = ip_vs_app_pkt_in(cp, skb);
 		if (ret == 0)
 			return 0;
 		/* ret=2: csum update is needed after payload mangling */
@@ -169,7 +160,7 @@ sctp_dnat_handler(struct sk_buff *skb, struct ip_vs_protocol *pp,
 	/* Only update csum if we really have to */
 	if (sctph->dest != cp->dport || payload_csum ||
 	    (skb->ip_summed == CHECKSUM_PARTIAL &&
-	     !(skb_dst(skb)->dev->features & NETIF_F_SCTP_CRC))) {
+	     !(skb_dst(skb)->dev->features & NETIF_F_SCTP_CSUM))) {
 		sctph->dest = cp->dport;
 		sctp_nat_csum(skb, sctph, sctphoff);
 	} else if (skb->ip_summed != CHECKSUM_PARTIAL) {
@@ -378,7 +369,7 @@ static inline void
 set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 		int direction, const struct sk_buff *skb)
 {
-	struct sctp_chunkhdr _sctpch, *sch;
+	sctp_chunkhdr_t _sctpch, *sch;
 	unsigned char chunk_type;
 	int event, next_state;
 	int ihl, cofs;
@@ -389,7 +380,7 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 	ihl = ip_hdrlen(skb);
 #endif
 
-	cofs = ihl + sizeof(struct sctphdr);
+	cofs = ihl + sizeof(sctp_sctphdr_t);
 	sch = skb_header_pointer(skb, cofs, sizeof(_sctpch), &_sctpch);
 	if (sch == NULL)
 		return;
@@ -410,7 +401,7 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 	    (sch->type == SCTP_CID_COOKIE_ACK)) {
 		int clen = ntohs(sch->length);
 
-		if (clen >= sizeof(_sctpch)) {
+		if (clen >= sizeof(sctp_chunkhdr_t)) {
 			sch = skb_header_pointer(skb, cofs + ALIGN(clen, 4),
 						 sizeof(_sctpch), &_sctpch);
 			if (sch && sch->type == SCTP_CID_ABORT)
@@ -447,7 +438,7 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 				ntohs(cp->cport),
 				sctp_state_name(cp->state),
 				sctp_state_name(next_state),
-				refcount_read(&cp->refcnt));
+				atomic_read(&cp->refcnt));
 		if (dest) {
 			if (!(cp->flags & IP_VS_CONN_F_INACTIVE) &&
 				(next_state != IP_VS_SCTP_S_ESTABLISHED)) {
@@ -461,8 +452,6 @@ set_sctp_state(struct ip_vs_proto_data *pd, struct ip_vs_conn *cp,
 				cp->flags &= ~IP_VS_CONN_F_INACTIVE;
 			}
 		}
-		if (next_state == IP_VS_SCTP_S_ESTABLISHED)
-			ip_vs_control_assure_ct(cp);
 	}
 	if (likely(pd))
 		cp->timeout = pd->timeout_table[cp->state = next_state];
@@ -485,13 +474,14 @@ static inline __u16 sctp_app_hashkey(__be16 port)
 		& SCTP_APP_TAB_MASK;
 }
 
-static int sctp_register_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
+static int sctp_register_app(struct net *net, struct ip_vs_app *inc)
 {
 	struct ip_vs_app *i;
 	__u16 hash;
 	__be16 port = inc->port;
 	int ret = 0;
-	struct ip_vs_proto_data *pd = ip_vs_proto_data_get(ipvs, IPPROTO_SCTP);
+	struct netns_ipvs *ipvs = net_ipvs(net);
+	struct ip_vs_proto_data *pd = ip_vs_proto_data_get(net, IPPROTO_SCTP);
 
 	hash = sctp_app_hashkey(port);
 
@@ -508,9 +498,9 @@ out:
 	return ret;
 }
 
-static void sctp_unregister_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
+static void sctp_unregister_app(struct net *net, struct ip_vs_app *inc)
 {
-	struct ip_vs_proto_data *pd = ip_vs_proto_data_get(ipvs, IPPROTO_SCTP);
+	struct ip_vs_proto_data *pd = ip_vs_proto_data_get(net, IPPROTO_SCTP);
 
 	atomic_dec(&pd->appcnt);
 	list_del_rcu(&inc->p_list);
@@ -518,7 +508,7 @@ static void sctp_unregister_app(struct netns_ipvs *ipvs, struct ip_vs_app *inc)
 
 static int sctp_app_conn_bind(struct ip_vs_conn *cp)
 {
-	struct netns_ipvs *ipvs = cp->ipvs;
+	struct netns_ipvs *ipvs = net_ipvs(ip_vs_conn_net(cp));
 	int hash;
 	struct ip_vs_app *inc;
 	int result = 0;
@@ -529,10 +519,12 @@ static int sctp_app_conn_bind(struct ip_vs_conn *cp)
 	/* Lookup application incarnations and bind the right one */
 	hash = sctp_app_hashkey(cp->vport);
 
+	rcu_read_lock();
 	list_for_each_entry_rcu(inc, &ipvs->sctp_apps[hash], p_list) {
 		if (inc->port == cp->vport) {
 			if (unlikely(!ip_vs_app_inc_get(inc)))
 				break;
+			rcu_read_unlock();
 
 			IP_VS_DBG_BUF(9, "%s: Binding conn %s:%u->"
 					"%s:%u to app %s on port %u\n",
@@ -545,10 +537,11 @@ static int sctp_app_conn_bind(struct ip_vs_conn *cp)
 			cp->app = inc;
 			if (inc->init_conn)
 				result = inc->init_conn(inc, cp);
-			break;
+			goto out;
 		}
 	}
-
+	rcu_read_unlock();
+out:
 	return result;
 }
 
@@ -556,8 +549,10 @@ static int sctp_app_conn_bind(struct ip_vs_conn *cp)
  *   timeouts is netns related now.
  * ---------------------------------------------
  */
-static int __ip_vs_sctp_init(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
+static int __ip_vs_sctp_init(struct net *net, struct ip_vs_proto_data *pd)
 {
+	struct netns_ipvs *ipvs = net_ipvs(net);
+
 	ip_vs_init_hash_table(ipvs->sctp_apps, SCTP_APP_TAB_SIZE);
 	pd->timeout_table = ip_vs_create_timeout_table((int *)sctp_timeouts,
 							sizeof(sctp_timeouts));
@@ -566,7 +561,7 @@ static int __ip_vs_sctp_init(struct netns_ipvs *ipvs, struct ip_vs_proto_data *p
 	return 0;
 }
 
-static void __ip_vs_sctp_exit(struct netns_ipvs *ipvs, struct ip_vs_proto_data *pd)
+static void __ip_vs_sctp_exit(struct net *net, struct ip_vs_proto_data *pd)
 {
 	kfree(pd->timeout_table);
 }

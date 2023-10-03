@@ -916,7 +916,7 @@ struct ahc_softc {
 	/*
 	 * SCBs that have been sent to the controller
 	 */
-	BSD_LIST_HEAD(, scb)	  pending_scbs;
+	LIST_HEAD(, scb)	  pending_scbs;
 
 	/*
 	 * Counting lock for deferring the release of additional
@@ -949,7 +949,6 @@ struct ahc_softc {
 	 * Platform specific device information.
 	 */
 	ahc_dev_softc_t		  dev_softc;
-	struct device		  *dev;
 
 	/*
 	 * Bus specific device information.

@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 /*
  * PCI Backend - Common data structures for overriding the configuration space
  *
@@ -65,7 +64,7 @@ struct config_field_entry {
 	void *data;
 };
 
-extern bool xen_pcibk_permissive;
+extern bool permissive;
 
 #define OFFSET(cfg_entry) ((cfg_entry)->base_offset+(cfg_entry)->field->offset)
 

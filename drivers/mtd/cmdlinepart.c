@@ -48,14 +48,15 @@
  * edb7312-nor:256k(ARMboot)ro,-(root);edb7312-nand:-(home)
  */
 
-#define pr_fmt(fmt)	"mtd: " fmt
-
 #include <linux/kernel.h>
 #include <linux/slab.h>
 #include <linux/mtd/mtd.h>
 #include <linux/mtd/partitions.h>
 #include <linux/module.h>
 #include <linux/err.h>
+
+/* error message prefix */
+#define ERRP "mtd: "
 
 /* debug macro */
 #if 0
@@ -114,8 +115,9 @@ static struct mtd_partition * newpart(char *s,
 		s++;
 	} else {
 		size = memparse(s, &s);
-		if (!size) {
-			pr_err("partition has size 0\n");
+		if (size < PAGE_SIZE) {
+			printk(KERN_ERR ERRP "partition size too small (%llx)\n",
+			       size);
 			return ERR_PTR(-EINVAL);
 		}
 	}
@@ -140,7 +142,7 @@ static struct mtd_partition * newpart(char *s,
 		name = ++s;
 		p = strchr(name, delim);
 		if (!p) {
-			pr_err("no closing %c found in partition name\n", delim);
+			printk(KERN_ERR ERRP "no closing %c found in partition name\n", delim);
 			return ERR_PTR(-EINVAL);
 		}
 		name_len = p - name;
@@ -168,7 +170,7 @@ static struct mtd_partition * newpart(char *s,
 	/* test if more partitions are following */
 	if (*s == ',') {
 		if (size == SIZE_REMAINING) {
-			pr_err("no partitions allowed after a fill-up partition\n");
+			printk(KERN_ERR ERRP "no partitions allowed after a fill-up partition\n");
 			return ERR_PTR(-EINVAL);
 		}
 		/* more partitions follow, parse them */
@@ -190,10 +192,7 @@ static struct mtd_partition * newpart(char *s,
 		extra_mem = (unsigned char *)(parts + *num_parts);
 	}
 
-	/*
-	 * enter this partition (offset will be calculated later if it is
-	 * OFFSET_CONTINUOUS at this point)
-	 */
+	/* enter this partition (offset will be calculated later if it is zero at this point) */
 	parts[this_part].size = size;
 	parts[this_part].offset = offset;
 	parts[this_part].mask_flags = mask_flags;
@@ -231,43 +230,14 @@ static int mtdpart_setup_real(char *s)
 		struct cmdline_mtd_partition *this_mtd;
 		struct mtd_partition *parts;
 		int mtd_id_len, num_parts;
-		char *p, *mtd_id, *semicol, *open_parenth;
-
-		/*
-		 * Replace the first ';' by a NULL char so strrchr can work
-		 * properly.
-		 */
-		semicol = strchr(s, ';');
-		if (semicol)
-			*semicol = '\0';
-
-		/*
-		 * make sure that part-names with ":" will not be handled as
-		 * part of the mtd-id with an ":"
-		 */
-		open_parenth = strchr(s, '(');
-		if (open_parenth)
-			*open_parenth = '\0';
+		char *p, *mtd_id;
 
 		mtd_id = s;
 
-		/*
-		 * fetch <mtd-id>. We use strrchr to ignore all ':' that could
-		 * be present in the MTD name, only the last one is interpreted
-		 * as an <mtd-id>/<part-definition> separator.
-		 */
-		p = strrchr(s, ':');
-
-		/* Restore the '(' now. */
-		if (open_parenth)
-			*open_parenth = '(';
-
-		/* Restore the ';' now. */
-		if (semicol)
-			*semicol = ';';
-
+		/* fetch <mtd-id> */
+		p = strchr(s, ':');
 		if (!p) {
-			pr_err("no mtd-id\n");
+			printk(KERN_ERR ERRP "no mtd-id\n");
 			return -EINVAL;
 		}
 		mtd_id_len = p - mtd_id;
@@ -319,7 +289,7 @@ static int mtdpart_setup_real(char *s)
 
 		/* does another spec follow? */
 		if (*s != ';') {
-			pr_err("bad character after partition (%c)\n", *s);
+			printk(KERN_ERR ERRP "bad character after partition (%c)\n", *s);
 			return -EINVAL;
 		}
 		s++;
@@ -336,7 +306,7 @@ static int mtdpart_setup_real(char *s)
  * the first one in the chain if a NULL mtd_id is passed in.
  */
 static int parse_cmdline_partitions(struct mtd_info *master,
-				    const struct mtd_partition **pparts,
+				    struct mtd_partition **pparts,
 				    struct mtd_part_parser_data *data)
 {
 	unsigned long long offset;
@@ -373,15 +343,17 @@ static int parse_cmdline_partitions(struct mtd_info *master,
 			part->parts[i].size = master->size - offset;
 
 		if (offset + part->parts[i].size > master->size) {
-			pr_warn("%s: partitioning exceeds flash size, truncating\n",
-				part->mtd_id);
+			printk(KERN_WARNING ERRP
+			       "%s: partitioning exceeds flash size, truncating\n",
+			       part->mtd_id);
 			part->parts[i].size = master->size - offset;
 		}
 		offset += part->parts[i].size;
 
 		if (part->parts[i].size == 0) {
-			pr_warn("%s: skipping zero sized partition\n",
-				part->mtd_id);
+			printk(KERN_WARNING ERRP
+			       "%s: skipping zero sized partition\n",
+			       part->mtd_id);
 			part->num_parts--;
 			memmove(&part->parts[i], &part->parts[i + 1],
 				sizeof(*part->parts) * (part->num_parts - i));
@@ -414,6 +386,7 @@ static int __init mtdpart_setup(char *s)
 __setup("mtdparts=", mtdpart_setup);
 
 static struct mtd_part_parser cmdline_parser = {
+	.owner = THIS_MODULE,
 	.parse_fn = parse_cmdline_partitions,
 	.name = "cmdlinepart",
 };

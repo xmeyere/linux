@@ -1,9 +1,13 @@
-// SPDX-License-Identifier: GPL-2.0+
 /*
  *	uvc_video.c  --  USB Video Class Gadget driver
  *
  *	Copyright (C) 2009-2010
  *	    Laurent Pinchart (laurent.pinchart@ideasonboard.com)
+ *
+ *	This program is free software; you can redistribute it and/or modify
+ *	it under the terms of the GNU General Public License as published by
+ *	the Free Software Foundation; either version 2 of the License, or
+ *	(at your option) any later version.
  */
 
 #include <linux/kernel.h>
@@ -125,21 +129,6 @@ uvc_video_encode_isoc(struct usb_request *req, struct uvc_video *video,
  * Request handling
  */
 
-static int uvcg_video_ep_queue(struct uvc_video *video, struct usb_request *req)
-{
-	int ret;
-
-	ret = usb_ep_queue(video->ep, req, GFP_ATOMIC);
-	if (ret < 0) {
-		printk(KERN_INFO "Failed to queue request (%d).\n", ret);
-		/* Isochronous endpoints can't be halted. */
-		if (usb_endpoint_xfer_bulk(video->ep->desc))
-			usb_ep_set_halt(video->ep);
-	}
-
-	return ret;
-}
-
 /*
  * I somehow feel that synchronisation won't be easy to achieve here. We have
  * three events that control USB requests submission:
@@ -204,13 +193,14 @@ uvc_video_complete(struct usb_ep *ep, struct usb_request *req)
 
 	video->encode(req, video, buf);
 
-	ret = uvcg_video_ep_queue(video, req);
-	spin_unlock_irqrestore(&video->queue.irqlock, flags);
-
-	if (ret < 0) {
+	if ((ret = usb_ep_queue(ep, req, GFP_ATOMIC)) < 0) {
+		printk(KERN_INFO "Failed to queue request (%d).\n", ret);
+		usb_ep_set_halt(ep);
+		spin_unlock_irqrestore(&video->queue.irqlock, flags);
 		uvcg_queue_cancel(queue, 0);
 		goto requeue;
 	}
+	spin_unlock_irqrestore(&video->queue.irqlock, flags);
 
 	return;
 
@@ -253,7 +243,7 @@ uvc_video_alloc_requests(struct uvc_video *video)
 
 	req_size = video->ep->maxpacket
 		 * max_t(unsigned int, video->ep->maxburst, 1)
-		 * (video->ep->mult);
+		 * (video->ep->mult + 1);
 
 	for (i = 0; i < UVC_NUM_REQUESTS; ++i) {
 		video->req_buffer[i] = kmalloc(req_size, GFP_KERNEL);
@@ -330,13 +320,15 @@ int uvcg_video_pump(struct uvc_video *video)
 		video->encode(req, video, buf);
 
 		/* Queue the USB request */
-		ret = uvcg_video_ep_queue(video, req);
-		spin_unlock_irqrestore(&queue->irqlock, flags);
-
+		ret = usb_ep_queue(video->ep, req, GFP_ATOMIC);
 		if (ret < 0) {
+			printk(KERN_INFO "Failed to queue request (%d)\n", ret);
+			usb_ep_set_halt(video->ep);
+			spin_unlock_irqrestore(&queue->irqlock, flags);
 			uvcg_queue_cancel(queue, 0);
 			break;
 		}
+		spin_unlock_irqrestore(&queue->irqlock, flags);
 	}
 
 	spin_lock_irqsave(&video->req_lock, flags);
@@ -399,8 +391,7 @@ int uvcg_video_init(struct uvc_video *video)
 	video->imagesize = 320 * 240 * 2;
 
 	/* Initialize the video buffers queue. */
-	uvcg_queue_init(&video->queue, V4L2_BUF_TYPE_VIDEO_OUTPUT,
-			&video->mutex);
+	uvcg_queue_init(&video->queue, V4L2_BUF_TYPE_VIDEO_OUTPUT);
 	return 0;
 }
 

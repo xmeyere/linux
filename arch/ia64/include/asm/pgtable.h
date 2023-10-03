@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _ASM_IA64_PGTABLE_H
 #define _ASM_IA64_PGTABLE_H
 
@@ -100,7 +99,7 @@
 #define PMD_MASK	(~(PMD_SIZE-1))
 #define PTRS_PER_PMD	(1UL << (PTRS_PER_PTD_SHIFT))
 
-#if CONFIG_PGTABLE_LEVELS == 4
+#ifdef CONFIG_PGTABLE_4
 /*
  * Definitions for second level:
  *
@@ -118,7 +117,7 @@
  *
  * PGDIR_SHIFT determines what a first-level page table entry can map.
  */
-#if CONFIG_PGTABLE_LEVELS == 4
+#ifdef CONFIG_PGTABLE_4
 #define PGDIR_SHIFT		(PUD_SHIFT + (PTRS_PER_PTD_SHIFT))
 #else
 #define PGDIR_SHIFT		(PMD_SHIFT + (PTRS_PER_PTD_SHIFT))
@@ -148,7 +147,7 @@
 
 # ifndef __ASSEMBLY__
 
-#include <linux/sched/mm.h>	/* for mm_struct */
+#include <linux/sched.h>	/* for mm_struct */
 #include <linux/bitops.h>
 #include <asm/cacheflush.h>
 #include <asm/mmu_context.h>
@@ -181,7 +180,7 @@
 #define __S111	__pgprot(__ACCESS_BITS | _PAGE_PL_3 | _PAGE_AR_RWX)
 
 #define pgd_ERROR(e)	printk("%s:%d: bad pgd %016lx.\n", __FILE__, __LINE__, pgd_val(e))
-#if CONFIG_PGTABLE_LEVELS == 4
+#ifdef CONFIG_PGTABLE_4
 #define pud_ERROR(e)	printk("%s:%d: bad pud %016lx.\n", __FILE__, __LINE__, pud_val(e))
 #endif
 #define pmd_ERROR(e)	printk("%s:%d: bad pmd %016lx.\n", __FILE__, __LINE__, pmd_val(e))
@@ -282,7 +281,7 @@ extern unsigned long VMALLOC_END;
 #define pud_page_vaddr(pud)		((unsigned long) __va(pud_val(pud) & _PFN_MASK))
 #define pud_page(pud)			virt_to_page((pud_val(pud) + PAGE_OFFSET))
 
-#if CONFIG_PGTABLE_LEVELS == 4
+#ifdef CONFIG_PGTABLE_4
 #define pgd_none(pgd)			(!pgd_val(pgd))
 #define pgd_bad(pgd)			(!ia64_phys_addr_valid(pgd_val(pgd)))
 #define pgd_present(pgd)		(pgd_val(pgd) != 0UL)
@@ -385,7 +384,7 @@ pgd_offset (const struct mm_struct *mm, unsigned long address)
    here.  */
 #define pgd_offset_gate(mm, addr)	pgd_offset_k(addr)
 
-#if CONFIG_PGTABLE_LEVELS == 4
+#ifdef CONFIG_PGTABLE_4
 /* Find an entry in the second-level page table.. */
 #define pud_offset(dir,addr) \
 	((pud_t *) pgd_page_vaddr(*(dir)) + (((addr) >> PUD_SHIFT) & (PTRS_PER_PUD - 1)))
@@ -587,11 +586,9 @@ extern struct page *zero_page_memmap_ptr;
 #define __HAVE_ARCH_PGD_OFFSET_GATE
 
 
-#if CONFIG_PGTABLE_LEVELS == 3
-#define __ARCH_USE_5LEVEL_HACK
+#ifndef CONFIG_PGTABLE_4
 #include <asm-generic/pgtable-nopud.h>
 #endif
-#include <asm-generic/5level-fixup.h>
 #include <asm-generic/pgtable.h>
 
 #endif /* _ASM_IA64_PGTABLE_H */

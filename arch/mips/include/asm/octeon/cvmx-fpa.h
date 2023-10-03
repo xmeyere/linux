@@ -36,8 +36,6 @@
 #ifndef __CVMX_FPA_H__
 #define __CVMX_FPA_H__
 
-#include <linux/delay.h>
-
 #include <asm/octeon/cvmx-address.h>
 #include <asm/octeon/cvmx-fpa-defs.h>
 
@@ -51,7 +49,6 @@
 typedef union {
 	uint64_t u64;
 	struct {
-#ifdef __BIG_ENDIAN_BITFIELD
 		/*
 		 * the (64-bit word) location in scratchpad to write
 		 * to (if len != 0)
@@ -66,12 +63,6 @@ typedef union {
 		 * the NCB bus.
 		 */
 		uint64_t addr:40;
-#else
-		uint64_t addr:40;
-		uint64_t did:8;
-		uint64_t len:8;
-		uint64_t scraddr:8;
-#endif
 	} s;
 } cvmx_fpa_iobdma_data_t;
 
@@ -167,7 +158,7 @@ static inline void cvmx_fpa_enable(void)
 		}
 
 		/* Enforce a 10 cycle delay between config and enable */
-		__delay(10);
+		cvmx_wait(10);
 	}
 
 	/* FIXME: CVMX_FPA_CTL_STATUS read is unmodelled */

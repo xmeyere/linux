@@ -1,4 +1,3 @@
-# SPDX-License-Identifier: GPL-2.0
 uname_M := $(shell uname -m 2>/dev/null || echo not)
 ARCH ?= $(shell echo $(uname_M) | sed -e s/i.86/i386/)
 ifeq ($(ARCH),i386)
@@ -12,7 +11,15 @@ endif
 
 CFLAGS += -I../../../../usr/include/
 
-TEST_GEN_PROGS := msgque
+all:
+ifeq ($(ARCH),x86)
+	gcc $(CFLAGS) msgque.c -o msgque_test
+else
+	echo "Not an x86 target, can't build msgque selftest"
+endif
 
-include ../lib.mk
+run_tests: all
+	./msgque_test
 
+clean:
+	rm -fr ./msgque_test

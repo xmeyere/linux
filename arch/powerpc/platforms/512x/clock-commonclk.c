@@ -12,7 +12,6 @@
  */
 
 #include <linux/bitops.h>
-#include <linux/clk.h>
 #include <linux/clk-provider.h>
 #include <linux/clkdev.h>
 #include <linux/device.h>
@@ -221,7 +220,7 @@ static bool soc_has_mclk_mux0_canin(void)
 /* convenience wrappers around the common clk API */
 static inline struct clk *mpc512x_clk_fixed(const char *name, int rate)
 {
-	return clk_register_fixed_rate(NULL, name, NULL, 0, rate);
+	return clk_register_fixed_rate(NULL, name, NULL, CLK_IS_ROOT, rate);
 }
 
 static inline struct clk *mpc512x_clk_factor(
@@ -363,7 +362,7 @@ static int get_cpmf_mult_x2(void)
  */
 
 /* applies to the IPS_DIV, and PCI_DIV values */
-static const struct clk_div_table divtab_2346[] = {
+static struct clk_div_table divtab_2346[] = {
 	{ .val = 2, .div = 2, },
 	{ .val = 3, .div = 3, },
 	{ .val = 4, .div = 4, },
@@ -372,7 +371,7 @@ static const struct clk_div_table divtab_2346[] = {
 };
 
 /* applies to the MBX_DIV, LPC_DIV, and NFC_DIV values */
-static const struct clk_div_table divtab_1234[] = {
+static struct clk_div_table divtab_1234[] = {
 	{ .val = 1, .div = 1, },
 	{ .val = 2, .div = 2, },
 	{ .val = 3, .div = 3, },
@@ -719,7 +718,7 @@ static void mpc512x_clk_setup_clock_tree(struct device_node *np, int busfreq)
 	 *   most one of a mux, div, and gate each into one 'struct clk'
 	 *   item
 	 * - PSC/MSCAN/SPDIF clock generation OTOH already is very
-	 *   specific and cannot get mapped to composites (at least not
+	 *   specific and cannot get mapped to componsites (at least not
 	 *   a single one, maybe two of them, but then some of these
 	 *   intermediate clock signals get referenced elsewhere (e.g.
 	 *   in the clock frequency measurement, CFM) and thus need
@@ -985,7 +984,7 @@ static void mpc5121_clk_provide_migration_support(void)
 
 #define NODE_PREP do { \
 	of_address_to_resource(np, 0, &res); \
-	snprintf(devname, sizeof(devname), "%pa.%s", &res.start, np->name); \
+	snprintf(devname, sizeof(devname), "%08x.%s", res.start, np->name); \
 } while (0)
 
 #define NODE_CHK(clkname, clkitem, regnode, regflag) do { \

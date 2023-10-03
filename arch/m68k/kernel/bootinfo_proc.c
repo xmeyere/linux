@@ -1,4 +1,3 @@
-// SPDX-License-Identifier: GPL-2.0
 /*
  * Based on arch/arm/kernel/atags_proc.c
  */
@@ -63,9 +62,11 @@ static int __init init_bootinfo_procfs(void)
 	if (!bootinfo_size)
 		return -EINVAL;
 
-	bootinfo_copy = kmemdup(bootinfo_tmp, bootinfo_size, GFP_KERNEL);
+	bootinfo_copy = kmalloc(bootinfo_size, GFP_KERNEL);
 	if (!bootinfo_copy)
 		return -ENOMEM;
+
+	memcpy(bootinfo_copy, bootinfo_tmp, bootinfo_size);
 
 	pde = proc_create_data("bootinfo", 0400, NULL, &bootinfo_fops, NULL);
 	if (!pde) {

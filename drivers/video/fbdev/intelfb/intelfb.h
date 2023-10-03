@@ -1,4 +1,3 @@
-/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _INTELFB_H
 #define _INTELFB_H
 
@@ -286,7 +285,9 @@ struct intelfb_info {
 	/* use a gart reserved fb mem */
 	u8 fbmem_gart;
 
-	int wc_cookie;
+	/* mtrr support */
+	int mtrr_reg;
+	u32 has_mtrr;
 
 	/* heap data */
 	struct intelfb_heap_data aperture;

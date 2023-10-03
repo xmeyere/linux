@@ -1,7 +1,19 @@
-// SPDX-License-Identifier: GPL-2.0
 /******************************************************************************
  *
  * Copyright(c) 2007 - 2012 Realtek Corporation. All rights reserved.
+ *
+ * This program is free software; you can redistribute it and/or modify it
+ * under the terms of version 2 of the GNU General Public License as
+ * published by the Free Software Foundation.
+ *
+ * This program is distributed in the hope that it will be useful, but WITHOUT
+ * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
+ * FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for
+ * more details.
+ *
+ * You should have received a copy of the GNU General Public License along with
+ * this program; if not, write to the Free Software Foundation, Inc.,
+ * 51 Franklin Street, Fifth Floor, Boston, MA 02110, USA
  *
  ******************************************************************************/
 #define _USB_OPS_LINUX_C_
@@ -12,7 +24,7 @@
 
 static void interrupt_handler_8188eu(struct adapter *adapt, u16 pkt_len, u8 *pbuf)
 {
-	struct hal_data_8188e *haldata = adapt->HalData;
+	struct hal_data_8188e	*haldata = GET_HAL_DATA(adapt);
 
 	if (pkt_len != INTERRUPT_MSG_FORMAT_LEN) {
 		DBG_88E("%s Invalid interrupt content length (%d)!\n", __func__, pkt_len);
@@ -20,8 +32,8 @@ static void interrupt_handler_8188eu(struct adapter *adapt, u16 pkt_len, u8 *pbu
 	}
 
 	/*  HISR */
-	memcpy(&haldata->IntArray[0], &pbuf[USB_INTR_CONTENT_HISR_OFFSET], 4);
-	memcpy(&haldata->IntArray[1], &pbuf[USB_INTR_CONTENT_HISRE_OFFSET], 4);
+	memcpy(&(haldata->IntArray[0]), &(pbuf[USB_INTR_CONTENT_HISR_OFFSET]), 4);
+	memcpy(&(haldata->IntArray[1]), &(pbuf[USB_INTR_CONTENT_HISRE_OFFSET]), 4);
 
 	/*  C2H Event */
 	if (pbuf[0] != 0)
@@ -40,7 +52,7 @@ static int recvbuf2recvframe(struct adapter *adapt, struct sk_buff *pskb)
 	struct sk_buff *pkt_copy = NULL;
 	struct recv_frame	*precvframe = NULL;
 	struct rx_pkt_attrib	*pattrib = NULL;
-	struct hal_data_8188e *haldata = adapt->HalData;
+	struct hal_data_8188e	*haldata = GET_HAL_DATA(adapt);
 	struct recv_priv	*precvpriv = &adapt->recvpriv;
 	struct __queue *pfree_recv_queue = &precvpriv->free_recv_queue;
 
@@ -58,13 +70,14 @@ static int recvbuf2recvframe(struct adapter *adapt, struct sk_buff *pskb)
 		prxstat = (struct recv_stat *)pbuf;
 
 		precvframe = rtw_alloc_recvframe(pfree_recv_queue);
-		if (!precvframe) {
+		if (precvframe == NULL) {
 			RT_TRACE(_module_rtl871x_recv_c_, _drv_err_, ("recvbuf2recvframe: precvframe==NULL\n"));
 			DBG_88E("%s()-%d: rtw_alloc_recvframe() failed! RX Drop!\n", __func__, __LINE__);
 			goto _exit_recvbuf2recvframe;
 		}
 
 		INIT_LIST_HEAD(&precvframe->list);
+		precvframe->len = 0;
 
 		update_recvframe_attrib_88e(precvframe, prxstat);
 
@@ -116,15 +129,33 @@ static int recvbuf2recvframe(struct adapter *adapt, struct sk_buff *pskb)
 		if (pkt_copy) {
 			pkt_copy->dev = adapt->pnetdev;
 			precvframe->pkt = pkt_copy;
+			precvframe->rx_head = pkt_copy->data;
+			precvframe->rx_end = pkt_copy->data + alloc_sz;
 			skb_reserve(pkt_copy, 8 - ((size_t)(pkt_copy->data) & 7));/* force pkt_copy->data at 8-byte alignment address */
 			skb_reserve(pkt_copy, shift_sz);/* force ip_hdr at 8-byte alignment address according to shift_sz. */
 			memcpy(pkt_copy->data, (pbuf + pattrib->drvinfo_sz + RXDESC_SIZE), skb_len);
-			skb_put(precvframe->pkt, skb_len);
+			precvframe->rx_tail = pkt_copy->data;
+			precvframe->rx_data = pkt_copy->data;
 		} else {
-			DBG_88E("recvbuf2recvframe: alloc_skb fail , drop frag frame\n");
-			rtw_free_recvframe(precvframe, pfree_recv_queue);
-			goto _exit_recvbuf2recvframe;
+			if ((pattrib->mfrag == 1) && (pattrib->frag_num == 0)) {
+				DBG_88E("recvbuf2recvframe: alloc_skb fail , drop frag frame\n");
+				rtw_free_recvframe(precvframe, pfree_recv_queue);
+				goto _exit_recvbuf2recvframe;
+			}
+			precvframe->pkt = skb_clone(pskb, GFP_ATOMIC);
+			if (precvframe->pkt) {
+				precvframe->rx_tail = pbuf + pattrib->drvinfo_sz + RXDESC_SIZE;
+				precvframe->rx_head = precvframe->rx_tail;
+				precvframe->rx_data = precvframe->rx_tail;
+				precvframe->rx_end =  pbuf + pattrib->drvinfo_sz + RXDESC_SIZE + alloc_sz;
+			} else {
+				DBG_88E("recvbuf2recvframe: skb_clone fail\n");
+				rtw_free_recvframe(precvframe, pfree_recv_queue);
+				goto _exit_recvbuf2recvframe;
+			}
 		}
+
+		recvframe_put(precvframe, skb_len);
 
 		switch (haldata->UsbRxAggMode) {
 		case USB_RX_AGG_DMA:
@@ -140,26 +171,27 @@ static int recvbuf2recvframe(struct adapter *adapt, struct sk_buff *pskb)
 		}
 		if (pattrib->pkt_rpt_type == NORMAL_RX) { /* Normal rx packet */
 			if (pattrib->physt)
-				update_recvframe_phyinfo_88e(precvframe, pphy_status);
+				update_recvframe_phyinfo_88e(precvframe, (struct phy_stat *)pphy_status);
 			if (rtw_recv_entry(precvframe) != _SUCCESS) {
 				RT_TRACE(_module_rtl871x_recv_c_, _drv_err_,
 					("recvbuf2recvframe: rtw_recv_entry(precvframe) != _SUCCESS\n"));
 			}
-		} else if (pattrib->pkt_rpt_type == TX_REPORT1) {
-			/* CCX-TXRPT ack for xmit mgmt frames. */
-			handle_txrpt_ccx_88e(adapt, precvframe->pkt->data);
-			rtw_free_recvframe(precvframe, pfree_recv_queue);
-		} else if (pattrib->pkt_rpt_type == TX_REPORT2) {
-			ODM_RA_TxRPT2Handle_8188E(
-						&haldata->odmpriv,
-						precvframe->pkt->data,
-						pattrib->pkt_len,
-						pattrib->MacIDValidEntry[0],
-						pattrib->MacIDValidEntry[1]
-						);
-			rtw_free_recvframe(precvframe, pfree_recv_queue);
-		} else if (pattrib->pkt_rpt_type == HIS_REPORT) {
-			interrupt_handler_8188eu(adapt, pattrib->pkt_len, precvframe->pkt->data);
+		} else {
+			/* enqueue recvframe to txrtp queue */
+			if (pattrib->pkt_rpt_type == TX_REPORT1) {
+				/* CCX-TXRPT ack for xmit mgmt frames. */
+				handle_txrpt_ccx_88e(adapt, precvframe->rx_data);
+			} else if (pattrib->pkt_rpt_type == TX_REPORT2) {
+				ODM_RA_TxRPT2Handle_8188E(
+							&haldata->odmpriv,
+							precvframe->rx_data,
+							pattrib->pkt_len,
+							pattrib->MacIDValidEntry[0],
+							pattrib->MacIDValidEntry[1]
+							);
+			} else if (pattrib->pkt_rpt_type == HIS_REPORT) {
+				interrupt_handler_8188eu(adapt, pattrib->pkt_len, precvframe->rx_data);
+			}
 			rtw_free_recvframe(precvframe, pfree_recv_queue);
 		}
 		pkt_cnt--;
@@ -217,15 +249,12 @@ static int usbctrl_vendorreq(struct adapter *adapt, u8 request, u16 value, u16 i
 		goto exit;
 	}
 
-	if (mutex_lock_interruptible(&dvobjpriv->usb_vendor_req_mutex)) {
-		status = -ERESTARTSYS;
-		goto exit;
-	}
+	_enter_critical_mutex(&dvobjpriv->usb_vendor_req_mutex, NULL);
 
 	/*  Acquire IO memory for vendorreq */
-	pIo_buf = kmalloc(MAX_USB_IO_CTL_SIZE, GFP_ATOMIC);
+	pIo_buf = dvobjpriv->usb_vendor_req_buf;
 
-	if (!pIo_buf) {
+	if (pIo_buf == NULL) {
 		DBG_88E("[%s] pIo_buf == NULL\n", __func__);
 		status = -ENOMEM;
 		goto release_mutex;
@@ -257,7 +286,8 @@ static int usbctrl_vendorreq(struct adapter *adapt, u8 request, u16 value, u16 i
 				if (status == (-ESHUTDOWN) || status == -ENODEV) {
 					adapt->bSurpriseRemoved = true;
 				} else {
-					adapt->HalData->srestpriv.Wifi_Error_Status = USB_VEN_REQ_CMD_FAIL;
+					struct hal_data_8188e	*haldata = GET_HAL_DATA(adapt);
+					haldata->srestpriv.Wifi_Error_Status = USB_VEN_REQ_CMD_FAIL;
 				}
 			} else { /*  status != len && status >= 0 */
 				if (status > 0) {
@@ -267,14 +297,13 @@ static int usbctrl_vendorreq(struct adapter *adapt, u8 request, u16 value, u16 i
 					}
 				}
 			}
+
 		}
 
 		/*  firmware download is checksumed, don't retry */
 		if ((value >= FW_8188E_START_ADDRESS && value <= FW_8188E_END_ADDRESS) || status == len)
 			break;
 	}
-	kfree(pIo_buf);
-
 release_mutex:
 	mutex_unlock(&dvobjpriv->usb_vendor_req_mutex);
 exit:
@@ -290,6 +319,7 @@ u8 usb_read8(struct adapter *adapter, u32 addr)
 	u16 len;
 	u8 data = 0;
 
+
 	request = 0x05;
 	requesttype = 0x01;/* read_in */
 	index = 0;/* n/a */
@@ -299,7 +329,9 @@ u8 usb_read8(struct adapter *adapter, u32 addr)
 
 	usbctrl_vendorreq(adapter, request, wvalue, index, &data, len, requesttype);
 
+
 	return data;
+
 }
 
 u16 usb_read16(struct adapter *adapter, u32 addr)
@@ -330,6 +362,7 @@ u32 usb_read32(struct adapter *adapter, u32 addr)
 	u16 len;
 	__le32 data;
 
+
 	request = 0x05;
 	requesttype = 0x01;/* read_in */
 	index = 0;/* n/a */
@@ -338,6 +371,7 @@ u32 usb_read32(struct adapter *adapter, u32 addr)
 	len = 4;
 
 	usbctrl_vendorreq(adapter, request, wvalue, index, &data, len, requesttype);
+
 
 	return le32_to_cpu(data);
 }
@@ -349,6 +383,8 @@ static void usb_read_port_complete(struct urb *purb, struct pt_regs *regs)
 	struct recv_priv *precvpriv = &adapt->recvpriv;
 
 	RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("usb_read_port_complete!!!\n"));
+
+	precvpriv->rx_pending_cnt--;
 
 	if (adapt->bSurpriseRemoved || adapt->bDriverStopped || adapt->bReadPortCancel) {
 		RT_TRACE(_module_hci_ops_os_c_, _drv_err_,
@@ -367,7 +403,7 @@ static void usb_read_port_complete(struct urb *purb, struct pt_regs *regs)
 			RT_TRACE(_module_hci_ops_os_c_, _drv_err_,
 				 ("usb_read_port_complete: (purb->actual_length > MAX_RECVBUF_SZ) || (purb->actual_length < RXDESC_SIZE)\n"));
 			precvbuf->reuse = true;
-			usb_read_port(adapt, RECV_BULK_IN_ADDR, precvbuf);
+			usb_read_port(adapt, precvpriv->ff_hwaddr, 0, (unsigned char *)precvbuf);
 			DBG_88E("%s()-%d: RX Warning!\n", __func__, __LINE__);
 		} else {
 			skb_put(precvbuf->pskb, purb->actual_length);
@@ -378,7 +414,7 @@ static void usb_read_port_complete(struct urb *purb, struct pt_regs *regs)
 
 			precvbuf->pskb = NULL;
 			precvbuf->reuse = false;
-			usb_read_port(adapt, RECV_BULK_IN_ADDR, precvbuf);
+			usb_read_port(adapt, precvpriv->ff_hwaddr, 0, (unsigned char *)precvbuf);
 		}
 	} else {
 		RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("usb_read_port_complete : purb->status(%d) != 0\n", purb->status));
@@ -393,16 +429,18 @@ static void usb_read_port_complete(struct urb *purb, struct pt_regs *regs)
 		case -ENODEV:
 		case -ESHUTDOWN:
 			adapt->bSurpriseRemoved = true;
-			/* fall through */
 		case -ENOENT:
 			adapt->bDriverStopped = true;
 			RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("usb_read_port_complete:bDriverStopped=true\n"));
 			break;
 		case -EPROTO:
 		case -EOVERFLOW:
-			adapt->HalData->srestpriv.Wifi_Error_Status = USB_READ_PORT_FAIL;
+			{
+				struct hal_data_8188e	*haldata = GET_HAL_DATA(adapt);
+				haldata->srestpriv.Wifi_Error_Status = USB_READ_PORT_FAIL;
+			}
 			precvbuf->reuse = true;
-			usb_read_port(adapt, RECV_BULK_IN_ADDR, precvbuf);
+			usb_read_port(adapt, precvpriv->ff_hwaddr, 0, (unsigned char *)precvbuf);
 			break;
 		case -EINPROGRESS:
 			DBG_88E("ERROR: URB IS IN PROGRESS!\n");
@@ -413,15 +451,19 @@ static void usb_read_port_complete(struct urb *purb, struct pt_regs *regs)
 	}
 }
 
-u32 usb_read_port(struct adapter *adapter, u32 addr, struct recv_buf *precvbuf)
+u32 usb_read_port(struct adapter *adapter, u32 addr, u32 cnt, u8 *rmem)
 {
 	struct urb *purb = NULL;
+	struct recv_buf	*precvbuf = (struct recv_buf *)rmem;
 	struct dvobj_priv	*pdvobj = adapter_to_dvobj(adapter);
 	struct recv_priv	*precvpriv = &adapter->recvpriv;
 	struct usb_device	*pusbd = pdvobj->pusbdev;
 	int err;
 	unsigned int pipe;
+	size_t tmpaddr = 0;
+	size_t alignment = 0;
 	u32 ret = _SUCCESS;
+
 
 	if (adapter->bDriverStopped || adapter->bSurpriseRemoved ||
 	    adapter->pwrctrlpriv.pnp_bstop_trx) {
@@ -436,23 +478,29 @@ u32 usb_read_port(struct adapter *adapter, u32 addr, struct recv_buf *precvbuf)
 		return _FAIL;
 	}
 
-	if (!precvbuf->reuse || !precvbuf->pskb) {
+	if ((!precvbuf->reuse) || (precvbuf->pskb == NULL)) {
 		precvbuf->pskb = skb_dequeue(&precvpriv->free_recv_skb_queue);
-		if (precvbuf->pskb)
+		if (NULL != precvbuf->pskb)
 			precvbuf->reuse = true;
 	}
 
 	/* re-assign for linux based on skb */
-	if (!precvbuf->reuse || !precvbuf->pskb) {
-		precvbuf->pskb = netdev_alloc_skb(adapter->pnetdev, MAX_RECVBUF_SZ);
-		if (!precvbuf->pskb) {
+	if ((!precvbuf->reuse) || (precvbuf->pskb == NULL)) {
+		precvbuf->pskb = netdev_alloc_skb(adapter->pnetdev, MAX_RECVBUF_SZ + RECVBUFF_ALIGN_SZ);
+		if (precvbuf->pskb == NULL) {
 			RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("init_recvbuf(): alloc_skb fail!\n"));
 			DBG_88E("#### usb_read_port() alloc_skb fail!#####\n");
 			return _FAIL;
 		}
+
+		tmpaddr = (size_t)precvbuf->pskb->data;
+		alignment = tmpaddr & (RECVBUFF_ALIGN_SZ-1);
+		skb_reserve(precvbuf->pskb, (RECVBUFF_ALIGN_SZ - alignment));
 	} else { /* reuse skb */
 		precvbuf->reuse = false;
 	}
+
+	precvpriv->rx_pending_cnt++;
 
 	purb = precvbuf->purb;
 
@@ -478,12 +526,11 @@ u32 usb_read_port(struct adapter *adapter, u32 addr, struct recv_buf *precvbuf)
 	return ret;
 }
 
-void rtw_hal_inirp_deinit(struct adapter *padapter)
+void usb_read_port_cancel(struct adapter *padapter)
 {
 	int i;
 	struct recv_buf *precvbuf;
-
-	precvbuf = padapter->recvpriv.precv_buf;
+	precvbuf = (struct recv_buf *)padapter->recvpriv.precv_buf;
 
 	DBG_88E("%s\n", __func__);
 
@@ -505,6 +552,7 @@ int usb_write8(struct adapter *adapter, u32 addr, u8 val)
 	u16 index;
 	u16 len;
 	u8 data;
+	int ret;
 
 	request = 0x05;
 	requesttype = 0x00;/* write_out */
@@ -512,8 +560,8 @@ int usb_write8(struct adapter *adapter, u32 addr, u8 val)
 	wvalue = (u16)(addr&0x0000ffff);
 	len = 1;
 	data = val;
-	return usbctrl_vendorreq(adapter, request, wvalue,
-				 index, &data, len, requesttype);
+	ret = usbctrl_vendorreq(adapter, request, wvalue, index, &data, len, requesttype);
+	return ret;
 }
 
 int usb_write16(struct adapter *adapter, u32 addr, u16 val)
@@ -524,6 +572,8 @@ int usb_write16(struct adapter *adapter, u32 addr, u16 val)
 	u16 index;
 	u16 len;
 	__le32 data;
+	int ret;
+
 
 	request = 0x05;
 	requesttype = 0x00;/* write_out */
@@ -534,8 +584,10 @@ int usb_write16(struct adapter *adapter, u32 addr, u16 val)
 
 	data = cpu_to_le32(val & 0x0000ffff);
 
-	return usbctrl_vendorreq(adapter, request, wvalue,
-				 index, &data, len, requesttype);
+	ret = usbctrl_vendorreq(adapter, request, wvalue, index, &data, len, requesttype);
+
+
+	return ret;
 }
 
 int usb_write32(struct adapter *adapter, u32 addr, u32 val)
@@ -546,6 +598,8 @@ int usb_write32(struct adapter *adapter, u32 addr, u32 val)
 	u16 index;
 	u16 len;
 	__le32 data;
+	int ret;
+
 
 	request = 0x05;
 	requesttype = 0x00;/* write_out */
@@ -555,8 +609,10 @@ int usb_write32(struct adapter *adapter, u32 addr, u32 val)
 	len = 4;
 	data = cpu_to_le32(val);
 
-	return usbctrl_vendorreq(adapter, request, wvalue,
-				 index, &data, len, requesttype);
+	ret = usbctrl_vendorreq(adapter, request, wvalue, index, &data, len, requesttype);
+
+
+	return ret;
 }
 
 static void usb_write_port_complete(struct urb *purb, struct pt_regs *regs)
@@ -638,7 +694,7 @@ check_completion:
 	tasklet_hi_schedule(&pxmitpriv->xmit_tasklet);
 }
 
-u32 usb_write_port(struct adapter *padapter, u32 addr, u32 cnt, struct xmit_buf *xmitbuf)
+u32 usb_write_port(struct adapter *padapter, u32 addr, u32 cnt, u8 *wmem)
 {
 	unsigned long irqL;
 	unsigned int pipe;
@@ -647,8 +703,10 @@ u32 usb_write_port(struct adapter *padapter, u32 addr, u32 cnt, struct xmit_buf 
 	struct urb *purb = NULL;
 	struct dvobj_priv	*pdvobj = adapter_to_dvobj(padapter);
 	struct xmit_priv	*pxmitpriv = &padapter->xmitpriv;
-	struct xmit_frame *pxmitframe = (struct xmit_frame *)xmitbuf->priv_data;
+	struct xmit_buf *pxmitbuf = (struct xmit_buf *)wmem;
+	struct xmit_frame *pxmitframe = (struct xmit_frame *)pxmitbuf->priv_data;
 	struct usb_device *pusbd = pdvobj->pusbdev;
+
 
 	RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("+usb_write_port\n"));
 
@@ -656,7 +714,7 @@ u32 usb_write_port(struct adapter *padapter, u32 addr, u32 cnt, struct xmit_buf 
 	    (padapter->pwrctrlpriv.pnp_bstop_trx)) {
 		RT_TRACE(_module_hci_ops_os_c_, _drv_err_,
 			 ("usb_write_port:( padapter->bDriverStopped ||padapter->bSurpriseRemoved ||adapter->pwrctrlpriv.pnp_bstop_trx)!!!\n"));
-		rtw_sctx_done_err(&xmitbuf->sctx, RTW_SCTX_DONE_TX_DENY);
+		rtw_sctx_done_err(&pxmitbuf->sctx, RTW_SCTX_DONE_TX_DENY);
 		goto exit;
 	}
 
@@ -665,44 +723,44 @@ u32 usb_write_port(struct adapter *padapter, u32 addr, u32 cnt, struct xmit_buf 
 	switch (addr) {
 	case VO_QUEUE_INX:
 		pxmitpriv->voq_cnt++;
-		xmitbuf->flags = VO_QUEUE_INX;
+		pxmitbuf->flags = VO_QUEUE_INX;
 		break;
 	case VI_QUEUE_INX:
 		pxmitpriv->viq_cnt++;
-		xmitbuf->flags = VI_QUEUE_INX;
+		pxmitbuf->flags = VI_QUEUE_INX;
 		break;
 	case BE_QUEUE_INX:
 		pxmitpriv->beq_cnt++;
-		xmitbuf->flags = BE_QUEUE_INX;
+		pxmitbuf->flags = BE_QUEUE_INX;
 		break;
 	case BK_QUEUE_INX:
 		pxmitpriv->bkq_cnt++;
-		xmitbuf->flags = BK_QUEUE_INX;
+		pxmitbuf->flags = BK_QUEUE_INX;
 		break;
 	case HIGH_QUEUE_INX:
-		xmitbuf->flags = HIGH_QUEUE_INX;
+		pxmitbuf->flags = HIGH_QUEUE_INX;
 		break;
 	default:
-		xmitbuf->flags = MGT_QUEUE_INX;
+		pxmitbuf->flags = MGT_QUEUE_INX;
 		break;
 	}
 
 	spin_unlock_irqrestore(&pxmitpriv->lock, irqL);
 
-	purb	= xmitbuf->pxmit_urb[0];
+	purb	= pxmitbuf->pxmit_urb[0];
 
 	/* translate DMA FIFO addr to pipehandle */
 	pipe = ffaddr2pipehdl(pdvobj, addr);
 
 	usb_fill_bulk_urb(purb, pusbd, pipe,
-			  pxmitframe->buf_addr, /*  xmitbuf->pbuf */
+			  pxmitframe->buf_addr, /*  pxmitbuf->pbuf */
 			  cnt,
 			  usb_write_port_complete,
-			  xmitbuf);/* context is xmitbuf */
+			  pxmitbuf);/* context is pxmitbuf */
 
 	status = usb_submit_urb(purb, GFP_ATOMIC);
 	if (status) {
-		rtw_sctx_done_err(&xmitbuf->sctx, RTW_SCTX_DONE_WRITE_PORT_ERR);
+		rtw_sctx_done_err(&pxmitbuf->sctx, RTW_SCTX_DONE_WRITE_PORT_ERR);
 		DBG_88E("usb_write_port, status =%d\n", status);
 		RT_TRACE(_module_hci_ops_os_c_, _drv_err_, ("usb_write_port(): usb_submit_urb, status =%x\n", status));
 
@@ -724,7 +782,7 @@ u32 usb_write_port(struct adapter *padapter, u32 addr, u32 cnt, struct xmit_buf 
 
 exit:
 	if (ret != _SUCCESS)
-		rtw_free_xmitbuf(pxmitpriv, xmitbuf);
+		rtw_free_xmitbuf(pxmitpriv, pxmitbuf);
 	return ret;
 }
 
@@ -791,7 +849,7 @@ void rtl8188eu_xmit_tasklet(void *priv)
 			break;
 		}
 
-		ret = rtl8188eu_xmitframe_complete(adapt, pxmitpriv);
+		ret = rtl8188eu_xmitframe_complete(adapt, pxmitpriv, NULL);
 
 		if (!ret)
 			break;

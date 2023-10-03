@@ -52,17 +52,13 @@
 #include <linux/errno.h>
 #include <linux/init.h>
 #include <linux/if_ether.h>
-#include <linux/of_net.h>
-#include <linux/pci.h>
 #include <net/dst.h>
 #include <net/arp.h>
 #include <net/sock.h>
 #include <net/ipv6.h>
 #include <net/ip.h>
 #include <net/dsa.h>
-#include <net/flow_dissector.h>
 #include <linux/uaccess.h>
-#include <net/pkt_sched.h>
 
 __setup("ether=", netdev_boot_setup);
 
@@ -83,7 +79,7 @@ int eth_header(struct sk_buff *skb, struct net_device *dev,
 	       unsigned short type,
 	       const void *daddr, const void *saddr, unsigned int len)
 {
-	struct ethhdr *eth = skb_push(skb, ETH_HLEN);
+	struct ethhdr *eth = (struct ethhdr *)skb_push(skb, ETH_HLEN);
 
 	if (type != ETH_P_802_3 && type != ETH_P_802_2)
 		eth->h_proto = htons(type);
@@ -108,7 +104,7 @@ int eth_header(struct sk_buff *skb, struct net_device *dev,
 	 */
 
 	if (dev->flags & (IFF_LOOPBACK | IFF_NOARP)) {
-		eth_zero_addr(eth->h_dest);
+		memset(eth->h_dest, 0, ETH_ALEN);
 		return ETH_HLEN;
 	}
 
@@ -117,7 +113,40 @@ int eth_header(struct sk_buff *skb, struct net_device *dev,
 EXPORT_SYMBOL(eth_header);
 
 /**
- * eth_get_headlen - determine the length of header for an ethernet frame
+ * eth_rebuild_header- rebuild the Ethernet MAC header.
+ * @skb: socket buffer to update
+ *
+ * This is called after an ARP or IPV6 ndisc it's resolution on this
+ * sk_buff. We now let protocol (ARP) fill in the other fields.
+ *
+ * This routine CANNOT use cached dst->neigh!
+ * Really, it is used only when dst->neigh is wrong.
+ */
+int eth_rebuild_header(struct sk_buff *skb)
+{
+	struct ethhdr *eth = (struct ethhdr *)skb->data;
+	struct net_device *dev = skb->dev;
+
+	switch (eth->h_proto) {
+#ifdef CONFIG_INET
+	case htons(ETH_P_IP):
+		return arp_find(eth->h_dest, skb);
+#endif
+	default:
+		netdev_dbg(dev,
+		       "%s: unable to resolve type %X addresses.\n",
+		       dev->name, ntohs(eth->h_proto));
+
+		memcpy(eth->h_source, dev->dev_addr, ETH_ALEN);
+		break;
+	}
+
+	return 0;
+}
+EXPORT_SYMBOL(eth_rebuild_header);
+
+/**
+ * eth_get_headlen - determine the the length of header for an ethernet frame
  * @data: pointer to start of frame
  * @len: total length of frame
  *
@@ -126,18 +155,17 @@ EXPORT_SYMBOL(eth_header);
  */
 u32 eth_get_headlen(void *data, unsigned int len)
 {
-	const unsigned int flags = FLOW_DISSECTOR_F_PARSE_1ST_FRAG;
 	const struct ethhdr *eth = (const struct ethhdr *)data;
-	struct flow_keys_basic keys;
+	struct flow_keys keys;
 
 	/* this should never happen, but better safe than sorry */
-	if (unlikely(len < sizeof(*eth)))
+	if (len < sizeof(*eth))
 		return len;
 
 	/* parse any remaining L2/L3 headers, check for L4 */
-	if (!skb_flow_dissect_flow_keys_basic(NULL, &keys, data, eth->h_proto,
-					      sizeof(*eth), len, flags))
-		return max_t(u32, keys.control.thoff, sizeof(*eth));
+	if (!__skb_flow_dissect(NULL, &keys, data,
+				eth->h_proto, sizeof(*eth), len))
+		return max_t(u32, keys.thoff, sizeof(*eth));
 
 	/* parse for any L4 headers */
 	return min_t(u32, __skb_get_poff(NULL, data, &keys, len), len);
@@ -161,11 +189,10 @@ __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
 
 	skb->dev = dev;
 	skb_reset_mac_header(skb);
-
-	eth = (struct ethhdr *)skb->data;
 	skb_pull_inline(skb, ETH_HLEN);
+	eth = eth_hdr(skb);
 
-	if (unlikely(is_multicast_ether_addr_64bits(eth->h_dest))) {
+	if (unlikely(is_multicast_ether_addr(eth->h_dest))) {
 		if (ether_addr_equal_64bits(eth->h_dest, dev->broadcast))
 			skb->pkt_type = PACKET_BROADCAST;
 		else
@@ -184,7 +211,7 @@ __be16 eth_type_trans(struct sk_buff *skb, struct net_device *dev)
 	if (unlikely(netdev_uses_dsa(dev)))
 		return htons(ETH_P_XDSA);
 
-	if (likely(eth_proto_is_802_3(eth->h_proto)))
+	if (likely(ntohs(eth->h_proto) >= ETH_P_802_3_MIN))
 		return eth->h_proto;
 
 	/*
@@ -239,12 +266,7 @@ int eth_header_cache(const struct neighbour *neigh, struct hh_cache *hh, __be16 
 	eth->h_proto = type;
 	memcpy(eth->h_source, dev->dev_addr, ETH_ALEN);
 	memcpy(eth->h_dest, neigh->ha, ETH_ALEN);
-
-	/* Pairs with READ_ONCE() in neigh_resolve_output(),
-	 * neigh_hh_output() and neigh_update_hhs().
-	 */
-	smp_store_release(&hh->hh_len, ETH_HLEN);
-
+	hh->hh_len = ETH_HLEN;
 	return 0;
 }
 EXPORT_SYMBOL(eth_header_cache);
@@ -328,7 +350,8 @@ EXPORT_SYMBOL(eth_mac_addr);
  */
 int eth_change_mtu(struct net_device *dev, int new_mtu)
 {
-	netdev_warn(dev, "%s is deprecated\n", __func__);
+	if (new_mtu < 68 || new_mtu > ETH_DATA_LEN)
+		return -EINVAL;
 	dev->mtu = new_mtu;
 	return 0;
 }
@@ -346,6 +369,7 @@ EXPORT_SYMBOL(eth_validate_addr);
 const struct header_ops eth_header_ops ____cacheline_aligned = {
 	.create		= eth_header,
 	.parse		= eth_header_parse,
+	.rebuild	= eth_rebuild_header,
 	.cache		= eth_header_cache,
 	.cache_update	= eth_header_cache_update,
 };
@@ -361,16 +385,13 @@ void ether_setup(struct net_device *dev)
 	dev->header_ops		= &eth_header_ops;
 	dev->type		= ARPHRD_ETHER;
 	dev->hard_header_len 	= ETH_HLEN;
-	dev->min_header_len	= ETH_HLEN;
 	dev->mtu		= ETH_DATA_LEN;
-	dev->min_mtu		= ETH_MIN_MTU;
-	dev->max_mtu		= ETH_DATA_LEN;
 	dev->addr_len		= ETH_ALEN;
-	dev->tx_queue_len	= DEFAULT_TX_QUEUE_LEN;
+	dev->tx_queue_len	= 1000;	/* Ethernet wants good queues */
 	dev->flags		= IFF_BROADCAST|IFF_MULTICAST;
 	dev->priv_flags		|= IFF_TX_SKB_SHARING;
 
-	eth_broadcast_addr(dev->broadcast);
+	memset(dev->broadcast, 0xFF, ETH_ALEN);
 
 }
 EXPORT_SYMBOL(ether_setup);
@@ -398,47 +419,19 @@ struct net_device *alloc_etherdev_mqs(int sizeof_priv, unsigned int txqs,
 }
 EXPORT_SYMBOL(alloc_etherdev_mqs);
 
-static void devm_free_netdev(struct device *dev, void *res)
-{
-	free_netdev(*(struct net_device **)res);
-}
-
-struct net_device *devm_alloc_etherdev_mqs(struct device *dev, int sizeof_priv,
-					   unsigned int txqs, unsigned int rxqs)
-{
-	struct net_device **dr;
-	struct net_device *netdev;
-
-	dr = devres_alloc(devm_free_netdev, sizeof(*dr), GFP_KERNEL);
-	if (!dr)
-		return NULL;
-
-	netdev = alloc_etherdev_mqs(sizeof_priv, txqs, rxqs);
-	if (!netdev) {
-		devres_free(dr);
-		return NULL;
-	}
-
-	*dr = netdev;
-	devres_add(dev, dr);
-
-	return netdev;
-}
-EXPORT_SYMBOL(devm_alloc_etherdev_mqs);
-
 ssize_t sysfs_format_mac(char *buf, const unsigned char *addr, int len)
 {
 	return scnprintf(buf, PAGE_SIZE, "%*phC\n", len, addr);
 }
 EXPORT_SYMBOL(sysfs_format_mac);
 
-struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
+struct sk_buff **eth_gro_receive(struct sk_buff **head,
+				 struct sk_buff *skb)
 {
-	const struct packet_offload *ptype;
-	unsigned int hlen, off_eth;
-	struct sk_buff *pp = NULL;
+	struct sk_buff *p, **pp = NULL;
 	struct ethhdr *eh, *eh2;
-	struct sk_buff *p;
+	unsigned int hlen, off_eth;
+	const struct packet_offload *ptype;
 	__be16 type;
 	int flush = 1;
 
@@ -453,7 +446,7 @@ struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	flush = 0;
 
-	list_for_each_entry(p, head, list) {
+	for (p = *head; p; p = p->next) {
 		if (!NAPI_GRO_CB(p)->same_flow)
 			continue;
 
@@ -475,12 +468,12 @@ struct sk_buff *eth_gro_receive(struct list_head *head, struct sk_buff *skb)
 
 	skb_gro_pull(skb, sizeof(*eh));
 	skb_gro_postpull_rcsum(skb, eh, sizeof(*eh));
-	pp = call_gro_receive(ptype->callbacks.gro_receive, head, skb);
+	pp = ptype->callbacks.gro_receive(head, skb);
 
 out_unlock:
 	rcu_read_unlock();
 out:
-	skb_gro_flush_final(skb, pp, flush);
+	NAPI_GRO_CB(skb)->flush |= flush;
 
 	return pp;
 }
@@ -509,7 +502,6 @@ EXPORT_SYMBOL(eth_gro_complete);
 
 static struct packet_offload eth_packet_offload __read_mostly = {
 	.type = cpu_to_be16(ETH_P_TEB),
-	.priority = 10,
 	.callbacks = {
 		.gro_receive = eth_gro_receive,
 		.gro_complete = eth_gro_complete,
@@ -524,32 +516,3 @@ static int __init eth_offload_init(void)
 }
 
 fs_initcall(eth_offload_init);
-
-unsigned char * __weak arch_get_platform_mac_address(void)
-{
-	return NULL;
-}
-
-int eth_platform_get_mac_address(struct device *dev, u8 *mac_addr)
-{
-	const unsigned char *addr;
-	struct device_node *dp;
-
-	if (dev_is_pci(dev))
-		dp = pci_device_to_OF_node(to_pci_dev(dev));
-	else
-		dp = dev->of_node;
-
-	addr = NULL;
-	if (dp)
-		addr = of_get_mac_address(dp);
-	if (!addr)
-		addr = arch_get_platform_mac_address();
-
-	if (!addr)
-		return -ENODEV;
-
-	ether_addr_copy(mac_addr, addr);
-	return 0;
-}
-EXPORT_SYMBOL(eth_platform_get_mac_address);

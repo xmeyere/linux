@@ -21,7 +21,7 @@
 
 #include "ieee754dp.h"
 
-static const unsigned int table[] = {
+static const unsigned table[] = {
 	0, 1204, 3062, 5746, 9193, 13348, 18162, 23592,
 	29598, 36145, 43202, 50740, 58733, 67158, 75992,
 	85215, 83599, 71378, 60428, 50647, 41945, 34246,
@@ -33,7 +33,7 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 {
 	struct _ieee754_csr oldcsr;
 	union ieee754dp y, z, t;
-	unsigned int scalx, yh;
+	unsigned scalx, yh;
 	COMPXDP;
 
 	EXPLODEXDP;
@@ -42,12 +42,13 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 
 	/* x == INF or NAN? */
 	switch (xc) {
-	case IEEE754_CLASS_SNAN:
-		return ieee754dp_nanxcpt(x);
-
 	case IEEE754_CLASS_QNAN:
 		/* sqrt(Nan) = Nan */
-		return x;
+		return ieee754dp_nanxcpt(x);
+
+	case IEEE754_CLASS_SNAN:
+		ieee754_setcx(IEEE754_INVALID_OPERATION);
+		return ieee754dp_nanxcpt(ieee754dp_indef());
 
 	case IEEE754_CLASS_ZERO:
 		/* sqrt(0) = 0 */
@@ -57,7 +58,7 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 		if (xs) {
 			/* sqrt(-Inf) = Nan */
 			ieee754_setcx(IEEE754_INVALID_OPERATION);
-			return ieee754dp_indef();
+			return ieee754dp_nanxcpt(ieee754dp_indef());
 		}
 		/* sqrt(+Inf) = Inf */
 		return x;
@@ -70,7 +71,7 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 		if (xs) {
 			/* sqrt(-x) = Nan */
 			ieee754_setcx(IEEE754_INVALID_OPERATION);
-			return ieee754dp_indef();
+			return ieee754dp_nanxcpt(ieee754dp_indef());
 		}
 		break;
 	}
@@ -91,8 +92,7 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 		scalx -= 256;
 	}
 
-	x = builddp(0, xe + DP_EBIAS, xm & ~DP_HIDDEN_BIT);
-	y = x;
+	y = x = builddp(0, xe + DP_EBIAS, xm & ~DP_HIDDEN_BIT);
 
 	/* magic initial approximation to almost 8 sig. bits */
 	yh = y.bits >> 32;
@@ -109,8 +109,7 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 
 	/* triple to almost 56 sig. bits: y ~= sqrt(x) to within 1 ulp */
 	/* t=y*y; z=t;	pt[n0]+=0x00100000; t+=z; z=(x-z)*y; */
-	t = ieee754dp_mul(y, y);
-	z = t;
+	z = t = ieee754dp_mul(y, y);
 	t.bexp += 0x001;
 	t = ieee754dp_add(t, z);
 	z = ieee754dp_mul(ieee754dp_sub(x, z), y);
@@ -142,7 +141,7 @@ union ieee754dp ieee754dp_sqrt(union ieee754dp x)
 		switch (oldcsr.rm) {
 		case FPU_CSR_RU:
 			y.bits += 1;
-			/* fall through */
+			/* drop through */
 		case FPU_CSR_RN:
 			t.bits += 1;
 			break;

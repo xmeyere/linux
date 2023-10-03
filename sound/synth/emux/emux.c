@@ -47,13 +47,13 @@ int snd_emux_new(struct snd_emux **remu)
 	mutex_init(&emu->register_mutex);
 
 	emu->client = -1;
-#if IS_ENABLED(CONFIG_SND_SEQUENCER_OSS)
+#ifdef CONFIG_SND_SEQUENCER_OSS
 	emu->oss_synth = NULL;
 #endif
 	emu->max_voices = 0;
 	emu->use_time = 0;
 
-	timer_setup(&emu->tlist, snd_emux_timer_callback, 0);
+	setup_timer(&emu->tlist, snd_emux_timer_callback, (unsigned long)emu);
 	emu->timer_active = 0;
 
 	*remu = emu;
@@ -101,7 +101,7 @@ int snd_emux_register(struct snd_emux *emu, struct snd_card *card, int index, ch
 	emu->name = kstrdup(name, GFP_KERNEL);
 	emu->voices = kcalloc(emu->max_voices, sizeof(struct snd_emux_voice),
 			      GFP_KERNEL);
-	if (emu->name == NULL || emu->voices == NULL)
+	if (emu->voices == NULL)
 		return -ENOMEM;
 
 	/* create soundfont list */
@@ -123,12 +123,14 @@ int snd_emux_register(struct snd_emux *emu, struct snd_card *card, int index, ch
 	snd_emux_init_voices(emu);
 
 	snd_emux_init_seq(emu, card, index);
-#if IS_ENABLED(CONFIG_SND_SEQUENCER_OSS)
+#ifdef CONFIG_SND_SEQUENCER_OSS
 	snd_emux_init_seq_oss(emu);
 #endif
 	snd_emux_init_virmidi(emu, card);
 
+#ifdef CONFIG_PROC_FS
 	snd_emux_proc_init(emu, card, index);
+#endif
 	return 0;
 }
 
@@ -138,14 +140,21 @@ EXPORT_SYMBOL(snd_emux_register);
  */
 int snd_emux_free(struct snd_emux *emu)
 {
+	unsigned long flags;
+
 	if (! emu)
 		return -EINVAL;
 
-	del_timer_sync(&emu->tlist);
+	spin_lock_irqsave(&emu->voice_lock, flags);
+	if (emu->timer_active)
+		del_timer(&emu->tlist);
+	spin_unlock_irqrestore(&emu->voice_lock, flags);
 
+#ifdef CONFIG_PROC_FS
 	snd_emux_proc_free(emu);
+#endif
 	snd_emux_delete_virmidi(emu);
-#if IS_ENABLED(CONFIG_SND_SEQUENCER_OSS)
+#ifdef CONFIG_SND_SEQUENCER_OSS
 	snd_emux_detach_seq_oss(emu);
 #endif
 	snd_emux_detach_seq(emu);
@@ -158,3 +167,20 @@ int snd_emux_free(struct snd_emux *emu)
 }
 
 EXPORT_SYMBOL(snd_emux_free);
+
+
+/*
+ *  INIT part
+ */
+
+static int __init alsa_emux_init(void)
+{
+	return 0;
+}
+
+static void __exit alsa_emux_exit(void)
+{
+}
+
+module_init(alsa_emux_init)
+module_exit(alsa_emux_exit)

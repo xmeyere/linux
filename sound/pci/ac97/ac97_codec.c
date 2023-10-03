@@ -177,7 +177,6 @@ static const struct ac97_codec_id snd_ac97_codec_ids[] = {
 { 0x54524123, 0xffffffff, "TR28602",		NULL,		NULL }, // only guess --jk [TR28023 = eMicro EM28023 (new CT1297)]
 { 0x54584e03, 0xffffffff, "TLV320AIC27",	NULL,		NULL },
 { 0x54584e20, 0xffffffff, "TLC320AD9xC",	NULL,		NULL },
-{ 0x56494120, 0xfffffff0, "VIA1613",		patch_vt1613,	NULL },
 { 0x56494161, 0xffffffff, "VIA1612A",		NULL,		NULL }, // modified ICE1232 with S/PDIF
 { 0x56494170, 0xffffffff, "VIA1617A",		patch_vt1617a,	NULL }, // modified VT1616 with S/PDIF
 { 0x56494182, 0xffffffff, "VIA1618",		patch_vt1618,   NULL },
@@ -824,7 +823,7 @@ static int snd_ac97_put_spsa(struct snd_kcontrol *kcontrol, struct snd_ctl_elem_
 {
 	struct snd_ac97 *ac97 = snd_kcontrol_chip(kcontrol);
 	int reg = kcontrol->private_value & 0xff;
-	int shift = (kcontrol->private_value >> 8) & 0x0f;
+	int shift = (kcontrol->private_value >> 8) & 0xff;
 	int mask = (kcontrol->private_value >> 16) & 0xff;
 	// int invert = (kcontrol->private_value >> 24) & 0xff;
 	unsigned short value, old, new;
@@ -958,8 +957,8 @@ static int snd_ac97_ad18xx_pcm_get_volume(struct snd_kcontrol *kcontrol, struct 
 	int codec = kcontrol->private_value & 3;
 	
 	mutex_lock(&ac97->page_mutex);
-	ucontrol->value.integer.value[0] = 31 - ((ac97->spec.ad18xx.pcmreg[codec] >> 8) & 31);
-	ucontrol->value.integer.value[1] = 31 - ((ac97->spec.ad18xx.pcmreg[codec] >> 0) & 31);
+	ucontrol->value.integer.value[0] = 31 - ((ac97->spec.ad18xx.pcmreg[codec] >> 0) & 31);
+	ucontrol->value.integer.value[1] = 31 - ((ac97->spec.ad18xx.pcmreg[codec] >> 8) & 31);
 	mutex_unlock(&ac97->page_mutex);
 	return 0;
 }
@@ -1907,7 +1906,7 @@ static int ac97_reset_wait(struct snd_ac97 *ac97, int timeout, int with_modem)
  * write).  The other callbacks, wait and reset, are not mandatory.
  * 
  * The clock is set to 48000.  If another clock is needed, set
- * ``(*rbus)->clock`` manually.
+ * (*rbus)->clock manually.
  *
  * The AC97 bus instance is registered as a low-level device, so you don't
  * have to release it manually.
@@ -1965,7 +1964,6 @@ static int snd_ac97_dev_register(struct snd_device *device)
 		     snd_ac97_get_short_name(ac97));
 	if ((err = device_register(&ac97->dev)) < 0) {
 		ac97_err(ac97, "Can't register ac97 bus\n");
-		put_device(&ac97->dev);
 		ac97->dev.bus = NULL;
 		return err;
 	}
@@ -2026,9 +2024,10 @@ int snd_ac97_mixer(struct snd_ac97_bus *bus, struct snd_ac97_template *template,
 		.dev_disconnect =	snd_ac97_dev_disconnect,
 	};
 
-	if (snd_BUG_ON(!bus || !template || !rac97))
+	if (rac97)
+		*rac97 = NULL;
+	if (snd_BUG_ON(!bus || !template))
 		return -EINVAL;
-	*rac97 = NULL;
 	if (snd_BUG_ON(template->num >= 4))
 		return -EINVAL;
 	if (bus->codec[template->num])
@@ -2902,8 +2901,7 @@ static int apply_quirk_str(struct snd_ac97 *ac97, const char *typestr)
  * Return: Zero if successful, or a negative error code on failure.
  */
 
-int snd_ac97_tune_hardware(struct snd_ac97 *ac97,
-			   const struct ac97_quirk *quirk, const char *override)
+int snd_ac97_tune_hardware(struct snd_ac97 *ac97, struct ac97_quirk *quirk, const char *override)
 {
 	int result;
 
@@ -2941,3 +2939,19 @@ int snd_ac97_tune_hardware(struct snd_ac97 *ac97,
 }
 
 EXPORT_SYMBOL(snd_ac97_tune_hardware);
+
+/*
+ *  INIT part
+ */
+
+static int __init alsa_ac97_init(void)
+{
+	return 0;
+}
+
+static void __exit alsa_ac97_exit(void)
+{
+}
+
+module_init(alsa_ac97_init)
+module_exit(alsa_ac97_exit)

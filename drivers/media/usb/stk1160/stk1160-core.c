@@ -20,7 +20,8 @@
  *
  * TODO:
  *
- * 1. Support stream at lower speed: lower frame rate or lower frame size.
+ * 1. (Try to) detect if we must register ac97 mixer
+ * 2. Support stream at lower speed: lower frame rate or lower frame size.
  *
  */
 
@@ -33,7 +34,7 @@
 #include <linux/usb.h>
 #include <linux/mm.h>
 #include <linux/vmalloc.h>
-#include <media/i2c/saa7115.h>
+#include <media/saa7115.h>
 
 #include "stk1160.h"
 #include "stk1160-reg.h"
@@ -47,7 +48,7 @@ MODULE_AUTHOR("Ezequiel Garcia");
 MODULE_DESCRIPTION("STK1160 driver");
 
 /* Devices supported by this driver */
-static const struct usb_device_id stk1160_id_table[] = {
+static struct usb_device_id stk1160_id_table[] = {
 	{ USB_DEVICE(0x05e1, 0x0408) },
 	{ }
 };
@@ -75,7 +76,7 @@ int stk1160_read_reg(struct stk1160 *dev, u16 reg, u8 *value)
 		return -ENOMEM;
 	ret = usb_control_msg(dev->udev, pipe, 0x00,
 			USB_DIR_IN | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-			0x00, reg, buf, sizeof(u8), 1000);
+			0x00, reg, buf, sizeof(u8), HZ);
 	if (ret < 0) {
 		stk1160_err("read failed on reg 0x%x (%d)\n",
 			reg, ret);
@@ -95,7 +96,7 @@ int stk1160_write_reg(struct stk1160 *dev, u16 reg, u16 value)
 
 	ret =  usb_control_msg(dev->udev, pipe, 0x01,
 			USB_DIR_OUT | USB_TYPE_VENDOR | USB_RECIP_DEVICE,
-			value, reg, NULL, 0, 1000);
+			value, reg, NULL, 0, HZ);
 	if (ret < 0) {
 		stk1160_err("write failed on reg 0x%x (%d)\n",
 			reg, ret);
@@ -161,14 +162,12 @@ static void stk1160_release(struct v4l2_device *v4l2_dev)
 {
 	struct stk1160 *dev = container_of(v4l2_dev, struct stk1160, v4l2_dev);
 
-	stk1160_dbg("releasing all resources\n");
+	stk1160_info("releasing all resources\n");
 
 	stk1160_i2c_unregister(dev);
 
 	v4l2_ctrl_handler_free(&dev->ctrl_handler);
 	v4l2_device_unregister(&dev->v4l2_dev);
-	mutex_destroy(&dev->v4l_lock);
-	mutex_destroy(&dev->vb_queue_lock);
 	kfree(dev->alt_max_pkt_size);
 	kfree(dev);
 }
@@ -290,9 +289,8 @@ static int stk1160_probe(struct usb_interface *interface,
 		return -ENODEV;
 
 	/* Alloc an array for all possible max_pkt_size */
-	alt_max_pkt_size = kmalloc_array(interface->num_altsetting,
-					 sizeof(alt_max_pkt_size[0]),
-					 GFP_KERNEL);
+	alt_max_pkt_size = kmalloc(sizeof(alt_max_pkt_size[0]) *
+			interface->num_altsetting, GFP_KERNEL);
 	if (alt_max_pkt_size == NULL)
 		return -ENOMEM;
 
@@ -365,6 +363,9 @@ static int stk1160_probe(struct usb_interface *interface,
 	dev->sd_saa7115 = v4l2_i2c_new_subdev(&dev->v4l2_dev, &dev->i2c_adap,
 		"saa7115_auto", 0, saa7113_addrs);
 
+	stk1160_info("driver ver %s successfully loaded\n",
+		STK1160_VERSION);
+
 	/* i2c reset saa711x */
 	v4l2_device_call_all(&dev->v4l2_dev, 0, core, reset, 0);
 	v4l2_device_call_all(&dev->v4l2_dev, 0, video, s_stream, 0);
@@ -375,7 +376,7 @@ static int stk1160_probe(struct usb_interface *interface,
 	/* select default input */
 	stk1160_select_input(dev);
 
-	stk1160_ac97_setup(dev);
+	stk1160_ac97_register(dev);
 
 	rc = stk1160_video_register(dev);
 	if (rc < 0)
@@ -413,7 +414,10 @@ static void stk1160_disconnect(struct usb_interface *interface)
 	/* Here is the only place where isoc get released */
 	stk1160_uninit_isoc(dev);
 
-	stk1160_clear_queue(dev, VB2_BUF_STATE_ERROR);
+	/* ac97 unregister needs to be done before usb_device is cleared */
+	stk1160_ac97_unregister(dev);
+
+	stk1160_clear_queue(dev);
 
 	video_unregister_device(&dev->vdev);
 	v4l2_device_disconnect(&dev->v4l2_dev);
@@ -426,7 +430,7 @@ static void stk1160_disconnect(struct usb_interface *interface)
 
 	/*
 	 * This calls stk1160_release if it's the last reference.
-	 * Otherwise, release is posponed until there are no users left.
+	 * therwise, release is posponed until there are no users left.
 	 */
 	v4l2_device_put(&dev->v4l2_dev);
 }

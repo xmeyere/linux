@@ -146,8 +146,9 @@ enum v4l2_field vpfe_isif_get_fid(struct vpfe_device *vpfe_dev)
 	u32 field_status;
 
 	field_status = isif_read(isif->isif_cfg.base_addr, MODESET);
-	return (field_status >> DM365_ISIF_MDFS_OFFSET) &
-		DM365_ISIF_MDFS_MASK;
+	field_status = (field_status >> DM365_ISIF_MDFS_OFFSET) &
+			DM365_ISIF_MDFS_MASK;
+	return field_status;
 }
 
 static int
@@ -277,12 +278,11 @@ isif_config_format(struct vpfe_device *vpfe_dev, unsigned int pad)
 /*
  * isif_try_format() - Try video format on a pad
  * @isif: VPFE isif device
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle
  * @fmt: pointer to v4l2 subdev format structure
  */
 static void
-isif_try_format(struct vpfe_isif_device *isif,
-		struct v4l2_subdev_pad_config *cfg,
+isif_try_format(struct vpfe_isif_device *isif, struct v4l2_subdev_fh *fh,
 		struct v4l2_subdev_format *fmt)
 {
 	unsigned int width = fmt->format.width;
@@ -593,7 +593,8 @@ isif_validate_raw_params(struct vpfe_isif_raw_config *params)
 	ret = isif_validate_dfc_params(&params->dfc);
 	if (ret)
 		return ret;
-	return isif_validate_bclamp_params(&params->bclamp);
+	ret = isif_validate_bclamp_params(&params->bclamp);
+	return ret;
 }
 
 static int isif_set_params(struct v4l2_subdev *sd, void *params)
@@ -624,16 +625,21 @@ static int isif_set_params(struct v4l2_subdev *sd, void *params)
  */
 static long isif_ioctl(struct v4l2_subdev *sd, unsigned int cmd, void *arg)
 {
+	int ret;
+
 	switch (cmd) {
 	case VIDIOC_VPFE_ISIF_S_RAW_PARAMS:
-		return isif_set_params(sd, arg);
+		ret = isif_set_params(sd, arg);
+		break;
 
 	case VIDIOC_VPFE_ISIF_G_RAW_PARAMS:
-		return isif_get_params(sd, arg);
+		ret = isif_get_params(sd, arg);
+		break;
 
 	default:
-		return -ENOIOCTLCMD;
+		ret = -ENOIOCTLCMD;
 	}
+	return ret;
 }
 
 static void isif_config_gain_offset(struct vpfe_isif_device *isif)
@@ -1233,8 +1239,7 @@ static int isif_config_ycbcr(struct v4l2_subdev *sd, int mode)
 	 * a lot of registers that we didn't touch
 	 */
 	/* start with all bits zero */
-	ccdcfg = 0;
-	modeset = 0;
+	ccdcfg = modeset = 0;
 	pix_fmt = isif_get_pix_fmt(format->code);
 	if (pix_fmt < 0) {
 		pr_debug("Invalid pix_fmt(input mode)\n");
@@ -1389,41 +1394,45 @@ static int isif_set_stream(struct v4l2_subdev *sd, int enable)
  * __isif_get_format() - helper function for getting isif format
  * @isif: pointer to isif private structure.
  * @pad: pad number.
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle.
  * @which: wanted subdev format.
  */
 static struct v4l2_mbus_framefmt *
-__isif_get_format(struct vpfe_isif_device *isif,
-		  struct v4l2_subdev_pad_config *cfg, unsigned int pad,
-		  enum v4l2_subdev_format_whence which)
+__isif_get_format(struct vpfe_isif_device *isif, struct v4l2_subdev_fh *fh,
+		  unsigned int pad, enum v4l2_subdev_format_whence which)
 {
-	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_format(&isif->subdev, cfg, pad);
+	if (which == V4L2_SUBDEV_FORMAT_TRY) {
+		struct v4l2_subdev_format fmt;
 
+		fmt.pad = pad;
+		fmt.which = which;
+
+		return v4l2_subdev_get_try_format(fh, pad);
+	}
 	return &isif->formats[pad];
 }
 
 /*
- * isif_set_format() - set format on pad
- * @sd    : VPFE ISIF device
- * @cfg   : V4L2 subdev pad config
- * @fmt   : pointer to v4l2 subdev format structure
- *
- * Return 0 on success or -EINVAL if format or pad is invalid
- */
+* isif_set_format() - set format on pad
+* @sd    : VPFE ISIF device
+* @fh    : V4L2 subdev file handle
+* @fmt   : pointer to v4l2 subdev format structure
+*
+* Return 0 on success or -EINVAL if format or pad is invalid
+*/
 static int
-isif_set_format(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+isif_set_format(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 		struct v4l2_subdev_format *fmt)
 {
 	struct vpfe_isif_device *isif = v4l2_get_subdevdata(sd);
 	struct vpfe_device *vpfe_dev = to_vpfe_device(isif);
 	struct v4l2_mbus_framefmt *format;
 
-	format = __isif_get_format(isif, cfg, fmt->pad, fmt->which);
+	format = __isif_get_format(isif, fh, fmt->pad, fmt->which);
 	if (format == NULL)
 		return -EINVAL;
 
-	isif_try_format(isif, cfg, fmt);
+	isif_try_format(isif, fh, fmt);
 	memcpy(format, &fmt->format, sizeof(*format));
 
 	if (fmt->which == V4L2_SUBDEV_FORMAT_TRY)
@@ -1438,20 +1447,20 @@ isif_set_format(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 /*
  * isif_get_format() - Retrieve the video format on a pad
  * @sd: VPFE ISIF V4L2 subdevice
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle
  * @fmt: pointer to v4l2 subdev format structure
  *
  * Return 0 on success or -EINVAL if the pad is invalid or doesn't correspond
  * to the format type.
  */
 static int
-isif_get_format(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+isif_get_format(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 		struct v4l2_subdev_format *fmt)
 {
 	struct vpfe_isif_device *vpfe_isif = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format;
 
-	format = __isif_get_format(vpfe_isif, cfg, fmt->pad, fmt->which);
+	format = __isif_get_format(vpfe_isif, fh, fmt->pad, fmt->which);
 	if (format == NULL)
 		return -EINVAL;
 
@@ -1463,11 +1472,11 @@ isif_get_format(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 /*
  * isif_enum_frame_size() - enum frame sizes on pads
  * @sd: VPFE isif V4L2 subdevice
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle
  * @code: pointer to v4l2_subdev_frame_size_enum structure
  */
 static int
-isif_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+isif_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 		     struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct vpfe_isif_device *isif = v4l2_get_subdevdata(sd);
@@ -1480,8 +1489,8 @@ isif_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 	format.format.code = fse->code;
 	format.format.width = 1;
 	format.format.height = 1;
-	format.which = fse->which;
-	isif_try_format(isif, cfg, &format);
+	format.which = V4L2_SUBDEV_FORMAT_TRY;
+	isif_try_format(isif, fh, &format);
 	fse->min_width = format.format.width;
 	fse->min_height = format.format.height;
 
@@ -1492,8 +1501,8 @@ isif_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 	format.format.code = fse->code;
 	format.format.width = -1;
 	format.format.height = -1;
-	format.which = fse->which;
-	isif_try_format(isif, cfg, &format);
+	format.which = V4L2_SUBDEV_FORMAT_TRY;
+	isif_try_format(isif, fh, &format);
 	fse->max_width = format.format.width;
 	fse->max_height = format.format.height;
 
@@ -1503,11 +1512,11 @@ isif_enum_frame_size(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 /*
  * isif_enum_mbus_code() - enum mbus codes for pads
  * @sd: VPFE isif V4L2 subdevice
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle
  * @code: pointer to v4l2_subdev_mbus_code_enum structure
  */
 static int
-isif_enum_mbus_code(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
+isif_enum_mbus_code(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 		    struct v4l2_subdev_mbus_code_enum *code)
 {
 	switch (code->pad) {
@@ -1528,14 +1537,14 @@ isif_enum_mbus_code(struct v4l2_subdev *sd, struct v4l2_subdev_pad_config *cfg,
 /*
  * isif_pad_set_selection() - set crop rectangle on pad
  * @sd: VPFE isif V4L2 subdevice
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle
  * @code: pointer to v4l2_subdev_mbus_code_enum structure
  *
  * Return 0 on success, -EINVAL if pad is invalid
  */
 static int
 isif_pad_set_selection(struct v4l2_subdev *sd,
-		       struct v4l2_subdev_pad_config *cfg,
+		       struct v4l2_subdev_fh *fh,
 		       struct v4l2_subdev_selection *sel)
 {
 	struct vpfe_isif_device *vpfe_isif = v4l2_get_subdevdata(sd);
@@ -1545,7 +1554,7 @@ isif_pad_set_selection(struct v4l2_subdev *sd,
 	if (sel->pad != ISIF_PAD_SINK || sel->target != V4L2_SEL_TGT_CROP)
 		return -EINVAL;
 
-	format = __isif_get_format(vpfe_isif, cfg, sel->pad, sel->which);
+	format = __isif_get_format(vpfe_isif, fh, sel->pad, sel->which);
 	if (format == NULL)
 		return -EINVAL;
 
@@ -1561,14 +1570,14 @@ isif_pad_set_selection(struct v4l2_subdev *sd,
 		sel->r.height = format->height;
 	}
 	/* adjust the width to 16 pixel boundary */
-	sel->r.width = (sel->r.width + 15) & ~0xf;
+	sel->r.width = ((sel->r.width + 15) & ~0xf);
 	vpfe_isif->crop = sel->r;
 	if (sel->which == V4L2_SUBDEV_FORMAT_ACTIVE) {
 		isif_set_image_window(vpfe_isif);
 	} else {
 		struct v4l2_rect *rect;
 
-		rect = v4l2_subdev_get_try_crop(sd, cfg, ISIF_PAD_SINK);
+		rect = v4l2_subdev_get_try_crop(fh, ISIF_PAD_SINK);
 		memcpy(rect, &vpfe_isif->crop, sizeof(*rect));
 	}
 	return 0;
@@ -1577,14 +1586,14 @@ isif_pad_set_selection(struct v4l2_subdev *sd,
 /*
  * isif_pad_get_selection() - get crop rectangle on pad
  * @sd: VPFE isif V4L2 subdevice
- * @cfg: V4L2 subdev pad config
+ * @fh: V4L2 subdev file handle
  * @code: pointer to v4l2_subdev_mbus_code_enum structure
  *
  * Return 0 on success, -EINVAL if pad is invalid
  */
 static int
 isif_pad_get_selection(struct v4l2_subdev *sd,
-		       struct v4l2_subdev_pad_config *cfg,
+		       struct v4l2_subdev_fh *fh,
 		       struct v4l2_subdev_selection *sel)
 {
 	struct vpfe_isif_device *vpfe_isif = v4l2_get_subdevdata(sd);
@@ -1596,7 +1605,7 @@ isif_pad_get_selection(struct v4l2_subdev *sd,
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
 		struct v4l2_rect *rect;
 
-		rect = v4l2_subdev_get_try_crop(sd, cfg, ISIF_PAD_SINK);
+		rect = v4l2_subdev_get_try_crop(fh, ISIF_PAD_SINK);
 		memcpy(&sel->r, rect, sizeof(*rect));
 	} else {
 		sel->r = vpfe_isif->crop;
@@ -1610,8 +1619,9 @@ isif_pad_get_selection(struct v4l2_subdev *sd,
  * @sd: VPFE isif V4L2 subdevice
  * @fh: V4L2 subdev file handle
  *
- * Initialize all pad formats with default values. Try formats are initialized
- * on the file handle.
+ * Initialize all pad formats with default values. If fh is not NULL, try
+ * formats are initialized on the file handle. Otherwise active formats are
+ * initialized on the device.
  */
 static int
 isif_init_formats(struct v4l2_subdev *sd,
@@ -1622,27 +1632,27 @@ isif_init_formats(struct v4l2_subdev *sd,
 
 	memset(&format, 0, sizeof(format));
 	format.pad = ISIF_PAD_SINK;
-	format.which = V4L2_SUBDEV_FORMAT_TRY;
+	format.which = fh ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 	format.format.code = MEDIA_BUS_FMT_SGRBG12_1X12;
 	format.format.width = MAX_WIDTH;
 	format.format.height = MAX_HEIGHT;
-	isif_set_format(sd, fh->pad, &format);
+	isif_set_format(sd, fh, &format);
 
 	memset(&format, 0, sizeof(format));
 	format.pad = ISIF_PAD_SOURCE;
-	format.which = V4L2_SUBDEV_FORMAT_TRY;
+	format.which = fh ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 	format.format.code = MEDIA_BUS_FMT_SGRBG12_1X12;
 	format.format.width = MAX_WIDTH;
 	format.format.height = MAX_HEIGHT;
-	isif_set_format(sd, fh->pad, &format);
+	isif_set_format(sd, fh, &format);
 
 	memset(&sel, 0, sizeof(sel));
 	sel.pad = ISIF_PAD_SINK;
-	sel.which = V4L2_SUBDEV_FORMAT_TRY;
+	sel.which = fh ? V4L2_SUBDEV_FORMAT_TRY : V4L2_SUBDEV_FORMAT_ACTIVE;
 	sel.target = V4L2_SEL_TGT_CROP;
 	sel.r.width = MAX_WIDTH;
 	sel.r.height = MAX_HEIGHT;
-	isif_pad_set_selection(sd, fh->pad, &sel);
+	isif_pad_set_selection(sd, fh, &sel);
 
 	return 0;
 }
@@ -1698,14 +1708,9 @@ isif_link_setup(struct media_entity *entity, const struct media_pad *local,
 {
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 	struct vpfe_isif_device *isif = v4l2_get_subdevdata(sd);
-	unsigned int index = local->index;
 
-	/* FIXME: this is actually a hack! */
-	if (is_media_entity_v4l2_subdev(remote->entity))
-		index |= 2 << 16;
-
-	switch (index) {
-	case ISIF_PAD_SINK | 2 << 16:
+	switch (local->index | media_entity_type(remote->entity)) {
+	case ISIF_PAD_SINK | MEDIA_ENT_T_V4L2_SUBDEV:
 		/* read from decoder/sensor */
 		if (!(flags & MEDIA_LNK_FL_ENABLED)) {
 			isif->input = ISIF_INPUT_NONE;
@@ -1716,7 +1721,7 @@ isif_link_setup(struct media_entity *entity, const struct media_pad *local,
 		isif->input = ISIF_INPUT_PARALLEL;
 		break;
 
-	case ISIF_PAD_SOURCE:
+	case ISIF_PAD_SOURCE | MEDIA_ENT_T_DEVNODE:
 		/* write to memory */
 		if (flags & MEDIA_LNK_FL_ENABLED)
 			isif->output = ISIF_OUTPUT_MEMORY;
@@ -1724,7 +1729,7 @@ isif_link_setup(struct media_entity *entity, const struct media_pad *local,
 			isif->output = ISIF_OUTPUT_NONE;
 		break;
 
-	case ISIF_PAD_SOURCE | 2 << 16:
+	case ISIF_PAD_SOURCE | MEDIA_ENT_T_V4L2_SUBDEV:
 		if (flags & MEDIA_LNK_FL_ENABLED)
 			isif->output = ISIF_OUTPUT_IPIPEIF;
 		else
@@ -1813,7 +1818,7 @@ int vpfe_isif_register_entities(struct vpfe_isif_device *isif,
 	isif->video_out.vpfe_dev = vpfe_dev;
 	flags = 0;
 	/* connect isif to video node */
-	ret = media_create_pad_link(&isif->subdev.entity, 1,
+	ret = media_entity_create_link(&isif->subdev.entity, 1,
 				       &isif->video_out.video_dev.entity,
 				       0, flags);
 	if (ret < 0)
@@ -2048,7 +2053,7 @@ int vpfe_isif_init(struct vpfe_isif_device *isif, struct platform_device *pdev)
 	isif->input = ISIF_INPUT_NONE;
 	isif->output = ISIF_OUTPUT_NONE;
 	me->ops = &isif_media_ops;
-	status = media_entity_pads_init(me, ISIF_PADS_NUM, pads);
+	status = media_entity_init(me, ISIF_PADS_NUM, pads, 0);
 	if (status)
 		goto isif_fail;
 	isif->video_out.type = V4L2_BUF_TYPE_VIDEO_CAPTURE;
