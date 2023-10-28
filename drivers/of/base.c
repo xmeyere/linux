@@ -1,3 +1,5 @@
+#define DEBUG 1
+
 /*
  * Procedures for creating, accessing and interpreting the device tree.
  *

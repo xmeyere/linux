@@ -1,5 +1,5 @@
 ifeq ($(CONFIG_OF),y)
-
+dtb-$(CONFIG_ARCH_XM580) += xm580.dtsi
 dtb-$(CONFIG_MACH_ASM9260) += \
 	alphascale-asm9260-devkit.dtb
 # Keep at91 dtb files sorted alphabetically for each SoC

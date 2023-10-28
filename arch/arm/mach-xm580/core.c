@@ -35,6 +35,7 @@
 #include <linux/bootmem.h>
 #include <linux/amba/serial.h> 
 #include <linux/amba/pl330.h> 
+#include <linux/of_platform.h>
 #include "mach/clock.h" 
 #include "platsmp.h"
 #include <asm/device.h>
@@ -77,17 +78,17 @@ void __init xm580_map_io(void)
 }
 
 
-void __iomem *xm580_gic_cpu_base_addr;     
+//void __iomem *xm580_gic_cpu_base_addr;     
 void __init xm580_gic_init_irq(void)
 {
 	edb_trace();
-	xm580_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
+	//xm580_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
 #ifdef CONFIG_LOCAL_TIMERS
-	gic_init(0, IRQ_LOCALTIMER, (void*)0xfe301000,
-			(void*)0xfe300100);
+	//gic_init(0, IRQ_LOCALTIMER, (void*)0xfe301000,
+	//		(void*)0xfe300100);
 #else
-	gic_init(0, XM580_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE),
-			__io_address(CFG_GIC_CPU_BASE));
+//edb_trace();
+	gic_init(0, XM580_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE), __io_address(CFG_GIC_CPU_BASE));
 #endif
 }
 
@@ -117,14 +118,13 @@ void __init xm580_gic_init_irq(void)
 	}
 
 XM_AMBA_DEVICE(uart0, "uart:0",  UART0,    NULL);
-XM_AMBA_DEVICE(uart1, "uart:1",  UART1,    NULL);
-XM_AMBA_DEVICE(uart2, "uart:2",  UART2,    NULL);
-//XM_AMBA_DEVICE(uart1, "uart:1",  UART1,    &uart1_plat_data);
+//XM_AMBA_DEVICE(uart1, "uart:1",  UART1,    NULL);
+//XM_AMBA_DEVICE(uart2, "uart:2",  UART2,    NULL);
 
 static struct amba_device *amba_devs[] __initdata = {
 	&XM_AMBADEV_NAME(uart0),
-	&XM_AMBADEV_NAME(uart1),
-	&XM_AMBADEV_NAME(uart2),
+	//&XM_AMBADEV_NAME(uart1),
+	//&XM_AMBADEV_NAME(uart2),
 };
 
 /*
@@ -190,10 +190,19 @@ static void __init xm580_init_early(void)
 void __init xm580_init(void)
 {
 	unsigned long i;
+	int ret = 0;
 
 	edb_trace();
-	writel(0x84, (void*)0xfe020050);
-	writel(0x84, (void*)0xfe020054);
+	//writel(0x84, (void*)0xfe020050);
+	//writel(0x84, (void*)0xfe020054);
+
+
+	ret = of_platform_populate(NULL, of_default_bus_match_table, NULL,
+				   NULL);
+	if (ret) {
+		printk("of_platform_populate failed: %d\n", ret);
+		BUG();
+	}
 
 	for (i = 0; i < ARRAY_SIZE(amba_devs); i++) {
 		amba_device_register(amba_devs[i], &iomem_resource);
@@ -215,14 +224,21 @@ asmlinkage void asmprint(void)
 	edb_trace();
 }
 
-MACHINE_START(XM580, "xm580")
+static const char *const xm580_match[] = {
+	"xmeye,8536d",
+	NULL
+};
+
+DT_MACHINE_START(XM580, "xm580 (Flattened Device Tree)")
 	.atag_offset  = 0x100,
 	.map_io         = xm580_map_io,
 	.init_early     = xm580_init_early,
 	.init_irq       = xm580_gic_init_irq,
 	.init_time    	= xm580_timer_init,
 	.init_machine   = xm580_init,
-	.smp          = smp_ops(xm580_smp_ops),
+	//.smp          = smp_ops(xm580_smp_ops),
 	.reserve      = xm580_reserve,
 	.restart      = xm580_restart,
+	.nr_irqs = XM580_GIC_IRQ_START,
+	.dt_compat	= xm580_match,
 MACHINE_END

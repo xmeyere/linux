@@ -210,11 +210,16 @@ static int amba_get_enable_pclk(struct amba_device *pcdev)
 
 	pcdev->pclk = clk_get(&pcdev->dev, "apb_pclk");
 	if (IS_ERR(pcdev->pclk))
+	{
+		printk(KERN_INFO "amba_get_enable_pclk: failed to get clock\n");
 		return PTR_ERR(pcdev->pclk);
+	}
 
 	ret = clk_prepare_enable(pcdev->pclk);
 	if (ret)
 		clk_put(pcdev->pclk);
+	else
+		printk(KERN_INFO "amba_get_enable_pclk: clk_prepare_enable failed\n");
 
 	return ret;
 }
@@ -356,7 +361,10 @@ int amba_device_add(struct amba_device *dev, struct resource *parent)
 
 	ret = request_resource(parent, &dev->res);
 	if (ret)
+	{
+		printk(KERN_INFO "failed to request resource");
 		goto err_out;
+	}
 
 	/* Hard-coded primecell ID instead of plug-n-play */
 	if (dev->periphid != 0)
@@ -394,13 +402,20 @@ int amba_device_add(struct amba_device *dev, struct resource *parent)
 			dev->periphid = pid;
 
 		if (!dev->periphid)
+		{
+			printk(KERN_INFO "device periphid is null\n");
 			ret = -ENODEV;
+		}
+			
 	}
 
 	iounmap(tmp);
 
 	if (ret)
+	{
+		printk(KERN_INFO "amba_device_register failure: clock is null\n");
 		goto err_release;
+	}
 
  skip_probe:
 	ret = device_add(&dev->dev);
@@ -413,7 +428,7 @@ int amba_device_add(struct amba_device *dev, struct resource *parent)
 		ret = device_create_file(&dev->dev, &dev_attr_irq1);
 	if (ret == 0)
 		return ret;
-
+	printk(KERN_INFO "amba_device_register failure\n");
 	device_unregister(&dev->dev);
 
  err_release:

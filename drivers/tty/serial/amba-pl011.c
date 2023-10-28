@@ -29,10 +29,10 @@
  * and hooked into this driver.
  */
 
-
 #if defined(CONFIG_SERIAL_AMBA_PL011_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
 #define SUPPORT_SYSRQ
 #endif
+#define DEBUG 1
 
 #include <linux/module.h>
 #include <linux/ioport.h>
@@ -2175,7 +2175,7 @@ static int pl011_probe_dt_alias(int index, struct device *dev)
 }
 
 static int pl011_probe(struct amba_device *dev, const struct amba_id *id)
-{
+{	printk(KERN_INFO "pl011_probe\n");
 	struct uart_amba_port *uap;
 	struct vendor_data *vendor = id->data;
 	void __iomem *base;
@@ -2198,11 +2198,17 @@ static int pl011_probe(struct amba_device *dev, const struct amba_id *id)
 	base = devm_ioremap(&dev->dev, dev->res.start,
 			    resource_size(&dev->res));
 	if (!base)
-		return -ENOMEM;
+		{
+				printk(KERN_INFO "devm_ioremap failure\n");
+			return -ENOMEM;
+		}
 
 	uap->clk = devm_clk_get(&dev->dev, NULL);
 	if (IS_ERR(uap->clk))
-		return PTR_ERR(uap->clk);
+	{
+		printk(KERN_INFO "pl011: UNKNOWN CLOCK!\n");
+return PTR_ERR(uap->clk);
+	}
 
 	uap->vendor = vendor;
 	uap->lcrh_rx = vendor->lcrh_rx;
@@ -2233,7 +2239,7 @@ static int pl011_probe(struct amba_device *dev, const struct amba_id *id)
 	if (!amba_reg.state) {
 		ret = uart_register_driver(&amba_reg);
 		if (ret < 0) {
-			pr_err("Failed to register AMBA-PL011 driver\n");
+			printk(KERN_INFO "Failed to register AMBA-PL011 driver\n");
 			return ret;
 		}
 	}

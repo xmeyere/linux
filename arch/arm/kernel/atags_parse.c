@@ -192,7 +192,7 @@ setup_machine_tags(phys_addr_t __atags_pointer, unsigned int machine_nr)
 	 */
 	for_each_machine_desc(p)
 		if (machine_nr == p->nr) {
-			pr_info("Machine: %s\n", p->name);
+			early_print("Machine: %s\n", p->name);
 			mdesc = p;
 			break;
 		}

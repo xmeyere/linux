@@ -1,3 +1,4 @@
+#define DEBUG 1
 
 #include <linux/device.h>
 #include <linux/io.h>
@@ -8,7 +9,6 @@
 #include <linux/sizes.h>
 #include <linux/slab.h>
 #include <linux/string.h>
-
 /* Max address size we deal with */
 #define OF_MAX_ADDR_CELLS	4
 #define OF_CHECK_ADDR_COUNT(na)	((na) > 0 && (na) <= OF_MAX_ADDR_CELLS)
@@ -241,7 +241,10 @@ int of_pci_range_parser_init(struct of_pci_range_parser *parser,
 
 	parser->range = of_get_property(node, "ranges", &rlen);
 	if (parser->range == NULL)
-		return -ENOENT;
+		{
+			printk(KERN_INFO "null ranges property");
+			return -ENOENT;
+		}
 
 	parser->end = parser->range + rlen / sizeof(__be32);
 
@@ -640,17 +643,26 @@ const __be32 *of_get_address(struct device_node *dev, int index, u64 *size,
 	/* Get parent & match bus type */
 	parent = of_get_parent(dev);
 	if (parent == NULL)
+	{
+		printk(KERN_INFO "of_get_address: soc null for %s\n", dev->full_name);
 		return NULL;
+	}
 	bus = of_match_bus(parent);
 	bus->count_cells(dev, &na, &ns);
 	of_node_put(parent);
 	if (!OF_CHECK_ADDR_COUNT(na))
-		return NULL;
+		{
+				printk(KERN_INFO "of_get_address: invaild check failure with %d\n", na);
+			return NULL;
+		}
 
 	/* Get "reg" or "assigned-addresses" property */
 	prop = of_get_property(dev, bus->addresses, &psize);
 	if (prop == NULL)
+	{
+		printk(KERN_INFO "of_get_address: reg is null: %s\n", dev->full_name);
 		return NULL;
+	}
 	psize /= 4;
 
 	onesize = na + ns;
@@ -662,6 +674,8 @@ const __be32 *of_get_address(struct device_node *dev, int index, u64 *size,
 				*flags = bus->get_flags(prop);
 			return prop;
 		}
+
+	printk(KERN_INFO "of_get_address: unknown fault for %s\n", dev->full_name);
 	return NULL;
 }
 EXPORT_SYMBOL(of_get_address);

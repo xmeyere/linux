@@ -50,7 +50,7 @@ static int __init xm580_dmac_init(void)
 	dma_cap_set(DMA_SLAVE, xm580_dma_platdata.cap_mask);
 	dma_cap_set(DMA_CYCLIC, xm580_dma_platdata.cap_mask);
 	xm580_dma_device.dev.platform_data = &xm580_dma_platdata;
-	amba_device_register(&xm580_dma_device, &iomem_resource);
+	//amba_device_register(&xm580_dma_device, &iomem_resource);
 
 	return 0;
 }

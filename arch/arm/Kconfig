@@ -797,6 +797,8 @@ config ARCH_XM580
 	select USB_ARCH_HAS_OHCI
 	select USB_ARCH_HAS_EHCI
 	select USB_ARCH_HAS_XHCI
+	select USE_OF
+	select CONFIG_ARM_APPENDED_DTB
 	help 
 		This enables support for XM xm580 platform.
 

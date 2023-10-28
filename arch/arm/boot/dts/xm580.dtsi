@@ -1,0 +1,120 @@
+#include "skeleton.dtsi"
+#include <dt-bindings/interrupt-controller/arm-gic.h>
+
+
+/ {
+    model = "XM580 compatible board";
+    compatible = "xmeye,8536d";
+    interrupt-parent = <&gic>;
+
+    aliases {
+	
+	};
+
+    memory {
+        device_type = "memory";
+        reg = <0x80000000 0x10000000>;
+    };
+    
+    cpus {
+        #address-cells = <1>;
+		#size-cells = <0>;
+        cpu@0 {
+            compatible = "arm,cortex-a9";
+            device_type = "cpu";
+			reg = <0>;
+        };
+        cpu@1 {
+            compatible = "arm,cortex-a9";
+            device_type = "cpu";
+			reg = <1>;
+        };
+    };
+
+    xtal24mhz: xtal24mhz@24M {
+		#clock-cells = <0>;
+		compatible = "fixed-clock";
+		clock-frequency = <24000000>;
+	};
+
+    pclk: pclk@0 {
+		#clock-cells = <0>;
+		compatible = "fixed-clock";
+		clock-frequency = <0>;
+	};
+
+    gic: interrupt-controller@10140000 {
+        compatible = "arm,cortex-a9-gic";
+        interrupt-controller;
+        #interrupt-cells = <3>;
+        #address-cells = <0>;
+        /*  gic dist base, gic cpu base*/
+        reg = <0x20201000 0xF00>, <0x20200100 0x1000>; //cpu
+    };
+
+    soc: soc {
+        #address-cells = <1>;
+		#size-cells = <1>;
+        compatible = "simple-bus";
+
+        /* child and parent address space 1:1 mapped */
+        ranges;
+
+
+
+
+        /*l2-cache-controller@20210000 {
+	    	compatible = "arm,pl310-cache";
+	    	reg = <0x20210000 0x1000>;
+	    	cache-unified;
+	    	cache-level = <2>;
+	    };
+
+        console: serial@10030000 {
+            compatible = "arm,pl011", "arm,primecell";
+            reg = <0x10030000 0x1000>;
+            interrupt-parent = <&gic>;
+            interrupts = < GIC_SPI 32 >;
+        };*/
+
+        amba {
+			#address-cells = <1>;
+			#size-cells = <1>;
+			compatible = "arm,amba-bus";
+			ranges;
+
+            uart1: serial@10040000 {
+                compatible = "arm,pl011", "arm,primecell";
+                reg = <0x10040000 0x1000>;
+                clocks = <&pclk>;
+                clock-names = "apb_pclk";
+            };
+
+            uart2: serial@10050000 {
+                compatible = "arm,pl011", "arm,primecell";
+                reg = <0x10050000 0x1000>;
+                clocks = <&pclk>; 
+                clock-names = "apb_pclk";
+            };
+        };
+
+        dmac_s: dmac@f8003000 {
+	    	compatible = "arm,pl330", "arm,primecell";
+	    	reg = <0x20020000 0x1000>;
+	    	interrupt-parent = <&gic>;
+	    	interrupt-names = "name";
+	    	interrupts = <42>;
+	    };
+
+    //L2: l2-cache {
+	//	compatible = "marvell,aurora-system-cache";
+	//	reg = <0x20210000 0x1000>;
+	//	cache-id-part = <0x100>;
+	//	cache-unified;
+	//	wt-override;
+	//};
+
+
+    };
+   
+};
