@@ -227,9 +227,7 @@ static void __init xm580_local_timer_init(void)
 
 
 /*****************************************************************************/
-#ifdef CONFIG_LOCAL_TIMERS
 DEFINE_TWD_LOCAL_TIMER(twd_localtimer, (resource_size_t)(ARM_INTNL_BASE + REG_A5_PERI_PRI_TIMER_WDT), (resource_size_t)IRQ_LOCALTIMER);
-#endif
 
 /*****************************************************************************/
 
@@ -262,7 +260,7 @@ static cycle_t xm580_clocksource_read(struct clocksource *cs)
 
 static notrace u64 xm580_sched_clock_read(void)
 {
-	return ~readl_relaxed(xm580_clocksource.base + TIMER_VALUE);
+	return (u64)(u32)~readl_relaxed(xm580_clocksource.base + TIMER_VALUE);
 }
 
 static void xm580_clocksource_resume(struct clocksource *cs)
@@ -291,7 +289,7 @@ static void __init xm580_clocksource_init(void __iomem *base,
 	xm580_clocksource_start(base);
 
 	clocksource_register_hz(clksrc, rate);
-	printk("intitializing xm580 clock...");
+	printk("intitializing xm580 clock... clock rate is %d", rate);
 	sched_clock_register(xm580_sched_clock_read, 32, rate);
 }
 
@@ -301,10 +299,10 @@ void __init xm580_timer_init(void)
 
 	/* set the bus clock for all timer */
 
-#ifdef CONFIG_LOCAL_TIMERS
+//#ifdef CONFIG_LOCAL_TIMERS
 	//xm580_local_timer_init();
 	twd_local_timer_register(&twd_localtimer);
-#endif
+
 
 	xm580_clocksource_init((void *)TIMER(0)->addr,
 		TIMER(0)->name);

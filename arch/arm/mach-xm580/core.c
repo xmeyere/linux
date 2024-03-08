@@ -82,13 +82,8 @@ void __init xm580_gic_init_irq(void)
 {
 	edb_trace();
 	xm580_gic_cpu_base_addr = (void*)0xfe300100;//__io_address(CFG_GIC_CPU_BASE);
-#ifdef CONFIG_LOCAL_TIMERS
-	gic_init(0, IRQ_LOCALTIMER, (void*)0xfe301000,
-			(void*)0xfe300100);
-#else
-	gic_init(0, XM580_GIC_IRQ_START, __io_address(CFG_GIC_DIST_BASE),
+	gic_init(0, IRQ_LOCALTIMER, __io_address(CFG_GIC_DIST_BASE),
 			__io_address(CFG_GIC_CPU_BASE));
-#endif
 }
 
 

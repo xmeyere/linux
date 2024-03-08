@@ -9,6 +9,7 @@ config MACH_XM580
 	select ARM_TIMER_SP804
 	select PL330
 	select DMA_SHARED_BUFFER
+	select HAVE_ARM_TWD
 	help
 	  Includes support for the  xm580 platform.
 
