@@ -659,10 +659,7 @@ const __be32 *of_get_address(struct device_node *dev, int index, u64 *size,
 	/* Get "reg" or "assigned-addresses" property */
 	prop = of_get_property(dev, bus->addresses, &psize);
 	if (prop == NULL)
-	{
-		printk(KERN_INFO "of_get_address: reg is null: %s\n", dev->full_name);
 		return NULL;
-	}
 	psize /= 4;
 
 	onesize = na + ns;

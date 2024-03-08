@@ -25,7 +25,12 @@
 #include <asm/mach/time.h>
 #include <linux/sched_clock.h>
 #include <asm/hardware/arm_timer.h>
+#include <asm/smp_plat.h>
 #include <asm/smp_twd.h>
+
+#include <linux/clk.h>
+#include <linux/clkdev.h>
+#include <linux/clk-provider.h>
 
 #include <mach/early-debug.h>
 
@@ -63,37 +68,42 @@ static struct xm_timer_t xm_timer[] = {
 //#define GET_SMP_TIMER(_cpu)  (&xm_timer[((_cpu) << 1) + 4])
 #define GET_SMP_TIMER(_cpu)  (&xm_timer[(_cpu) + 2])
 /*****************************************************************************/
-
+extern void early_print(const char *str, ...);
 static long __init sp804_get_clock_rate(const char *name)
 {
 	struct clk *clk;
 	long rate;
 	int err;
+	early_print("sp804_get_clock_rate: enter\n");
 
 	clk = clk_get_sys("sp804", name);
 	if (IS_ERR(clk)) {
+		early_print("sp804_get_clock_rate: failed to find clk\n");
 		pr_err("sp804: %s clock not found: %d\n", name,
 			(int)PTR_ERR(clk));
 		return PTR_ERR(clk);
 	}
-
+	early_print("sp804_get_clock_rate: c\n");
 	err = clk_prepare(clk);
 	if (err) {
+		early_print("sp804_get_clock_rate: failed to prepare\n");
 		pr_err("sp804: %s clock failed to prepare: %d\n", name, err);
 		clk_put(clk);
 		return err;
 	}
-
+early_print("sp804_get_clock_rate: d\n");
 	err = clk_enable(clk);
 	if (err) {
+		early_print("sp804_get_clock_rate: failed to enable\n");
 		pr_err("sp804: %s clock failed to enable: %d\n", name, err);
 		clk_unprepare(clk);
 		clk_put(clk);
 		return err;
 	}
-
+early_print("sp804_get_clock_rate: e\n");
 	rate = clk_get_rate(clk);
 	if (rate < 0) {
+		early_print("sp804_get_clock_rate: get rate failed\n");
 		pr_err("sp804: %s clock failed to get rate: %ld\n", name, rate);
 		clk_disable(clk);
 		clk_unprepare(clk);
@@ -227,9 +237,9 @@ static void __init xm580_local_timer_init(void)
 
 
 /*****************************************************************************/
-#ifdef CONFIG_LOCAL_TIMERS
+//#ifdef CONFIG_LOCAL_TIMERS
 DEFINE_TWD_LOCAL_TIMER(twd_localtimer, (resource_size_t)(ARM_INTNL_BASE + REG_A5_PERI_PRI_TIMER_WDT), (resource_size_t)IRQ_LOCALTIMER);
-#endif
+//#endif
 
 /*****************************************************************************/
 
@@ -270,10 +280,12 @@ static void xm580_clocksource_resume(struct clocksource *cs)
 	xm580_clocksource_start(to_xm580_clksrc(cs)->base);
 }
 
+
 static void __init xm580_clocksource_init(void __iomem *base,
 						const char *name)
 {
-	long rate = sp804_get_clock_rate(name);
+	early_print("xm580_clocksource_init a\n");
+	long rate = 24000000; //sp804_get_clock_rate(name);
 	struct clocksource *clksrc = &xm580_clocksource.clksrc;
 
 	if (rate < 0)
@@ -287,30 +299,46 @@ static void __init xm580_clocksource_init(void __iomem *base,
 	clksrc->resume = xm580_clocksource_resume,
 
 	xm580_clocksource.base = base;
-
+	early_print("xm580_clocksource_init b\n");
 	xm580_clocksource_start(base);
-
+	early_print("xm580_clocksource_init c\n");
 	clocksource_register_hz(clksrc, rate);
 	printk("intitializing xm580 clock...");
+		early_print("xm580_clocksource_init d\n");
 	sched_clock_register(xm580_sched_clock_read, 32, rate);
+
+		early_print("xm580_clocksource_init e\n");
 }
 
 
 void __init xm580_timer_init(void)
 {
-
+early_print("xm580_timer_init\n");
 	/* set the bus clock for all timer */
 
-#ifdef CONFIG_LOCAL_TIMERS
+//#ifdef CONFIG_LOCAL_TIMERS
 	//xm580_local_timer_init();
-	twd_local_timer_register(&twd_localtimer);
-#endif
+	//twd_local_timer_register(&twd_localtimer);
+//#endif
+early_print("xm580_timer_init b\n");
+	//xm580_clocksource_init((void *)TIMER(0)->addr,
+	//	TIMER(0)->name);
+early_print("xm580_timer_init c\n");
+	// timer1 is already initialized in device tree
 
-	xm580_clocksource_init((void *)TIMER(0)->addr,
-		TIMER(0)->name);
-
-	sp804_clockevents_init((void *)TIMER(1)->addr,
-		TIMER(1)->irq.irq, TIMER(1)->name);
-
+	early_print("xm580_timer_init end\n");
 }
 
+static struct clk *clk[1];
+static struct clk_onecell_data clk_data;
+void __init xm580_timerdev_init(struct device_node *np)
+{
+	early_print("!!!xm580_timerdev_init\n");
+	xm580_timer_init();
+
+	
+
+	early_print("initialized timer\n");
+}
+
+CLK_OF_DECLARE(xm580_clock, "xmeye,8536d-clock", xm580_timerdev_init);

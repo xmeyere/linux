@@ -4,10 +4,10 @@
 #define IRQ_LOCALTIMER      (29)  
 #define XM580_GIC_IRQ_START	(32)
 
-#define INTNR_TIMER_0       (XM580_GIC_IRQ_START + 4)    /* 36 */
-#define INTNR_TIMER_1       (XM580_GIC_IRQ_START + 4)
-#define INTNR_TIMER_2       (XM580_GIC_IRQ_START + 5)    /* 37 */
-#define INTNR_TIMER_3       (XM580_GIC_IRQ_START + 5)
+#define INTNR_TIMER_0       ( 4)    /* 36 */
+#define INTNR_TIMER_1       ( 4)
+#define INTNR_TIMER_2       ( 5)    /* 37 */
+#define INTNR_TIMER_3       ( 5)
 #define UART0_IRQ		(XM580_GIC_IRQ_START + 0)
 #define UART1_IRQ		(XM580_GIC_IRQ_START + 1)
 #define UART2_IRQ		(XM580_GIC_IRQ_START + 2)

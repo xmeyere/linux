@@ -129,7 +129,7 @@ static struct amba_device *amba_devs[] __initdata = {
 
 /*
  * These are fixed clocks.
- */
+
 static struct clk uart_clk = {
 	.rate   = 24000000,
 };
@@ -147,19 +147,19 @@ static struct clk twd_clk = {
 };
 
 static struct clk_lookup lookups[] = {
-	{       /* UART0 */
+	{       
 		.dev_id         = "uart:0",
 		.clk            = &uart_clk,
 	},
-	{       /* UART1 */
+	{     
 		.dev_id         = "uart:1",
 		.clk            = &uart_clk,
 	},
-	{       /* UART2 */
+	{   
 		.dev_id         = "uart:2",
 		.clk            = &uart_clk,
 	},
-	{ /* SP804 timers */
+	{ 
 		.dev_id     = "sp804",
 		.clk        = &sp804_clk,
 	},
@@ -171,20 +171,22 @@ static struct clk_lookup lookups[] = {
 		.dev_id     = "smp_twd",
 		.clk        = &twd_clk,
 	},
-};
+}; */
 
 static void __init xm580_init_early(void)    
 {
 	unsigned int tmp;
 	unsigned int pllclk;
+	unsigned int twdclk;
 	edb_trace();
 	tmp = readl(__io_address(PLL_PLLA_CTRL));
-	pllclk = 12000000 / (tmp & 0x3F) * ((tmp >> 6) & 0xFFF) / (((tmp >> 19) & 0x1) + 1);
+	pllclk = 24000000 / (tmp & 0x3F) * ((tmp >> 6) & 0xFFF) / (((tmp >> 19) & 0x1) + 1);
 
 	tmp = readl(__io_address(PLL_CPUCLK_CTRL));
-	twd_clk.rate = pllclk / ((tmp  & 0xFF) + 1) / (((tmp >> 20) & 0x1) == 0 ? 1 : 4);
+	twdclk = pllclk / ((tmp  & 0xFF) + 1) / (((tmp >> 20) & 0x1) == 0 ? 1 : 4);
+	early_print("PLL Clock frequency: %d\nTWD Clock frequency: %d\n", pllclk, twdclk);
 
-	clkdev_add_table(lookups, ARRAY_SIZE(lookups));
+	//clkdev_add_table(lookups, ARRAY_SIZE(lookups));
 }
 
 void __init xm580_init(void)
@@ -205,12 +207,10 @@ void __init xm580_init(void)
 	}
 
 	for (i = 0; i < ARRAY_SIZE(amba_devs); i++) {
-		amba_device_register(amba_devs[i], &iomem_resource);
+		//amba_device_register(amba_devs[i], &iomem_resource);
 	}
 }
-static void __init xm580_reserve(void)
-{
-}
+
 void xm580_restart(enum reboot_mode mode, const char *cmd)
 {
 	writel(1, __io_address(SYS_CTRL_BASE + REG_SYS_SOFT_RSTEN));
@@ -233,12 +233,12 @@ DT_MACHINE_START(XM580, "xm580 (Flattened Device Tree)")
 	.atag_offset  = 0x100,
 	.map_io         = xm580_map_io,
 	.init_early     = xm580_init_early,
-	.init_irq       = xm580_gic_init_irq,
-	.init_time    	= xm580_timer_init,
-	.init_machine   = xm580_init,
+	//.init_irq       = xm580_gic_init_irq,
+	//.init_time    	= xm580_timer_init,
+	//.init_machine   = xm580_init,
 	//.smp          = smp_ops(xm580_smp_ops),
-	.reserve      = xm580_reserve,
+	//.reserve      = xm580_reserve,
 	.restart      = xm580_restart,
-	.nr_irqs = XM580_GIC_IRQ_START,
+	//.nr_irqs = XM580_GIC_IRQ_START,
 	.dt_compat	= xm580_match,
 MACHINE_END
