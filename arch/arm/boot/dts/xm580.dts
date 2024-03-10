@@ -101,32 +101,6 @@
 			interrupts		= <GIC_SPI 59 0>;
         };
 
-        /*usb0: usb@3f120000 {
-		compatible = "snps,dwc2";
-		reg = <0x50300000 0xFFFFF>;
-		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
-		clocks = <&twdclock>;
-		clock-names = "otg";
-	    };*/
-
-        /*usb0: usb@50300000 {
-		compatible = "snps,dwc2";
-		reg = <0x50300000 0xFFFFF>;
-		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
-		clocks = <&twdclock>;
-		clock-names = "otg";
-        dr_mode = "host";
-	    };
-
-        usb1: usb@550400000 {
-		compatible = "snps,dwc2";
-		reg = <0x50400000 0xFFFFF>;
-		interrupts = <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;
-		clocks = <&twdclock>;
-		clock-names = "otg";
-        dr_mode = "host";
-	    };*/
-
         amba {
 			#address-cells = <1>;
 			#size-cells = <1>;

@@ -1328,7 +1328,7 @@ void dwc_otg_core_init(dwc_otg_core_if_t * core_if)
 	DWC_WRITE_REG32(&global_regs->gusbcfg, usbcfg.d32);
 
 	/* Reset the Controller */
-	dwc_otg_core_reset(core_if);
+	//dwc_otg_core_reset(core_if); // misha: This does not get called on XM driver
 
 	core_if->adp_enable = core_if->core_params->adp_supp_enable;
 	core_if->power_down = core_if->core_params->power_down;

@@ -91,7 +91,7 @@ extern int32_t dwc_otg_get_param_otg_cap(dwc_otg_core_if_t * core_if);
 #define DWC_OTG_CAP_PARAM_HNP_SRP_CAPABLE 0
 #define DWC_OTG_CAP_PARAM_SRP_ONLY_CAPABLE 1
 #define DWC_OTG_CAP_PARAM_NO_HNP_SRP_CAPABLE 2
-#define dwc_param_otg_cap_default DWC_OTG_CAP_PARAM_HNP_SRP_CAPABLE
+#define dwc_param_otg_cap_default DWC_OTG_CAP_PARAM_NO_HNP_SRP_CAPABLE
 
 extern int dwc_otg_set_param_opt(dwc_otg_core_if_t * core_if, int32_t val);
 extern int32_t dwc_otg_get_param_opt(dwc_otg_core_if_t * core_if);
@@ -120,7 +120,7 @@ extern int32_t dwc_otg_get_param_dma_enable(dwc_otg_core_if_t * core_if);
 extern int dwc_otg_set_param_dma_desc_enable(dwc_otg_core_if_t * core_if,
 					     int32_t val);
 extern int32_t dwc_otg_get_param_dma_desc_enable(dwc_otg_core_if_t * core_if);
-#define dwc_param_dma_desc_enable_default 1
+#define dwc_param_dma_desc_enable_default 0
 
 /** The DMA Burst size (applicable only for External DMA
  * Mode). 1, 4, 8 16, 32, 64, 128, 256 (default 32)
@@ -128,7 +128,7 @@ extern int32_t dwc_otg_get_param_dma_desc_enable(dwc_otg_core_if_t * core_if);
 extern int dwc_otg_set_param_dma_burst_size(dwc_otg_core_if_t * core_if,
 					    int32_t val);
 extern int32_t dwc_otg_get_param_dma_burst_size(dwc_otg_core_if_t * core_if);
-#define dwc_param_dma_burst_size_default 32
+#define dwc_param_dma_burst_size_default 1
 
 /**
  * Specifies the maximum speed of operation in host and device mode.
@@ -397,7 +397,7 @@ extern int32_t dwc_otg_get_param_dev_tx_fifo_size(dwc_otg_core_if_t * core_if,
  */
 extern int dwc_otg_set_param_thr_ctl(dwc_otg_core_if_t * core_if, int32_t val);
 extern int32_t dwc_otg_get_thr_ctl(dwc_otg_core_if_t * core_if, int fifo_num);
-#define dwc_param_thr_ctl_default 0
+#define dwc_param_thr_ctl_default 1
 
 /** Thresholding length for Tx
  * FIFOs in 32 bit DWORDs
@@ -421,7 +421,7 @@ extern int32_t dwc_otg_get_rx_thr_length(dwc_otg_core_if_t * core_if);
 extern int dwc_otg_set_param_lpm_enable(dwc_otg_core_if_t * core_if,
 					int32_t val);
 extern int32_t dwc_otg_get_param_lpm_enable(dwc_otg_core_if_t * core_if);
-#define dwc_param_lpm_enable_default 1
+#define dwc_param_lpm_enable_default 0
 
 /**
  * Specifies whether LPM Errata (Link Power Management) support is enabled
@@ -508,7 +508,7 @@ extern int32_t dwc_otg_get_param_cont_on_bna(dwc_otg_core_if_t * core_if);
 extern int dwc_otg_set_param_ahb_single(dwc_otg_core_if_t * core_if,
 					int32_t val);
 extern int32_t dwc_otg_get_param_ahb_single(dwc_otg_core_if_t * core_if);
-#define dwc_param_ahb_single_default 0
+#define dwc_param_ahb_single_default 1
 
 extern int dwc_otg_set_param_otg_ver(dwc_otg_core_if_t * core_if, int32_t val);
 extern int32_t dwc_otg_get_param_otg_ver(dwc_otg_core_if_t * core_if);
