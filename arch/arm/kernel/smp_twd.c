@@ -337,7 +337,6 @@ static int __init twd_local_timer_common_register(struct device_node *np)
 
 	err = request_percpu_irq(twd_ppi, twd_handler, "twd", twd_evt);
 	if (err) {
-		pr_err("twd: can't register interrupt %d (%d)\n", twd_ppi, err);
 		goto out_free;
 	}
 

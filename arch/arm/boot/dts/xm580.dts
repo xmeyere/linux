@@ -10,7 +10,8 @@
 
     aliases {
         serial0 = &uart0;
-		
+        serial1 = &uart1;
+        serial2 = &uart2;
 	};
 
     memory {
@@ -60,7 +61,7 @@
     twdclock: twdclock {
 		#clock-cells = <0>;
 		compatible = "fixed-clock";
-		clock-frequency = <100000000>; // 100 MHz
+		clock-frequency = <200000000>; // 200 MHz
 	};
 
     soc: soc {
@@ -74,8 +75,8 @@
         /* Main timer (per-cpu local timer and watchdog).*/
         twd: local_timer@0200600 {
             compatible = "arm,cortex-a9-twd-timer";
-			reg = <0x20200600 0x20>;
-			interrupts = <0 29 0>;
+			reg = <0x20200600 0xa00>;
+			interrupts = <GIC_PPI 13 0>;
             clocks = <&twdclock>;
             clock-names = "smp_twd";
 		};
@@ -83,18 +84,54 @@
         timer0: timer0@100C0000 {
 			compatible = "arm,sp804", "arm,primecell";
 			reg = <0x100C0000 0x1000>;
-			interrupts = <0 4 0>, <0 4 0>;
+			interrupts = <GIC_SPI 4 0>, <GIC_SPI 4 0>;
 			clocks = <&sp804clk>;
 			clock-names = "apb_pclk";
 		};
+
+        usb0: usb0@50300000 {
+            compatible = "snps,dwc_otg";
+            reg			= <0x50300000 0xFFFFF>;
+			interrupts		= <GIC_SPI 44 0>;
+        };
+
+        usb1: usb1@550400000 {
+            compatible = "snps,dwc_otg";
+            reg			= <0x50400000 0xFFFFF>;
+			interrupts		= <GIC_SPI 59 0>;
+        };
+
+        /*usb0: usb@3f120000 {
+		compatible = "snps,dwc2";
+		reg = <0x50300000 0xFFFFF>;
+		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&twdclock>;
+		clock-names = "otg";
+	    };*/
+
+        /*usb0: usb@50300000 {
+		compatible = "snps,dwc2";
+		reg = <0x50300000 0xFFFFF>;
+		interrupts = <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&twdclock>;
+		clock-names = "otg";
+        dr_mode = "host";
+	    };
+
+        usb1: usb@550400000 {
+		compatible = "snps,dwc2";
+		reg = <0x50400000 0xFFFFF>;
+		interrupts = <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;
+		clocks = <&twdclock>;
+		clock-names = "otg";
+        dr_mode = "host";
+	    };*/
 
         amba {
 			#address-cells = <1>;
 			#size-cells = <1>;
 			compatible = "arm,amba-bus";
 			ranges;
-
-            
             
             gic: interrupt-controller@20201000 {
                 compatible = "arm,cortex-a9-gic";
@@ -104,9 +141,6 @@
                 /*  gic dist base, gic cpu base*/
                 reg = <0x20201000 0xF00>, <0x20200100 0xF00>; //cpu
             };
-
-           
-			
 
             l2-cache-controller@20210000 {
 	    	    compatible = "arm,pl310-cache";
@@ -120,32 +154,50 @@
                 reg = <0x10030000 0x1000>;
                 clocks = <&uartclk>;
                 clock-names = "apb_pclk";
-                interrupts = <0 0 0>;
+                interrupts = <GIC_SPI 0 0>;
             };
 
-            /*uart1: serial@10040000 {
+            uart1: serial@10040000 {
                 compatible = "arm,pl011", "arm,primecell";
                 reg = <0x10040000 0x1000>;
-                clocks = <&pclk>;
+                clocks = <&uartclk>;
                 clock-names = "apb_pclk";
-                interrupts = <0 2 0>;
+                interrupts = <GIC_SPI 1 0>;
             };
 
             uart2: serial@10050000 {
                 compatible = "arm,pl011", "arm,primecell";
                 reg = <0x10050000 0x1000>;
-                clocks = <&pclk>; 
+                clocks = <&uartclk>; 
                 clock-names = "apb_pclk";
-                interrupts = <0 3 0>;
-            };*/
+                interrupts = <GIC_SPI 2 0>;
+            };
             dma@20020000 {
 	    	    compatible = "arm,pl330", "arm,primecell";
 	    	    reg = <0x20020000 0x1000>;
 	    	    interrupt-names = "name";
-	    	    interrupts = <0 10 0>;
+	    	    interrupts = <GIC_SPI 10 0>;
                 clocks = <&dmaclk>;
 			    clock-names = "apb_pclk";
 	        };
+
+            gmac: gmac@10090000 {
+                compatible		= "xmeye,8536d-gmac";
+			    reg			= <0x10010000 0xFFFF>;
+			    interrupts		= <GIC_SPI 3 0>;
+            };
+
+            ahci0: sata@50500000 {
+			    compatible		= "generic-ahci";
+			    reg			= <0x50500000 0xFFFFF>;
+			    interrupts		= <GIC_SPI 61 0>;
+		    };
+
+            ahci1: sata@50600000 {
+			    compatible		= "generic-ahci";
+			    reg			= <0x50600000 0xFFFFF>;
+			    interrupts		= <GIC_SPI 62 0>;
+		    };
         };
     };
 };

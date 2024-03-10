@@ -1,0 +1,1 @@
+obj-y += dwc_common_port/ dwc_otg/

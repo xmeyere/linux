@@ -1466,6 +1466,24 @@ static int stmmac_associate_phy(struct device *dev, void *data)
     return 1;	/* forces exit of driver_for_each_device() */
 }
 
+/* PLATFORM DEVICE */
+struct plat_stmmacenet_data xm580_gmac_platdata = {
+    .bus_id      = 0,  /* MAC挂在哪条总线上面，默认axi为0,需要和phy的bus_id保持一致， --0*/
+    .pbl        = 16,
+    .clk_csr    = 0,  /* mdio的时钟频率范围， 必须确保在1-2.5M之间，传输时钟为50M，设为--0000（存在一点问题?） */
+    .has_gmac   = 0,  /* 千兆-1/百兆-0, 使用百兆，--0 */
+    .enh_desc   = 0,  /* 增强形描述符-1/一般描述符-0, 使用一般描述符，--0 */
+    .tx_coe     = 0,  /* gmac是否支持发送L4校验，简单起见暂不支持, --0 */
+    .bugged_jumbo = 0, /* 超大帧，不支持千兆，暂不支持, --0 */
+    .pmt        = 0,     /* 休眠省电模式，暂不支持, --0 */
+    .fix_mac_speed  = NULL,  /* 调整速度，只支持自适应，速度在硬件上面决定， --NULL */
+    .bus_setup      = NULL,  /* 暂时无用， --NULL */
+    .init           = NULL,  /* 平台自定义初始化函数,不需要 ,NULL*/
+    .exit           = NULL,  /* 不需要, --NULL */
+    .custom_cfg     = NULL,  /* 不需要， --NULL */
+    .bsp_priv       = NULL   /* 不需要， --NULL */
+};
+
 /**
  * stmmac_dvr_probe
  * @pdev: platform device pointer
@@ -1512,7 +1530,7 @@ static int stmmac_dvr_probe(struct platform_device *pdev)
     SET_NETDEV_DEV(ndev, &pdev->dev);
 
     /* Get the MAC information */
-    ndev->irq = platform_get_irq_byname(pdev, "gmac_irq");
+    ndev->irq = platform_get_irq(pdev, 0);
     if (ndev->irq == -ENXIO) {
         pr_err("%s: ERROR: MAC IRQ configuration "
                 "information not found\n", __func__);
@@ -1523,8 +1541,8 @@ static int stmmac_dvr_probe(struct platform_device *pdev)
     priv = netdev_priv(ndev);
     priv->device = &(pdev->dev);
     priv->dev = ndev;
-    plat_dat = pdev->dev.platform_data;
-
+    pdev->dev.platform_data = (void*)&xm580_gmac_platdata;
+    plat_dat = &xm580_gmac_platdata;
     priv->plat = plat_dat;
 
     priv->ioaddr = addr;
@@ -1534,12 +1552,6 @@ static int stmmac_dvr_probe(struct platform_device *pdev)
     /* Set the I/O base addr */
     ndev->base_addr = (unsigned long)addr;
 
-    /* Custom initialisation */
-    if (priv->plat->init) {
-        ret = priv->plat->init(pdev);
-        if (unlikely(ret))
-            goto out_free_ndev;
-    }
 
     /* MAC HW revice detection */
     ret = stmmac_mac_device_setup(ndev);
@@ -1631,6 +1643,11 @@ static int stmmac_dvr_remove(struct platform_device *pdev)
 
 static const struct dev_pm_ops stmmac_pm_ops;
 
+static const struct of_device_id gmac_of_match[] = {
+	{ .compatible = "xmeye,8536d-gmac", },
+	{},
+};
+
 static struct platform_driver stmmac_driver = {
     .probe = stmmac_dvr_probe,
     .remove = stmmac_dvr_remove,
@@ -1638,27 +1655,12 @@ static struct platform_driver stmmac_driver = {
         .name = STMMAC_RESOURCE_NAME,
         .owner = THIS_MODULE,
         .pm = &stmmac_pm_ops,
+        .of_match_table = gmac_of_match,
     },
 };
 
 
-/* PLATFORM DEVICE */
-struct plat_stmmacenet_data xm580_gmac_platdata = {
-    .bus_id      = 0,  /* MAC挂在哪条总线上面，默认axi为0,需要和phy的bus_id保持一致， --0*/
-    .pbl        = 16,
-    .clk_csr    = 0,  /* mdio的时钟频率范围， 必须确保在1-2.5M之间，传输时钟为50M，设为--0000（存在一点问题?） */
-    .has_gmac   = 0,  /* 千兆-1/百兆-0, 使用百兆，--0 */
-    .enh_desc   = 0,  /* 增强形描述符-1/一般描述符-0, 使用一般描述符，--0 */
-    .tx_coe     = 0,  /* gmac是否支持发送L4校验，简单起见暂不支持, --0 */
-    .bugged_jumbo = 0, /* 超大帧，不支持千兆，暂不支持, --0 */
-    .pmt        = 0,     /* 休眠省电模式，暂不支持, --0 */
-    .fix_mac_speed  = NULL,  /* 调整速度，只支持自适应，速度在硬件上面决定， --NULL */
-    .bus_setup      = NULL,  /* 暂时无用， --NULL */
-    .init           = NULL,  /* 平台自定义初始化函数,不需要 ,NULL*/
-    .exit           = NULL,  /* 不需要, --NULL */
-    .custom_cfg     = NULL,  /* 不需要， --NULL */
-    .bsp_priv       = NULL   /* 不需要， --NULL */
-};
+
 
 
 
@@ -1743,11 +1745,11 @@ static int __init stmmac_init_module(void)
         return -ENODEV;
     }
 
-    ret = platform_device_register(&xm580_gmac);
-    if (ret) {
-        pr_err("No MAC device registered!\n");
-        return -ENODEV;
-    }
+    //ret = platform_device_register(&xm580_gmac);
+    //if (ret) {
+    //    pr_err("No MAC device registered!\n");
+    //    return -ENODEV;
+    //}
 
     return ret;
 }

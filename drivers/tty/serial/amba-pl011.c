@@ -32,7 +32,6 @@
 #if defined(CONFIG_SERIAL_AMBA_PL011_CONSOLE) && defined(CONFIG_MAGIC_SYSRQ)
 #define SUPPORT_SYSRQ
 #endif
-#define DEBUG 1
 
 #include <linux/module.h>
 #include <linux/ioport.h>
@@ -2175,7 +2174,7 @@ static int pl011_probe_dt_alias(int index, struct device *dev)
 }
 
 static int pl011_probe(struct amba_device *dev, const struct amba_id *id)
-{	printk(KERN_INFO "pl011_probe\n");
+{
 	struct uart_amba_port *uap;
 	struct vendor_data *vendor = id->data;
 	void __iomem *base;
