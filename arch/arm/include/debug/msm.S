@@ -1,39 +1,26 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *
  * Copyright (C) 2007 Google, Inc.
  * Copyright (c) 2011, Code Aurora Forum. All rights reserved.
  * Author: Brian Swetland <swetland@google.com>
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
  */
 
 	.macro	addruart, rp, rv, tmp
-#ifdef CONFIG_DEBUG_UART_PHYS
 	ldr	\rp, =CONFIG_DEBUG_UART_PHYS
 	ldr	\rv, =CONFIG_DEBUG_UART_VIRT
-#endif
 	.endm
 
 	.macro	senduart, rd, rx
 ARM_BE8(rev	\rd, \rd )
-#ifdef CONFIG_DEBUG_QCOM_UARTDM
 	@ Write the 1 character to UARTDM_TF
 	str	\rd, [\rx, #0x70]
-#else
-	str	\rd, [\rx, #0x0C]
-#endif
 	.endm
 
-	.macro	waituart, rd, rx
-#ifdef CONFIG_DEBUG_QCOM_UARTDM
+	.macro	waituartcts,rd,rx
+	.endm
+
+	.macro	waituarttxrdy, rd, rx
 	@ check for TX_EMT in UARTDM_SR
 	ldr	\rd, [\rx, #0x08]
 ARM_BE8(rev     \rd, \rd )
@@ -55,13 +42,6 @@ ARM_BE8(rev     \rd, \rd )
 	str	\rd, [\rx, #0x40]
 	@ UARTDM reg. Read to induce delay
 	ldr	\rd, [\rx, #0x08]
-#else
-	@ wait for TX_READY
-1001:	ldr	\rd, [\rx, #0x08]
-ARM_BE8(rev     \rd, \rd )
-	tst	\rd, #0x04
-	beq	1001b
-#endif
 	.endm
 
 	.macro	busyuart, rd, rx

@@ -1,5 +1,8 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TTY_LDISC_H
 #define _LINUX_TTY_LDISC_H
+
+struct tty_struct;
 
 /*
  * This structure defines the interface between the tty line discipline
@@ -24,12 +27,6 @@
  *	This function instructs the line discipline to clear its
  *	buffers of any input characters it may have queued to be
  *	delivered to the user mode process.
- *
- * ssize_t (*chars_in_buffer)(struct tty_struct *tty);
- *
- *	This function returns the number of input characters the line
- *	discipline may have queued up to be delivered to the user mode
- *	process.
  *
  * ssize_t (*read)(struct tty_struct * tty, struct file * file,
  *		   unsigned char * buf, size_t nr);
@@ -59,10 +56,16 @@
  *	low-level driver can "grab" an ioctl request before the line
  *	discpline has a chance to see it.
  *
- * long	(*compat_ioctl)(struct tty_struct * tty, struct file * file,
+ * int	(*compat_ioctl)(struct tty_struct * tty, struct file * file,
  *		        unsigned int cmd, unsigned long arg);
  *
  *	Process ioctl calls from 32-bit process on 64-bit system
+ *
+ *	NOTE: only ioctls that are neither "pointer to compatible
+ *	structure" nor tty-generic.  Something private that takes
+ *	an integer or a pointer to wordsize-sensitive structure
+ *	belongs here, but most of ldiscs will happily leave
+ *	it NULL.
  *
  * void	(*set_termios)(struct tty_struct *tty, struct ktermios * old);
  *
@@ -104,11 +107,6 @@
  *	seek to perform this action quickly but should wait until
  *	any pending driver I/O is completed.
  *
- * void (*fasync)(struct tty_struct *, int on)
- *
- *	Notify line discipline when signal-driven I/O is enabled or
- *	disabled.
- *
  * void (*dcd_change)(struct tty_struct *tty, unsigned int status)
  *
  *	Tells the discipline that the DCD pin has changed its status.
@@ -129,13 +127,16 @@
 
 #include <linux/fs.h>
 #include <linux/wait.h>
-
+#include <linux/atomic.h>
+#include <linux/list.h>
+#include <linux/lockdep.h>
+#include <linux/seq_file.h>
 
 /*
  * the semaphore definition
  */
 struct ld_semaphore {
-	long			count;
+	atomic_long_t		count;
 	raw_spinlock_t		wait_lock;
 	unsigned int		wait_readers;
 	struct list_head	read_wait;
@@ -177,7 +178,6 @@ extern int ldsem_down_write_nested(struct ld_semaphore *sem, int subclass,
 
 
 struct tty_ldisc_ops {
-	int	magic;
 	char	*name;
 	int	num;
 	int	flags;
@@ -188,17 +188,17 @@ struct tty_ldisc_ops {
 	int	(*open)(struct tty_struct *);
 	void	(*close)(struct tty_struct *);
 	void	(*flush_buffer)(struct tty_struct *tty);
-	ssize_t	(*chars_in_buffer)(struct tty_struct *tty);
 	ssize_t	(*read)(struct tty_struct *tty, struct file *file,
-			unsigned char __user *buf, size_t nr);
+			unsigned char *buf, size_t nr,
+			void **cookie, unsigned long offset);
 	ssize_t	(*write)(struct tty_struct *tty, struct file *file,
 			 const unsigned char *buf, size_t nr);
 	int	(*ioctl)(struct tty_struct *tty, struct file *file,
 			 unsigned int cmd, unsigned long arg);
-	long	(*compat_ioctl)(struct tty_struct *tty, struct file *file,
+	int	(*compat_ioctl)(struct tty_struct *tty, struct file *file,
 				unsigned int cmd, unsigned long arg);
 	void	(*set_termios)(struct tty_struct *tty, struct ktermios *old);
-	unsigned int (*poll)(struct tty_struct *, struct file *,
+	__poll_t (*poll)(struct tty_struct *, struct file *,
 			     struct poll_table_struct *);
 	int	(*hangup)(struct tty_struct *tty);
 
@@ -206,16 +206,13 @@ struct tty_ldisc_ops {
 	 * The following routines are called from below.
 	 */
 	void	(*receive_buf)(struct tty_struct *, const unsigned char *cp,
-			       char *fp, int count);
+			       const char *fp, int count);
 	void	(*write_wakeup)(struct tty_struct *);
 	void	(*dcd_change)(struct tty_struct *, unsigned int);
-	void	(*fasync)(struct tty_struct *tty, int on);
 	int	(*receive_buf2)(struct tty_struct *, const unsigned char *cp,
-				char *fp, int count);
+				const char *fp, int count);
 
 	struct  module *owner;
-
-	int refcount;
 };
 
 struct tty_ldisc {
@@ -223,11 +220,21 @@ struct tty_ldisc {
 	struct tty_struct *tty;
 };
 
-#define TTY_LDISC_MAGIC	0x5403
-
 #define LDISC_FLAG_DEFINED	0x00000001
 
 #define MODULE_ALIAS_LDISC(ldisc) \
 	MODULE_ALIAS("tty-ldisc-" __stringify(ldisc))
+
+extern const struct seq_operations tty_ldiscs_seq_ops;
+
+struct tty_ldisc *tty_ldisc_ref(struct tty_struct *);
+void tty_ldisc_deref(struct tty_ldisc *);
+struct tty_ldisc *tty_ldisc_ref_wait(struct tty_struct *);
+
+void tty_ldisc_flush(struct tty_struct *tty);
+
+int tty_register_ldisc(struct tty_ldisc_ops *new_ldisc);
+void tty_unregister_ldisc(struct tty_ldisc_ops *ldisc);
+int tty_set_ldisc(struct tty_struct *tty, int disc);
 
 #endif /* _LINUX_TTY_LDISC_H */

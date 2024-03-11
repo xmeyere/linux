@@ -19,9 +19,6 @@
 
 #include <asm/io.h>
 
-#include <asm/prom.h>
-#include <asm/pci-bridge.h>
-
 #include "nv_type.h"
 #include "nv_local.h"
 #include "nv_proto.h"
@@ -45,8 +42,7 @@ int nvidia_probe_of_connector(struct fb_info *info, int conn, u8 **out_edid)
 		const char *pname;
 		int len;
 
-		for (dp = NULL;
-		     (dp = of_get_next_child(parent, dp)) != NULL;) {
+		for_each_child_of_node(parent, dp) {
 			pname = of_get_property(dp, "name", NULL);
 			if (!pname)
 				continue;

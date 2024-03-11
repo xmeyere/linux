@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  *  linux/arch/arm/mm/ioremap.c
  *
@@ -26,10 +27,12 @@
 #include <linux/vmalloc.h>
 #include <linux/io.h>
 #include <linux/sizes.h>
+#include <linux/memblock.h>
 
 #include <asm/cp15.h>
 #include <asm/cputype.h>
 #include <asm/cacheflush.h>
+#include <asm/early_ioremap.h>
 #include <asm/mmu_context.h>
 #include <asm/pgalloc.h>
 #include <asm/tlbflush.h>
@@ -139,14 +142,8 @@ void __check_vmalloc_seq(struct mm_struct *mm)
 static void unmap_area_sections(unsigned long virt, unsigned long size)
 {
 	unsigned long addr = virt, end = virt + (size & ~(SZ_1M - 1));
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmdp;
+	pmd_t *pmdp = pmd_off_k(addr);
 
-	flush_cache_vunmap(addr, end);
-	pgd = pgd_offset_k(addr);
-	pud = pud_offset(pgd, addr);
-	pmdp = pmd_offset(pud, addr);
 	do {
 		pmd_t pmd = *pmdp;
 
@@ -187,9 +184,7 @@ remap_area_sections(unsigned long virt, unsigned long pfn,
 		    size_t size, const struct mem_type *type)
 {
 	unsigned long addr = virt, end = virt + size;
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
+	pmd_t *pmd = pmd_off_k(addr);
 
 	/*
 	 * Remove and free any PTE-based mapping, and
@@ -197,9 +192,6 @@ remap_area_sections(unsigned long virt, unsigned long pfn,
 	 */
 	unmap_area_sections(virt, size);
 
-	pgd = pgd_offset_k(addr);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
 	do {
 		pmd[0] = __pmd(__pfn_to_phys(pfn) | type->prot_sect);
 		pfn += SZ_1M >> PAGE_SHIFT;
@@ -219,19 +211,13 @@ remap_area_supersections(unsigned long virt, unsigned long pfn,
 			 size_t size, const struct mem_type *type)
 {
 	unsigned long addr = virt, end = virt + size;
-	pgd_t *pgd;
-	pud_t *pud;
-	pmd_t *pmd;
+	pmd_t *pmd = pmd_off_k(addr);
 
 	/*
 	 * Remove and free any PTE-based mapping, and
 	 * sync the current kernel mapping.
 	 */
 	unmap_area_sections(virt, size);
-
-	pgd = pgd_offset_k(virt);
-	pud = pud_offset(pgd, addr);
-	pmd = pmd_offset(pud, addr);
 	do {
 		unsigned long super_pmd_val, i;
 
@@ -255,7 +241,7 @@ remap_area_supersections(unsigned long virt, unsigned long pfn,
 }
 #endif
 
-void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
+static void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
 	unsigned long offset, size_t size, unsigned int mtype, void *caller)
 {
 	const struct mem_type *type;
@@ -296,9 +282,11 @@ void __iomem * __arm_ioremap_pfn_caller(unsigned long pfn,
 	}
 
 	/*
-	 * Don't allow RAM to be mapped - this causes problems with ARMv6+
+	 * Don't allow RAM to be mapped with mismatched attributes - this
+	 * causes problems with ARMv6+
 	 */
-	if (WARN_ON(pfn_valid(pfn)))
+	if (WARN_ON(memblock_is_map_memory(PFN_PHYS(pfn)) &&
+		    mtype != MT_MEMORY_RW))
 		return NULL;
 
 	area = get_vm_area_caller(size, VM_IOREMAP, caller);
@@ -363,7 +351,7 @@ __arm_ioremap_pfn(unsigned long pfn, unsigned long offset, size_t size,
 		  unsigned int mtype)
 {
 	return __arm_ioremap_pfn_caller(pfn, offset, size, mtype,
-			__builtin_return_address(0));
+					__builtin_return_address(0));
 }
 EXPORT_SYMBOL(__arm_ioremap_pfn);
 
@@ -371,13 +359,26 @@ void __iomem * (*arch_ioremap_caller)(phys_addr_t, size_t,
 				      unsigned int, void *) =
 	__arm_ioremap_caller;
 
-void __iomem *
-__arm_ioremap(phys_addr_t phys_addr, size_t size, unsigned int mtype)
+void __iomem *ioremap(resource_size_t res_cookie, size_t size)
 {
-	return arch_ioremap_caller(phys_addr, size, mtype,
-		__builtin_return_address(0));
+	return arch_ioremap_caller(res_cookie, size, MT_DEVICE,
+				   __builtin_return_address(0));
 }
-EXPORT_SYMBOL(__arm_ioremap);
+EXPORT_SYMBOL(ioremap);
+
+void __iomem *ioremap_cache(resource_size_t res_cookie, size_t size)
+{
+	return arch_ioremap_caller(res_cookie, size, MT_DEVICE_CACHED,
+				   __builtin_return_address(0));
+}
+EXPORT_SYMBOL(ioremap_cache);
+
+void __iomem *ioremap_wc(resource_size_t res_cookie, size_t size)
+{
+	return arch_ioremap_caller(res_cookie, size, MT_DEVICE_WC,
+				   __builtin_return_address(0));
+}
+EXPORT_SYMBOL(ioremap_wc);
 
 /*
  * Remap an arbitrary physical address space into the kernel virtual
@@ -398,6 +399,13 @@ __arm_ioremap_exec(phys_addr_t phys_addr, size_t size, bool cached)
 
 	return __arm_ioremap_caller(phys_addr, size, mtype,
 			__builtin_return_address(0));
+}
+
+void *arch_memremap_wb(phys_addr_t phys_addr, size_t size)
+{
+	return (__force void *)arch_ioremap_caller(phys_addr, size,
+						   MT_MEMORY_RW,
+						   __builtin_return_address(0));
 }
 
 void __iounmap(volatile void __iomem *io_addr)
@@ -431,11 +439,11 @@ void __iounmap(volatile void __iomem *io_addr)
 
 void (*arch_iounmap)(volatile void __iomem *) = __iounmap;
 
-void __arm_iounmap(volatile void __iomem *io_addr)
+void iounmap(volatile void __iomem *cookie)
 {
-	arch_iounmap(io_addr);
+	arch_iounmap(cookie);
 }
-EXPORT_SYMBOL(__arm_iounmap);
+EXPORT_SYMBOL(iounmap);
 
 #ifdef CONFIG_PCI
 static int pci_ioremap_mem_type = MT_DEVICE;
@@ -447,7 +455,7 @@ void pci_ioremap_set_mem_type(int mem_type)
 
 int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr)
 {
-	BUG_ON(offset + SZ_64K > IO_SPACE_LIMIT);
+	BUG_ON(offset + SZ_64K - 1 > IO_SPACE_LIMIT);
 
 	return ioremap_page_range(PCI_IO_VIRT_BASE + offset,
 				  PCI_IO_VIRT_BASE + offset + SZ_64K,
@@ -455,4 +463,27 @@ int pci_ioremap_io(unsigned int offset, phys_addr_t phys_addr)
 				  __pgprot(get_mem_type(pci_ioremap_mem_type)->prot_pte));
 }
 EXPORT_SYMBOL_GPL(pci_ioremap_io);
+
+void __iomem *pci_remap_cfgspace(resource_size_t res_cookie, size_t size)
+{
+	return arch_ioremap_caller(res_cookie, size, MT_UNCACHED,
+				   __builtin_return_address(0));
+}
+EXPORT_SYMBOL_GPL(pci_remap_cfgspace);
 #endif
+
+/*
+ * Must be called after early_fixmap_init
+ */
+void __init early_ioremap_init(void)
+{
+	early_ioremap_setup();
+}
+
+bool arch_memremap_can_ram_remap(resource_size_t offset, size_t size,
+				 unsigned long flags)
+{
+	unsigned long pfn = PHYS_PFN(offset);
+
+	return memblock_is_map_memory(pfn);
+}

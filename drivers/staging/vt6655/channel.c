@@ -1,22 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0+
 /*
  * Copyright (c) 1996, 2003 VIA Networking Technologies, Inc.
  * All rights reserved.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License along
- * with this program; if not, write to the Free Software Foundation, Inc.,
- * 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
- *
- * File: channel.c
  *
  */
 
@@ -127,40 +112,38 @@ static struct ieee80211_supported_band vnt_supported_5ghz_band = {
 	.n_bitrates = ARRAY_SIZE(vnt_rates_a),
 };
 
-void vnt_init_bands(struct vnt_private *priv)
+static void vnt_init_band(struct vnt_private *priv,
+			  struct ieee80211_supported_band *supported_band,
+			  enum nl80211_band band)
 {
-	struct ieee80211_channel *ch;
 	int i;
 
+	for (i = 0; i < supported_band->n_channels; i++) {
+		supported_band->channels[i].max_power = 0x3f;
+		supported_band->channels[i].flags =
+			IEEE80211_CHAN_NO_HT40;
+	}
+
+	priv->hw->wiphy->bands[band] = supported_band;
+}
+
+void vnt_init_bands(struct vnt_private *priv)
+{
 	switch (priv->byRFType) {
 	case RF_AIROHA7230:
 	case RF_UW2452:
 	case RF_NOTHING:
 	default:
-		ch = vnt_channels_5ghz;
-
-		for (i = 0; i < ARRAY_SIZE(vnt_channels_5ghz); i++) {
-			ch[i].max_power = 0x3f;
-			ch[i].flags = IEEE80211_CHAN_NO_HT40;
-		}
-
-		priv->hw->wiphy->bands[IEEE80211_BAND_5GHZ] =
-						&vnt_supported_5ghz_band;
-	/* fallthrough */
+		vnt_init_band(priv, &vnt_supported_5ghz_band,
+			      NL80211_BAND_5GHZ);
+		fallthrough;
 	case RF_RFMD2959:
 	case RF_AIROHA:
 	case RF_AL2230S:
 	case RF_UW2451:
 	case RF_VT3226:
-		ch = vnt_channels_2ghz;
-
-		for (i = 0; i < ARRAY_SIZE(vnt_channels_2ghz); i++) {
-			ch[i].max_power = 0x3f;
-			ch[i].flags = IEEE80211_CHAN_NO_HT40;
-		}
-
-		priv->hw->wiphy->bands[IEEE80211_BAND_2GHZ] =
-						&vnt_supported_2ghz_band;
+		vnt_init_band(priv, &vnt_supported_2ghz_band,
+			      NL80211_BAND_2GHZ);
 		break;
 	}
 }
@@ -168,67 +151,70 @@ void vnt_init_bands(struct vnt_private *priv)
 /**
  * set_channel() - Set NIC media channel
  *
- * @pDeviceHandler: The adapter to be set
- * @uConnectionChannel: Channel to be set
+ * @priv: The adapter to be set
+ * @ch: Channel to be set
  *
  * Return Value: true if succeeded; false if failed.
  *
  */
-bool set_channel(void *pDeviceHandler, struct ieee80211_channel *ch)
+bool set_channel(struct vnt_private *priv, struct ieee80211_channel *ch)
 {
-	struct vnt_private *pDevice = pDeviceHandler;
-	bool bResult = true;
+	bool ret = true;
 
-	if (pDevice->byCurrentCh == ch->hw_value)
-		return bResult;
+	if (priv->byCurrentCh == ch->hw_value)
+		return ret;
 
 	/* Set VGA to max sensitivity */
-	if (pDevice->bUpdateBBVGA &&
-	    pDevice->byBBVGACurrent != pDevice->abyBBVGA[0]) {
-		pDevice->byBBVGACurrent = pDevice->abyBBVGA[0];
+	if (priv->bUpdateBBVGA &&
+	    priv->byBBVGACurrent != priv->abyBBVGA[0]) {
+		priv->byBBVGACurrent = priv->abyBBVGA[0];
 
-		BBvSetVGAGainOffset(pDevice, pDevice->byBBVGACurrent);
+		bb_set_vga_gain_offset(priv, priv->byBBVGACurrent);
 	}
 
 	/* clear NAV */
-	MACvRegBitsOn(pDevice->PortOffset, MAC_REG_MACCR, MACCR_CLRNAV);
+	MACvRegBitsOn(priv->PortOffset, MAC_REG_MACCR, MACCR_CLRNAV);
 
-	/* TX_PE will reserve 3 us for MAX2829 A mode only, it is for better TX throughput */
+	/* TX_PE will reserve 3 us for MAX2829 A mode only,
+	 * it is for better TX throughput
+	 */
 
-	if (pDevice->byRFType == RF_AIROHA7230)
-		RFbAL7230SelectChannelPostProcess(pDevice, pDevice->byCurrentCh,
+	if (priv->byRFType == RF_AIROHA7230)
+		RFbAL7230SelectChannelPostProcess(priv, priv->byCurrentCh,
 						  ch->hw_value);
 
-	pDevice->byCurrentCh = ch->hw_value;
-	bResult &= RFbSelectChannel(pDevice, pDevice->byRFType,
-				    ch->hw_value);
+	priv->byCurrentCh = ch->hw_value;
+	ret &= RFbSelectChannel(priv, priv->byRFType,
+				ch->hw_value);
 
 	/* Init Synthesizer Table */
-	if (pDevice->bEnablePSMode)
-		RFvWriteWakeProgSyn(pDevice, pDevice->byRFType, ch->hw_value);
+	if (priv->bEnablePSMode)
+		RFvWriteWakeProgSyn(priv, priv->byRFType, ch->hw_value);
 
-	BBvSoftwareReset(pDevice);
+	bb_software_reset(priv);
 
-	if (pDevice->byLocalID > REV_ID_VT3253_B1) {
+	if (priv->byLocalID > REV_ID_VT3253_B1) {
 		unsigned long flags;
 
-		spin_lock_irqsave(&pDevice->lock, flags);
+		spin_lock_irqsave(&priv->lock, flags);
 
 		/* set HW default power register */
-		MACvSelectPage1(pDevice->PortOffset);
-		RFbSetPower(pDevice, RATE_1M, pDevice->byCurrentCh);
-		VNSvOutPortB(pDevice->PortOffset + MAC_REG_PWRCCK, pDevice->byCurPwr);
-		RFbSetPower(pDevice, RATE_6M, pDevice->byCurrentCh);
-		VNSvOutPortB(pDevice->PortOffset + MAC_REG_PWROFDM, pDevice->byCurPwr);
-		MACvSelectPage0(pDevice->PortOffset);
+		MACvSelectPage1(priv->PortOffset);
+		RFbSetPower(priv, RATE_1M, priv->byCurrentCh);
+		VNSvOutPortB(priv->PortOffset + MAC_REG_PWRCCK,
+			     priv->byCurPwr);
+		RFbSetPower(priv, RATE_6M, priv->byCurrentCh);
+		VNSvOutPortB(priv->PortOffset + MAC_REG_PWROFDM,
+			     priv->byCurPwr);
+		MACvSelectPage0(priv->PortOffset);
 
-		spin_unlock_irqrestore(&pDevice->lock, flags);
+		spin_unlock_irqrestore(&priv->lock, flags);
 	}
 
-	if (pDevice->byBBType == BB_TYPE_11B)
-		RFbSetPower(pDevice, RATE_1M, pDevice->byCurrentCh);
+	if (priv->byBBType == BB_TYPE_11B)
+		RFbSetPower(priv, RATE_1M, priv->byCurrentCh);
 	else
-		RFbSetPower(pDevice, RATE_6M, pDevice->byCurrentCh);
+		RFbSetPower(priv, RATE_6M, priv->byCurrentCh);
 
-	return bResult;
+	return ret;
 }

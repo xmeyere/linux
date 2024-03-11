@@ -21,7 +21,7 @@
 #ifdef SAVAGEFB_DEBUG
 # define DBG(x)		printk (KERN_DEBUG "savagefb: %s\n", (x));
 #else
-# define DBG(x)
+# define DBG(x)		no_printk(x)
 # define SavagePrintRegs(...)
 #endif
 
@@ -213,9 +213,7 @@ struct savagefb_par {
 		void   __iomem *vbase;
 		u32    pbase;
 		u32    len;
-#ifdef CONFIG_MTRR
-		int    mtrr;
-#endif
+		int    wc_cookie;
 	} video;
 
 	struct {

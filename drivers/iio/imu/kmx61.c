@@ -1,20 +1,15 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * KMX61 - Kionix 6-axis Accelerometer/Magnetometer
  *
  * Copyright (c) 2014, Intel Corporation.
  *
- * This file is subject to the terms and conditions of version 2 of
- * the GNU General Public License.  See the file COPYING in the main
- * directory of this archive for more details.
- *
  * IIO driver for KMX61 (7-bit I2C slave address 0x0E or 0x0F).
- *
  */
 
 #include <linux/module.h>
 #include <linux/i2c.h>
 #include <linux/acpi.h>
-#include <linux/gpio/consumer.h>
 #include <linux/interrupt.h>
 #include <linux/pm.h>
 #include <linux/pm_runtime.h>
@@ -27,7 +22,6 @@
 #include <linux/iio/trigger_consumer.h>
 
 #define KMX61_DRV_NAME "kmx61"
-#define KMX61_GPIO_NAME "kmx61_int"
 #define KMX61_IRQ_NAME "kmx61_event"
 
 #define KMX61_REG_WHO_AM_I	0x00
@@ -169,19 +163,18 @@ static const u16 kmx61_uscale_table[] = {9582, 19163, 38326};
 static const struct {
 	int val;
 	int val2;
-	u8 odr_bits;
-} kmx61_samp_freq_table[] = { {12, 500000, 0x00},
-			{25, 0, 0x01},
-			{50, 0, 0x02},
-			{100, 0, 0x03},
-			{200, 0, 0x04},
-			{400, 0, 0x05},
-			{800, 0, 0x06},
-			{1600, 0, 0x07},
-			{0, 781000, 0x08},
-			{1, 563000, 0x09},
-			{3, 125000, 0x0A},
-			{6, 250000, 0x0B} };
+} kmx61_samp_freq_table[] = { {12, 500000},
+			{25, 0},
+			{50, 0},
+			{100, 0},
+			{200, 0},
+			{400, 0},
+			{800, 0},
+			{1600, 0},
+			{0, 781000},
+			{1, 563000},
+			{3, 125000},
+			{6, 250000} };
 
 static const struct {
 	int val;
@@ -302,23 +295,9 @@ static int kmx61_convert_freq_to_bit(int val, int val2)
 	for (i = 0; i < ARRAY_SIZE(kmx61_samp_freq_table); i++)
 		if (val == kmx61_samp_freq_table[i].val &&
 		    val2 == kmx61_samp_freq_table[i].val2)
-			return kmx61_samp_freq_table[i].odr_bits;
+			return i;
 	return -EINVAL;
 }
-
-static int kmx61_convert_bit_to_freq(u8 odr_bits, int *val, int *val2)
-{
-	int i;
-
-	for (i = 0; i < ARRAY_SIZE(kmx61_samp_freq_table); i++)
-		if (odr_bits == kmx61_samp_freq_table[i].odr_bits) {
-			*val = kmx61_samp_freq_table[i].val;
-			*val2 = kmx61_samp_freq_table[i].val2;
-			return 0;
-		}
-	return -EINVAL;
-}
-
 
 static int kmx61_convert_wake_up_odr_to_bit(int val, int val2)
 {
@@ -333,10 +312,10 @@ static int kmx61_convert_wake_up_odr_to_bit(int val, int val2)
 
 /**
  * kmx61_set_mode() - set KMX61 device operating mode
- * @data - kmx61 device private data pointer
- * @mode - bitmask, indicating operating mode for @device
- * @device - bitmask, indicating device for which @mode needs to be set
- * @update - update stby bits stored in device's private  @data
+ * @data: kmx61 device private data pointer
+ * @mode: bitmask, indicating operating mode for @device
+ * @device: bitmask, indicating device for which @mode needs to be set
+ * @update: update stby bits stored in device's private  @data
  *
  * For each sensor (accelerometer/magnetometer) there are two operating modes
  * STANDBY and OPERATION. Neither accel nor magn can be disabled independently
@@ -478,7 +457,7 @@ static int kmx61_set_odr(struct kmx61_data *data, int val, int val2, u8 device)
 
 static int kmx61_get_odr(struct kmx61_data *data, int *val, int *val2,
 			 u8 device)
-{	int i;
+{
 	u8 lodr_bits;
 
 	if (device & KMX61_ACC)
@@ -490,13 +469,13 @@ static int kmx61_get_odr(struct kmx61_data *data, int *val, int *val2,
 	else
 		return -EINVAL;
 
-	for (i = 0; i < ARRAY_SIZE(kmx61_samp_freq_table); i++)
-		if (lodr_bits == kmx61_samp_freq_table[i].odr_bits) {
-			*val = kmx61_samp_freq_table[i].val;
-			*val2 = kmx61_samp_freq_table[i].val2;
-			return 0;
-		}
-	return -EINVAL;
+	if (lodr_bits >= ARRAY_SIZE(kmx61_samp_freq_table))
+		return -EINVAL;
+
+	*val = kmx61_samp_freq_table[lodr_bits].val;
+	*val2 = kmx61_samp_freq_table[lodr_bits].val2;
+
+	return 0;
 }
 
 static int kmx61_set_range(struct kmx61_data *data, u8 range)
@@ -580,8 +559,11 @@ static int kmx61_chip_init(struct kmx61_data *data)
 	}
 	data->odr_bits = ret;
 
-	/* set output data rate for wake up (motion detection) function */
-	ret = kmx61_convert_bit_to_freq(data->odr_bits, &val, &val2);
+	/*
+	 * set output data rate for wake up (motion detection) function
+	 * to match data rate for accelerometer sampling
+	 */
+	ret = kmx61_get_odr(data, &val, &val2, KMX61_ACC);
 	if (ret < 0)
 		return ret;
 
@@ -736,9 +718,9 @@ static int kmx61_setup_any_motion_interrupt(struct kmx61_data *data,
 
 /**
  * kmx61_set_power_state() - set power state for kmx61 @device
- * @data - kmx61 device private pointer
- * @on - power state to be set for @device
- * @device - bitmask indicating device for which @on state needs to be set
+ * @data: kmx61 device private pointer
+ * @on: power state to be set for @device
+ * @device: bitmask indicating device for which @on state needs to be set
  *
  * Notice that when ACC power state needs to be set to ON and MAG is in
  * OPERATION then we know that kmx61_runtime_resume was already called
@@ -768,7 +750,7 @@ static int kmx61_set_power_state(struct kmx61_data *data, bool on, u8 device)
 	}
 
 	if (on) {
-		ret = pm_runtime_get_sync(&data->client->dev);
+		ret = pm_runtime_resume_and_get(&data->client->dev);
 	} else {
 		pm_runtime_mark_last_busy(&data->client->dev);
 		ret = pm_runtime_put_autosuspend(&data->client->dev);
@@ -777,8 +759,6 @@ static int kmx61_set_power_state(struct kmx61_data *data, bool on, u8 device)
 		dev_err(&data->client->dev,
 			"Failed: kmx61_set_power_state for %d, ret %d\n",
 			on, ret);
-		if (on)
-			pm_runtime_put_noidle(&data->client->dev);
 
 		return ret;
 	}
@@ -1017,7 +997,6 @@ static int kmx61_mag_validate_trigger(struct iio_dev *indio_dev,
 }
 
 static const struct iio_info kmx61_acc_info = {
-	.driver_module		= THIS_MODULE,
 	.read_raw		= kmx61_read_raw,
 	.write_raw		= kmx61_write_raw,
 	.attrs			= &kmx61_acc_attribute_group,
@@ -1029,7 +1008,6 @@ static const struct iio_info kmx61_acc_info = {
 };
 
 static const struct iio_info kmx61_mag_info = {
-	.driver_module		= THIS_MODULE,
 	.read_raw		= kmx61_read_raw,
 	.write_raw		= kmx61_write_raw,
 	.attrs			= &kmx61_mag_attribute_group,
@@ -1083,25 +1061,20 @@ err_unlock:
 	return ret;
 }
 
-static int kmx61_trig_try_reenable(struct iio_trigger *trig)
+static void kmx61_trig_reenable(struct iio_trigger *trig)
 {
 	struct iio_dev *indio_dev = iio_trigger_get_drvdata(trig);
 	struct kmx61_data *data = kmx61_get_data(indio_dev);
 	int ret;
 
 	ret = i2c_smbus_read_byte_data(data->client, KMX61_REG_INL);
-	if (ret < 0) {
+	if (ret < 0)
 		dev_err(&data->client->dev, "Error reading reg_inl\n");
-		return ret;
-	}
-
-	return 0;
 }
 
 static const struct iio_trigger_ops kmx61_trigger_ops = {
 	.set_trigger_state = kmx61_data_rdy_trigger_set_state,
-	.try_reenable = kmx61_trig_try_reenable,
-	.owner = THIS_MODULE,
+	.reenable = kmx61_trig_reenable,
 };
 
 static irqreturn_t kmx61_event_handler(int irq, void *private)
@@ -1255,34 +1228,6 @@ static const char *kmx61_match_acpi_device(struct device *dev)
 	return dev_name(dev);
 }
 
-static int kmx61_gpio_probe(struct i2c_client *client, struct kmx61_data *data)
-{
-	struct device *dev;
-	struct gpio_desc *gpio;
-	int ret;
-
-	if (!client)
-		return -EINVAL;
-
-	dev = &client->dev;
-
-	/* data ready gpio interrupt pin */
-	gpio = devm_gpiod_get_index(dev, KMX61_GPIO_NAME, 0);
-	if (IS_ERR(gpio)) {
-		dev_err(dev, "acpi gpio get index failed\n");
-		return PTR_ERR(gpio);
-	}
-
-	ret = gpiod_direction_input(gpio);
-	if (ret)
-		return ret;
-
-	ret = gpiod_to_irq(gpio);
-
-	dev_dbg(dev, "GPIO resource, no:%d irq:%d\n", desc_to_gpio(gpio), ret);
-	return ret;
-}
-
 static struct iio_dev *kmx61_indiodev_setup(struct kmx61_data *data,
 					    const struct iio_info *info,
 					    const struct iio_chan_spec *chan,
@@ -1297,7 +1242,6 @@ static struct iio_dev *kmx61_indiodev_setup(struct kmx61_data *data,
 
 	kmx61_set_data(indio_dev, data);
 
-	indio_dev->dev.parent = &data->client->dev;
 	indio_dev->channels = chan;
 	indio_dev->num_channels = num_channels;
 	indio_dev->name = name;
@@ -1318,11 +1262,10 @@ static struct iio_trigger *kmx61_trigger_setup(struct kmx61_data *data,
 				      "%s-%s-dev%d",
 				      indio_dev->name,
 				      tag,
-				      indio_dev->id);
+				      iio_device_id(indio_dev));
 	if (!trig)
 		return ERR_PTR(-ENOMEM);
 
-	trig->dev.parent = &data->client->dev;
 	trig->ops = &kmx61_trigger_ops;
 	iio_trigger_set_drvdata(trig, indio_dev);
 
@@ -1376,10 +1319,7 @@ static int kmx61_probe(struct i2c_client *client,
 	if (ret < 0)
 		return ret;
 
-	if (client->irq < 0)
-		client->irq = kmx61_gpio_probe(client, data);
-
-	if (client->irq >= 0) {
+	if (client->irq > 0) {
 		ret = devm_request_threaded_irq(&client->dev, client->irq,
 						kmx61_data_rdy_trig_poll,
 						kmx61_event_handler,
@@ -1434,10 +1374,18 @@ static int kmx61_probe(struct i2c_client *client,
 		}
 	}
 
+	ret = pm_runtime_set_active(&client->dev);
+	if (ret < 0)
+		goto err_buffer_cleanup_mag;
+
+	pm_runtime_enable(&client->dev);
+	pm_runtime_set_autosuspend_delay(&client->dev, KMX61_SLEEP_DELAY_MS);
+	pm_runtime_use_autosuspend(&client->dev);
+
 	ret = iio_device_register(data->acc_indio_dev);
 	if (ret < 0) {
 		dev_err(&client->dev, "Failed to register acc iio device\n");
-		goto err_buffer_cleanup_mag;
+		goto err_pm_cleanup;
 	}
 
 	ret = iio_device_register(data->mag_indio_dev);
@@ -1446,25 +1394,18 @@ static int kmx61_probe(struct i2c_client *client,
 		goto err_iio_unregister_acc;
 	}
 
-	ret = pm_runtime_set_active(&client->dev);
-	if (ret < 0)
-		goto err_iio_unregister_mag;
-
-	pm_runtime_enable(&client->dev);
-	pm_runtime_set_autosuspend_delay(&client->dev, KMX61_SLEEP_DELAY_MS);
-	pm_runtime_use_autosuspend(&client->dev);
-
 	return 0;
 
-err_iio_unregister_mag:
-	iio_device_unregister(data->mag_indio_dev);
 err_iio_unregister_acc:
 	iio_device_unregister(data->acc_indio_dev);
+err_pm_cleanup:
+	pm_runtime_dont_use_autosuspend(&client->dev);
+	pm_runtime_disable(&client->dev);
 err_buffer_cleanup_mag:
-	if (client->irq >= 0)
+	if (client->irq > 0)
 		iio_triggered_buffer_cleanup(data->mag_indio_dev);
 err_buffer_cleanup_acc:
-	if (client->irq >= 0)
+	if (client->irq > 0)
 		iio_triggered_buffer_cleanup(data->acc_indio_dev);
 err_trigger_unregister_motion:
 	iio_trigger_unregister(data->motion_trig);
@@ -1481,14 +1422,13 @@ static int kmx61_remove(struct i2c_client *client)
 {
 	struct kmx61_data *data = i2c_get_clientdata(client);
 
-	pm_runtime_disable(&client->dev);
-	pm_runtime_set_suspended(&client->dev);
-	pm_runtime_put_noidle(&client->dev);
-
 	iio_device_unregister(data->acc_indio_dev);
 	iio_device_unregister(data->mag_indio_dev);
 
-	if (client->irq >= 0) {
+	pm_runtime_disable(&client->dev);
+	pm_runtime_set_suspended(&client->dev);
+
+	if (client->irq > 0) {
 		iio_triggered_buffer_cleanup(data->acc_indio_dev);
 		iio_triggered_buffer_cleanup(data->mag_indio_dev);
 		iio_trigger_unregister(data->acc_dready_trig);

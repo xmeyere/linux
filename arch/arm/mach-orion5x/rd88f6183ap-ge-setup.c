@@ -1,11 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * arch/arm/mach-orion5x/rd88f6183-ap-ge-setup.c
  *
  * Marvell Orion-1-90 AP GE Reference Design Setup
- *
- * This file is licensed under the terms of the GNU General Public
- * License version 2.  This program is licensed "as is" without any
- * warranty of any kind, whether express or implied.
  */
 #include <linux/gpio.h>
 #include <linux/kernel.h>
@@ -18,12 +15,12 @@
 #include <linux/spi/spi.h>
 #include <linux/spi/flash.h>
 #include <linux/ethtool.h>
-#include <net/dsa.h>
+#include <linux/platform_data/dsa.h>
 #include <asm/mach-types.h>
 #include <asm/mach/arch.h>
 #include <asm/mach/pci.h>
-#include <mach/orion5x.h>
 #include "common.h"
+#include "orion5x.h"
 
 static struct mv643xx_eth_platform_data rd88f6183ap_ge_eth_data = {
 	.phy_addr	= -1,
@@ -38,11 +35,6 @@ static struct dsa_chip_data rd88f6183ap_ge_switch_chip_data = {
 	.port_names[3]	= "lan4",
 	.port_names[4]	= "wan",
 	.port_names[5]	= "cpu",
-};
-
-static struct dsa_platform_data rd88f6183ap_ge_switch_plat_data = {
-	.nr_chips	= 1,
-	.chip		= &rd88f6183ap_ge_switch_chip_data,
 };
 
 static struct mtd_partition rd88f6183ap_ge_partitions[] = {
@@ -71,7 +63,6 @@ static struct spi_board_info __initdata rd88f6183ap_ge_spi_slave_info[] = {
 	{
 		.modalias	= "m25p80",
 		.platform_data	= &rd88f6183ap_ge_spi_slave_data,
-		.irq		= NO_IRQ,
 		.max_speed_hz	= 20000000,
 		.bus_num	= 0,
 		.chip_select	= 0,
@@ -90,8 +81,7 @@ static void __init rd88f6183ap_ge_init(void)
 	 */
 	orion5x_ehci0_init();
 	orion5x_eth_init(&rd88f6183ap_ge_eth_data);
-	orion5x_eth_switch_init(&rd88f6183ap_ge_switch_plat_data,
-				gpio_to_irq(3));
+	orion5x_eth_switch_init(&rd88f6183ap_ge_switch_chip_data);
 	spi_register_board_info(rd88f6183ap_ge_spi_slave_info,
 				ARRAY_SIZE(rd88f6183ap_ge_spi_slave_info));
 	orion5x_spi_init();
@@ -119,6 +109,7 @@ subsys_initcall(rd88f6183ap_ge_pci_init);
 MACHINE_START(RD88F6183AP_GE, "Marvell Orion-1-90 AP GE Reference Design")
 	/* Maintainer: Lennert Buytenhek <buytenh@marvell.com> */
 	.atag_offset	= 0x100,
+	.nr_irqs	= ORION5X_NR_IRQS,
 	.init_machine	= rd88f6183ap_ge_init,
 	.map_io		= orion5x_map_io,
 	.init_early	= orion5x_init_early,

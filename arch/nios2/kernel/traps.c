@@ -11,6 +11,7 @@
  */
 
 #include <linux/sched.h>
+#include <linux/sched/debug.h>
 #include <linux/kernel.h>
 #include <linux/signal.h>
 #include <linux/export.h>
@@ -19,9 +20,14 @@
 
 #include <asm/traps.h>
 #include <asm/sections.h>
-#include <asm/uaccess.h>
+#include <linux/uaccess.h>
 
 static DEFINE_SPINLOCK(die_lock);
+
+static void _send_sig(int signo, int code, unsigned long addr)
+{
+	force_sig_fault(signo, code, (void __user *) addr);
+}
 
 void die(const char *str, struct pt_regs *regs, long err)
 {
@@ -31,33 +37,28 @@ void die(const char *str, struct pt_regs *regs, long err)
 	show_regs(regs);
 	spin_unlock_irq(&die_lock);
 	/*
-	 * do_exit() should take care of panic'ing from an interrupt
+	 * make_task_dead() should take care of panic'ing from an interrupt
 	 * context so we don't handle it here
 	 */
-	do_exit(err);
+	make_task_dead(err);
 }
 
 void _exception(int signo, struct pt_regs *regs, int code, unsigned long addr)
 {
-	siginfo_t info;
-
 	if (!user_mode(regs))
 		die("Exception in kernel mode", regs, signo);
 
-	info.si_signo = signo;
-	info.si_errno = 0;
-	info.si_code = code;
-	info.si_addr = (void __user *) addr;
-	force_sig_info(signo, &info, current);
+	_send_sig(signo, code, addr);
 }
 
 /*
- * The show_stack is an external API which we do not use ourselves.
+ * The show_stack() is external API which we do not use ourselves.
  */
 
 int kstack_depth_to_print = 48;
 
-void show_stack(struct task_struct *task, unsigned long *stack)
+void show_stack(struct task_struct *task, unsigned long *stack,
+		const char *loglvl)
 {
 	unsigned long *endstack, addr;
 	int i;
@@ -72,16 +73,16 @@ void show_stack(struct task_struct *task, unsigned long *stack)
 	addr = (unsigned long) stack;
 	endstack = (unsigned long *) PAGE_ALIGN(addr);
 
-	pr_emerg("Stack from %08lx:", (unsigned long)stack);
+	printk("%sStack from %08lx:", loglvl, (unsigned long)stack);
 	for (i = 0; i < kstack_depth_to_print; i++) {
 		if (stack + 1 > endstack)
 			break;
 		if (i % 8 == 0)
-			pr_emerg("\n       ");
-		pr_emerg(" %08lx", *stack++);
+			printk("%s\n       ", loglvl);
+		printk("%s %08lx", loglvl, *stack++);
 	}
 
-	pr_emerg("\nCall Trace:");
+	printk("%s\nCall Trace:", loglvl);
 	i = 0;
 	while (stack + 1 <= endstack) {
 		addr = *stack++;
@@ -97,16 +98,11 @@ void show_stack(struct task_struct *task, unsigned long *stack)
 		     (addr <= (unsigned long) _etext))) {
 			if (i % 4 == 0)
 				pr_emerg("\n       ");
-			pr_emerg(" [<%08lx>]", addr);
+			printk("%s [<%08lx>]", loglvl, addr);
 			i++;
 		}
 	}
-	pr_emerg("\n");
-}
-
-void __init trap_init(void)
-{
-	/* Nothing to do here */
+	printk("%s\n", loglvl);
 }
 
 /* Breakpoint handler */
@@ -182,4 +178,19 @@ asmlinkage void unhandled_exception(struct pt_regs *regs, int cause)
 	show_regs(regs);
 
 	pr_emerg("opcode: 0x%08lx\n", *(unsigned long *)(regs->ea));
+}
+
+asmlinkage void handle_trap_1_c(struct pt_regs *fp)
+{
+	_send_sig(SIGUSR1, 0, fp->ea);
+}
+
+asmlinkage void handle_trap_2_c(struct pt_regs *fp)
+{
+	_send_sig(SIGUSR2, 0, fp->ea);
+}
+
+asmlinkage void handle_trap_3_c(struct pt_regs *fp)
+{
+	_send_sig(SIGILL, ILL_ILLTRP, fp->ea);
 }

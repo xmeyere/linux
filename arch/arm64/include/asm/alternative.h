@@ -1,9 +1,14 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef __ASM_ALTERNATIVE_H
 #define __ASM_ALTERNATIVE_H
 
+#include <asm/alternative-macros.h>
+
+#ifndef __ASSEMBLY__
+
+#include <linux/init.h>
 #include <linux/types.h>
 #include <linux/stddef.h>
-#include <linux/stringify.h>
 
 struct alt_instr {
 	s32 orig_offset;	/* offset to original instruction */
@@ -13,32 +18,18 @@ struct alt_instr {
 	u8  alt_len;		/* size of new instruction(s), <= orig_len */
 };
 
-void apply_alternatives_all(void);
-void apply_alternatives(void *start, size_t length);
-void free_alternatives_memory(void);
+typedef void (*alternative_cb_t)(struct alt_instr *alt,
+				 __le32 *origptr, __le32 *updptr, int nr_inst);
 
-#define ALTINSTR_ENTRY(feature)						      \
-	" .word 661b - .\n"				/* label           */ \
-	" .word 663f - .\n"				/* new instruction */ \
-	" .hword " __stringify(feature) "\n"		/* feature bit     */ \
-	" .byte 662b-661b\n"				/* source len      */ \
-	" .byte 664f-663f\n"				/* replacement len */
+void __init apply_boot_alternatives(void);
+void __init apply_alternatives_all(void);
+bool alternative_is_applied(u16 cpufeature);
 
-/* alternative assembly primitive: */
-#define ALTERNATIVE(oldinstr, newinstr, feature)			\
-	"661:\n\t"							\
-	oldinstr "\n"							\
-	"662:\n"							\
-	".pushsection .altinstructions,\"a\"\n"				\
-	ALTINSTR_ENTRY(feature)						\
-	".popsection\n"							\
-	".pushsection .altinstr_replacement, \"a\"\n"			\
-	"663:\n\t"							\
-	newinstr "\n"							\
-	"664:\n\t"							\
-	".popsection\n\t"						\
-	".if ((664b-663b) != (662b-661b))\n\t"				\
-	"	.error \"Alternatives instruction length mismatch\"\n\t"\
-	".endif\n"
+#ifdef CONFIG_MODULES
+void apply_alternatives_module(void *start, size_t length);
+#else
+static inline void apply_alternatives_module(void *start, size_t length) { }
+#endif
 
+#endif /* __ASSEMBLY__ */
 #endif /* __ASM_ALTERNATIVE_H */

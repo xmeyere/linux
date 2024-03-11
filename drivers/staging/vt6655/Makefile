@@ -1,6 +1,4 @@
-# TODO: all of these should be removed
-ccflags-y := -DLINUX -D__KERNEL__ -D__NO_VERSION__
-ccflags-y += -DHOSTAP
+# SPDX-License-Identifier: GPL-2.0
 
 vt6655_stage-y +=	device_main.o \
 	card.o \
@@ -11,7 +9,6 @@ vt6655_stage-y +=	device_main.o \
 	dpc.o \
 	power.o \
 	srom.o \
-	mib.o \
 	key.o \
 	rf.o
 

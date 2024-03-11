@@ -29,19 +29,6 @@
 #include <nvif/class.h>
 
 /*******************************************************************************
- * Graphics object classes
- ******************************************************************************/
-
-static struct nvkm_oclass
-gk208_gr_sclass[] = {
-	{ 0x902d, &nvkm_object_ofuncs },
-	{ 0xa140, &nvkm_object_ofuncs },
-	{ KEPLER_B, &gf100_fermi_ofuncs },
-	{ 0xa1c0, &nvkm_object_ofuncs },
-	{}
-};
-
-/*******************************************************************************
  * PGRAPH register lists
  ******************************************************************************/
 
@@ -134,6 +121,7 @@ gk208_gr_pack_mmio[] = {
 	{ gf119_gr_init_gpm_0 },
 	{ gk110_gr_init_gpc_unk_1 },
 	{ gf100_gr_init_gcc_0 },
+	{ gk104_gr_init_gpc_unk_2 },
 	{ gk104_gr_init_tpccs_0 },
 	{ gk208_gr_init_tex_0 },
 	{ gk104_gr_init_pe_0 },
@@ -151,43 +139,6 @@ gk208_gr_pack_mmio[] = {
 /*******************************************************************************
  * PGRAPH engine/subdev functions
  ******************************************************************************/
-
-static int
-gk208_gr_fini(struct nvkm_object *object, bool suspend)
-{
-	struct gf100_gr_priv *priv = (void *)object;
-	static const struct {
-		u32 addr;
-		u32 data;
-	} magic[] = {
-		{ 0x020520, 0xfffffffc },
-		{ 0x020524, 0xfffffffe },
-		{ 0x020524, 0xfffffffc },
-		{ 0x020524, 0xfffffff8 },
-		{ 0x020524, 0xffffffe0 },
-		{ 0x020530, 0xfffffffe },
-		{ 0x02052c, 0xfffffffa },
-		{ 0x02052c, 0xfffffff0 },
-		{ 0x02052c, 0xffffffc0 },
-		{ 0x02052c, 0xffffff00 },
-		{ 0x02052c, 0xfffffc00 },
-		{ 0x02052c, 0xfffcfc00 },
-		{ 0x02052c, 0xfff0fc00 },
-		{ 0x02052c, 0xff80fc00 },
-		{ 0x020528, 0xfffffffe },
-		{ 0x020528, 0xfffffffc },
-	};
-	int i;
-
-	nv_mask(priv, 0x000200, 0x08001000, 0x00000000);
-	nv_mask(priv, 0x0206b4, 0x00000000, 0x00000000);
-	for (i = 0; i < ARRAY_SIZE(magic); i++) {
-		nv_wr32(priv, magic[i].addr, magic[i].data);
-		nv_wait(priv, magic[i].addr, 0x80000000, 0x00000000);
-	}
-
-	return nvkm_gr_fini(&priv->base, suspend);
-}
 
 #include "fuc/hubgk208.fuc5.h"
 
@@ -209,19 +160,49 @@ gk208_gr_gpccs_ucode = {
 	.data.size = sizeof(gk208_grgpc_data),
 };
 
-struct nvkm_oclass *
-gk208_gr_oclass = &(struct gf100_gr_oclass) {
-	.base.handle = NV_ENGINE(GR, 0x08),
-	.base.ofuncs = &(struct nvkm_ofuncs) {
-		.ctor = gf100_gr_ctor,
-		.dtor = gf100_gr_dtor,
-		.init = gk104_gr_init,
-		.fini = gk208_gr_fini,
-	},
-	.cclass = &gk208_grctx_oclass,
-	.sclass =  gk208_gr_sclass,
+static const struct gf100_gr_func
+gk208_gr = {
+	.oneinit_tiles = gf100_gr_oneinit_tiles,
+	.oneinit_sm_id = gf100_gr_oneinit_sm_id,
+	.init = gf100_gr_init,
+	.init_gpc_mmu = gf100_gr_init_gpc_mmu,
+	.init_vsc_stream_master = gk104_gr_init_vsc_stream_master,
+	.init_zcull = gf117_gr_init_zcull,
+	.init_num_active_ltcs = gf100_gr_init_num_active_ltcs,
+	.init_rop_active_fbps = gk104_gr_init_rop_active_fbps,
+	.init_fecs_exceptions = gf100_gr_init_fecs_exceptions,
+	.init_sked_hww_esr = gk104_gr_init_sked_hww_esr,
+	.init_419cc0 = gf100_gr_init_419cc0,
+	.init_ppc_exceptions = gk104_gr_init_ppc_exceptions,
+	.init_tex_hww_esr = gf100_gr_init_tex_hww_esr,
+	.init_shader_exceptions = gf100_gr_init_shader_exceptions,
+	.init_400054 = gf100_gr_init_400054,
+	.trap_mp = gf100_gr_trap_mp,
 	.mmio = gk208_gr_pack_mmio,
 	.fecs.ucode = &gk208_gr_fecs_ucode,
 	.gpccs.ucode = &gk208_gr_gpccs_ucode,
+	.rops = gf100_gr_rops,
 	.ppc_nr = 1,
-}.base;
+	.grctx = &gk208_grctx,
+	.zbc = &gf100_gr_zbc,
+	.sclass = {
+		{ -1, -1, FERMI_TWOD_A },
+		{ -1, -1, KEPLER_INLINE_TO_MEMORY_B },
+		{ -1, -1, KEPLER_B, &gf100_fermi },
+		{ -1, -1, KEPLER_COMPUTE_B },
+		{}
+	}
+};
+
+static const struct gf100_gr_fwif
+gk208_gr_fwif[] = {
+	{ -1, gf100_gr_load, &gk208_gr },
+	{ -1, gf100_gr_nofw, &gk208_gr },
+	{}
+};
+
+int
+gk208_gr_new(struct nvkm_device *device, enum nvkm_subdev_type type, int inst, struct nvkm_gr **pgr)
+{
+	return gf100_gr_new_(gk208_gr_fwif, device, type, inst, pgr);
+}

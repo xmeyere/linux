@@ -1,12 +1,8 @@
+// SPDX-License-Identifier: GPL-2.0
 /*
  * Device tree sources for default Exynos5420 thermal zone definition
  *
  * Copyright (c) 2014 Lukasz Majewski <l.majewski@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 polling-delay-passive = <0>;
@@ -28,7 +24,7 @@ trips {
 		type = "active";
 	};
 	cpu-crit-0 {
-		temperature = <1200000>; /* millicelsius */
+		temperature = <120000>; /* millicelsius */
 		hysteresis = <0>; /* millicelsius */
 		type = "critical";
 	};

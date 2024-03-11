@@ -1,18 +1,9 @@
+/* SPDX-License-Identifier: GPL-2.0+ */
 /*
  * Copyright (c) 2013 Samsung Electronics Co., Ltd.
  *		http://www.samsung.com
  *
  * Exynos low-level resume code
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/linkage.h>
@@ -23,14 +14,7 @@
 #define CPU_MASK	0xff0ffff0
 #define CPU_CORTEX_A9	0x410fc090
 
-	/*
-	 * The following code is located into the .data section. This is to
-	 * allow l2x0_regs_phys to be accessed with a relative load while we
-	 * can't rely on any MMU translation. We could have put l2x0_regs_phys
-	 * in the .text section as well, but some setups might insist on it to
-	 * be truly read-only. (Reference from: arch/arm/kernel/sleep.S)
-	 */
-	.data
+	.text
 	.align
 
 	/*
@@ -60,7 +44,8 @@ ENTRY(exynos_cpu_resume)
 ENDPROC(exynos_cpu_resume)
 
 	.align
-
+	.arch armv7-a
+	.arch_extension sec
 ENTRY(exynos_cpu_resume_ns)
 	mrc	p15, 0, r0, c0, c0, 0
 	ldr	r1, =CPU_MASK
@@ -69,10 +54,12 @@ ENTRY(exynos_cpu_resume_ns)
 	cmp	r0, r1
 	bne	skip_cp15
 
-	adr	r0, cp15_save_power
+	adr	r0, _cp15_save_power
 	ldr	r1, [r0]
-	adr	r0, cp15_save_diag
+	ldr	r1, [r0, r1]
+	adr	r0, _cp15_save_diag
 	ldr	r2, [r0]
+	ldr	r2, [r0, r2]
 	mov	r0, #SMC_CMD_C15RESUME
 	dsb
 	smc	#0
@@ -118,14 +105,21 @@ skip_l2x0:
 skip_cp15:
 	b	cpu_resume
 ENDPROC(exynos_cpu_resume_ns)
+
+	.align
+_cp15_save_power:
+	.long	cp15_save_power - .
+_cp15_save_diag:
+	.long	cp15_save_diag - .
+#ifdef CONFIG_CACHE_L2X0
+1:	.long	l2x0_saved_regs - .
+#endif /* CONFIG_CACHE_L2X0 */
+
+	.data
+	.align	2
 	.globl cp15_save_diag
 cp15_save_diag:
 	.long	0	@ cp15 diagnostic
 	.globl cp15_save_power
 cp15_save_power:
 	.long	0	@ cp15 power control
-
-#ifdef CONFIG_CACHE_L2X0
-	.align
-1:	.long	l2x0_saved_regs - .
-#endif /* CONFIG_CACHE_L2X0 */

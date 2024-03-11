@@ -1,12 +1,9 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * LED Flash class interface
  *
  * Copyright (C) 2015 Samsung Electronics Co., Ltd.
  * Author: Jacek Anaszewski <j.anaszewski@samsung.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/device.h>
@@ -95,20 +92,18 @@ static ssize_t flash_strobe_store(struct device *dev,
 	struct led_classdev *led_cdev = dev_get_drvdata(dev);
 	struct led_classdev_flash *fled_cdev = lcdev_to_flcdev(led_cdev);
 	unsigned long state;
-	ssize_t ret = -EINVAL;
+	ssize_t ret = -EBUSY;
 
 	mutex_lock(&led_cdev->led_access);
 
-	if (led_sysfs_is_disabled(led_cdev)) {
-		ret = -EBUSY;
+	if (led_sysfs_is_disabled(led_cdev))
 		goto unlock;
-	}
 
 	ret = kstrtoul(buf, 10, &state);
 	if (ret)
 		goto unlock;
 
-	if (state < 0 || state > 1) {
+	if (state > 1) {
 		ret = -EINVAL;
 		goto unlock;
 	}
@@ -216,75 +211,6 @@ static ssize_t flash_fault_show(struct device *dev,
 }
 static DEVICE_ATTR_RO(flash_fault);
 
-static ssize_t available_sync_leds_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct led_classdev *led_cdev = dev_get_drvdata(dev);
-	struct led_classdev_flash *fled_cdev = lcdev_to_flcdev(led_cdev);
-	char *pbuf = buf;
-	int i, buf_len;
-
-	buf_len = sprintf(pbuf, "[0: none] ");
-	pbuf += buf_len;
-
-	for (i = 0; i < fled_cdev->num_sync_leds; ++i) {
-		buf_len = sprintf(pbuf, "[%d: %s] ", i + 1,
-				  fled_cdev->sync_leds[i]->led_cdev.name);
-		pbuf += buf_len;
-	}
-
-	return sprintf(buf, "%s\n", buf);
-}
-static DEVICE_ATTR_RO(available_sync_leds);
-
-static ssize_t flash_sync_strobe_store(struct device *dev,
-		struct device_attribute *attr, const char *buf, size_t size)
-{
-	struct led_classdev *led_cdev = dev_get_drvdata(dev);
-	struct led_classdev_flash *fled_cdev = lcdev_to_flcdev(led_cdev);
-	unsigned long led_id;
-	ssize_t ret;
-
-	mutex_lock(&led_cdev->led_access);
-
-	if (led_sysfs_is_disabled(led_cdev)) {
-		ret = -EBUSY;
-		goto unlock;
-	}
-
-	ret = kstrtoul(buf, 10, &led_id);
-	if (ret)
-		goto unlock;
-
-	if (led_id > fled_cdev->num_sync_leds) {
-		ret = -ERANGE;
-		goto unlock;
-	}
-
-	fled_cdev->sync_led_id = led_id;
-
-	ret = size;
-unlock:
-	mutex_unlock(&led_cdev->led_access);
-	return ret;
-}
-
-static ssize_t flash_sync_strobe_show(struct device *dev,
-		struct device_attribute *attr, char *buf)
-{
-	struct led_classdev *led_cdev = dev_get_drvdata(dev);
-	struct led_classdev_flash *fled_cdev = lcdev_to_flcdev(led_cdev);
-	int sled_id = fled_cdev->sync_led_id;
-	char *sync_led_name = "none";
-
-	if (fled_cdev->sync_led_id > 0)
-		sync_led_name = (char *)
-			fled_cdev->sync_leds[sled_id - 1]->led_cdev.name;
-
-	return sprintf(buf, "[%d: %s]\n", sled_id, sync_led_name);
-}
-static DEVICE_ATTR_RW(flash_sync_strobe);
-
 static struct attribute *led_flash_strobe_attrs[] = {
 	&dev_attr_flash_strobe.attr,
 	NULL,
@@ -307,12 +233,6 @@ static struct attribute *led_flash_fault_attrs[] = {
 	NULL,
 };
 
-static struct attribute *led_flash_sync_strobe_attrs[] = {
-	&dev_attr_available_sync_leds.attr,
-	&dev_attr_flash_sync_strobe.attr,
-	NULL,
-};
-
 static const struct attribute_group led_flash_strobe_group = {
 	.attrs = led_flash_strobe_attrs,
 };
@@ -327,10 +247,6 @@ static const struct attribute_group led_flash_brightness_group = {
 
 static const struct attribute_group led_flash_fault_group = {
 	.attrs = led_flash_fault_attrs,
-};
-
-static const struct attribute_group led_flash_sync_strobe_group = {
-	.attrs = led_flash_sync_strobe_attrs,
 };
 
 static void led_flash_resume(struct led_classdev *led_cdev)
@@ -361,14 +277,12 @@ static void led_flash_init_sysfs_groups(struct led_classdev_flash *fled_cdev)
 	if (ops->fault_get)
 		flash_groups[num_sysfs_groups++] = &led_flash_fault_group;
 
-	if (led_cdev->flags & LED_DEV_CAP_SYNC_STROBE)
-		flash_groups[num_sysfs_groups++] = &led_flash_sync_strobe_group;
-
 	led_cdev->groups = flash_groups;
 }
 
-int led_classdev_flash_register(struct device *parent,
-				struct led_classdev_flash *fled_cdev)
+int led_classdev_flash_register_ext(struct device *parent,
+				    struct led_classdev_flash *fled_cdev,
+				    struct led_init_data *init_data)
 {
 	struct led_classdev *led_cdev;
 	const struct led_flash_ops *ops;
@@ -380,7 +294,7 @@ int led_classdev_flash_register(struct device *parent,
 	led_cdev = &fled_cdev->led_cdev;
 
 	if (led_cdev->flags & LED_DEV_CAP_FLASH) {
-		if (!led_cdev->brightness_set_sync)
+		if (!led_cdev->brightness_set_blocking)
 			return -EINVAL;
 
 		ops = fled_cdev->ops;
@@ -394,17 +308,13 @@ int led_classdev_flash_register(struct device *parent,
 	}
 
 	/* Register led class device */
-	ret = led_classdev_register(parent, led_cdev);
+	ret = led_classdev_register_ext(parent, led_cdev, init_data);
 	if (ret < 0)
 		return ret;
 
-	/* Setting a torch brightness needs to have immediate effect */
-	led_cdev->flags &= ~SET_BRIGHTNESS_ASYNC;
-	led_cdev->flags |= SET_BRIGHTNESS_SYNC;
-
 	return 0;
 }
-EXPORT_SYMBOL_GPL(led_classdev_flash_register);
+EXPORT_SYMBOL_GPL(led_classdev_flash_register_ext);
 
 void led_classdev_flash_unregister(struct led_classdev_flash *fled_cdev)
 {
@@ -414,6 +324,56 @@ void led_classdev_flash_unregister(struct led_classdev_flash *fled_cdev)
 	led_classdev_unregister(&fled_cdev->led_cdev);
 }
 EXPORT_SYMBOL_GPL(led_classdev_flash_unregister);
+
+static void devm_led_classdev_flash_release(struct device *dev, void *res)
+{
+	led_classdev_flash_unregister(*(struct led_classdev_flash **)res);
+}
+
+int devm_led_classdev_flash_register_ext(struct device *parent,
+				     struct led_classdev_flash *fled_cdev,
+				     struct led_init_data *init_data)
+{
+	struct led_classdev_flash **dr;
+	int ret;
+
+	dr = devres_alloc(devm_led_classdev_flash_release, sizeof(*dr),
+			  GFP_KERNEL);
+	if (!dr)
+		return -ENOMEM;
+
+	ret = led_classdev_flash_register_ext(parent, fled_cdev, init_data);
+	if (ret) {
+		devres_free(dr);
+		return ret;
+	}
+
+	*dr = fled_cdev;
+	devres_add(parent, dr);
+
+	return 0;
+}
+EXPORT_SYMBOL_GPL(devm_led_classdev_flash_register_ext);
+
+static int devm_led_classdev_flash_match(struct device *dev,
+					      void *res, void *data)
+{
+	struct led_classdev_flash **p = res;
+
+	if (WARN_ON(!p || !*p))
+		return 0;
+
+	return *p == data;
+}
+
+void devm_led_classdev_flash_unregister(struct device *dev,
+					struct led_classdev_flash *fled_cdev)
+{
+	WARN_ON(devres_release(dev,
+			       devm_led_classdev_flash_release,
+			       devm_led_classdev_flash_match, fled_cdev));
+}
+EXPORT_SYMBOL_GPL(devm_led_classdev_flash_unregister);
 
 static void led_clamp_align(struct led_flash_setting *s)
 {

@@ -1,14 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * Device access for Dialog DA9055 PMICs.
  *
  * Copyright(c) 2012 Dialog Semiconductor Ltd.
  *
  * Author: David Dajun Chen <dchen@diasemi.com>
- *
- *  This program is free software; you can redistribute  it and/or modify it
- *  under  the terms of  the GNU General  Public License as published by the
- *  Free Software Foundation;  either version 2 of the  License, or (at your
- *  option) any later version.
  */
 
 #include <linux/module.h>
@@ -222,7 +218,7 @@ static bool da9055_register_volatile(struct device *dev, unsigned int reg)
 	}
 }
 
-static struct regmap_irq da9055_irqs[] = {
+static const struct regmap_irq da9055_irqs[] = {
 	[DA9055_IRQ_NONKEY] = {
 		.reg_offset = 0,
 		.mask = DA9055_IRQ_NONKEY_MASK,
@@ -245,7 +241,7 @@ static struct regmap_irq da9055_irqs[] = {
 	},
 };
 
-struct regmap_config da9055_regmap_config = {
+const struct regmap_config da9055_regmap_config = {
 	.reg_bits = 8,
 	.val_bits = 8,
 
@@ -258,41 +254,19 @@ struct regmap_config da9055_regmap_config = {
 };
 EXPORT_SYMBOL_GPL(da9055_regmap_config);
 
-static struct resource da9055_onkey_resource = {
-	.name = "ONKEY",
-	.start = DA9055_IRQ_NONKEY,
-	.end   = DA9055_IRQ_NONKEY,
-	.flags = IORESOURCE_IRQ,
+static const struct resource da9055_onkey_resource =
+	DEFINE_RES_IRQ_NAMED(DA9055_IRQ_NONKEY, "ONKEY");
+
+static const struct resource da9055_rtc_resource[] = {
+	DEFINE_RES_IRQ_NAMED(DA9055_IRQ_ALARM, "ALM"),
+	DEFINE_RES_IRQ_NAMED(DA9055_IRQ_TICK, "TICK"),
 };
 
-static struct resource da9055_rtc_resource[] = {
-	{
-		.name = "ALM",
-		.start = DA9055_IRQ_ALARM,
-		.end   = DA9055_IRQ_ALARM,
-		.flags = IORESOURCE_IRQ,
-	},
-	{
-		.name = "TICK",
-		.start = DA9055_IRQ_TICK,
-		.end   = DA9055_IRQ_TICK,
-		.flags = IORESOURCE_IRQ,
-	},
-};
+static const struct resource da9055_hwmon_resource =
+	DEFINE_RES_IRQ_NAMED(DA9055_IRQ_HWMON, "HWMON");
 
-static struct resource da9055_hwmon_resource = {
-	.name = "HWMON",
-	.start = DA9055_IRQ_HWMON,
-	.end   = DA9055_IRQ_HWMON,
-	.flags = IORESOURCE_IRQ,
-};
-
-static struct resource da9055_ld05_6_resource = {
-	.name = "REGULATOR",
-	.start = DA9055_IRQ_REGULATOR,
-	.end   = DA9055_IRQ_REGULATOR,
-	.flags = IORESOURCE_IRQ,
-};
+static const struct resource da9055_ld05_6_resource =
+	DEFINE_RES_IRQ_NAMED(DA9055_IRQ_REGULATOR, "REGULATOR");
 
 static const struct mfd_cell da9055_devs[] = {
 	{
@@ -367,7 +341,7 @@ static const struct mfd_cell da9055_devs[] = {
 	},
 };
 
-static struct regmap_irq_chip da9055_regmap_irq_chip = {
+static const struct regmap_irq_chip da9055_regmap_irq_chip = {
 	.name = "da9055_irq",
 	.status_base = DA9055_REG_EVENT_A,
 	.mask_base = DA9055_REG_IRQ_MASK_A,

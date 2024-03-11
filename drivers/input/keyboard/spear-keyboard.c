@@ -3,7 +3,7 @@
  * Based on omap-keypad driver
  *
  * Copyright (C) 2010 ST Microelectronics
- * Rajeev Kumar<rajeev-dlh.kumar@st.com>
+ * Rajeev Kumar <rajeevkumar.linux@gmail.com>
  *
  * This file is licensed under the terms of the GNU General Public
  * License version 2. This program is licensed "as is" without any
@@ -191,10 +191,8 @@ static int spear_kbd_probe(struct platform_device *pdev)
 	int error;
 
 	irq = platform_get_irq(pdev, 0);
-	if (irq < 0) {
-		dev_err(&pdev->dev, "not able to get irq for the device\n");
+	if (irq < 0)
 		return irq;
-	}
 
 	kbd = devm_kzalloc(&pdev->dev, sizeof(*kbd), GFP_KERNEL);
 	if (!kbd) {
@@ -283,13 +281,10 @@ static int spear_kbd_remove(struct platform_device *pdev)
 	input_unregister_device(kbd->input);
 	clk_unprepare(kbd->clk);
 
-	device_init_wakeup(&pdev->dev, 0);
-
 	return 0;
 }
 
-#ifdef CONFIG_PM
-static int spear_kbd_suspend(struct device *dev)
+static int __maybe_unused spear_kbd_suspend(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct spear_kbd *kbd = platform_get_drvdata(pdev);
@@ -323,7 +318,7 @@ static int spear_kbd_suspend(struct device *dev)
 		writel_relaxed(val, kbd->io_base + MODE_CTL_REG);
 
 	} else {
-		if (input_dev->users) {
+		if (input_device_enabled(input_dev)) {
 			writel_relaxed(mode_ctl_reg & ~MODE_CTL_START_SCAN,
 					kbd->io_base + MODE_CTL_REG);
 			clk_disable(kbd->clk);
@@ -331,7 +326,7 @@ static int spear_kbd_suspend(struct device *dev)
 	}
 
 	/* store current configuration */
-	if (input_dev->users)
+	if (input_device_enabled(input_dev))
 		kbd->mode_ctl_reg = mode_ctl_reg;
 
 	/* restore previous clk state */
@@ -342,7 +337,7 @@ static int spear_kbd_suspend(struct device *dev)
 	return 0;
 }
 
-static int spear_kbd_resume(struct device *dev)
+static int __maybe_unused spear_kbd_resume(struct device *dev)
 {
 	struct platform_device *pdev = to_platform_device(dev);
 	struct spear_kbd *kbd = platform_get_drvdata(pdev);
@@ -356,19 +351,18 @@ static int spear_kbd_resume(struct device *dev)
 			disable_irq_wake(kbd->irq);
 		}
 	} else {
-		if (input_dev->users)
+		if (input_device_enabled(input_dev))
 			clk_enable(kbd->clk);
 	}
 
 	/* restore current configuration */
-	if (input_dev->users)
+	if (input_device_enabled(input_dev))
 		writel_relaxed(kbd->mode_ctl_reg, kbd->io_base + MODE_CTL_REG);
 
 	mutex_unlock(&input_dev->mutex);
 
 	return 0;
 }
-#endif
 
 static SIMPLE_DEV_PM_OPS(spear_kbd_pm_ops, spear_kbd_suspend, spear_kbd_resume);
 

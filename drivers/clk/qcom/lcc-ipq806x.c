@@ -1,14 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright (c) 2014, The Linux Foundation. All rights reserved.
- *
- * This software is licensed under the terms of the GNU General Public
- * License version 2, as published by the Free Software Foundation, and
- * may be copied, distributed, and modified under those terms.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
  */
 
 #include <linux/kernel.h>
@@ -61,15 +53,17 @@ static const struct pll_config pll4_config = {
 	.main_output_mask = BIT(23),
 };
 
-#define P_PXO	0
-#define P_PLL4	1
-
-static const u8 lcc_pxo_pll4_map[] = {
-	[P_PXO]		= 0,
-	[P_PLL4]	= 2,
+enum {
+	P_PXO,
+	P_PLL4,
 };
 
-static const char *lcc_pxo_pll4[] = {
+static const struct parent_map lcc_pxo_pll4_map[] = {
+	{ P_PXO, 0 },
+	{ P_PLL4, 2 }
+};
+
+static const char * const lcc_pxo_pll4[] = {
 	"pxo",
 	"pll4_vote",
 };
@@ -144,7 +138,7 @@ static struct clk_rcg mi2s_osr_src = {
 	},
 };
 
-static const char *lcc_mi2s_parents[] = {
+static const char * const lcc_mi2s_parents[] = {
 	"mi2s_osr_src",
 };
 
@@ -294,14 +288,14 @@ static struct clk_regmap_mux pcm_clk = {
 };
 
 static struct freq_tbl clk_tbl_aif_osr[] = {
-	{  22050, P_PLL4, 1, 147, 20480 },
-	{  32000, P_PLL4, 1,   1,    96 },
-	{  44100, P_PLL4, 1, 147, 10240 },
-	{  48000, P_PLL4, 1,   1,    64 },
-	{  88200, P_PLL4, 1, 147,  5120 },
-	{  96000, P_PLL4, 1,   1,    32 },
-	{ 176400, P_PLL4, 1, 147,  2560 },
-	{ 192000, P_PLL4, 1,   1,    16 },
+	{  2822400, P_PLL4, 1, 147, 20480 },
+	{  4096000, P_PLL4, 1,   1,    96 },
+	{  5644800, P_PLL4, 1, 147, 10240 },
+	{  6144000, P_PLL4, 1,   1,    64 },
+	{ 11289600, P_PLL4, 1, 147,  5120 },
+	{ 12288000, P_PLL4, 1,   1,    32 },
+	{ 22579200, P_PLL4, 1, 147,  2560 },
+	{ 24576000, P_PLL4, 1,   1,    16 },
 	{ },
 };
 
@@ -338,7 +332,7 @@ static struct clk_rcg spdif_src = {
 	},
 };
 
-static const char *lcc_spdif_parents[] = {
+static const char * const lcc_spdif_parents[] = {
 	"spdif_src",
 };
 
@@ -360,7 +354,7 @@ static struct clk_branch spdif_clk = {
 };
 
 static struct freq_tbl clk_tbl_ahbix[] = {
-	{ 131072, P_PLL4, 1, 1, 3 },
+	{ 131072000, P_PLL4, 1, 1, 3 },
 	{ },
 };
 
@@ -386,13 +380,12 @@ static struct clk_rcg ahbix_clk = {
 	.freq_tbl = clk_tbl_ahbix,
 	.clkr = {
 		.enable_reg = 0x38,
-		.enable_mask = BIT(10), /* toggle the gfmux to select mn/pxo */
+		.enable_mask = BIT(11),
 		.hw.init = &(struct clk_init_data){
 			.name = "ahbix",
 			.parent_names = lcc_pxo_pll4,
 			.num_parents = 2,
-			.ops = &clk_rcg_ops,
-			.flags = CLK_SET_RATE_GATE,
+			.ops = &clk_rcg_lcc_ops,
 		},
 	},
 };
@@ -442,7 +435,7 @@ static int lcc_ipq806x_probe(struct platform_device *pdev)
 		return PTR_ERR(regmap);
 
 	/* Configure the rate of PLL4 if the bootloader hasn't already */
-	val = regmap_read(regmap, 0x0, &val);
+	regmap_read(regmap, 0x0, &val);
 	if (!val)
 		clk_pll_configure_sr(&pll4, regmap, &pll4_config, true);
 	/* Enable PLL4 source on the LPASS Primary PLL Mux */
@@ -451,15 +444,8 @@ static int lcc_ipq806x_probe(struct platform_device *pdev)
 	return qcom_cc_really_probe(pdev, &lcc_ipq806x_desc, regmap);
 }
 
-static int lcc_ipq806x_remove(struct platform_device *pdev)
-{
-	qcom_cc_remove(pdev);
-	return 0;
-}
-
 static struct platform_driver lcc_ipq806x_driver = {
 	.probe		= lcc_ipq806x_probe,
-	.remove		= lcc_ipq806x_remove,
 	.driver		= {
 		.name	= "lcc-ipq806x",
 		.of_match_table = lcc_ipq806x_match_table,

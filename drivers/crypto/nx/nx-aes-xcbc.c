@@ -1,20 +1,8 @@
-/**
+// SPDX-License-Identifier: GPL-2.0-only
+/*
  * AES XCBC routines supporting the Power 7+ Nest Accelerators driver
  *
  * Copyright (C) 2011-2012 International Business Machines Inc.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; version 2 only.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 675 Mass Ave, Cambridge, MA 02139, USA.
  *
  * Author: Kent Yoder <yoder1@us.ibm.com>
  */
@@ -42,6 +30,7 @@ static int nx_xcbc_set_key(struct crypto_shash *desc,
 			   unsigned int         key_len)
 {
 	struct nx_crypto_ctx *nx_ctx = crypto_shash_ctx(desc);
+	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
 
 	switch (key_len) {
 	case AES_KEYSIZE_128:
@@ -51,7 +40,7 @@ static int nx_xcbc_set_key(struct crypto_shash *desc,
 		return -EINVAL;
 	}
 
-	memcpy(nx_ctx->priv.xcbc.key, in_key, key_len);
+	memcpy(csbcpb->cpb.aes_xcbc.key, in_key, key_len);
 
 	return 0;
 }
@@ -104,8 +93,7 @@ static int nx_xcbc_empty(struct shash_desc *desc, u8 *out)
 	nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) * sizeof(struct nx_sg);
 	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
 
-	rc = nx_hcall_sync(nx_ctx, &nx_ctx->op,
-			   desc->flags & CRYPTO_TFM_REQ_MAY_SLEEP);
+	rc = nx_hcall_sync(nx_ctx, &nx_ctx->op, 0);
 	if (rc)
 		goto out;
 	atomic_inc(&(nx_ctx->stats->aes_ops));
@@ -133,8 +121,7 @@ static int nx_xcbc_empty(struct shash_desc *desc, u8 *out)
 	nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) * sizeof(struct nx_sg);
 	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
 
-	rc = nx_hcall_sync(nx_ctx, &nx_ctx->op,
-			   desc->flags & CRYPTO_TFM_REQ_MAY_SLEEP);
+	rc = nx_hcall_sync(nx_ctx, &nx_ctx->op, 0);
 	if (rc)
 		goto out;
 	atomic_inc(&(nx_ctx->stats->aes_ops));
@@ -148,32 +135,29 @@ out:
 	return rc;
 }
 
-static int nx_xcbc_init(struct shash_desc *desc)
+static int nx_crypto_ctx_aes_xcbc_init2(struct crypto_tfm *tfm)
 {
-	struct xcbc_state *sctx = shash_desc_ctx(desc);
-	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
+	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(tfm);
 	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
-	struct nx_sg *out_sg;
-	int len;
+	int err;
+
+	err = nx_crypto_ctx_aes_xcbc_init(tfm);
+	if (err)
+		return err;
 
 	nx_ctx_init(nx_ctx, HCOP_FC_AES);
-
-	memset(sctx, 0, sizeof *sctx);
 
 	NX_CPB_SET_KEY_SIZE(csbcpb, NX_KS_AES_128);
 	csbcpb->cpb.hdr.mode = NX_MODE_AES_XCBC_MAC;
 
-	memcpy(csbcpb->cpb.aes_xcbc.key, nx_ctx->priv.xcbc.key, AES_BLOCK_SIZE);
-	memset(nx_ctx->priv.xcbc.key, 0, sizeof *nx_ctx->priv.xcbc.key);
+	return 0;
+}
 
-	len = AES_BLOCK_SIZE;
-	out_sg = nx_build_sg_list(nx_ctx->out_sg, (u8 *)sctx->state,
-				  &len, nx_ctx->ap->sglen);
+static int nx_xcbc_init(struct shash_desc *desc)
+{
+	struct xcbc_state *sctx = shash_desc_ctx(desc);
 
-	if (len != AES_BLOCK_SIZE)
-		return -EINVAL;
-
-	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
+	memset(sctx, 0, sizeof *sctx);
 
 	return 0;
 }
@@ -186,6 +170,7 @@ static int nx_xcbc_update(struct shash_desc *desc,
 	struct nx_crypto_ctx *nx_ctx = crypto_tfm_ctx(&desc->tfm->base);
 	struct nx_csbcpb *csbcpb = nx_ctx->csbcpb;
 	struct nx_sg *in_sg;
+	struct nx_sg *out_sg;
 	u32 to_process = 0, leftover, total;
 	unsigned int max_sg_len;
 	unsigned long irq_flags;
@@ -213,6 +198,17 @@ static int nx_xcbc_update(struct shash_desc *desc,
 	max_sg_len = min_t(u64, max_sg_len,
 				nx_ctx->ap->databytelen/NX_PAGE_SIZE);
 
+	data_len = AES_BLOCK_SIZE;
+	out_sg = nx_build_sg_list(nx_ctx->out_sg, (u8 *)sctx->state,
+				  &len, nx_ctx->ap->sglen);
+
+	if (data_len != AES_BLOCK_SIZE) {
+		rc = -EINVAL;
+		goto out;
+	}
+
+	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
+
 	do {
 		to_process = total - to_process;
 		to_process = to_process & ~(AES_BLOCK_SIZE - 1);
@@ -235,8 +231,10 @@ static int nx_xcbc_update(struct shash_desc *desc,
 						(u8 *) sctx->buffer,
 						&data_len,
 						max_sg_len);
-			if (data_len != sctx->count)
-				return -EINVAL;
+			if (data_len != sctx->count) {
+				rc = -EINVAL;
+				goto out;
+			}
 		}
 
 		data_len = to_process - sctx->count;
@@ -245,8 +243,10 @@ static int nx_xcbc_update(struct shash_desc *desc,
 					&data_len,
 					max_sg_len);
 
-		if (data_len != to_process - sctx->count)
-			return -EINVAL;
+		if (data_len != to_process - sctx->count) {
+			rc = -EINVAL;
+			goto out;
+		}
 
 		nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) *
 					sizeof(struct nx_sg);
@@ -265,8 +265,7 @@ static int nx_xcbc_update(struct shash_desc *desc,
 			goto out;
 		}
 
-		rc = nx_hcall_sync(nx_ctx, &nx_ctx->op,
-			   desc->flags & CRYPTO_TFM_REQ_MAY_SLEEP);
+		rc = nx_hcall_sync(nx_ctx, &nx_ctx->op, 0);
 		if (rc)
 			goto out;
 
@@ -325,15 +324,19 @@ static int nx_xcbc_final(struct shash_desc *desc, u8 *out)
 	in_sg = nx_build_sg_list(nx_ctx->in_sg, (u8 *)sctx->buffer,
 				 &len, nx_ctx->ap->sglen);
 
-	if (len != sctx->count)
-		return -EINVAL;
+	if (len != sctx->count) {
+		rc = -EINVAL;
+		goto out;
+	}
 
 	len = AES_BLOCK_SIZE;
 	out_sg = nx_build_sg_list(nx_ctx->out_sg, out, &len,
 				  nx_ctx->ap->sglen);
 
-	if (len != AES_BLOCK_SIZE)
-		return -EINVAL;
+	if (len != AES_BLOCK_SIZE) {
+		rc = -EINVAL;
+		goto out;
+	}
 
 	nx_ctx->op.inlen = (nx_ctx->in_sg - in_sg) * sizeof(struct nx_sg);
 	nx_ctx->op.outlen = (nx_ctx->out_sg - out_sg) * sizeof(struct nx_sg);
@@ -343,8 +346,7 @@ static int nx_xcbc_final(struct shash_desc *desc, u8 *out)
 		goto out;
 	}
 
-	rc = nx_hcall_sync(nx_ctx, &nx_ctx->op,
-			   desc->flags & CRYPTO_TFM_REQ_MAY_SLEEP);
+	rc = nx_hcall_sync(nx_ctx, &nx_ctx->op, 0);
 	if (rc)
 		goto out;
 
@@ -368,11 +370,10 @@ struct shash_alg nx_shash_aes_xcbc_alg = {
 		.cra_name        = "xcbc(aes)",
 		.cra_driver_name = "xcbc-aes-nx",
 		.cra_priority    = 300,
-		.cra_flags       = CRYPTO_ALG_TYPE_SHASH,
 		.cra_blocksize   = AES_BLOCK_SIZE,
 		.cra_module      = THIS_MODULE,
 		.cra_ctxsize     = sizeof(struct nx_crypto_ctx),
-		.cra_init        = nx_crypto_ctx_aes_xcbc_init,
+		.cra_init        = nx_crypto_ctx_aes_xcbc_init2,
 		.cra_exit        = nx_crypto_ctx_exit,
 	}
 };

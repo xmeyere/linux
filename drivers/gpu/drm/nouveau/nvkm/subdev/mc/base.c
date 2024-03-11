@@ -23,147 +23,205 @@
  */
 #include "priv.h"
 
-#include <core/device.h>
 #include <core/option.h>
+#include <subdev/top.h>
 
-static inline void
-nvkm_mc_unk260(struct nvkm_mc *pmc, u32 data)
+void
+nvkm_mc_unk260(struct nvkm_device *device, u32 data)
 {
-	const struct nvkm_mc_oclass *impl = (void *)nv_oclass(pmc);
-	if (impl->unk260)
-		impl->unk260(pmc, data);
-}
-
-static inline u32
-nvkm_mc_intr_mask(struct nvkm_mc *pmc)
-{
-	u32 intr = nv_rd32(pmc, 0x000100);
-	if (intr == 0xffffffff) /* likely fallen off the bus */
-		intr = 0x00000000;
-	return intr;
-}
-
-static irqreturn_t
-nvkm_mc_intr(int irq, void *arg)
-{
-	struct nvkm_mc *pmc = arg;
-	const struct nvkm_mc_oclass *oclass = (void *)nv_object(pmc)->oclass;
-	const struct nvkm_mc_intr *map = oclass->intr;
-	struct nvkm_subdev *unit;
-	u32 intr;
-
-	nv_wr32(pmc, 0x000140, 0x00000000);
-	nv_rd32(pmc, 0x000140);
-	intr = nvkm_mc_intr_mask(pmc);
-	if (pmc->use_msi)
-		oclass->msi_rearm(pmc);
-
-	if (intr) {
-		u32 stat = intr = nvkm_mc_intr_mask(pmc);
-		while (map->stat) {
-			if (intr & map->stat) {
-				unit = nvkm_subdev(pmc, map->unit);
-				if (unit && unit->intr)
-					unit->intr(unit);
-				stat &= ~map->stat;
-			}
-			map++;
-		}
-
-		if (stat)
-			nv_error(pmc, "unknown intr 0x%08x\n", stat);
-	}
-
-	nv_wr32(pmc, 0x000140, 0x00000001);
-	return intr ? IRQ_HANDLED : IRQ_NONE;
-}
-
-int
-_nvkm_mc_fini(struct nvkm_object *object, bool suspend)
-{
-	struct nvkm_mc *pmc = (void *)object;
-	nv_wr32(pmc, 0x000140, 0x00000000);
-	return nvkm_subdev_fini(&pmc->base, suspend);
-}
-
-int
-_nvkm_mc_init(struct nvkm_object *object)
-{
-	struct nvkm_mc *pmc = (void *)object;
-	int ret = nvkm_subdev_init(&pmc->base);
-	if (ret)
-		return ret;
-	nv_wr32(pmc, 0x000140, 0x00000001);
-	return 0;
+	struct nvkm_mc *mc = device->mc;
+	if (likely(mc) && mc->func->unk260)
+		mc->func->unk260(mc, data);
 }
 
 void
-_nvkm_mc_dtor(struct nvkm_object *object)
+nvkm_mc_intr_mask(struct nvkm_device *device, enum nvkm_subdev_type type, int inst, bool en)
 {
-	struct nvkm_device *device = nv_device(object);
-	struct nvkm_mc *pmc = (void *)object;
-	free_irq(pmc->irq, pmc);
-	if (pmc->use_msi)
-		pci_disable_msi(device->pdev);
-	nvkm_subdev_destroy(&pmc->base);
+	struct nvkm_mc *mc = device->mc;
+	const struct nvkm_mc_map *map;
+	if (likely(mc) && mc->func->intr_mask) {
+		u32 mask = nvkm_top_intr_mask(device, type, inst);
+		for (map = mc->func->intr; !mask && map->stat; map++) {
+			if (map->type == type && map->inst == inst)
+				mask = map->stat;
+		}
+		mc->func->intr_mask(mc, mask, en ? mask : 0);
+	}
 }
 
-int
-nvkm_mc_create_(struct nvkm_object *parent, struct nvkm_object *engine,
-		struct nvkm_oclass *bclass, int length, void **pobject)
+void
+nvkm_mc_intr_unarm(struct nvkm_device *device)
 {
-	const struct nvkm_mc_oclass *oclass = (void *)bclass;
-	struct nvkm_device *device = nv_device(parent);
-	struct nvkm_mc *pmc;
-	int ret;
+	struct nvkm_mc *mc = device->mc;
+	if (likely(mc))
+		mc->func->intr_unarm(mc);
+}
 
-	ret = nvkm_subdev_create_(parent, engine, bclass, 0, "PMC",
-				  "master", length, pobject);
-	pmc = *pobject;
-	if (ret)
-		return ret;
+void
+nvkm_mc_intr_rearm(struct nvkm_device *device)
+{
+	struct nvkm_mc *mc = device->mc;
+	if (likely(mc))
+		mc->func->intr_rearm(mc);
+}
 
-	pmc->unk260 = nvkm_mc_unk260;
+static u32
+nvkm_mc_intr_stat(struct nvkm_mc *mc)
+{
+	u32 intr = mc->func->intr_stat(mc);
+	if (WARN_ON_ONCE(intr == 0xffffffff))
+		intr = 0; /* likely fallen off the bus */
+	return intr;
+}
 
-	if (nv_device_is_pci(device)) {
-		switch (device->pdev->device & 0x0ff0) {
-		case 0x00f0:
-		case 0x02e0:
-			/* BR02? NFI how these would be handled yet exactly */
-			break;
-		default:
-			switch (device->chipset) {
-			case 0xaa:
-				/* reported broken, nv also disable it */
-				break;
-			default:
-				pmc->use_msi = true;
-				break;
+void
+nvkm_mc_intr(struct nvkm_device *device, bool *handled)
+{
+	struct nvkm_mc *mc = device->mc;
+	struct nvkm_top *top = device->top;
+	struct nvkm_top_device *tdev;
+	struct nvkm_subdev *subdev;
+	const struct nvkm_mc_map *map;
+	u32 stat, intr;
+
+	if (unlikely(!mc))
+		return;
+
+	stat = intr = nvkm_mc_intr_stat(mc);
+
+	if (top) {
+		list_for_each_entry(tdev, &top->device, head) {
+			if (tdev->intr >= 0 && (stat & BIT(tdev->intr))) {
+				subdev = nvkm_device_subdev(device, tdev->type, tdev->inst);
+				if (subdev) {
+					nvkm_subdev_intr(subdev);
+					stat &= ~BIT(tdev->intr);
+					if (!stat)
+						break;
+				}
 			}
-		}
-
-		pmc->use_msi = nvkm_boolopt(device->cfgopt, "NvMSI",
-					    pmc->use_msi);
-
-		if (pmc->use_msi && oclass->msi_rearm) {
-			pmc->use_msi = pci_enable_msi(device->pdev) == 0;
-			if (pmc->use_msi) {
-				nv_info(pmc, "MSI interrupts enabled\n");
-				oclass->msi_rearm(pmc);
-			}
-		} else {
-			pmc->use_msi = false;
 		}
 	}
 
-	ret = nv_device_get_irq(device, true);
-	if (ret < 0)
-		return ret;
-	pmc->irq = ret;
+	for (map = mc->func->intr; map->stat; map++) {
+		if (intr & map->stat) {
+			subdev = nvkm_device_subdev(device, map->type, map->inst);
+			if (subdev)
+				nvkm_subdev_intr(subdev);
+			stat &= ~map->stat;
+		}
+	}
 
-	ret = request_irq(pmc->irq, nvkm_mc_intr, IRQF_SHARED, "nvkm", pmc);
-	if (ret < 0)
-		return ret;
+	if (stat)
+		nvkm_error(&mc->subdev, "intr %08x\n", stat);
+	*handled = intr != 0;
+}
 
+static u32
+nvkm_mc_reset_mask(struct nvkm_device *device, bool isauto, enum nvkm_subdev_type type, int inst)
+{
+	struct nvkm_mc *mc = device->mc;
+	const struct nvkm_mc_map *map;
+	u64 pmc_enable = 0;
+	if (likely(mc)) {
+		if (!(pmc_enable = nvkm_top_reset(device, type, inst))) {
+			for (map = mc->func->reset; map && map->stat; map++) {
+				if (!isauto || !map->noauto) {
+					if (map->type == type && map->inst == inst) {
+						pmc_enable = map->stat;
+						break;
+					}
+				}
+			}
+		}
+	}
+	return pmc_enable;
+}
+
+void
+nvkm_mc_reset(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, true, type, inst);
+	if (pmc_enable) {
+		nvkm_mask(device, 0x000200, pmc_enable, 0x00000000);
+		nvkm_mask(device, 0x000200, pmc_enable, pmc_enable);
+		nvkm_rd32(device, 0x000200);
+	}
+}
+
+void
+nvkm_mc_disable(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, false, type, inst);
+	if (pmc_enable)
+		nvkm_mask(device, 0x000200, pmc_enable, 0x00000000);
+}
+
+void
+nvkm_mc_enable(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, false, type, inst);
+	if (pmc_enable) {
+		nvkm_mask(device, 0x000200, pmc_enable, pmc_enable);
+		nvkm_rd32(device, 0x000200);
+	}
+}
+
+bool
+nvkm_mc_enabled(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	u64 pmc_enable = nvkm_mc_reset_mask(device, false, type, inst);
+
+	return (pmc_enable != 0) &&
+	       ((nvkm_rd32(device, 0x000200) & pmc_enable) == pmc_enable);
+}
+
+
+static int
+nvkm_mc_fini(struct nvkm_subdev *subdev, bool suspend)
+{
+	nvkm_mc_intr_unarm(subdev->device);
+	return 0;
+}
+
+static int
+nvkm_mc_init(struct nvkm_subdev *subdev)
+{
+	struct nvkm_mc *mc = nvkm_mc(subdev);
+	if (mc->func->init)
+		mc->func->init(mc);
+	nvkm_mc_intr_rearm(subdev->device);
+	return 0;
+}
+
+static void *
+nvkm_mc_dtor(struct nvkm_subdev *subdev)
+{
+	return nvkm_mc(subdev);
+}
+
+static const struct nvkm_subdev_func
+nvkm_mc = {
+	.dtor = nvkm_mc_dtor,
+	.init = nvkm_mc_init,
+	.fini = nvkm_mc_fini,
+};
+
+void
+nvkm_mc_ctor(const struct nvkm_mc_func *func, struct nvkm_device *device,
+	     enum nvkm_subdev_type type, int inst, struct nvkm_mc *mc)
+{
+	nvkm_subdev_ctor(&nvkm_mc, device, type, inst, &mc->subdev);
+	mc->func = func;
+}
+
+int
+nvkm_mc_new_(const struct nvkm_mc_func *func, struct nvkm_device *device,
+	     enum nvkm_subdev_type type, int inst, struct nvkm_mc **pmc)
+{
+	struct nvkm_mc *mc;
+	if (!(mc = *pmc = kzalloc(sizeof(*mc), GFP_KERNEL)))
+		return -ENOMEM;
+	nvkm_mc_ctor(func, device, type, inst, *pmc);
 	return 0;
 }

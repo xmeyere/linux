@@ -1,15 +1,12 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
- *  This program is free software; you can redistribute it and/or modify it
- *  under the terms of the GNU General Public License version 2 as published
- *  by the Free Software Foundation.
  *
- * Copyright (C) 2010 John Crispin <blogic@openwrt.org>
+ * Copyright (C) 2010 John Crispin <john@phrozen.org>
  */
 
 #include <linux/export.h>
 #include <linux/clk.h>
-#include <linux/bootmem.h>
-#include <linux/of_platform.h>
+#include <linux/memblock.h>
 #include <linux/of_fdt.h>
 
 #include <asm/bootinfo.h>
@@ -41,10 +38,6 @@ int ltq_soc_type(void)
 	return soc_info.type;
 }
 
-void prom_free_prom_memory(void)
-{
-}
-
 static void __init prom_init_cmdline(void)
 {
 	int argc = fw_arg0;
@@ -65,6 +58,8 @@ static void __init prom_init_cmdline(void)
 
 void __init plat_mem_setup(void)
 {
+	void *dtb;
+
 	ioport_resource.start = IOPORT_RESOURCE_START;
 	ioport_resource.end = IOPORT_RESOURCE_END;
 	iomem_resource.start = IOMEM_RESOURCE_START;
@@ -72,13 +67,15 @@ void __init plat_mem_setup(void)
 
 	set_io_port_base((unsigned long) KSEG1);
 
+	dtb = get_fdt();
+	if (dtb == NULL)
+		panic("no dtb found");
+
 	/*
-	 * Load the builtin devicetree. This causes the chosen node to be
+	 * Load the devicetree. This causes the chosen node to be
 	 * parsed resulting in our memory appearing
 	 */
-	__dt_setup_arch(__dtb_start);
-
-	strlcpy(arcs_cmdline, boot_command_line, COMMAND_LINE_SIZE);
+	__dt_setup_arch(dtb);
 }
 
 void __init device_tree_init(void)
@@ -101,10 +98,3 @@ void __init prom_init(void)
 		panic("failed to register_vsmp_smp_ops()");
 #endif
 }
-
-int __init plat_of_setup(void)
-{
-	return __dt_register_buses(soc_info.compatible, "simple-bus");
-}
-
-arch_initcall(plat_of_setup);

@@ -34,6 +34,8 @@
 #include "internal.h"
 #include "pnfs.h"
 
+#include "nfs4trace.h"
+
 #define NFSDBG_FACILITY		NFSDBG_PNFS
 
 /*
@@ -43,7 +45,6 @@
 #define NFS4_DEVICE_ID_HASH_SIZE	(1 << NFS4_DEVICE_ID_HASH_BITS)
 #define NFS4_DEVICE_ID_HASH_MASK	(NFS4_DEVICE_ID_HASH_SIZE - 1)
 
-#define PNFS_DEVICE_RETRY_TIMEOUT (120*HZ)
 
 static struct hlist_head nfs4_deviceid_cache[NFS4_DEVICE_ID_HASH_SIZE];
 static DEFINE_SPINLOCK(nfs4_deviceid_lock);
@@ -95,7 +96,7 @@ _lookup_deviceid(const struct pnfs_layoutdriver_type *ld,
 static struct nfs4_deviceid_node *
 nfs4_get_device_info(struct nfs_server *server,
 		const struct nfs4_deviceid *dev_id,
-		struct rpc_cred *cred, gfp_t gfp_flags)
+		const struct cred *cred, gfp_t gfp_flags)
 {
 	struct nfs4_deviceid_node *d = NULL;
 	struct pnfs_device *pdev = NULL;
@@ -149,9 +150,11 @@ nfs4_get_device_info(struct nfs_server *server,
 	 */
 	d = server->pnfs_curr_ld->alloc_deviceid_node(server, pdev,
 			gfp_flags);
+	if (d && pdev->nocache)
+		set_bit(NFS_DEVICEID_NOCACHE, &d->flags);
 
 out_free_pages:
-	for (i = 0; i < max_pages; i++)
+	while (--i >= 0)
 		__free_page(pages[i]);
 	kfree(pages);
 out_free_pdev:
@@ -175,15 +178,15 @@ __nfs4_find_get_deviceid(struct nfs_server *server,
 	rcu_read_lock();
 	d = _lookup_deviceid(server->pnfs_curr_ld, server->nfs_client, id,
 			hash);
-	if (d != NULL)
-		atomic_inc(&d->ref);
+	if (d != NULL && !atomic_inc_not_zero(&d->ref))
+		d = NULL;
 	rcu_read_unlock();
 	return d;
 }
 
 struct nfs4_deviceid_node *
 nfs4_find_get_deviceid(struct nfs_server *server,
-		const struct nfs4_deviceid *id, struct rpc_cred *cred,
+		const struct nfs4_deviceid *id, const struct cred *cred,
 		gfp_t gfp_mask)
 {
 	long hash = nfs4_deviceid_hash(id);
@@ -191,24 +194,28 @@ nfs4_find_get_deviceid(struct nfs_server *server,
 
 	d = __nfs4_find_get_deviceid(server, id, hash);
 	if (d)
-		return d;
+		goto found;
 
 	new = nfs4_get_device_info(server, id, cred, gfp_mask);
-	if (!new)
+	if (!new) {
+		trace_nfs4_find_deviceid(server, id, -ENOENT);
 		return new;
+	}
 
 	spin_lock(&nfs4_deviceid_lock);
 	d = __nfs4_find_get_deviceid(server, id, hash);
 	if (d) {
 		spin_unlock(&nfs4_deviceid_lock);
 		server->pnfs_curr_ld->free_deviceid_node(new);
-		return d;
+	} else {
+		atomic_inc(&new->ref);
+		hlist_add_head_rcu(&new->node, &nfs4_deviceid_cache[hash]);
+		spin_unlock(&nfs4_deviceid_lock);
+		d = new;
 	}
-	hlist_add_head_rcu(&new->node, &nfs4_deviceid_cache[hash]);
-	atomic_inc(&new->ref);
-	spin_unlock(&nfs4_deviceid_lock);
-
-	return new;
+found:
+	trace_nfs4_find_deviceid(server, id, 0);
+	return d;
 }
 EXPORT_SYMBOL_GPL(nfs4_find_get_deviceid);
 
@@ -235,12 +242,11 @@ nfs4_delete_deviceid(const struct pnfs_layoutdriver_type *ld,
 		return;
 	}
 	hlist_del_init_rcu(&d->node);
+	clear_bit(NFS_DEVICEID_NOCACHE, &d->flags);
 	spin_unlock(&nfs4_deviceid_lock);
-	synchronize_rcu();
 
 	/* balance the initial ref set in pnfs_insert_deviceid */
-	if (atomic_dec_and_test(&d->ref))
-		d->ld->free_deviceid_node(d);
+	nfs4_put_deviceid_node(d);
 }
 EXPORT_SYMBOL_GPL(nfs4_delete_deviceid);
 
@@ -271,18 +277,36 @@ EXPORT_SYMBOL_GPL(nfs4_init_deviceid_node);
 bool
 nfs4_put_deviceid_node(struct nfs4_deviceid_node *d)
 {
+	if (test_bit(NFS_DEVICEID_NOCACHE, &d->flags)) {
+		if (atomic_add_unless(&d->ref, -1, 2))
+			return false;
+		nfs4_delete_deviceid(d->ld, d->nfs_client, &d->deviceid);
+	}
 	if (!atomic_dec_and_test(&d->ref))
 		return false;
+	trace_nfs4_deviceid_free(d->nfs_client, &d->deviceid);
 	d->ld->free_deviceid_node(d);
 	return true;
 }
 EXPORT_SYMBOL_GPL(nfs4_put_deviceid_node);
 
 void
+nfs4_mark_deviceid_available(struct nfs4_deviceid_node *node)
+{
+	if (test_bit(NFS_DEVICEID_UNAVAILABLE, &node->flags)) {
+		clear_bit(NFS_DEVICEID_UNAVAILABLE, &node->flags);
+		smp_mb__after_atomic();
+	}
+}
+EXPORT_SYMBOL_GPL(nfs4_mark_deviceid_available);
+
+void
 nfs4_mark_deviceid_unavailable(struct nfs4_deviceid_node *node)
 {
 	node->timestamp_unavailable = jiffies;
+	smp_mb__before_atomic();
 	set_bit(NFS_DEVICEID_UNAVAILABLE, &node->flags);
+	smp_mb__after_atomic();
 }
 EXPORT_SYMBOL_GPL(nfs4_mark_deviceid_unavailable);
 
@@ -297,6 +321,7 @@ nfs4_test_deviceid_unavailable(struct nfs4_deviceid_node *node)
 		if (time_in_range(node->timestamp_unavailable, start, end))
 			return true;
 		clear_bit(NFS_DEVICEID_UNAVAILABLE, &node->flags);
+		smp_mb__after_atomic();
 	}
 	return false;
 }
@@ -314,6 +339,7 @@ _deviceid_purge_client(const struct nfs_client *clp, long hash)
 		if (d->nfs_client == clp && atomic_read(&d->ref)) {
 			hlist_del_init_rcu(&d->node);
 			hlist_add_head(&d->tmpnode, &tmp);
+			clear_bit(NFS_DEVICEID_NOCACHE, &d->flags);
 		}
 	rcu_read_unlock();
 	spin_unlock(&nfs4_deviceid_lock);
@@ -321,12 +347,10 @@ _deviceid_purge_client(const struct nfs_client *clp, long hash)
 	if (hlist_empty(&tmp))
 		return;
 
-	synchronize_rcu();
 	while (!hlist_empty(&tmp)) {
 		d = hlist_entry(tmp.first, struct nfs4_deviceid_node, tmpnode);
 		hlist_del(&d->tmpnode);
-		if (atomic_dec_and_test(&d->ref))
-			d->ld->free_deviceid_node(d);
+		nfs4_put_deviceid_node(d);
 	}
 }
 

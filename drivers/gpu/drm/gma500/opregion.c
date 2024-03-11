@@ -163,10 +163,7 @@ static u32 asle_set_backlight(struct drm_device *dev, u32 bclp)
 	if (bclp > 255)
 		return ASLE_BACKLIGHT_FAILED;
 
-	if (config_enabled(CONFIG_BACKLIGHT_CLASS_DEVICE)) {
-		int max = bd->props.max_brightness;
-		gma_backlight_set(dev, bclp * max / 255);
-	}
+	gma_backlight_set(dev, bclp * bd->props.max_brightness / 255);
 
 	asle->cblv = (bclp * 0x64) / 0xff | ASLE_CBLV_VALID;
 
@@ -308,12 +305,13 @@ void psb_intel_opregion_fini(struct drm_device *dev)
 int psb_intel_opregion_setup(struct drm_device *dev)
 {
 	struct drm_psb_private *dev_priv = dev->dev_private;
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	struct psb_intel_opregion *opregion = &dev_priv->opregion;
 	u32 opregion_phy, mboxes;
 	void __iomem *base;
 	int err = 0;
 
-	pci_read_config_dword(dev->pdev, PCI_ASLS, &opregion_phy);
+	pci_read_config_dword(pdev, PCI_ASLS, &opregion_phy);
 	if (opregion_phy == 0) {
 		DRM_DEBUG_DRIVER("ACPI Opregion not supported\n");
 		return -ENOTSUPP;

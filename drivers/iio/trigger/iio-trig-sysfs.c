@@ -1,8 +1,6 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Copyright 2011 Analog Devices Inc.
- *
- * Licensed under the GPL-2.
- *
  */
 
 #include <linux/kernel.h>
@@ -127,7 +125,6 @@ static const struct attribute_group *iio_sysfs_trigger_attr_groups[] = {
 };
 
 static const struct iio_trigger_ops iio_sysfs_trigger_ops = {
-	.owner = THIS_MODULE,
 };
 
 static int iio_sysfs_trigger_probe(int id)
@@ -152,7 +149,7 @@ static int iio_sysfs_trigger_probe(int id)
 		goto out1;
 	}
 	t->id = id;
-	t->trig = iio_trigger_alloc("sysfstrig%d", id);
+	t->trig = iio_trigger_alloc(&iio_sysfs_trig_dev, "sysfstrig%d", id);
 	if (!t->trig) {
 		ret = -ENOMEM;
 		goto free_t;
@@ -160,10 +157,9 @@ static int iio_sysfs_trigger_probe(int id)
 
 	t->trig->dev.groups = iio_sysfs_trigger_attr_groups;
 	t->trig->ops = &iio_sysfs_trigger_ops;
-	t->trig->dev.parent = &iio_sysfs_trig_dev;
 	iio_trigger_set_drvdata(t->trig, t);
 
-	init_irq_work(&t->work, iio_sysfs_trigger_work);
+	t->work = IRQ_WORK_INIT_HARD(iio_sysfs_trigger_work);
 
 	ret = iio_trigger_register(t->trig);
 	if (ret)
@@ -174,7 +170,7 @@ static int iio_sysfs_trigger_probe(int id)
 	return 0;
 
 out2:
-	iio_trigger_put(t->trig);
+	iio_trigger_free(t->trig);
 free_t:
 	kfree(t);
 out1:
@@ -199,6 +195,7 @@ static int iio_sysfs_trigger_remove(int id)
 	}
 
 	iio_trigger_unregister(t->trig);
+	irq_work_sync(&t->work);
 	iio_trigger_free(t->trig);
 
 	list_del(&t->l);
@@ -211,9 +208,13 @@ static int iio_sysfs_trigger_remove(int id)
 
 static int __init iio_sysfs_trig_init(void)
 {
+	int ret;
 	device_initialize(&iio_sysfs_trig_dev);
 	dev_set_name(&iio_sysfs_trig_dev, "iio_sysfs_trigger");
-	return device_add(&iio_sysfs_trig_dev);
+	ret = device_add(&iio_sysfs_trig_dev);
+	if (ret)
+		put_device(&iio_sysfs_trig_dev);
+	return ret;
 }
 module_init(iio_sysfs_trig_init);
 
@@ -223,7 +224,7 @@ static void __exit iio_sysfs_trig_exit(void)
 }
 module_exit(iio_sysfs_trig_exit);
 
-MODULE_AUTHOR("Michael Hennerich <hennerich@blackfin.uclinux.org>");
+MODULE_AUTHOR("Michael Hennerich <michael.hennerich@analog.com>");
 MODULE_DESCRIPTION("Sysfs based trigger for the iio subsystem");
 MODULE_LICENSE("GPL v2");
 MODULE_ALIAS("platform:iio-trig-sysfs");

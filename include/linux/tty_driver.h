@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0 */
 #ifndef _LINUX_TTY_DRIVER_H
 #define _LINUX_TTY_DRIVER_H
 
@@ -7,7 +8,7 @@
  * defined; unless noted otherwise, they are optional, and can be
  * filled in with a null pointer.
  *
- * struct tty_struct * (*lookup)(struct tty_driver *self, int idx)
+ * struct tty_struct * (*lookup)(struct tty_driver *self, struct file *, int idx)
  *
  *	Return the tty device corresponding to idx, NULL if there is not
  *	one currently in use and an ERR_PTR value on error. Called under
@@ -88,7 +89,7 @@
  *
  *	Note: Do not call this function directly, call tty_driver_flush_chars
  * 
- * int  (*write_room)(struct tty_struct *tty);
+ * unsigned int  (*write_room)(struct tty_struct *tty);
  *
  * 	This routine returns the numbers of characters the tty driver
  * 	will accept for queuing to be written.  This number is subject
@@ -135,7 +136,7 @@
  * 	the line discipline are close to full, and it should somehow
  * 	signal that no more characters should be sent to the tty.
  *
- *	Optional: Always invoke via tty_throttle(), called under the
+ *	Optional: Always invoke via tty_throttle_safe(), called under the
  *	termios lock.
  * 
  * void (*unthrottle)(struct tty_struct * tty);
@@ -152,7 +153,7 @@
  * 	This routine notifies the tty driver that it should stop
  * 	outputting characters to the tty device.  
  *
- *	Called with ->flow_lock held. Serialized with start() method.
+ *	Called with ->flow.lock held. Serialized with start() method.
  *
  *	Optional:
  *
@@ -163,7 +164,7 @@
  * 	This routine notifies the tty driver that it resume sending
  *	characters to the tty device.
  *
- *	Called with ->flow_lock held. Serialized with stop() method.
+ *	Called with ->flow.lock held. Serialized with stop() method.
  *
  *	Optional:
  *
@@ -223,34 +224,29 @@
  *	line). See tty_do_resize() if you need to wrap the standard method
  *	in your own logic - the usual case.
  *
- * void (*set_termiox)(struct tty_struct *tty, struct termiox *new);
- *
- *	Called when the device receives a termiox based ioctl. Passes down
- *	the requested data from user space. This method will not be invoked
- *	unless the tty also has a valid tty->termiox pointer.
- *
- *	Optional: Called under the termios lock
- *
  * int (*get_icount)(struct tty_struct *tty, struct serial_icounter *icount);
  *
  *	Called when the device receives a TIOCGICOUNT ioctl. Passed a kernel
  *	structure to complete. This method is optional and will only be called
- *	if provided (otherwise EINVAL will be returned).
+ *	if provided (otherwise ENOTTY will be returned).
  */
 
 #include <linux/export.h>
 #include <linux/fs.h>
+#include <linux/kref.h>
 #include <linux/list.h>
 #include <linux/cdev.h>
 #include <linux/termios.h>
+#include <linux/seq_file.h>
 
 struct tty_struct;
 struct tty_driver;
 struct serial_icounter_struct;
+struct serial_struct;
 
 struct tty_operations {
 	struct tty_struct * (*lookup)(struct tty_driver *driver,
-			struct inode *inode, int idx);
+			struct file *filp, int idx);
 	int  (*install)(struct tty_driver *driver, struct tty_struct *tty);
 	void (*remove)(struct tty_driver *driver, struct tty_struct *tty);
 	int  (*open)(struct tty_struct * tty, struct file * filp);
@@ -261,8 +257,8 @@ struct tty_operations {
 		      const unsigned char *buf, int count);
 	int  (*put_char)(struct tty_struct *tty, unsigned char ch);
 	void (*flush_chars)(struct tty_struct *tty);
-	int  (*write_room)(struct tty_struct *tty);
-	int  (*chars_in_buffer)(struct tty_struct *tty);
+	unsigned int (*write_room)(struct tty_struct *tty);
+	unsigned int (*chars_in_buffer)(struct tty_struct *tty);
 	int  (*ioctl)(struct tty_struct *tty,
 		    unsigned int cmd, unsigned long arg);
 	long (*compat_ioctl)(struct tty_struct *tty,
@@ -282,21 +278,23 @@ struct tty_operations {
 	int (*tiocmset)(struct tty_struct *tty,
 			unsigned int set, unsigned int clear);
 	int (*resize)(struct tty_struct *tty, struct winsize *ws);
-	int (*set_termiox)(struct tty_struct *tty, struct termiox *tnew);
 	int (*get_icount)(struct tty_struct *tty,
 				struct serial_icounter_struct *icount);
+	int  (*get_serial)(struct tty_struct *tty, struct serial_struct *p);
+	int  (*set_serial)(struct tty_struct *tty, struct serial_struct *p);
+	void (*show_fdinfo)(struct tty_struct *tty, struct seq_file *m);
 #ifdef CONFIG_CONSOLE_POLL
 	int (*poll_init)(struct tty_driver *driver, int line, char *options);
 	int (*poll_get_char)(struct tty_driver *driver, int line);
 	void (*poll_put_char)(struct tty_driver *driver, int line, char ch);
 #endif
-	const struct file_operations *proc_fops;
-};
+	int (*proc_show)(struct seq_file *, void *);
+} __randomize_layout;
 
 struct tty_driver {
 	int	magic;		/* magic number for this structure */
 	struct kref kref;	/* Reference management */
-	struct cdev *cdevs;
+	struct cdev **cdevs;
 	struct module	*owner;
 	const char	*driver_name;
 	const char	*name;
@@ -325,15 +323,12 @@ struct tty_driver {
 
 	const struct tty_operations *ops;
 	struct list_head tty_drivers;
-};
+} __randomize_layout;
 
 extern struct list_head tty_drivers;
 
 extern struct tty_driver *__tty_alloc_driver(unsigned int lines,
 		struct module *owner, unsigned long flags);
-extern void put_tty_driver(struct tty_driver *driver);
-extern void tty_set_operations(struct tty_driver *driver,
-			const struct tty_operations *op);
 extern struct tty_driver *tty_find_polling_driver(char *name, int *line);
 
 extern void tty_driver_kref_put(struct tty_driver *driver);
@@ -342,22 +337,16 @@ extern void tty_driver_kref_put(struct tty_driver *driver);
 #define tty_alloc_driver(lines, flags) \
 		__tty_alloc_driver(lines, THIS_MODULE, flags)
 
-/*
- * DEPRECATED Do not use this in new code, use tty_alloc_driver instead.
- * (And change the return value checks.)
- */
-static inline struct tty_driver *alloc_tty_driver(unsigned int lines)
-{
-	struct tty_driver *ret = tty_alloc_driver(lines, 0);
-	if (IS_ERR(ret))
-		return NULL;
-	return ret;
-}
-
 static inline struct tty_driver *tty_driver_kref_get(struct tty_driver *d)
 {
 	kref_get(&d->kref);
 	return d;
+}
+
+static inline void tty_set_operations(struct tty_driver *driver,
+		const struct tty_operations *op)
+{
+	driver->ops = op;
 }
 
 /* tty driver magic number */
@@ -436,5 +425,22 @@ static inline struct tty_driver *tty_driver_kref_get(struct tty_driver *d)
 
 /* serial subtype definitions */
 #define SERIAL_TYPE_NORMAL	1
+
+int tty_register_driver(struct tty_driver *driver);
+void tty_unregister_driver(struct tty_driver *driver);
+struct device *tty_register_device(struct tty_driver *driver, unsigned index,
+		struct device *dev);
+struct device *tty_register_device_attr(struct tty_driver *driver,
+		unsigned index, struct device *device, void *drvdata,
+		const struct attribute_group **attr_grp);
+void tty_unregister_device(struct tty_driver *driver, unsigned index);
+
+#ifdef CONFIG_PROC_FS
+void proc_tty_register_driver(struct tty_driver *);
+void proc_tty_unregister_driver(struct tty_driver *);
+#else
+static inline void proc_tty_register_driver(struct tty_driver *d) {}
+static inline void proc_tty_unregister_driver(struct tty_driver *d) {}
+#endif
 
 #endif /* #ifdef _LINUX_TTY_DRIVER_H */

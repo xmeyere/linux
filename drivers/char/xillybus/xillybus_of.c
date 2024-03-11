@@ -1,13 +1,10 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * linux/drivers/misc/xillybus_of.c
  *
  * Copyright 2011 Xillybus Ltd, http://xillybus.com
  *
  * Driver for the Xillybus FPGA/host framework using Open Firmware.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the smems of the GNU General Public License as published by
- * the Free Software Foundation; version 2 of the License.
  */
 
 #include <linux/module.h>
@@ -15,23 +12,18 @@
 #include <linux/slab.h>
 #include <linux/platform_device.h>
 #include <linux/of.h>
-#include <linux/of_irq.h>
-#include <linux/of_address.h>
-#include <linux/of_device.h>
-#include <linux/of_platform.h>
 #include <linux/err.h>
 #include "xillybus.h"
 
 MODULE_DESCRIPTION("Xillybus driver for Open Firmware");
 MODULE_AUTHOR("Eli Billauer, Xillybus Ltd.");
-MODULE_VERSION("1.06");
 MODULE_ALIAS("xillybus_of");
 MODULE_LICENSE("GPL v2");
 
 static const char xillyname[] = "xillybus_of";
 
 /* Match table for of_platform binding */
-static struct of_device_id xillybus_of_match[] = {
+static const struct of_device_id xillybus_of_match[] = {
 	{ .compatible = "xillybus,xillybus-1.00.a", },
 	{ .compatible = "xlnx,xillybus-1.00.a", }, /* Deprecated */
 	{}
@@ -81,7 +73,6 @@ static int xilly_map_single_of(struct xilly_endpoint *ep,
 {
 	dma_addr_t addr;
 	struct xilly_mapping *this;
-	int rc;
 
 	this = kzalloc(sizeof(*this), GFP_KERNEL);
 	if (!this)
@@ -101,15 +92,7 @@ static int xilly_map_single_of(struct xilly_endpoint *ep,
 
 	*ret_dma_handle = addr;
 
-	rc = devm_add_action(ep->dev, xilly_of_unmap, this);
-
-	if (rc) {
-		dma_unmap_single(ep->dev, addr, size, direction);
-		kfree(this);
-		return rc;
-	}
-
-	return 0;
+	return devm_add_action_or_reset(ep->dev, xilly_of_unmap, this);
 }
 
 static struct xilly_endpoint_hardware of_hw = {
@@ -132,7 +115,6 @@ static int xilly_drv_probe(struct platform_device *op)
 	struct xilly_endpoint *endpoint;
 	int rc;
 	int irq;
-	struct resource res;
 	struct xilly_endpoint_hardware *ephw = &of_hw;
 
 	if (of_property_read_bool(dev->of_node, "dma-coherent"))
@@ -145,13 +127,11 @@ static int xilly_drv_probe(struct platform_device *op)
 
 	dev_set_drvdata(dev, endpoint);
 
-	rc = of_address_to_resource(dev->of_node, 0, &res);
-	endpoint->registers = devm_ioremap_resource(dev, &res);
-
+	endpoint->registers = devm_platform_ioremap_resource(op, 0);
 	if (IS_ERR(endpoint->registers))
 		return PTR_ERR(endpoint->registers);
 
-	irq = irq_of_parse_and_map(dev->of_node, 0);
+	irq = platform_get_irq(op, 0);
 
 	rc = devm_request_irq(dev, irq, xillybus_isr, 0, xillyname, endpoint);
 

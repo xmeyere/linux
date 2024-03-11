@@ -122,7 +122,7 @@
 #include "xgbe.h"
 #include "xgbe-common.h"
 
-static cycle_t xgbe_cc_read(const struct cyclecounter *cc)
+static u64 xgbe_cc_read(const struct cyclecounter *cc)
 {
 	struct xgbe_prv_data *pdata = container_of(cc,
 						   struct xgbe_prv_data,
@@ -179,7 +179,7 @@ static int xgbe_adjtime(struct ptp_clock_info *info, s64 delta)
 	return 0;
 }
 
-static int xgbe_gettime(struct ptp_clock_info *info, struct timespec *ts)
+static int xgbe_gettime(struct ptp_clock_info *info, struct timespec64 *ts)
 {
 	struct xgbe_prv_data *pdata = container_of(info,
 						   struct xgbe_prv_data,
@@ -193,12 +193,13 @@ static int xgbe_gettime(struct ptp_clock_info *info, struct timespec *ts)
 
 	spin_unlock_irqrestore(&pdata->tstamp_lock, flags);
 
-	*ts = ns_to_timespec(nsec);
+	*ts = ns_to_timespec64(nsec);
 
 	return 0;
 }
 
-static int xgbe_settime(struct ptp_clock_info *info, const struct timespec *ts)
+static int xgbe_settime(struct ptp_clock_info *info,
+			const struct timespec64 *ts)
 {
 	struct xgbe_prv_data *pdata = container_of(info,
 						   struct xgbe_prv_data,
@@ -206,7 +207,7 @@ static int xgbe_settime(struct ptp_clock_info *info, const struct timespec *ts)
 	unsigned long flags;
 	u64 nsec;
 
-	nsec = timespec_to_ns(ts);
+	nsec = timespec64_to_ns(ts);
 
 	spin_lock_irqsave(&pdata->tstamp_lock, flags);
 
@@ -236,8 +237,8 @@ void xgbe_ptp_register(struct xgbe_prv_data *pdata)
 	info->max_adj = pdata->ptpclk_rate;
 	info->adjfreq = xgbe_adjfreq;
 	info->adjtime = xgbe_adjtime;
-	info->gettime = xgbe_gettime;
-	info->settime = xgbe_settime;
+	info->gettime64 = xgbe_gettime;
+	info->settime64 = xgbe_settime;
 	info->enable = xgbe_enable;
 
 	clock = ptp_clock_register(info, pdata->dev);
@@ -266,7 +267,7 @@ void xgbe_ptp_register(struct xgbe_prv_data *pdata)
 			 ktime_to_ns(ktime_get_real()));
 
 	/* Disable all timestamping to start */
-	XGMAC_IOWRITE(pdata, MAC_TCR, 0);
+	XGMAC_IOWRITE(pdata, MAC_TSCR, 0);
 	pdata->tstamp_config.tx_type = HWTSTAMP_TX_OFF;
 	pdata->tstamp_config.rx_filter = HWTSTAMP_FILTER_NONE;
 }

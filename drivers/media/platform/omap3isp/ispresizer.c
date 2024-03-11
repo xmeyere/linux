@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * ispresizer.c
  *
@@ -8,10 +9,6 @@
  *
  * Contacts: Laurent Pinchart <laurent.pinchart@ideasonboard.com>
  *	     Sakari Ailus <sakari.ailus@iki.fi>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 
 #include <linux/device.h>
@@ -112,16 +109,17 @@ static const struct isprsz_coef filter_coefs = {
  * __resizer_get_format - helper function for getting resizer format
  * @res   : pointer to resizer private structure
  * @pad   : pad number
- * @fh    : V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @which : wanted subdev format
  * return zero
  */
 static struct v4l2_mbus_framefmt *
-__resizer_get_format(struct isp_res_device *res, struct v4l2_subdev_fh *fh,
+__resizer_get_format(struct isp_res_device *res,
+		     struct v4l2_subdev_state *sd_state,
 		     unsigned int pad, enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_format(fh, pad);
+		return v4l2_subdev_get_try_format(&res->subdev, sd_state, pad);
 	else
 		return &res->formats[pad];
 }
@@ -129,15 +127,17 @@ __resizer_get_format(struct isp_res_device *res, struct v4l2_subdev_fh *fh,
 /*
  * __resizer_get_crop - helper function for getting resizer crop rectangle
  * @res   : pointer to resizer private structure
- * @fh    : V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @which : wanted subdev crop rectangle
  */
 static struct v4l2_rect *
-__resizer_get_crop(struct isp_res_device *res, struct v4l2_subdev_fh *fh,
+__resizer_get_crop(struct isp_res_device *res,
+		   struct v4l2_subdev_state *sd_state,
 		   enum v4l2_subdev_format_whence which)
 {
 	if (which == V4L2_SUBDEV_FORMAT_TRY)
-		return v4l2_subdev_get_try_crop(fh, RESZ_PAD_SINK);
+		return v4l2_subdev_get_try_crop(&res->subdev, sd_state,
+						RESZ_PAD_SINK);
 	else
 		return &res->crop.request;
 }
@@ -1215,7 +1215,7 @@ static void resizer_try_crop(const struct v4l2_mbus_framefmt *sink,
 /*
  * resizer_get_selection - Retrieve a selection rectangle on a pad
  * @sd: ISP resizer V4L2 subdevice
- * @fh: V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @sel: Selection rectangle
  *
  * The only supported rectangles are the crop rectangles on the sink pad.
@@ -1223,7 +1223,7 @@ static void resizer_try_crop(const struct v4l2_mbus_framefmt *sink,
  * Return 0 on success or a negative error code otherwise.
  */
 static int resizer_get_selection(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_fh *fh,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
@@ -1234,9 +1234,9 @@ static int resizer_get_selection(struct v4l2_subdev *sd,
 	if (sel->pad != RESZ_PAD_SINK)
 		return -EINVAL;
 
-	format_sink = __resizer_get_format(res, fh, RESZ_PAD_SINK,
+	format_sink = __resizer_get_format(res, sd_state, RESZ_PAD_SINK,
 					   sel->which);
-	format_source = __resizer_get_format(res, fh, RESZ_PAD_SOURCE,
+	format_source = __resizer_get_format(res, sd_state, RESZ_PAD_SOURCE,
 					     sel->which);
 
 	switch (sel->target) {
@@ -1251,7 +1251,7 @@ static int resizer_get_selection(struct v4l2_subdev *sd,
 		break;
 
 	case V4L2_SEL_TGT_CROP:
-		sel->r = *__resizer_get_crop(res, fh, sel->which);
+		sel->r = *__resizer_get_crop(res, sd_state, sel->which);
 		resizer_calc_ratios(res, &sel->r, format_source, &ratio);
 		break;
 
@@ -1265,7 +1265,7 @@ static int resizer_get_selection(struct v4l2_subdev *sd,
 /*
  * resizer_set_selection - Set a selection rectangle on a pad
  * @sd: ISP resizer V4L2 subdevice
- * @fh: V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @sel: Selection rectangle
  *
  * The only supported rectangle is the actual crop rectangle on the sink pad.
@@ -1276,7 +1276,7 @@ static int resizer_get_selection(struct v4l2_subdev *sd,
  * Return 0 on success or a negative error code otherwise.
  */
 static int resizer_set_selection(struct v4l2_subdev *sd,
-				 struct v4l2_subdev_fh *fh,
+				 struct v4l2_subdev_state *sd_state,
 				 struct v4l2_subdev_selection *sel)
 {
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
@@ -1290,9 +1290,9 @@ static int resizer_set_selection(struct v4l2_subdev *sd,
 	    sel->pad != RESZ_PAD_SINK)
 		return -EINVAL;
 
-	format_sink = __resizer_get_format(res, fh, RESZ_PAD_SINK,
+	format_sink = __resizer_get_format(res, sd_state, RESZ_PAD_SINK,
 					   sel->which);
-	format_source = *__resizer_get_format(res, fh, RESZ_PAD_SOURCE,
+	format_source = *__resizer_get_format(res, sd_state, RESZ_PAD_SOURCE,
 					      sel->which);
 
 	dev_dbg(isp->dev, "%s(%s): req %ux%u -> (%d,%d)/%ux%u -> %ux%u\n",
@@ -1310,7 +1310,7 @@ static int resizer_set_selection(struct v4l2_subdev *sd,
 	 * stored the mangled rectangle.
 	 */
 	resizer_try_crop(format_sink, &format_source, &sel->r);
-	*__resizer_get_crop(res, fh, sel->which) = sel->r;
+	*__resizer_get_crop(res, sd_state, sel->which) = sel->r;
 	resizer_calc_ratios(res, &sel->r, &format_source, &ratio);
 
 	dev_dbg(isp->dev, "%s(%s): got %ux%u -> (%d,%d)/%ux%u -> %ux%u\n",
@@ -1320,7 +1320,8 @@ static int resizer_set_selection(struct v4l2_subdev *sd,
 		format_source.width, format_source.height);
 
 	if (sel->which == V4L2_SUBDEV_FORMAT_TRY) {
-		*__resizer_get_format(res, fh, RESZ_PAD_SOURCE, sel->which) =
+		*__resizer_get_format(res, sd_state, RESZ_PAD_SOURCE,
+				      sel->which) =
 			format_source;
 		return 0;
 	}
@@ -1331,7 +1332,7 @@ static int resizer_set_selection(struct v4l2_subdev *sd,
 	 */
 	spin_lock_irqsave(&res->lock, flags);
 
-	*__resizer_get_format(res, fh, RESZ_PAD_SOURCE, sel->which) =
+	*__resizer_get_format(res, sd_state, RESZ_PAD_SOURCE, sel->which) =
 		format_source;
 
 	res->ratio = ratio;
@@ -1368,13 +1369,14 @@ static unsigned int resizer_max_in_width(struct isp_res_device *res)
 /*
  * resizer_try_format - Handle try format by pad subdev method
  * @res   : ISP resizer device
- * @fh    : V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @pad   : pad num
  * @fmt   : pointer to v4l2 format structure
  * @which : wanted subdev format
  */
 static void resizer_try_format(struct isp_res_device *res,
-			       struct v4l2_subdev_fh *fh, unsigned int pad,
+			       struct v4l2_subdev_state *sd_state,
+			       unsigned int pad,
 			       struct v4l2_mbus_framefmt *fmt,
 			       enum v4l2_subdev_format_whence which)
 {
@@ -1395,10 +1397,11 @@ static void resizer_try_format(struct isp_res_device *res,
 		break;
 
 	case RESZ_PAD_SOURCE:
-		format = __resizer_get_format(res, fh, RESZ_PAD_SINK, which);
+		format = __resizer_get_format(res, sd_state, RESZ_PAD_SINK,
+					      which);
 		fmt->code = format->code;
 
-		crop = *__resizer_get_crop(res, fh, which);
+		crop = *__resizer_get_crop(res, sd_state, which);
 		resizer_calc_ratios(res, &crop, fmt, &ratio);
 		break;
 	}
@@ -1410,12 +1413,12 @@ static void resizer_try_format(struct isp_res_device *res,
 /*
  * resizer_enum_mbus_code - Handle pixel format enumeration
  * @sd     : pointer to v4l2 subdev structure
- * @fh     : V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @code   : pointer to v4l2_subdev_mbus_code_enum structure
  * return -EINVAL or zero on success
  */
 static int resizer_enum_mbus_code(struct v4l2_subdev *sd,
-				  struct v4l2_subdev_fh *fh,
+				  struct v4l2_subdev_state *sd_state,
 				  struct v4l2_subdev_mbus_code_enum *code)
 {
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
@@ -1430,8 +1433,8 @@ static int resizer_enum_mbus_code(struct v4l2_subdev *sd,
 		if (code->index != 0)
 			return -EINVAL;
 
-		format = __resizer_get_format(res, fh, RESZ_PAD_SINK,
-					      V4L2_SUBDEV_FORMAT_TRY);
+		format = __resizer_get_format(res, sd_state, RESZ_PAD_SINK,
+					      code->which);
 		code->code = format->code;
 	}
 
@@ -1439,7 +1442,7 @@ static int resizer_enum_mbus_code(struct v4l2_subdev *sd,
 }
 
 static int resizer_enum_frame_size(struct v4l2_subdev *sd,
-				   struct v4l2_subdev_fh *fh,
+				   struct v4l2_subdev_state *sd_state,
 				   struct v4l2_subdev_frame_size_enum *fse)
 {
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
@@ -1451,7 +1454,7 @@ static int resizer_enum_frame_size(struct v4l2_subdev *sd,
 	format.code = fse->code;
 	format.width = 1;
 	format.height = 1;
-	resizer_try_format(res, fh, fse->pad, &format, V4L2_SUBDEV_FORMAT_TRY);
+	resizer_try_format(res, sd_state, fse->pad, &format, fse->which);
 	fse->min_width = format.width;
 	fse->min_height = format.height;
 
@@ -1461,7 +1464,7 @@ static int resizer_enum_frame_size(struct v4l2_subdev *sd,
 	format.code = fse->code;
 	format.width = -1;
 	format.height = -1;
-	resizer_try_format(res, fh, fse->pad, &format, V4L2_SUBDEV_FORMAT_TRY);
+	resizer_try_format(res, sd_state, fse->pad, &format, fse->which);
 	fse->max_width = format.width;
 	fse->max_height = format.height;
 
@@ -1471,17 +1474,18 @@ static int resizer_enum_frame_size(struct v4l2_subdev *sd,
 /*
  * resizer_get_format - Handle get format by pads subdev method
  * @sd    : pointer to v4l2 subdev structure
- * @fh    : V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @fmt   : pointer to v4l2 subdev format structure
  * return -EINVAL or zero on success
  */
-static int resizer_get_format(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
+static int resizer_get_format(struct v4l2_subdev *sd,
+			      struct v4l2_subdev_state *sd_state,
 			      struct v4l2_subdev_format *fmt)
 {
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format;
 
-	format = __resizer_get_format(res, fh, fmt->pad, fmt->which);
+	format = __resizer_get_format(res, sd_state, fmt->pad, fmt->which);
 	if (format == NULL)
 		return -EINVAL;
 
@@ -1492,37 +1496,38 @@ static int resizer_get_format(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
 /*
  * resizer_set_format - Handle set format by pads subdev method
  * @sd    : pointer to v4l2 subdev structure
- * @fh    : V4L2 subdev file handle
+ * @cfg: V4L2 subdev pad configuration
  * @fmt   : pointer to v4l2 subdev format structure
  * return -EINVAL or zero on success
  */
-static int resizer_set_format(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh,
+static int resizer_set_format(struct v4l2_subdev *sd,
+			      struct v4l2_subdev_state *sd_state,
 			      struct v4l2_subdev_format *fmt)
 {
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
 	struct v4l2_mbus_framefmt *format;
 	struct v4l2_rect *crop;
 
-	format = __resizer_get_format(res, fh, fmt->pad, fmt->which);
+	format = __resizer_get_format(res, sd_state, fmt->pad, fmt->which);
 	if (format == NULL)
 		return -EINVAL;
 
-	resizer_try_format(res, fh, fmt->pad, &fmt->format, fmt->which);
+	resizer_try_format(res, sd_state, fmt->pad, &fmt->format, fmt->which);
 	*format = fmt->format;
 
 	if (fmt->pad == RESZ_PAD_SINK) {
 		/* reset crop rectangle */
-		crop = __resizer_get_crop(res, fh, fmt->which);
+		crop = __resizer_get_crop(res, sd_state, fmt->which);
 		crop->left = 0;
 		crop->top = 0;
 		crop->width = fmt->format.width;
 		crop->height = fmt->format.height;
 
 		/* Propagate the format from sink to source */
-		format = __resizer_get_format(res, fh, RESZ_PAD_SOURCE,
+		format = __resizer_get_format(res, sd_state, RESZ_PAD_SOURCE,
 					      fmt->which);
 		*format = fmt->format;
-		resizer_try_format(res, fh, RESZ_PAD_SOURCE, format,
+		resizer_try_format(res, sd_state, RESZ_PAD_SOURCE, format,
 				   fmt->which);
 	}
 
@@ -1573,7 +1578,7 @@ static int resizer_init_formats(struct v4l2_subdev *sd,
 	format.format.code = MEDIA_BUS_FMT_YUYV8_1X16;
 	format.format.width = 4096;
 	format.format.height = 4096;
-	resizer_set_format(sd, fh, &format);
+	resizer_set_format(sd, fh ? fh->state : NULL, &format);
 
 	return 0;
 }
@@ -1623,9 +1628,14 @@ static int resizer_link_setup(struct media_entity *entity,
 {
 	struct v4l2_subdev *sd = media_entity_to_v4l2_subdev(entity);
 	struct isp_res_device *res = v4l2_get_subdevdata(sd);
+	unsigned int index = local->index;
 
-	switch (local->index | media_entity_type(remote->entity)) {
-	case RESZ_PAD_SINK | MEDIA_ENT_T_DEVNODE:
+	/* FIXME: this is actually a hack! */
+	if (is_media_entity_v4l2_subdev(remote->entity))
+		index |= 2 << 16;
+
+	switch (index) {
+	case RESZ_PAD_SINK:
 		/* read from memory */
 		if (flags & MEDIA_LNK_FL_ENABLED) {
 			if (res->input == RESIZER_INPUT_VP)
@@ -1637,7 +1647,7 @@ static int resizer_link_setup(struct media_entity *entity,
 		}
 		break;
 
-	case RESZ_PAD_SINK | MEDIA_ENT_T_V4L2_SUBDEV:
+	case RESZ_PAD_SINK | 2 << 16:
 		/* read from ccdc or previewer */
 		if (flags & MEDIA_LNK_FL_ENABLED) {
 			if (res->input == RESIZER_INPUT_MEMORY)
@@ -1649,7 +1659,7 @@ static int resizer_link_setup(struct media_entity *entity,
 		}
 		break;
 
-	case RESZ_PAD_SOURCE | MEDIA_ENT_T_DEVNODE:
+	case RESZ_PAD_SOURCE:
 		/* resizer always write to memory */
 		break;
 
@@ -1679,6 +1689,7 @@ int omap3isp_resizer_register_entities(struct isp_res_device *res,
 	int ret;
 
 	/* Register the subdev and video nodes. */
+	res->subdev.dev = vdev->mdev->dev;
 	ret = v4l2_device_register_subdev(vdev, &res->subdev);
 	if (ret < 0)
 		goto error;
@@ -1718,7 +1729,7 @@ static int resizer_init_entities(struct isp_res_device *res)
 
 	v4l2_subdev_init(sd, &resizer_v4l2_ops);
 	sd->internal_ops = &resizer_v4l2_internal_ops;
-	strlcpy(sd->name, "OMAP3 ISP resizer", sizeof(sd->name));
+	strscpy(sd->name, "OMAP3 ISP resizer", sizeof(sd->name));
 	sd->grp_id = 1 << 16;	/* group ID for isp subdevs */
 	v4l2_set_subdevdata(sd, res);
 	sd->flags |= V4L2_SUBDEV_FL_HAS_DEVNODE;
@@ -1728,7 +1739,7 @@ static int resizer_init_entities(struct isp_res_device *res)
 	pads[RESZ_PAD_SOURCE].flags = MEDIA_PAD_FL_SOURCE;
 
 	me->ops = &resizer_media_ops;
-	ret = media_entity_init(me, RESZ_PADS_NUM, pads, 0);
+	ret = media_entity_pads_init(me, RESZ_PADS_NUM, pads);
 	if (ret < 0)
 		return ret;
 
@@ -1755,21 +1766,8 @@ static int resizer_init_entities(struct isp_res_device *res)
 
 	res->video_out.video.entity.flags |= MEDIA_ENT_FL_DEFAULT;
 
-	/* Connect the video nodes to the resizer subdev. */
-	ret = media_entity_create_link(&res->video_in.video.entity, 0,
-			&res->subdev.entity, RESZ_PAD_SINK, 0);
-	if (ret < 0)
-		goto error_link;
-
-	ret = media_entity_create_link(&res->subdev.entity, RESZ_PAD_SOURCE,
-			&res->video_out.video.entity, 0, 0);
-	if (ret < 0)
-		goto error_link;
-
 	return 0;
 
-error_link:
-	omap3isp_video_cleanup(&res->video_out);
 error_video_out:
 	omap3isp_video_cleanup(&res->video_in);
 error_video_in:

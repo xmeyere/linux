@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0-or-later
 /*
  * drivers/media/radio/si4713-i2c.c
  *
@@ -5,20 +6,6 @@
  *
  * Copyright (c) 2009 Nokia Corporation
  * Contact: Eduardo Valentin <eduardo.valentin@nokia.com>
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License as published by
- * the Free Software Foundation; either version 2 of the License, or
- * (at your option) any later version.
- *
- * This program is distributed in the hope that it will be useful,
- * but WITHOUT ANY WARRANTY; without even the implied warranty of
- * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
- * GNU General Public License for more details.
- *
- * You should have received a copy of the GNU General Public License
- * along with this program; if not, write to the Free Software
- * Foundation, Inc., 59 Temple Place, Suite 330, Boston, MA 02111-1307 USA
  */
 
 #include <linux/completion.h>
@@ -99,7 +86,7 @@ MODULE_VERSION("0.0.1");
 #define check_command_failed(status)	(!(status & SI4713_CTS) || \
 					(status & SI4713_ERR))
 /* mute definition */
-#define set_mute(p)	((p & 1) | ((p & 1) << 1));
+#define set_mute(p)	(((p) & 1) | (((p) & 1) << 1))
 
 #ifdef DEBUG
 #define DBG_BUFFER(device, message, buffer, size)			\
@@ -383,7 +370,7 @@ static int si4713_powerup(struct si4713_device *sdev)
 		}
 	}
 
-	if (!IS_ERR(sdev->gpio_reset)) {
+	if (sdev->gpio_reset) {
 		udelay(50);
 		gpiod_set_value(sdev->gpio_reset, 1);
 	}
@@ -407,8 +394,7 @@ static int si4713_powerup(struct si4713_device *sdev)
 						SI4713_STC_INT | SI4713_CTS);
 		return err;
 	}
-	if (!IS_ERR(sdev->gpio_reset))
-		gpiod_set_value(sdev->gpio_reset, 0);
+	gpiod_set_value(sdev->gpio_reset, 0);
 
 
 	if (sdev->vdd) {
@@ -447,7 +433,7 @@ static int si4713_powerdown(struct si4713_device *sdev)
 		v4l2_dbg(1, debug, &sdev->sd, "Power down response: 0x%02x\n",
 				resp[0]);
 		v4l2_dbg(1, debug, &sdev->sd, "Device in reset mode\n");
-		if (!IS_ERR(sdev->gpio_reset))
+		if (sdev->gpio_reset)
 			gpiod_set_value(sdev->gpio_reset, 0);
 
 		if (sdev->vdd) {
@@ -717,9 +703,9 @@ static int si4713_tx_tune_status(struct si4713_device *sdev, u8 intack,
 		*power = val[5];
 		*antcap = val[6];
 		*noise = val[7];
-		v4l2_dbg(1, debug, &sdev->sd, "%s: response: %d x 10 kHz "
-				"(power %d, antcap %d, rnl %d)\n", __func__,
-				*frequency, *power, *antcap, *noise);
+		v4l2_dbg(1, debug, &sdev->sd,
+			 "%s: response: %d x 10 kHz (power %d, antcap %d, rnl %d)\n",
+			 __func__, *frequency, *power, *antcap, *noise);
 	}
 
 	return err;
@@ -759,10 +745,9 @@ static int si4713_tx_rds_buff(struct si4713_device *sdev, u8 mode, u16 rdsb,
 		v4l2_dbg(1, debug, &sdev->sd,
 			"%s: status=0x%02x\n", __func__, val[0]);
 		*cbleft = (s8)val[2] - val[3];
-		v4l2_dbg(1, debug, &sdev->sd, "%s: response: interrupts"
-				" 0x%02x cb avail: %d cb used %d fifo avail"
-				" %d fifo used %d\n", __func__, val[1],
-				val[2], val[3], val[4], val[5]);
+		v4l2_dbg(1, debug, &sdev->sd,
+			 "%s: response: interrupts 0x%02x cb avail: %d cb used %d fifo avail %d fifo used %d\n",
+			 __func__, val[1], val[2], val[3], val[4], val[5]);
 	}
 
 	return err;
@@ -1172,7 +1157,7 @@ static int si4713_s_ctrl(struct v4l2_ctrl *ctrl)
 			 * V4L2_CID_TUNE_POWER_LEVEL. */
 			if (force)
 				break;
-			/* fall through */
+			fallthrough;
 		case V4L2_CID_TUNE_POWER_LEVEL:
 			ret = si4713_tx_tune_power(sdev,
 				sdev->tune_pwr_level->val, sdev->tune_ant_cap->val);
@@ -1278,7 +1263,7 @@ static int si4713_g_modulator(struct v4l2_subdev *sd, struct v4l2_modulator *vm)
 	if (vm->index > 0)
 		return -EINVAL;
 
-	strncpy(vm->name, "FM Modulator", 32);
+	strscpy(vm->name, "FM Modulator", sizeof(vm->name));
 	vm->capability = V4L2_TUNER_CAP_STEREO | V4L2_TUNER_CAP_LOW |
 		V4L2_TUNER_CAP_RDS | V4L2_TUNER_CAP_RDS_CONTROLS;
 
@@ -1442,8 +1427,7 @@ static const struct v4l2_ctrl_config si4713_alt_freqs_ctrl = {
  * I2C driver interface
  */
 /* si4713_probe - probe for the device */
-static int si4713_probe(struct i2c_client *client,
-					const struct i2c_device_id *id)
+static int si4713_probe(struct i2c_client *client)
 {
 	struct si4713_device *sdev;
 	struct v4l2_ctrl_handler *hdl;
@@ -1460,14 +1444,9 @@ static int si4713_probe(struct i2c_client *client,
 		goto exit;
 	}
 
-	sdev->gpio_reset = devm_gpiod_get(&client->dev, "reset");
-	if (!IS_ERR(sdev->gpio_reset)) {
-		gpiod_direction_output(sdev->gpio_reset, 0);
-	} else if (PTR_ERR(sdev->gpio_reset) == -ENOENT) {
-		dev_dbg(&client->dev, "No reset GPIO assigned\n");
-	} else if (PTR_ERR(sdev->gpio_reset) == -ENOSYS) {
-		dev_dbg(&client->dev, "No reset GPIO support\n");
-	} else {
+	sdev->gpio_reset = devm_gpiod_get_optional(&client->dev, "reset",
+						   GPIOD_OUT_LOW);
+	if (IS_ERR(sdev->gpio_reset)) {
 		rval = PTR_ERR(sdev->gpio_reset);
 		dev_err(&client->dev, "Failed to request gpio: %d\n", rval);
 		goto exit;
@@ -1615,8 +1594,10 @@ static int si4713_probe(struct i2c_client *client,
 		return 0;
 
 	si4713_pdev = platform_device_alloc("radio-si4713", -1);
-	if (!si4713_pdev)
+	if (!si4713_pdev) {
+		rval = -ENOMEM;
 		goto put_main_pdev;
+	}
 
 	si4713_pdev_pdata.subdev = client;
 	rval = platform_device_add_data(si4713_pdev, &si4713_pdev_pdata,
@@ -1665,11 +1646,20 @@ static const struct i2c_device_id si4713_id[] = {
 };
 MODULE_DEVICE_TABLE(i2c, si4713_id);
 
+#if IS_ENABLED(CONFIG_OF)
+static const struct of_device_id si4713_of_match[] = {
+	{ .compatible = "silabs,si4713" },
+	{ },
+};
+MODULE_DEVICE_TABLE(of, si4713_of_match);
+#endif
+
 static struct i2c_driver si4713_i2c_driver = {
 	.driver		= {
 		.name	= "si4713",
+		.of_match_table = of_match_ptr(si4713_of_match),
 	},
-	.probe		= si4713_probe,
+	.probe_new	= si4713_probe,
 	.remove         = si4713_remove,
 	.id_table       = si4713_id,
 };

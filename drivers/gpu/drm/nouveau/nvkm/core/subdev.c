@@ -24,97 +24,171 @@
 #include <core/subdev.h>
 #include <core/device.h>
 #include <core/option.h>
+#include <subdev/mc.h>
 
-struct nvkm_subdev *
-nvkm_subdev(void *obj, int idx)
-{
-	struct nvkm_object *object = nv_object(obj);
-	while (object && !nv_iclass(object, NV_SUBDEV_CLASS))
-		object = object->parent;
-	if (object == NULL || nv_subidx(nv_subdev(object)) != idx)
-		object = nv_device(obj)->subdev[idx];
-	return object ? nv_subdev(object) : NULL;
-}
+const char *
+nvkm_subdev_type[NVKM_SUBDEV_NR] = {
+#define NVKM_LAYOUT_ONCE(type,data,ptr,...) [type] = #ptr,
+#define NVKM_LAYOUT_INST(A...) NVKM_LAYOUT_ONCE(A)
+#include <core/layout.h>
+#undef NVKM_LAYOUT_ONCE
+#undef NVKM_LAYOUT_INST
+};
 
 void
-nvkm_subdev_reset(struct nvkm_object *subdev)
+nvkm_subdev_intr(struct nvkm_subdev *subdev)
 {
-	nv_trace(subdev, "resetting...\n");
-	nv_ofuncs(subdev)->fini(subdev, false);
-	nv_debug(subdev, "reset\n");
+	if (subdev->func->intr)
+		subdev->func->intr(subdev);
 }
 
 int
-nvkm_subdev_init(struct nvkm_subdev *subdev)
+nvkm_subdev_info(struct nvkm_subdev *subdev, u64 mthd, u64 *data)
 {
-	int ret = nvkm_object_init(&subdev->object);
-	if (ret)
-		return ret;
-
-	nvkm_subdev_reset(&subdev->object);
-	return 0;
-}
-
-int
-_nvkm_subdev_init(struct nvkm_object *object)
-{
-	return nvkm_subdev_init(nv_subdev(object));
+	if (subdev->func->info)
+		return subdev->func->info(subdev, mthd, data);
+	return -ENOSYS;
 }
 
 int
 nvkm_subdev_fini(struct nvkm_subdev *subdev, bool suspend)
 {
-	if (subdev->unit) {
-		nv_mask(subdev, 0x000200, subdev->unit, 0x00000000);
-		nv_mask(subdev, 0x000200, subdev->unit, subdev->unit);
+	struct nvkm_device *device = subdev->device;
+	const char *action = suspend ? "suspend" : "fini";
+	s64 time;
+
+	nvkm_trace(subdev, "%s running...\n", action);
+	time = ktime_to_us(ktime_get());
+
+	if (subdev->func->fini) {
+		int ret = subdev->func->fini(subdev, suspend);
+		if (ret) {
+			nvkm_error(subdev, "%s failed, %d\n", action, ret);
+			if (suspend)
+				return ret;
+		}
 	}
 
-	return nvkm_object_fini(&subdev->object, suspend);
+	nvkm_mc_reset(device, subdev->type, subdev->inst);
+
+	time = ktime_to_us(ktime_get()) - time;
+	nvkm_trace(subdev, "%s completed in %lldus\n", action, time);
+	return 0;
 }
 
 int
-_nvkm_subdev_fini(struct nvkm_object *object, bool suspend)
+nvkm_subdev_preinit(struct nvkm_subdev *subdev)
 {
-	return nvkm_subdev_fini(nv_subdev(object), suspend);
-}
+	s64 time;
 
-void
-nvkm_subdev_destroy(struct nvkm_subdev *subdev)
-{
-	int subidx = nv_hclass(subdev) & 0xff;
-	nv_device(subdev)->subdev[subidx] = NULL;
-	nvkm_object_destroy(&subdev->object);
-}
+	nvkm_trace(subdev, "preinit running...\n");
+	time = ktime_to_us(ktime_get());
 
-void
-_nvkm_subdev_dtor(struct nvkm_object *object)
-{
-	nvkm_subdev_destroy(nv_subdev(object));
+	if (subdev->func->preinit) {
+		int ret = subdev->func->preinit(subdev);
+		if (ret) {
+			nvkm_error(subdev, "preinit failed, %d\n", ret);
+			return ret;
+		}
+	}
+
+	time = ktime_to_us(ktime_get()) - time;
+	nvkm_trace(subdev, "preinit completed in %lldus\n", time);
+	return 0;
 }
 
 int
-nvkm_subdev_create_(struct nvkm_object *parent, struct nvkm_object *engine,
-		    struct nvkm_oclass *oclass, u32 pclass,
-		    const char *subname, const char *sysname,
-		    int size, void **pobject)
+nvkm_subdev_init(struct nvkm_subdev *subdev)
 {
-	struct nvkm_subdev *subdev;
+	s64 time;
 	int ret;
 
-	ret = nvkm_object_create_(parent, engine, oclass, pclass |
-				  NV_SUBDEV_CLASS, size, pobject);
-	subdev = *pobject;
-	if (ret)
-		return ret;
+	nvkm_trace(subdev, "init running...\n");
+	time = ktime_to_us(ktime_get());
 
-	__mutex_init(&subdev->mutex, subname, &oclass->lock_class_key);
-	subdev->name = subname;
+	if (subdev->func->oneinit && !subdev->oneinit) {
+		s64 time;
+		nvkm_trace(subdev, "one-time init running...\n");
+		time = ktime_to_us(ktime_get());
+		ret = subdev->func->oneinit(subdev);
+		if (ret) {
+			nvkm_error(subdev, "one-time init failed, %d\n", ret);
+			return ret;
+		}
 
-	if (parent) {
-		struct nvkm_device *device = nv_device(parent);
-		subdev->debug = nvkm_dbgopt(device->dbgopt, subname);
-		subdev->mmio  = nv_subdev(device)->mmio;
+		subdev->oneinit = true;
+		time = ktime_to_us(ktime_get()) - time;
+		nvkm_trace(subdev, "one-time init completed in %lldus\n", time);
 	}
 
+	if (subdev->func->init) {
+		ret = subdev->func->init(subdev);
+		if (ret) {
+			nvkm_error(subdev, "init failed, %d\n", ret);
+			return ret;
+		}
+	}
+
+	time = ktime_to_us(ktime_get()) - time;
+	nvkm_trace(subdev, "init completed in %lldus\n", time);
+	return 0;
+}
+
+void
+nvkm_subdev_del(struct nvkm_subdev **psubdev)
+{
+	struct nvkm_subdev *subdev = *psubdev;
+	s64 time;
+
+	if (subdev && !WARN_ON(!subdev->func)) {
+		nvkm_trace(subdev, "destroy running...\n");
+		time = ktime_to_us(ktime_get());
+		list_del(&subdev->head);
+		if (subdev->func->dtor)
+			*psubdev = subdev->func->dtor(subdev);
+		time = ktime_to_us(ktime_get()) - time;
+		nvkm_trace(subdev, "destroy completed in %lldus\n", time);
+		kfree(*psubdev);
+		*psubdev = NULL;
+	}
+}
+
+void
+nvkm_subdev_disable(struct nvkm_device *device, enum nvkm_subdev_type type, int inst)
+{
+	struct nvkm_subdev *subdev;
+	list_for_each_entry(subdev, &device->subdev, head) {
+		if (subdev->type == type && subdev->inst == inst) {
+			*subdev->pself = NULL;
+			nvkm_subdev_del(&subdev);
+			break;
+		}
+	}
+}
+
+void
+nvkm_subdev_ctor(const struct nvkm_subdev_func *func, struct nvkm_device *device,
+		 enum nvkm_subdev_type type, int inst, struct nvkm_subdev *subdev)
+{
+	subdev->func = func;
+	subdev->device = device;
+	subdev->type = type;
+	subdev->inst = inst < 0 ? 0 : inst;
+
+	if (inst >= 0)
+		snprintf(subdev->name, sizeof(subdev->name), "%s%d", nvkm_subdev_type[type], inst);
+	else
+		strscpy(subdev->name, nvkm_subdev_type[type], sizeof(subdev->name));
+	subdev->debug = nvkm_dbgopt(device->dbgopt, subdev->name);
+	list_add_tail(&subdev->head, &device->subdev);
+}
+
+int
+nvkm_subdev_new_(const struct nvkm_subdev_func *func, struct nvkm_device *device,
+		 enum nvkm_subdev_type type, int inst, struct nvkm_subdev **psubdev)
+{
+	if (!(*psubdev = kzalloc(sizeof(**psubdev), GFP_KERNEL)))
+		return -ENOMEM;
+	nvkm_subdev_ctor(func, device, type, inst, *psubdev);
 	return 0;
 }

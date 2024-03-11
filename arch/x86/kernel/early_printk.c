@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: GPL-2.0
 #include <linux/console.h>
 #include <linux/kernel.h>
 #include <linux/init.h>
@@ -7,6 +8,7 @@
 #include <linux/pci_regs.h>
 #include <linux/pci_ids.h>
 #include <linux/errno.h>
+#include <linux/pgtable.h>
 #include <asm/io.h>
 #include <asm/processor.h>
 #include <asm/fcntl.h>
@@ -14,11 +16,8 @@
 #include <xen/hvc-console.h>
 #include <asm/pci-direct.h>
 #include <asm/fixmap.h>
-#include <asm/intel-mid.h>
-#include <asm/pgtable.h>
 #include <linux/usb/ehci_def.h>
-#include <linux/efi.h>
-#include <asm/efi.h>
+#include <linux/usb/xhci-dbgp.h>
 #include <asm/pci_x86.h>
 
 /* Simple VGA output */
@@ -94,20 +93,6 @@ static unsigned long early_serial_base = 0x3f8;  /* ttyS0 */
 #define MSR             6       /*  Modem Status              */
 #define DLL             0       /*  Divisor Latch Low         */
 #define DLH             1       /*  Divisor latch High        */
-
-static void mem32_serial_out(unsigned long addr, int offset, int value)
-{
-	uint32_t *vaddr = (uint32_t *)addr;
-	/* shift implied by pointer type */
-	writel(value, vaddr + offset);
-}
-
-static unsigned int mem32_serial_in(unsigned long addr, int offset)
-{
-	uint32_t *vaddr = (uint32_t *)addr;
-	/* shift implied by pointer type */
-	return readl(vaddr + offset);
-}
 
 static unsigned int io_serial_in(unsigned long addr, int offset)
 {
@@ -189,7 +174,9 @@ static __init void early_serial_init(char *s)
 	}
 
 	if (*s) {
-		if (kstrtoul(s, 0, &baud) < 0 || baud == 0)
+		baud = simple_strtoull(s, &e, 0);
+
+		if (baud == 0 || s == e)
 			baud = DEFAULT_BAUD;
 	}
 
@@ -205,32 +192,53 @@ static __init void early_serial_init(char *s)
 }
 
 #ifdef CONFIG_PCI
+static void mem32_serial_out(unsigned long addr, int offset, int value)
+{
+	u32 __iomem *vaddr = (u32 __iomem *)addr;
+	/* shift implied by pointer type */
+	writel(value, vaddr + offset);
+}
+
+static unsigned int mem32_serial_in(unsigned long addr, int offset)
+{
+	u32 __iomem *vaddr = (u32 __iomem *)addr;
+	/* shift implied by pointer type */
+	return readl(vaddr + offset);
+}
+
 /*
  * early_pci_serial_init()
  *
  * This function is invoked when the early_printk param starts with "pciserial"
- * The rest of the param should be ",B:D.F,baud" where B, D & F describe the
- * location of a PCI device that must be a UART device.
+ * The rest of the param should be "[force],B:D.F,baud", where B, D & F describe
+ * the location of a PCI device that must be a UART device. "force" is optional
+ * and overrides the use of an UART device with a wrong PCI class code.
  */
 static __init void early_pci_serial_init(char *s)
 {
 	unsigned divisor;
 	unsigned long baud = DEFAULT_BAUD;
 	u8 bus, slot, func;
-	uint32_t classcode, bar0;
-	uint16_t cmdreg;
+	u32 classcode, bar0;
+	u16 cmdreg;
 	char *e;
+	int force = 0;
 
-
-	/*
-	 * First, part the param to get the BDF values
-	 */
 	if (*s == ',')
 		++s;
 
 	if (*s == 0)
 		return;
 
+	/* Force the use of an UART device with wrong class code */
+	if (!strncmp(s, "force,", 6)) {
+		force = 1;
+		s += 6;
+	}
+
+	/*
+	 * Part the param to get the BDF values
+	 */
 	bus = (u8)simple_strtoul(s, &e, 16);
 	s = e;
 	if (*s != ':')
@@ -249,7 +257,7 @@ static __init void early_pci_serial_init(char *s)
 		s++;
 
 	/*
-	 * Second, find the device from the BDF
+	 * Find the device from the BDF
 	 */
 	cmdreg = read_pci_config(bus, slot, func, PCI_COMMAND);
 	classcode = read_pci_config(bus, slot, func, PCI_CLASS_REVISION);
@@ -260,8 +268,10 @@ static __init void early_pci_serial_init(char *s)
 	 */
 	if (((classcode >> 16 != PCI_CLASS_COMMUNICATION_MODEM) &&
 	     (classcode >> 16 != PCI_CLASS_COMMUNICATION_SERIAL)) ||
-	   (((classcode >> 8) & 0xff) != 0x02)) /* 16550 I/F at BAR0 */
-		return;
+	   (((classcode >> 8) & 0xff) != 0x02)) /* 16550 I/F at BAR0 */ {
+		if (!force)
+			return;
+	}
 
 	/*
 	 * Determine if it is IO or memory mapped
@@ -285,7 +295,7 @@ static __init void early_pci_serial_init(char *s)
 	}
 
 	/*
-	 * Lastly, initalize the hardware
+	 * Initialize the hardware
 	 */
 	if (*s) {
 		if (strcmp(s, "nocfg") == 0)
@@ -314,7 +324,7 @@ static struct console early_serial_console = {
 	.index =	-1,
 };
 
-static inline void early_console_register(struct console *con, int keep_early)
+static void early_console_register(struct console *con, int keep_early)
 {
 	if (con->index != -1) {
 		printk(KERN_CRIT "ERROR: earlyprintk= %s already used\n",
@@ -375,15 +385,9 @@ static int __init setup_early_printk(char *buf)
 		if (!strncmp(buf, "xen", 3))
 			early_console_register(&xenboot_console, keep);
 #endif
-#ifdef CONFIG_EARLY_PRINTK_INTEL_MID
-		if (!strncmp(buf, "hsu", 3)) {
-			hsu_early_console_init(buf + 3);
-			early_console_register(&early_hsu_console, keep);
-		}
-#endif
-#ifdef CONFIG_EARLY_PRINTK_EFI
-		if (!strncmp(buf, "efi", 3))
-			early_console_register(&early_efi_console, keep);
+#ifdef CONFIG_EARLY_PRINTK_USB_XDBC
+		if (!strncmp(buf, "xdbc", 4))
+			early_xdbc_parse_parameter(buf + 4);
 #endif
 
 		buf++;

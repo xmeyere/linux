@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * OMAP44xx and 54xx PRM common functions
  *
@@ -13,22 +14,15 @@
  * with the public linux-omap@vger.kernel.org mailing list and the
  * authors above to ensure that the autogeneration scripts are kept
  * up-to-date with the file contents.
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  */
 
 #ifndef __ARCH_ARM_MACH_OMAP2_PRM44XX_54XX_H
 #define __ARCH_ARM_MACH_OMAP2_PRM44XX_54XX_H
 
+#include "prcm-common.h"
+
 /* Function prototypes */
 #ifndef __ASSEMBLER__
-
-/* OMAP4/OMAP5-specific VP functions */
-u32 omap4_prm_vp_check_txdone(u8 vp_id);
-void omap4_prm_vp_clear_txdone(u8 vp_id);
 
 /*
  * OMAP4/OMAP5 access functions for voltage controller (VC) and
@@ -38,7 +32,7 @@ extern u32 omap4_prm_vcvp_read(u8 offset);
 extern void omap4_prm_vcvp_write(u32 val, u8 offset);
 extern u32 omap4_prm_vcvp_rmw(u32 mask, u32 bits, u8 offset);
 
-extern int __init omap44xx_prm_init(void);
+int __init omap44xx_prm_init(const struct omap_prcm_init_data *data);
 
 #endif
 

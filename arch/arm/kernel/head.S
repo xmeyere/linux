@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  *  linux/arch/arm/kernel/head.S
  *
@@ -5,14 +6,11 @@
  *  Copyright (c) 2003 ARM Limited
  *  All Rights Reserved
  *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
- *
  *  Kernel startup code for all 32-bit CPUs
  */
 #include <linux/linkage.h>
 #include <linux/init.h>
+#include <linux/pgtable.h>
 
 #include <asm/assembler.h>
 #include <asm/cp15.h>
@@ -21,12 +19,10 @@
 #include <asm/asm-offsets.h>
 #include <asm/memory.h>
 #include <asm/thread_info.h>
-#include <asm/pgtable.h>
 
 #if defined(CONFIG_DEBUG_LL) && !defined(CONFIG_DEBUG_SEMIHOSTING)
 #include CONFIG_DEBUG_LL_INCLUDE
 #endif
-
 /*
  * swapper_pg_dir is the virtual address of the initial page table.
  * We place the page tables 16K below KERNEL_RAM_VADDR.  Therefore, we must
@@ -34,7 +30,7 @@
  * the least significant 16 bits to be 0x8000, but we could probably
  * relax this restriction to KERNEL_RAM_VADDR >= PAGE_OFFSET + 0x4000.
  */
-#define KERNEL_RAM_VADDR	(PAGE_OFFSET + TEXT_OFFSET)
+#define KERNEL_RAM_VADDR	(KERNEL_OFFSET + TEXT_OFFSET)
 #if (KERNEL_RAM_VADDR & 0xffff) != 0x8000
 #error KERNEL_RAM_VADDR must start at 0xXXXX8000
 #endif
@@ -50,6 +46,23 @@
 
 	.globl	swapper_pg_dir
 	.equ	swapper_pg_dir, KERNEL_RAM_VADDR - PG_DIR_SIZE
+
+	/*
+	 * This needs to be assigned at runtime when the linker symbols are
+	 * resolved. These are unsigned 64bit really, but in this assembly code
+	 * We store them as 32bit.
+	 */
+	.pushsection .data
+	.align	2
+	.globl	kernel_sec_start
+	.globl	kernel_sec_end
+kernel_sec_start:
+	.long	0
+	.long	0
+kernel_sec_end:
+	.long	0
+	.long	0
+	.popsection
 
 	.macro	pgtbl, rd, phys
 	add	\rd, \phys, #TEXT_OFFSET
@@ -80,7 +93,7 @@
 ENTRY(stext)
  ARM_BE8(setend	be )			@ ensure we are in BE8 mode
 
- THUMB(	adr	r9, BSYM(1f)	)	@ Kernel is always entered in ARM.
+ THUMB(	badr	r9, 1f		)	@ Kernel is always entered in ARM.
  THUMB(	bx	r9		)	@ If this is a Thumb-2 kernel,
  THUMB(	.thumb			)	@ switch to Thumb now.
  THUMB(1:			)
@@ -106,10 +119,8 @@ ENTRY(stext)
 #endif
 
 #ifndef CONFIG_XIP_KERNEL
-	adr	r3, 2f
-	ldmia	r3, {r4, r8}
-	sub	r4, r3, r4			@ (PHYS_OFFSET - PAGE_OFFSET)
-	add	r8, r8, r4			@ PHYS_OFFSET
+	adr_l	r8, _text			@ __pa(_text)
+	sub	r8, r8, #TEXT_OFFSET		@ PHYS_OFFSET
 #else
 	ldr	r8, =PLAT_PHYS_OFFSET		@ always constant in this case
 #endif
@@ -131,23 +142,36 @@ ENTRY(stext)
 	 * The following calls CPU specific code in a position independent
 	 * manner.  See arch/arm/mm/proc-*.S for details.  r10 = base of
 	 * xxx_proc_info structure selected by __lookup_processor_type
-	 * above.  On return, the CPU will be ready for the MMU to be
-	 * turned on, and r0 will hold the CPU control register value.
+	 * above.
+	 *
+	 * The processor init function will be called with:
+	 *  r1 - machine type
+	 *  r2 - boot data (atags/dt) pointer
+	 *  r4 - translation table base (low word)
+	 *  r5 - translation table base (high word, if LPAE)
+	 *  r8 - translation table base 1 (pfn if LPAE)
+	 *  r9 - cpuid
+	 *  r13 - virtual address for __enable_mmu -> __turn_mmu_on
+	 *
+	 * On return, the CPU will be ready for the MMU to be turned on,
+	 * r0 will hold the CPU control register value, r1, r2, r4, and
+	 * r9 will be preserved.  r5 will also be preserved if LPAE.
 	 */
 	ldr	r13, =__mmap_switched		@ address to jump to after
 						@ mmu has been enabled
-	adr	lr, BSYM(1f)			@ return (PIC) address
+	badr	lr, 1f				@ return (PIC) address
+#ifdef CONFIG_ARM_LPAE
+	mov	r5, #0				@ high TTBR0
+	mov	r8, r4, lsr #12			@ TTBR1 is swapper_pg_dir pfn
+#else
 	mov	r8, r4				@ set TTBR1 to swapper_pg_dir
- ARM(	add	pc, r10, #PROCINFO_INITFUNC	)
- THUMB(	add	r12, r10, #PROCINFO_INITFUNC	)
- THUMB(	ret	r12				)
+#endif
+	ldr	r12, [r10, #PROCINFO_INITFUNC]
+	add	r12, r12, r10
+	ret	r12
 1:	b	__enable_mmu
 ENDPROC(stext)
 	.ltorg
-#ifndef CONFIG_XIP_KERNEL
-2:	.long	.
-	.long	PAGE_OFFSET
-#endif
 
 /*
  * Setup the initial page tables.  We only setup the barest
@@ -158,7 +182,7 @@ ENDPROC(stext)
  *
  * Returns:
  *  r0, r3, r5-r7 corrupted
- *  r4 = page table (see ARCH_PGD_SHIFT in asm/memory.h)
+ *  r4 = physical page table address
  */
 __create_page_tables:
 	pgtbl	r4, r8				@ page table address
@@ -210,11 +234,8 @@ __create_page_tables:
 	 * Create identity mapping to cater for __enable_mmu.
 	 * This identity mapping will be removed by paging_init().
 	 */
-	adr	r0, __turn_mmu_on_loc
-	ldmia	r0, {r3, r5, r6}
-	sub	r0, r0, r3			@ virt->phys offset
-	add	r5, r5, r0			@ phys __turn_mmu_on
-	add	r6, r6, r0			@ phys __turn_mmu_on_end
+	adr_l	r5, __turn_mmu_on		@ _pa(__turn_mmu_on)
+	adr_l	r6, __turn_mmu_on_end		@ _pa(__turn_mmu_on_end)
 	mov	r5, r5, lsr #SECTION_SHIFT
 	mov	r6, r6, lsr #SECTION_SHIFT
 
@@ -225,16 +246,31 @@ __create_page_tables:
 	blo	1b
 
 	/*
-	 * Map our RAM from the start to the end of the kernel .bss section.
+	 * The main matter: map in the kernel using section mappings, and
+	 * set two variables to indicate the physical start and end of the
+	 * kernel.
 	 */
-	add	r0, r4, #PAGE_OFFSET >> (SECTION_SHIFT - PMD_ORDER)
+	add	r0, r4, #KERNEL_OFFSET >> (SECTION_SHIFT - PMD_ORDER)
 	ldr	r6, =(_end - 1)
-	orr	r3, r8, r7
+	adr_l	r5, kernel_sec_start		@ _pa(kernel_sec_start)
+#if defined CONFIG_CPU_ENDIAN_BE8 || defined CONFIG_CPU_ENDIAN_BE32
+	str	r8, [r5, #4]			@ Save physical start of kernel (BE)
+#else
+	str	r8, [r5]			@ Save physical start of kernel (LE)
+#endif
+	orr	r3, r8, r7			@ Add the MMU flags
 	add	r6, r4, r6, lsr #(SECTION_SHIFT - PMD_ORDER)
 1:	str	r3, [r0], #1 << PMD_ORDER
 	add	r3, r3, #1 << SECTION_SHIFT
 	cmp	r0, r6
 	bls	1b
+	eor	r3, r3, r7			@ Remove the MMU flags
+	adr_l	r5, kernel_sec_end		@ _pa(kernel_sec_end)
+#if defined CONFIG_CPU_ENDIAN_BE8 || defined CONFIG_CPU_ENDIAN_BE32
+	str	r3, [r5, #4]			@ Save physical end of kernel (BE)
+#else
+	str	r3, [r5]			@ Save physical end of kernel (LE)
+#endif
 
 #ifdef CONFIG_XIP_KERNEL
 	/*
@@ -260,11 +296,10 @@ __create_page_tables:
 	 * We map 2 sections in case the ATAGs/DTB crosses a section boundary.
 	 */
 	mov	r0, r2, lsr #SECTION_SHIFT
-	movs	r0, r0, lsl #SECTION_SHIFT
-	subne	r3, r0, r8
-	addne	r3, r3, #PAGE_OFFSET
-	addne	r3, r4, r3, lsr #(SECTION_SHIFT - PMD_ORDER)
-	orrne	r6, r7, r0
+	cmp	r2, #0
+	ldrne	r3, =FDT_FIXED_BASE >> (SECTION_SHIFT - PMD_ORDER)
+	addne	r3, r3, r4
+	orrne	r6, r7, r0, lsl #SECTION_SHIFT
 	strne	r6, [r3], #1 << PMD_ORDER
 	addne	r6, r6, #1 << SECTION_SHIFT
 	strne	r6, [r3]
@@ -333,22 +368,16 @@ __create_page_tables:
 #endif
 #ifdef CONFIG_ARM_LPAE
 	sub	r4, r4, #0x1000		@ point to the PGD table
-	mov	r4, r4, lsr #ARCH_PGD_SHIFT
 #endif
 	ret	lr
 ENDPROC(__create_page_tables)
 	.ltorg
-	.align
-__turn_mmu_on_loc:
-	.long	.
-	.long	__turn_mmu_on
-	.long	__turn_mmu_on_end
 
 #if defined(CONFIG_SMP)
 	.text
-ENTRY(secondary_startup_arm)
 	.arm
- THUMB(	adr	r9, BSYM(1f)	)	@ Kernel is entered in ARM.
+ENTRY(secondary_startup_arm)
+ THUMB(	badr	r9, 1f		)	@ Kernel is entered in ARM.
  THUMB(	bx	r9		)	@ If this is a Thumb-2 kernel,
  THUMB(	.thumb			)	@ switch to Thumb now.
  THUMB(1:			)
@@ -378,37 +407,29 @@ ENTRY(secondary_startup)
 	/*
 	 * Use the page tables supplied from  __cpu_up.
 	 */
-	adr	r4, __secondary_data
-	ldmia	r4, {r5, r7, r12}		@ address to jump to after
-	sub	lr, r4, r5			@ mmu has been enabled
-	ldr	r4, [r7, lr]			@ get secondary_data.pgdir
-	add	r7, r7, #4
-	ldr	r8, [r7, lr]			@ get secondary_data.swapper_pg_dir
-	adr	lr, BSYM(__enable_mmu)		@ return address
+	adr_l	r3, secondary_data
+	mov_l	r12, __secondary_switched
+	ldrd	r4, r5, [r3, #0]		@ get secondary_data.pgdir
+ARM_BE8(eor	r4, r4, r5)			@ Swap r5 and r4 in BE:
+ARM_BE8(eor	r5, r4, r5)			@ it can be done in 3 steps
+ARM_BE8(eor	r4, r4, r5)			@ without using a temp reg.
+	ldr	r8, [r3, #8]			@ get secondary_data.swapper_pg_dir
+	badr	lr, __enable_mmu		@ return address
 	mov	r13, r12			@ __secondary_switched address
- ARM(	add	pc, r10, #PROCINFO_INITFUNC	) @ initialise processor
-						  @ (return control reg)
- THUMB(	add	r12, r10, #PROCINFO_INITFUNC	)
- THUMB(	ret	r12				)
+	ldr	r12, [r10, #PROCINFO_INITFUNC]
+	add	r12, r12, r10			@ initialise processor
+						@ (return control reg)
+	ret	r12
 ENDPROC(secondary_startup)
 ENDPROC(secondary_startup_arm)
 
-	/*
-	 * r6  = &secondary_data
-	 */
 ENTRY(__secondary_switched)
-	ldr	sp, [r7, #4]			@ get secondary_data.stack
+	ldr_l	r7, secondary_data + 12		@ get secondary_data.stack
+	mov	sp, r7
 	mov	fp, #0
 	b	secondary_start_kernel
 ENDPROC(__secondary_switched)
 
-	.align
-
-	.type	__secondary_data, %object
-__secondary_data:
-	.long	.
-	.long	secondary_data
-	.long	__secondary_switched
 #endif /* defined(CONFIG_SMP) */
 
 
@@ -416,12 +437,14 @@ __secondary_data:
 /*
  * Setup common bits before finally enabling the MMU.  Essentially
  * this is just loading the page table pointer and domain access
- * registers.
+ * registers.  All these registers need to be preserved by the
+ * processor setup function (or set in the case of r0)
  *
  *  r0  = cp#15 control register
  *  r1  = machine ID
  *  r2  = atags or dtb pointer
- *  r4  = page table (see ARCH_PGD_SHIFT in asm/memory.h)
+ *  r4  = TTBR pointer (low word)
+ *  r5  = TTBR pointer (high word if LPAE)
  *  r9  = processor ID
  *  r13 = *virtual* address to jump to upon completion
  */
@@ -440,11 +463,10 @@ __enable_mmu:
 #ifdef CONFIG_CPU_ICACHE_DISABLE
 	bic	r0, r0, #CR_I
 #endif
-#ifndef CONFIG_ARM_LPAE
-	mov	r5, #(domain_val(DOMAIN_USER, DOMAIN_MANAGER) | \
-		      domain_val(DOMAIN_KERNEL, DOMAIN_MANAGER) | \
-		      domain_val(DOMAIN_TABLE, DOMAIN_MANAGER) | \
-		      domain_val(DOMAIN_IO, DOMAIN_CLIENT))
+#ifdef CONFIG_ARM_LPAE
+	mcrr	p15, 0, r4, r5, c2		@ load TTBR0
+#else
+	mov	r5, #DACR_INIT
 	mcr	p15, 0, r5, c3, c0, 0		@ load domain access register
 	mcr	p15, 0, r4, c2, c0, 0		@ load page table pointer
 #endif
@@ -522,20 +544,13 @@ ARM_BE8(rev	r0, r0)			@ byteswap if big endian
 	retne	lr
 
 __fixup_smp_on_up:
-	adr	r0, 1f
-	ldmia	r0, {r3 - r5}
-	sub	r3, r0, r3
-	add	r4, r4, r3
-	add	r5, r5, r3
+	adr_l	r4, __smpalt_begin
+	adr_l	r5, __smpalt_end
 	b	__do_fixup_smp_on_up
 ENDPROC(__fixup_smp)
 
-	.align
-1:	.word	.
-	.word	__smpalt_begin
-	.word	__smpalt_end
-
 	.pushsection .data
+	.align	2
 	.globl	smp_on_up
 smp_on_up:
 	ALT_SMP(.long	1)
@@ -547,14 +562,15 @@ smp_on_up:
 __do_fixup_smp_on_up:
 	cmp	r4, r5
 	reths	lr
-	ldmia	r4!, {r0, r6}
- ARM(	str	r6, [r0, r3]	)
- THUMB(	add	r0, r0, r3	)
+	ldmia	r4, {r0, r6}
+ ARM(	str	r6, [r0, r4]	)
+ THUMB(	add	r0, r0, r4	)
+	add	r4, r4, #8
 #ifdef __ARMEB__
  THUMB(	mov	r6, r6, ror #16	)	@ Convert word order for big-endian.
 #endif
  THUMB(	strh	r6, [r0], #2	)	@ For Thumb-2, store as two halfwords
- THUMB(	mov	r6, r6, lsr #16	)	@ to be robust against misaligned r3.
+ THUMB(	mov	r6, r6, lsr #16	)	@ to be robust against misaligned r0.
  THUMB(	strh	r6, [r0]	)
 	b	__do_fixup_smp_on_up
 ENDPROC(__do_fixup_smp_on_up)
@@ -563,150 +579,8 @@ ENTRY(fixup_smp)
 	stmfd	sp!, {r4 - r6, lr}
 	mov	r4, r0
 	add	r5, r0, r1
-	mov	r3, #0
 	bl	__do_fixup_smp_on_up
 	ldmfd	sp!, {r4 - r6, pc}
 ENDPROC(fixup_smp)
-
-#ifdef __ARMEB__
-#define LOW_OFFSET	0x4
-#define HIGH_OFFSET	0x0
-#else
-#define LOW_OFFSET	0x0
-#define HIGH_OFFSET	0x4
-#endif
-
-#ifdef CONFIG_ARM_PATCH_PHYS_VIRT
-
-/* __fixup_pv_table - patch the stub instructions with the delta between
- * PHYS_OFFSET and PAGE_OFFSET, which is assumed to be 16MiB aligned and
- * can be expressed by an immediate shifter operand. The stub instruction
- * has a form of '(add|sub) rd, rn, #imm'.
- */
-	__HEAD
-__fixup_pv_table:
-	adr	r0, 1f
-	ldmia	r0, {r3-r7}
-	mvn	ip, #0
-	subs	r3, r0, r3	@ PHYS_OFFSET - PAGE_OFFSET
-	add	r4, r4, r3	@ adjust table start address
-	add	r5, r5, r3	@ adjust table end address
-	add	r6, r6, r3	@ adjust __pv_phys_pfn_offset address
-	add	r7, r7, r3	@ adjust __pv_offset address
-	mov	r0, r8, lsr #PAGE_SHIFT	@ convert to PFN
-	str	r0, [r6]	@ save computed PHYS_OFFSET to __pv_phys_pfn_offset
-	strcc	ip, [r7, #HIGH_OFFSET]	@ save to __pv_offset high bits
-	mov	r6, r3, lsr #24	@ constant for add/sub instructions
-	teq	r3, r6, lsl #24 @ must be 16MiB aligned
-THUMB(	it	ne		@ cross section branch )
-	bne	__error
-	str	r3, [r7, #LOW_OFFSET]	@ save to __pv_offset low bits
-	b	__fixup_a_pv_table
-ENDPROC(__fixup_pv_table)
-
-	.align
-1:	.long	.
-	.long	__pv_table_begin
-	.long	__pv_table_end
-2:	.long	__pv_phys_pfn_offset
-	.long	__pv_offset
-
-	.text
-__fixup_a_pv_table:
-	adr	r0, 3f
-	ldr	r6, [r0]
-	add	r6, r6, r3
-	ldr	r0, [r6, #HIGH_OFFSET]	@ pv_offset high word
-	ldr	r6, [r6, #LOW_OFFSET]	@ pv_offset low word
-	mov	r6, r6, lsr #24
-	cmn	r0, #1
-#ifdef CONFIG_THUMB2_KERNEL
-	moveq	r0, #0x200000	@ set bit 21, mov to mvn instruction
-	lsls	r6, #24
-	beq	2f
-	clz	r7, r6
-	lsr	r6, #24
-	lsl	r6, r7
-	bic	r6, #0x0080
-	lsrs	r7, #1
-	orrcs	r6, #0x0080
-	orr	r6, r6, r7, lsl #12
-	orr	r6, #0x4000
-	b	2f
-1:	add     r7, r3
-	ldrh	ip, [r7, #2]
-ARM_BE8(rev16	ip, ip)
-	tst	ip, #0x4000
-	and	ip, #0x8f00
-	orrne	ip, r6	@ mask in offset bits 31-24
-	orreq	ip, r0	@ mask in offset bits 7-0
-ARM_BE8(rev16	ip, ip)
-	strh	ip, [r7, #2]
-	bne	2f
-	ldrh	ip, [r7]
-ARM_BE8(rev16	ip, ip)
-	bic	ip, #0x20
-	orr	ip, ip, r0, lsr #16
-ARM_BE8(rev16	ip, ip)
-	strh	ip, [r7]
-2:	cmp	r4, r5
-	ldrcc	r7, [r4], #4	@ use branch for delay slot
-	bcc	1b
-	bx	lr
-#else
-#ifdef CONFIG_CPU_ENDIAN_BE8
-	moveq	r0, #0x00004000	@ set bit 22, mov to mvn instruction
-#else
-	moveq	r0, #0x400000	@ set bit 22, mov to mvn instruction
-#endif
-	b	2f
-1:	ldr	ip, [r7, r3]
-#ifdef CONFIG_CPU_ENDIAN_BE8
-	@ in BE8, we load data in BE, but instructions still in LE
-	bic	ip, ip, #0xff000000
-	tst	ip, #0x000f0000	@ check the rotation field
-	orrne	ip, ip, r6, lsl #24 @ mask in offset bits 31-24
-	biceq	ip, ip, #0x00004000 @ clear bit 22
-	orreq	ip, ip, r0      @ mask in offset bits 7-0
-#else
-	bic	ip, ip, #0x000000ff
-	tst	ip, #0xf00	@ check the rotation field
-	orrne	ip, ip, r6	@ mask in offset bits 31-24
-	biceq	ip, ip, #0x400000	@ clear bit 22
-	orreq	ip, ip, r0	@ mask in offset bits 7-0
-#endif
-	str	ip, [r7, r3]
-2:	cmp	r4, r5
-	ldrcc	r7, [r4], #4	@ use branch for delay slot
-	bcc	1b
-	ret	lr
-#endif
-ENDPROC(__fixup_a_pv_table)
-
-	.align
-3:	.long __pv_offset
-
-ENTRY(fixup_pv_table)
-	stmfd	sp!, {r4 - r7, lr}
-	mov	r3, #0			@ no offset
-	mov	r4, r0			@ r0 = table start
-	add	r5, r0, r1		@ r1 = table size
-	bl	__fixup_a_pv_table
-	ldmfd	sp!, {r4 - r7, pc}
-ENDPROC(fixup_pv_table)
-
-	.data
-	.globl	__pv_phys_pfn_offset
-	.type	__pv_phys_pfn_offset, %object
-__pv_phys_pfn_offset:
-	.word	0
-	.size	__pv_phys_pfn_offset, . -__pv_phys_pfn_offset
-
-	.globl	__pv_offset
-	.type	__pv_offset, %object
-__pv_offset:
-	.quad	0
-	.size	__pv_offset, . -__pv_offset
-#endif
 
 #include "head-common.S"

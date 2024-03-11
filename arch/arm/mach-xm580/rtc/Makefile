@@ -1,1 +1,0 @@
-obj-$(CONFIG_XM580_RTC) += rtc.o

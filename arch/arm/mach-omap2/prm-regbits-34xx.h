@@ -1,3 +1,4 @@
+/* SPDX-License-Identifier: GPL-2.0-only */
 /*
  * OMAP3430 Power/Reset Management register bits
  *
@@ -5,10 +6,6 @@
  * Copyright (C) 2007-2008 Nokia Corporation
  *
  * Written by Paul Walmsley
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
 #ifndef __ARCH_ARM_MACH_OMAP2_PRM_REGBITS_34XX_H
 #define __ARCH_ARM_MACH_OMAP2_PRM_REGBITS_34XX_H
@@ -112,6 +109,7 @@
 #define OMAP3430_VC_CMD_ONLP_SHIFT			16
 #define OMAP3430_VC_CMD_RET_SHIFT			8
 #define OMAP3430_VC_CMD_OFF_SHIFT			0
+#define OMAP3430_SREN_MASK				(1 << 4)
 #define OMAP3430_HSEN_MASK				(1 << 3)
 #define OMAP3430_MCODE_MASK				(0x7 << 0)
 #define OMAP3430_VALID_MASK				(1 << 24)

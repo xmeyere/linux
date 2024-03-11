@@ -1,32 +1,47 @@
+// SPDX-License-Identifier: GPL-2.0
 /* Copyright (C) 2011-2013 Freescale Semiconductor, Inc.
  *
  * derived from imx-hdmi.c(renamed to bridge/dw_hdmi.c now)
- *
- * This program is free software; you can redistribute it and/or modify
- * it under the terms of the GNU General Public License version 2 as
- * published by the Free Software Foundation.
  */
-#include <linux/module.h>
-#include <linux/platform_device.h>
+
 #include <linux/component.h>
 #include <linux/mfd/syscon.h>
 #include <linux/mfd/syscon/imx6q-iomuxc-gpr.h>
-#include <drm/bridge/dw_hdmi.h>
-#include <video/imx-ipu-v3.h>
+#include <linux/module.h>
+#include <linux/platform_device.h>
 #include <linux/regmap.h>
-#include <drm/drm_of.h>
-#include <drm/drmP.h>
-#include <drm/drm_crtc_helper.h>
+
+#include <video/imx-ipu-v3.h>
+
+#include <drm/bridge/dw_hdmi.h>
+#include <drm/drm_atomic_helper.h>
+#include <drm/drm_bridge.h>
 #include <drm/drm_edid.h>
-#include <drm/drm_encoder_slave.h>
+#include <drm/drm_encoder.h>
+#include <drm/drm_managed.h>
+#include <drm/drm_of.h>
+#include <drm/drm_simple_kms_helper.h>
 
 #include "imx-drm.h"
 
+struct imx_hdmi;
+
+struct imx_hdmi_encoder {
+	struct drm_encoder encoder;
+	struct imx_hdmi *hdmi;
+};
+
 struct imx_hdmi {
 	struct device *dev;
-	struct drm_encoder encoder;
+	struct drm_bridge *bridge;
+	struct dw_hdmi *hdmi;
 	struct regmap *regmap;
 };
+
+static inline struct imx_hdmi *enc_to_imx_hdmi(struct drm_encoder *e)
+{
+	return container_of(e, struct imx_hdmi_encoder, encoder)->hdmi;
+}
 
 static const struct dw_hdmi_mpll_config imx_mpll_cfg[] = {
 	{
@@ -48,10 +63,16 @@ static const struct dw_hdmi_mpll_config imx_mpll_cfg[] = {
 			{ 0x40a2, 0x000a },
 		},
 	}, {
-		~0UL, {
+		216000000, {
 			{ 0x00a0, 0x000a },
 			{ 0x2001, 0x000f },
 			{ 0x4002, 0x000f },
+		},
+	}, {
+		~0UL, {
+			{ 0x0000, 0x0000 },
+			{ 0x0000, 0x0000 },
+			{ 0x0000, 0x0000 },
 		},
 	}
 };
@@ -75,86 +96,68 @@ static const struct dw_hdmi_curr_ctrl imx_cur_ctr[] = {
 	},
 };
 
-static const struct dw_hdmi_sym_term imx_sym_term[] = {
-	/*pixelclk   symbol   term*/
-	{ 148500000, 0x800d, 0x0005 },
-	{ ~0UL,      0x0000, 0x0000 }
+/*
+ * Resistance term 133Ohm Cfg
+ * PREEMP config 0.00
+ * TX/CK level 10
+ */
+static const struct dw_hdmi_phy_config imx_phy_config[] = {
+	/*pixelclk   symbol   term   vlev */
+	{ 216000000, 0x800d, 0x0005, 0x01ad},
+	{ ~0UL,      0x0000, 0x0000, 0x0000}
 };
 
-static int dw_hdmi_imx_parse_dt(struct imx_hdmi *hdmi)
+static void dw_hdmi_imx_encoder_enable(struct drm_encoder *encoder)
 {
-	struct device_node *np = hdmi->dev->of_node;
-
-	hdmi->regmap = syscon_regmap_lookup_by_phandle(np, "gpr");
-	if (IS_ERR(hdmi->regmap)) {
-		dev_err(hdmi->dev, "Unable to get gpr\n");
-		return PTR_ERR(hdmi->regmap);
-	}
-
-	return 0;
-}
-
-static void dw_hdmi_imx_encoder_disable(struct drm_encoder *encoder)
-{
-}
-
-static bool dw_hdmi_imx_encoder_mode_fixup(struct drm_encoder *encoder,
-					   const struct drm_display_mode *mode,
-					   struct drm_display_mode *adj_mode)
-{
-	return true;
-}
-
-static void dw_hdmi_imx_encoder_mode_set(struct drm_encoder *encoder,
-					 struct drm_display_mode *mode,
-					 struct drm_display_mode *adj_mode)
-{
-}
-
-static void dw_hdmi_imx_encoder_commit(struct drm_encoder *encoder)
-{
-	struct imx_hdmi *hdmi = container_of(encoder, struct imx_hdmi, encoder);
-	int mux = imx_drm_encoder_get_mux_id(hdmi->dev->of_node, encoder);
+	struct imx_hdmi *hdmi = enc_to_imx_hdmi(encoder);
+	int mux = drm_of_encoder_active_port_id(hdmi->dev->of_node, encoder);
 
 	regmap_update_bits(hdmi->regmap, IOMUXC_GPR3,
 			   IMX6Q_GPR3_HDMI_MUX_CTL_MASK,
 			   mux << IMX6Q_GPR3_HDMI_MUX_CTL_SHIFT);
 }
 
-static void dw_hdmi_imx_encoder_prepare(struct drm_encoder *encoder)
+static int dw_hdmi_imx_atomic_check(struct drm_encoder *encoder,
+				    struct drm_crtc_state *crtc_state,
+				    struct drm_connector_state *conn_state)
 {
-	imx_drm_panel_format(encoder, V4L2_PIX_FMT_RGB24);
+	struct imx_crtc_state *imx_crtc_state = to_imx_crtc_state(crtc_state);
+
+	imx_crtc_state->bus_format = MEDIA_BUS_FMT_RGB888_1X24;
+	imx_crtc_state->di_hsync_pin = 2;
+	imx_crtc_state->di_vsync_pin = 3;
+
+	return 0;
 }
 
-static struct drm_encoder_helper_funcs dw_hdmi_imx_encoder_helper_funcs = {
-	.mode_fixup = dw_hdmi_imx_encoder_mode_fixup,
-	.mode_set   = dw_hdmi_imx_encoder_mode_set,
-	.prepare    = dw_hdmi_imx_encoder_prepare,
-	.commit     = dw_hdmi_imx_encoder_commit,
-	.disable    = dw_hdmi_imx_encoder_disable,
+static const struct drm_encoder_helper_funcs dw_hdmi_imx_encoder_helper_funcs = {
+	.enable     = dw_hdmi_imx_encoder_enable,
+	.atomic_check = dw_hdmi_imx_atomic_check,
 };
 
-static struct drm_encoder_funcs dw_hdmi_imx_encoder_funcs = {
-	.destroy = drm_encoder_cleanup,
-};
-
-static enum drm_mode_status imx6q_hdmi_mode_valid(struct drm_connector *con,
-						  struct drm_display_mode *mode)
+static enum drm_mode_status
+imx6q_hdmi_mode_valid(struct dw_hdmi *hdmi, void *data,
+		      const struct drm_display_info *info,
+		      const struct drm_display_mode *mode)
 {
 	if (mode->clock < 13500)
 		return MODE_CLOCK_LOW;
-	if (mode->clock > 266000)
+	/* FIXME: Hardware is capable of 266MHz, but setup data is missing. */
+	if (mode->clock > 216000)
 		return MODE_CLOCK_HIGH;
 
 	return MODE_OK;
 }
 
-static enum drm_mode_status imx6dl_hdmi_mode_valid(struct drm_connector *con,
-						   struct drm_display_mode *mode)
+static enum drm_mode_status
+imx6dl_hdmi_mode_valid(struct dw_hdmi *hdmi, void *data,
+		       const struct drm_display_info *info,
+		       const struct drm_display_mode *mode)
 {
 	if (mode->clock < 13500)
 		return MODE_CLOCK_LOW;
-	if (mode->clock > 270000)
+	/* FIXME: Hardware is capable of 270MHz, but setup data is missing. */
+	if (mode->clock > 216000)
 		return MODE_CLOCK_HIGH;
 
 	return MODE_OK;
@@ -163,16 +166,14 @@ static enum drm_mode_status imx6dl_hdmi_mode_valid(struct drm_connector *con,
 static struct dw_hdmi_plat_data imx6q_hdmi_drv_data = {
 	.mpll_cfg   = imx_mpll_cfg,
 	.cur_ctr    = imx_cur_ctr,
-	.sym_term   = imx_sym_term,
-	.dev_type   = IMX6Q_HDMI,
+	.phy_config = imx_phy_config,
 	.mode_valid = imx6q_hdmi_mode_valid,
 };
 
 static struct dw_hdmi_plat_data imx6dl_hdmi_drv_data = {
 	.mpll_cfg = imx_mpll_cfg,
 	.cur_ctr  = imx_cur_ctr,
-	.sym_term = imx_sym_term,
-	.dev_type = IMX6DL_HDMI,
+	.phy_config = imx_phy_config,
 	.mode_valid = imx6dl_hdmi_mode_valid,
 };
 
@@ -190,78 +191,76 @@ MODULE_DEVICE_TABLE(of, dw_hdmi_imx_dt_ids);
 static int dw_hdmi_imx_bind(struct device *dev, struct device *master,
 			    void *data)
 {
-	struct platform_device *pdev = to_platform_device(dev);
-	const struct dw_hdmi_plat_data *plat_data;
-	const struct of_device_id *match;
 	struct drm_device *drm = data;
+	struct imx_hdmi_encoder *hdmi_encoder;
 	struct drm_encoder *encoder;
-	struct imx_hdmi *hdmi;
-	struct resource *iores;
-	int irq;
 	int ret;
 
-	if (!pdev->dev.of_node)
-		return -ENODEV;
+	hdmi_encoder = drmm_simple_encoder_alloc(drm, struct imx_hdmi_encoder,
+						 encoder, DRM_MODE_ENCODER_TMDS);
+	if (IS_ERR(hdmi_encoder))
+		return PTR_ERR(hdmi_encoder);
+
+	hdmi_encoder->hdmi = dev_get_drvdata(dev);
+	encoder = &hdmi_encoder->encoder;
+
+	ret = imx_drm_encoder_parse_of(drm, encoder, dev->of_node);
+	if (ret)
+		return ret;
+
+	drm_encoder_helper_add(encoder, &dw_hdmi_imx_encoder_helper_funcs);
+
+	return drm_bridge_attach(encoder, hdmi_encoder->hdmi->bridge, NULL, 0);
+}
+
+static const struct component_ops dw_hdmi_imx_ops = {
+	.bind	= dw_hdmi_imx_bind,
+};
+
+static int dw_hdmi_imx_probe(struct platform_device *pdev)
+{
+	struct device_node *np = pdev->dev.of_node;
+	const struct of_device_id *match = of_match_node(dw_hdmi_imx_dt_ids, np);
+	struct imx_hdmi *hdmi;
+	int ret;
 
 	hdmi = devm_kzalloc(&pdev->dev, sizeof(*hdmi), GFP_KERNEL);
 	if (!hdmi)
 		return -ENOMEM;
 
-	match = of_match_node(dw_hdmi_imx_dt_ids, pdev->dev.of_node);
-	plat_data = match->data;
-	hdmi->dev = &pdev->dev;
-	encoder = &hdmi->encoder;
-
-	irq = platform_get_irq(pdev, 0);
-	if (irq < 0)
-		return irq;
-
-	iores = platform_get_resource(pdev, IORESOURCE_MEM, 0);
-	if (!iores)
-		return -ENXIO;
-
 	platform_set_drvdata(pdev, hdmi);
+	hdmi->dev = &pdev->dev;
 
-	encoder->possible_crtcs = drm_of_find_possible_crtcs(drm, dev->of_node);
-	/*
-	 * If we failed to find the CRTC(s) which this encoder is
-	 * supposed to be connected to, it's because the CRTC has
-	 * not been registered yet.  Defer probing, and hope that
-	 * the required CRTC is added later.
-	 */
-	if (encoder->possible_crtcs == 0)
-		return -EPROBE_DEFER;
+	hdmi->regmap = syscon_regmap_lookup_by_phandle(np, "gpr");
+	if (IS_ERR(hdmi->regmap)) {
+		dev_err(hdmi->dev, "Unable to get gpr\n");
+		return PTR_ERR(hdmi->regmap);
+	}
 
-	ret = dw_hdmi_imx_parse_dt(hdmi);
-	if (ret < 0)
-		return ret;
+	hdmi->hdmi = dw_hdmi_probe(pdev, match->data);
+	if (IS_ERR(hdmi->hdmi))
+		return PTR_ERR(hdmi->hdmi);
 
-	drm_encoder_helper_add(encoder, &dw_hdmi_imx_encoder_helper_funcs);
-	drm_encoder_init(drm, encoder, &dw_hdmi_imx_encoder_funcs,
-			 DRM_MODE_ENCODER_TMDS);
+	hdmi->bridge = of_drm_find_bridge(np);
+	if (!hdmi->bridge) {
+		dev_err(hdmi->dev, "Unable to find bridge\n");
+		dw_hdmi_remove(hdmi->hdmi);
+		return -ENODEV;
+	}
 
-	return dw_hdmi_bind(dev, master, data, encoder, iores, irq, plat_data);
-}
+	ret = component_add(&pdev->dev, &dw_hdmi_imx_ops);
+	if (ret)
+		dw_hdmi_remove(hdmi->hdmi);
 
-static void dw_hdmi_imx_unbind(struct device *dev, struct device *master,
-			       void *data)
-{
-	return dw_hdmi_unbind(dev, master, data);
-}
-
-static const struct component_ops dw_hdmi_imx_ops = {
-	.bind	= dw_hdmi_imx_bind,
-	.unbind	= dw_hdmi_imx_unbind,
-};
-
-static int dw_hdmi_imx_probe(struct platform_device *pdev)
-{
-	return component_add(&pdev->dev, &dw_hdmi_imx_ops);
+	return ret;
 }
 
 static int dw_hdmi_imx_remove(struct platform_device *pdev)
 {
+	struct imx_hdmi *hdmi = platform_get_drvdata(pdev);
+
 	component_del(&pdev->dev, &dw_hdmi_imx_ops);
+	dw_hdmi_remove(hdmi->hdmi);
 
 	return 0;
 }

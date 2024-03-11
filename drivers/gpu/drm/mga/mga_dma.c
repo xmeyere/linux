@@ -25,7 +25,7 @@
  * DEALINGS IN THE SOFTWARE.
  */
 
-/**
+/*
  * \file mga_dma.c
  * DMA support for MGA G200 / G400.
  *
@@ -35,8 +35,8 @@
  * \author Gareth Hughes <gareth@valinux.com>
  */
 
-#include <drm/drmP.h>
-#include <drm/mga_drm.h>
+#include <linux/delay.h>
+
 #include "mga_drv.h"
 
 #define MGA_DEFAULT_USEC_TIMEOUT	10000
@@ -62,7 +62,7 @@ int mga_do_wait_for_idle(drm_mga_private_t *dev_priv)
 			MGA_WRITE8(MGA_CRTC_INDEX, 0);
 			return 0;
 		}
-		DRM_UDELAY(1);
+		udelay(1);
 	}
 
 #if MGA_DMA_DEBUG
@@ -114,7 +114,7 @@ void mga_do_dma_flush(drm_mga_private_t *dev_priv)
 		status = MGA_READ(MGA_STATUS) & MGA_ENGINE_IDLE_MASK;
 		if (status == MGA_ENDPRDMASTS)
 			break;
-		DRM_UDELAY(1);
+		udelay(1);
 	}
 
 	if (primary->tail == primary->last_flush) {
@@ -389,9 +389,28 @@ int mga_freelist_put(struct drm_device *dev, struct drm_buf *buf)
 
 int mga_driver_load(struct drm_device *dev, unsigned long flags)
 {
+	struct pci_dev *pdev = to_pci_dev(dev->dev);
 	drm_mga_private_t *dev_priv;
 	int ret;
 
+	/* There are PCI versions of the G450.  These cards have the
+	 * same PCI ID as the AGP G450, but have an additional PCI-to-PCI
+	 * bridge chip.  We detect these cards, which are not currently
+	 * supported by this driver, by looking at the device ID of the
+	 * bus the "card" is on.  If vendor is 0x3388 (Hint Corp) and the
+	 * device is 0x0021 (HB6 Universal PCI-PCI bridge), we reject the
+	 * device.
+	 */
+	if ((pdev->device == 0x0525) && pdev->bus->self
+	    && (pdev->bus->self->vendor == 0x3388)
+	    && (pdev->bus->self->device == 0x0021)
+	    && dev->agp) {
+		/* FIXME: This should be quirked in the pci core, but oh well
+		 * the hw probably stopped existing. */
+		arch_phys_wc_del(dev->agp->agp_mtrr);
+		kfree(dev->agp);
+		dev->agp = NULL;
+	}
 	dev_priv = kzalloc(sizeof(drm_mga_private_t), GFP_KERNEL);
 	if (!dev_priv)
 		return -ENOMEM;
@@ -401,10 +420,10 @@ int mga_driver_load(struct drm_device *dev, unsigned long flags)
 	dev_priv->usec_timeout = MGA_DEFAULT_USEC_TIMEOUT;
 	dev_priv->chipset = flags;
 
-	pci_set_master(dev->pdev);
+	pci_set_master(pdev);
 
-	dev_priv->mmio_base = pci_resource_start(dev->pdev, 1);
-	dev_priv->mmio_size = pci_resource_len(dev->pdev, 1);
+	dev_priv->mmio_base = pci_resource_start(pdev, 1);
+	dev_priv->mmio_size = pci_resource_len(pdev, 1);
 
 	ret = drm_vblank_init(dev, 1);
 
@@ -416,8 +435,8 @@ int mga_driver_load(struct drm_device *dev, unsigned long flags)
 	return 0;
 }
 
-#if __OS_HAS_AGP
-/**
+#if IS_ENABLED(CONFIG_AGP)
+/*
  * Bootstrap the driver for AGP DMA.
  *
  * \todo
@@ -450,20 +469,20 @@ static int mga_do_agp_dma_bootstrap(struct drm_device *dev,
 	struct drm_agp_binding bind_req;
 
 	/* Acquire AGP. */
-	err = drm_agp_acquire(dev);
+	err = drm_legacy_agp_acquire(dev);
 	if (err) {
 		DRM_ERROR("Unable to acquire AGP: %d\n", err);
 		return err;
 	}
 
-	err = drm_agp_info(dev, &info);
+	err = drm_legacy_agp_info(dev, &info);
 	if (err) {
 		DRM_ERROR("Unable to get AGP info: %d\n", err);
 		return err;
 	}
 
 	mode.mode = (info.mode & ~0x07) | dma_bs->agp_mode;
-	err = drm_agp_enable(dev, mode);
+	err = drm_legacy_agp_enable(dev, mode);
 	if (err) {
 		DRM_ERROR("Unable to enable AGP (mode = 0x%lx)\n", mode.mode);
 		return err;
@@ -483,7 +502,7 @@ static int mga_do_agp_dma_bootstrap(struct drm_device *dev,
 	/* Allocate and bind AGP memory. */
 	agp_req.size = agp_size;
 	agp_req.type = 0;
-	err = drm_agp_alloc(dev, &agp_req);
+	err = drm_legacy_agp_alloc(dev, &agp_req);
 	if (err) {
 		dev_priv->agp_size = 0;
 		DRM_ERROR("Unable to allocate %uMB AGP memory\n",
@@ -496,7 +515,7 @@ static int mga_do_agp_dma_bootstrap(struct drm_device *dev,
 
 	bind_req.handle = agp_req.handle;
 	bind_req.offset = 0;
-	err = drm_agp_bind(dev, &bind_req);
+	err = drm_legacy_agp_bind(dev, &bind_req);
 	if (err) {
 		DRM_ERROR("Unable to bind AGP memory: %d\n", err);
 		return err;
@@ -592,7 +611,7 @@ static int mga_do_agp_dma_bootstrap(struct drm_device *dev,
 }
 #endif
 
-/**
+/*
  * Bootstrap the driver for PCI DMA.
  *
  * \todo
@@ -698,7 +717,7 @@ static int mga_do_pci_dma_bootstrap(struct drm_device *dev,
 static int mga_do_dma_bootstrap(struct drm_device *dev,
 				drm_mga_dma_bootstrap_t *dma_bs)
 {
-	const int is_agp = (dma_bs->agp_mode != 0) && drm_pci_device_is_agp(dev);
+	const int is_agp = (dma_bs->agp_mode != 0) && dev->agp;
 	int err;
 	drm_mga_private_t *const dev_priv =
 	    (drm_mga_private_t *) dev->dev_private;
@@ -930,7 +949,7 @@ static int mga_do_cleanup_dma(struct drm_device *dev, int full_cleanup)
 	 * is freed, it's too late.
 	 */
 	if (dev->irq_enabled)
-		drm_irq_uninstall(dev);
+		drm_legacy_irq_uninstall(dev);
 
 	if (dev->dev_private) {
 		drm_mga_private_t *dev_priv = dev->dev_private;
@@ -947,16 +966,16 @@ static int mga_do_cleanup_dma(struct drm_device *dev, int full_cleanup)
 			drm_legacy_ioremapfree(dev->agp_buffer_map, dev);
 
 		if (dev_priv->used_new_dma_init) {
-#if __OS_HAS_AGP
+#if IS_ENABLED(CONFIG_AGP)
 			if (dev_priv->agp_handle != 0) {
 				struct drm_agp_binding unbind_req;
 				struct drm_agp_buffer free_req;
 
 				unbind_req.handle = dev_priv->agp_handle;
-				drm_agp_unbind(dev, &unbind_req);
+				drm_legacy_agp_unbind(dev, &unbind_req);
 
 				free_req.handle = dev_priv->agp_handle;
-				drm_agp_free(dev, &free_req);
+				drm_legacy_agp_free(dev, &free_req);
 
 				dev_priv->agp_textures = NULL;
 				dev_priv->agp_size = 0;
@@ -964,7 +983,7 @@ static int mga_do_cleanup_dma(struct drm_device *dev, int full_cleanup)
 			}
 
 			if ((dev->agp != NULL) && dev->agp->acquired)
-				err = drm_agp_release(dev);
+				err = drm_legacy_agp_release(dev);
 #endif
 		}
 
@@ -1102,7 +1121,7 @@ int mga_dma_buffers(struct drm_device *dev, void *data,
 	 */
 	if (d->send_count != 0) {
 		DRM_ERROR("Process %d trying to send %d buffers via drmDMA\n",
-			  DRM_CURRENTPID, d->send_count);
+			  task_pid_nr(current), d->send_count);
 		return -EINVAL;
 	}
 
@@ -1110,7 +1129,8 @@ int mga_dma_buffers(struct drm_device *dev, void *data,
 	 */
 	if (d->request_count < 0 || d->request_count > dma->buf_count) {
 		DRM_ERROR("Process %d trying to get %d buffers (of %d max)\n",
-			  DRM_CURRENTPID, d->request_count, dma->buf_count);
+			  task_pid_nr(current), d->request_count,
+			  dma->buf_count);
 		return -EINVAL;
 	}
 
@@ -1124,18 +1144,16 @@ int mga_dma_buffers(struct drm_device *dev, void *data,
 	return ret;
 }
 
-/**
+/*
  * Called just before the module is unloaded.
  */
-int mga_driver_unload(struct drm_device *dev)
+void mga_driver_unload(struct drm_device *dev)
 {
 	kfree(dev->dev_private);
 	dev->dev_private = NULL;
-
-	return 0;
 }
 
-/**
+/*
  * Called when the last opener of the device is closed.
  */
 void mga_driver_lastclose(struct drm_device *dev)

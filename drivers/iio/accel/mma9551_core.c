@@ -1,15 +1,7 @@
+// SPDX-License-Identifier: GPL-2.0-only
 /*
  * Common code for Freescale MMA955x Intelligent Sensor Platform drivers
  * Copyright (c) 2014, Intel Corporation.
- *
- * This program is free software; you can redistribute it and/or modify it
- * under the terms and conditions of the GNU General Public License,
- * version 2, as published by the Free Software Foundation.
- *
- * This program is distributed in the hope it will be useful, but WITHOUT
- * ANY WARRANTY; without even the implied warranty of MERCHANTABILITY or
- * FITNESS FOR A PARTICULAR PURPOSE.  See the GNU General Public License for
- * more details.
  */
 
 #include <linux/module.h>
@@ -297,16 +289,19 @@ EXPORT_SYMBOL(mma9551_read_status_byte);
  * Returns: 0 on success, negative value on failure.
  */
 int mma9551_read_config_word(struct i2c_client *client, u8 app_id,
-			    u16 reg, u16 *val)
+			     u16 reg, u16 *val)
 {
 	int ret;
 	__be16 v;
 
 	ret = mma9551_transfer(client, app_id, MMA9551_CMD_READ_CONFIG,
 			       reg, NULL, 0, (u8 *)&v, 2);
+	if (ret < 0)
+		return ret;
+
 	*val = be16_to_cpu(v);
 
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL(mma9551_read_config_word);
 
@@ -328,12 +323,12 @@ EXPORT_SYMBOL(mma9551_read_config_word);
  * Returns: 0 on success, negative value on failure.
  */
 int mma9551_write_config_word(struct i2c_client *client, u8 app_id,
-			     u16 reg, u16 val)
+			      u16 reg, u16 val)
 {
 	__be16 v = cpu_to_be16(val);
 
 	return mma9551_transfer(client, app_id, MMA9551_CMD_WRITE_CONFIG, reg,
-				(u8 *) &v, 2, NULL, 0);
+				(u8 *)&v, 2, NULL, 0);
 }
 EXPORT_SYMBOL(mma9551_write_config_word);
 
@@ -362,9 +357,12 @@ int mma9551_read_status_word(struct i2c_client *client, u8 app_id,
 
 	ret = mma9551_transfer(client, app_id, MMA9551_CMD_READ_STATUS,
 			       reg, NULL, 0, (u8 *)&v, 2);
+	if (ret < 0)
+		return ret;
+
 	*val = be16_to_cpu(v);
 
-	return ret;
+	return 0;
 }
 EXPORT_SYMBOL(mma9551_read_status_word);
 
@@ -373,8 +371,8 @@ EXPORT_SYMBOL(mma9551_read_status_word);
  * @client:	I2C client
  * @app_id:	Application ID
  * @reg:	Application register
- * @len:	Length of array to read in bytes
- * @val:	Array of words to read
+ * @len:	Length of array to read (in words)
+ * @buf:	Array of words to read
  *
  * Read multiple configuration registers (word-sized registers).
  *
@@ -385,18 +383,22 @@ EXPORT_SYMBOL(mma9551_read_status_word);
  * Returns: 0 on success, negative value on failure.
  */
 int mma9551_read_config_words(struct i2c_client *client, u8 app_id,
-			     u16 reg, u8 len, u16 *buf)
+			      u16 reg, u8 len, u16 *buf)
 {
 	int ret, i;
-	int len_words = len / sizeof(u16);
-	__be16 be_buf[MMA9551_MAX_MAILBOX_DATA_REGS];
+	__be16 be_buf[MMA9551_MAX_MAILBOX_DATA_REGS / 2];
+
+	if (len > ARRAY_SIZE(be_buf)) {
+		dev_err(&client->dev, "Invalid buffer size %d\n", len);
+		return -EINVAL;
+	}
 
 	ret = mma9551_transfer(client, app_id, MMA9551_CMD_READ_CONFIG,
-			       reg, NULL, 0, (u8 *) be_buf, len);
+			       reg, NULL, 0, (u8 *)be_buf, len * sizeof(u16));
 	if (ret < 0)
 		return ret;
 
-	for (i = 0; i < len_words; i++)
+	for (i = 0; i < len; i++)
 		buf[i] = be16_to_cpu(be_buf[i]);
 
 	return 0;
@@ -408,8 +410,8 @@ EXPORT_SYMBOL(mma9551_read_config_words);
  * @client:	I2C client
  * @app_id:	Application ID
  * @reg:	Application register
- * @len:	Length of array to read in bytes
- * @val:	Array of words to read
+ * @len:	Length of array to read (in words)
+ * @buf:	Array of words to read
  *
  * Read multiple status registers (word-sized registers).
  *
@@ -423,15 +425,19 @@ int mma9551_read_status_words(struct i2c_client *client, u8 app_id,
 			      u16 reg, u8 len, u16 *buf)
 {
 	int ret, i;
-	int len_words = len / sizeof(u16);
-	__be16 be_buf[MMA9551_MAX_MAILBOX_DATA_REGS];
+	__be16 be_buf[MMA9551_MAX_MAILBOX_DATA_REGS / 2];
+
+	if (len > ARRAY_SIZE(be_buf)) {
+		dev_err(&client->dev, "Invalid buffer size %d\n", len);
+		return -EINVAL;
+	}
 
 	ret = mma9551_transfer(client, app_id, MMA9551_CMD_READ_STATUS,
-			       reg, NULL, 0, (u8 *) be_buf, len);
+			       reg, NULL, 0, (u8 *)be_buf, len * sizeof(u16));
 	if (ret < 0)
 		return ret;
 
-	for (i = 0; i < len_words; i++)
+	for (i = 0; i < len; i++)
 		buf[i] = be16_to_cpu(be_buf[i]);
 
 	return 0;
@@ -443,8 +449,8 @@ EXPORT_SYMBOL(mma9551_read_status_words);
  * @client:	I2C client
  * @app_id:	Application ID
  * @reg:	Application register
- * @len:	Length of array to write in bytes
- * @val:	Array of words to write
+ * @len:	Length of array to write (in words)
+ * @buf:	Array of words to write
  *
  * Write multiple configuration registers (word-sized registers).
  *
@@ -458,14 +464,18 @@ int mma9551_write_config_words(struct i2c_client *client, u8 app_id,
 			       u16 reg, u8 len, u16 *buf)
 {
 	int i;
-	int len_words = len / sizeof(u16);
-	__be16 be_buf[MMA9551_MAX_MAILBOX_DATA_REGS];
+	__be16 be_buf[(MMA9551_MAX_MAILBOX_DATA_REGS - 1) / 2];
 
-	for (i = 0; i < len_words; i++)
+	if (len > ARRAY_SIZE(be_buf)) {
+		dev_err(&client->dev, "Invalid buffer size %d\n", len);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < len; i++)
 		be_buf[i] = cpu_to_be16(buf[i]);
 
 	return mma9551_transfer(client, app_id, MMA9551_CMD_WRITE_CONFIG,
-				reg, (u8 *) be_buf, len, NULL, 0);
+				reg, (u8 *)be_buf, len * sizeof(u16), NULL, 0);
 }
 EXPORT_SYMBOL(mma9551_write_config_words);
 
@@ -660,7 +670,7 @@ int mma9551_set_power_state(struct i2c_client *client, bool on)
 	int ret;
 
 	if (on)
-		ret = pm_runtime_get_sync(&client->dev);
+		ret = pm_runtime_resume_and_get(&client->dev);
 	else {
 		pm_runtime_mark_last_busy(&client->dev);
 		ret = pm_runtime_put_autosuspend(&client->dev);
@@ -669,8 +679,6 @@ int mma9551_set_power_state(struct i2c_client *client, bool on)
 	if (ret < 0) {
 		dev_err(&client->dev,
 			"failed to change power state to %d\n", on);
-		if (on)
-			pm_runtime_put_noidle(&client->dev);
 
 		return ret;
 	}
@@ -785,7 +793,7 @@ EXPORT_SYMBOL(mma9551_read_accel_scale);
  */
 int mma9551_app_reset(struct i2c_client *client, u32 app_mask)
 {
-	return mma9551_write_config_byte(client, MMA9551_APPID_RCS,
+	return mma9551_write_config_byte(client, MMA9551_APPID_RSC,
 					 MMA9551_RSC_RESET +
 					 MMA9551_RSC_OFFSET(app_mask),
 					 MMA9551_RSC_VAL(app_mask));
