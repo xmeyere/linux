@@ -1,0 +1,1 @@
+obj-$(CONFIG_XM580_VO) += xm580_vo.o
