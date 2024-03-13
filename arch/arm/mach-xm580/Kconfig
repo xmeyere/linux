@@ -42,12 +42,6 @@ config MXC_HANTRO
 	help
 	  Includes support for the xm580 video encoder device.
 
-config USB_DWCOTG
-	bool "Add support for DWC USB controller"
-	default "y"
-	help
-	  Includes support for the xm580 DWC 2 usb controller
-
 menuconfig NETDEV_1000
 	bool "Ethernet (1000 Mbit)"
 	depends on !UML
