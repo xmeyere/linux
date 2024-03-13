@@ -4,6 +4,7 @@
 #include <linux/delay.h>
 #include <linux/io.h>
 #include <linux/compiler.h>
+#include <linux/module.h>
 
 // NOTE: this file orginally was at the drivers/ata folder (I think), but it works just as well here. Note that 3 modifications are needed for SATA to work in libata-core.c
 

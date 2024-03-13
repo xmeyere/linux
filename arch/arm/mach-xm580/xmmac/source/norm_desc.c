@@ -76,7 +76,7 @@ static int ndesc_get_rx_status(void *data, struct stmmac_extra_stats *x,
 	struct net_device_stats *stats = (struct net_device_stats *)data;
 
 	if (unlikely(p->des01.rx.last_descriptor == 0)) {
-		pr_warning("ndesc Error: Oversized Ethernet "
+		pr_warn("ndesc Error: Oversized Ethernet "
 			   "frame spanned multiple buffers\n");
 		stats->rx_length_errors++;
 		return discard_frame;

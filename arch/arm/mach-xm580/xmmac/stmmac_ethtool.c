@@ -41,6 +41,7 @@ struct stmmac_stats {
 	int sizeof_stat;
 	int stat_offset;
 };
+#define FIELD_SIZEOF(t, f) (sizeof(((t*)0)->f))
 
 #define STMMAC_STAT(m)	\
 	{ #m, FIELD_SIZEOF(struct stmmac_extra_stats, m),	\
@@ -104,43 +105,6 @@ static void stmmac_ethtool_getdrvinfo(struct net_device *dev,
 	strcpy(info->version, DRV_MODULE_VERSION);
 	info->fw_version[0] = '\0';
 	info->n_stats = STMMAC_STATS_LEN;
-}
-
-static int stmmac_ethtool_getsettings(struct net_device *dev,
-				      struct ethtool_cmd *cmd)
-{
-	struct stmmac_priv *priv = netdev_priv(dev);
-	struct phy_device *phy = priv->phydev;
-	int rc;
-	if (phy == NULL) {
-		pr_err("%s: %s: PHY is not registered\n",
-		       __func__, dev->name);
-		return -ENODEV;
-	}
-	if (!netif_running(dev)) {
-		pr_err("%s: interface is disabled: we cannot track "
-		"link speed / duplex setting\n", dev->name);
-		return -EBUSY;
-	}
-	cmd->transceiver = XCVR_INTERNAL;
-	spin_lock_irq(&priv->lock);
-	rc = phy_ethtool_gset(phy, cmd);
-	spin_unlock_irq(&priv->lock);
-	return rc;
-}
-
-static int stmmac_ethtool_setsettings(struct net_device *dev,
-				      struct ethtool_cmd *cmd)
-{
-	struct stmmac_priv *priv = netdev_priv(dev);
-	struct phy_device *phy = priv->phydev;
-	int rc;
-
-	spin_lock(&priv->lock);
-	rc = phy_ethtool_sset(phy, cmd);
-	spin_unlock(&priv->lock);
-
-	return rc;
 }
 
 static u32 stmmac_ethtool_getmsglevel(struct net_device *dev)
@@ -337,8 +301,6 @@ static int stmmac_set_wol(struct net_device *dev, struct ethtool_wolinfo *wol)
 static struct ethtool_ops stmmac_ethtool_ops = {
 	.begin = stmmac_check_if_running,
 	.get_drvinfo = stmmac_ethtool_getdrvinfo,
-	.get_settings = stmmac_ethtool_getsettings,
-	.set_settings = stmmac_ethtool_setsettings,
 	.get_msglevel = stmmac_ethtool_getmsglevel,
 	.set_msglevel = stmmac_ethtool_setmsglevel,
 	.get_regs = stmmac_ethtool_gregs,

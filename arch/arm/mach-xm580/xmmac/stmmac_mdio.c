@@ -140,7 +140,7 @@ int stmmac_mdio_register(struct net_device *ndev)
 	struct mii_bus *new_bus;
 	int *irqlist;
 	struct stmmac_priv *priv = netdev_priv(ndev);
-	int addr, found;
+	int addr, found, i;
 
 	new_bus = mdiobus_alloc();
 	if (new_bus == NULL)
@@ -162,7 +162,9 @@ int stmmac_mdio_register(struct net_device *ndev)
 	new_bus->reset = &stmmac_mdio_reset;
 	snprintf(new_bus->id, MII_BUS_ID_SIZE, "%x", priv->plat->bus_id);
 	new_bus->priv = ndev;
-	new_bus->irq = irqlist;
+	for (i = 0; i < PHY_MAX_ADDR; i++)
+		new_bus->irq[i] = irqlist;
+
 	new_bus->phy_mask = priv->phy_mask;
 	new_bus->parent = priv->device;
 	err = mdiobus_register(new_bus);
@@ -174,7 +176,7 @@ int stmmac_mdio_register(struct net_device *ndev)
 	priv->mii = new_bus;
 
 	found = 0;
-	for (addr = 0; addr < 32; addr++) {
+	/*for (addr = 0; addr < 32; addr++) {
 		struct phy_device *phydev = new_bus->phy_map[addr];
 		if (phydev) {
 		//	printk(KERN_EMERG"find %d\n", addr);
@@ -189,10 +191,10 @@ int stmmac_mdio_register(struct net_device *ndev)
 			       (addr == priv->phy_addr) ? " active" : "");
 			found = 1;
 		}
-	}
+	}*/
 
 	if (!found) {
-		pr_warning("%s: No PHY found\n", ndev->name);
+		pr_warn("%s: No PHY found\n", ndev->name);
 	} else {
 		//printk(KERN_EMERG"Found\n");
 	}

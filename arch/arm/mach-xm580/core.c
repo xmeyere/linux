@@ -10,13 +10,8 @@
 #include <linux/clockchips.h>
 #include <linux/cnt32_to_63.h>
 #include <linux/io.h>
-#include <linux/clkdev.h>
-//#include <asm/sched_clock.h>
-
-//#include <asm/system.h>
 #include <asm/irq.h>
 #include <linux/leds.h>
-#include <asm/hardware/arm_timer.h>
 #include <asm/mach-types.h>
 #include <linux/irqchip/arm-gic.h>    
 
@@ -32,9 +27,7 @@
 #include <mach/early-debug.h>
 #include <mach/irqs.h>
 #include <mach/dma.h>
-#include <linux/bootmem.h>
-#include <linux/amba/serial.h> 
-#include <linux/amba/pl330.h> 
+
 #include <linux/of_platform.h>
 #include "mach/clock.h" 
 #include "platsmp.h"
@@ -149,7 +142,7 @@ DT_MACHINE_START(XM580, "xm580 (Flattened Device Tree)")
 	.atag_offset  = 0x100,
 	.map_io         = xm580_map_io,
 	.init_early     = xm580_init_early,
-	.smp          = smp_ops(xm580_smp_ops),
+	//.smp          = smp_ops(xm580_smp_ops),
 	.restart      = xm580_restart,
 	.dt_compat	= xm580_match,
 MACHINE_END

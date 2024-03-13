@@ -222,7 +222,7 @@ static void stmmac_adjust_link(struct net_device *dev)
                     }
                 default:
                     if (netif_msg_link(priv))
-                        pr_warning("%s: Speed (%d) is not 10"
+                        pr_warn("%s: Speed (%d) is not 10"
                                 " or 100!\n", dev->name, phydev->speed);
                     break;
             }
@@ -708,7 +708,7 @@ static int stmmac_open(struct net_device *dev)
      *      ifconfig eth0 hw ether xx:xx:xx:xx:xx:xx  */
     if (!is_valid_ether_addr(dev->dev_addr)) {
         random_ether_addr(dev->dev_addr);
-        pr_warning("%s: generated random MAC address %pM\n", dev->name,
+        pr_warn("%s: generated random MAC address %pM\n", dev->name,
                 dev->dev_addr);
     }
 
@@ -898,14 +898,14 @@ static netdev_tx_t stmmac_xmit(struct sk_buff *skb, struct net_device *dev)
 
     for (i = 0; i < nfrags; i++) {
         skb_frag_t *frag = &skb_shinfo(skb)->frags[i];
-        int len = frag->size;
+        int len = skb_frag_size(frag);
 
         entry = (++priv->cur_tx) % txsize;
         desc = priv->dma_tx + entry;
 
         TX_DBG("\t[entry %d] segment len: %d\n", entry, len);
-        desc->des2 = dma_map_page(priv->device, frag->page.p,
-                frag->page_offset,
+        desc->des2 = dma_map_page(priv->device, skb_frag_address(frag),
+                frag->bv_offset,
                 len, DMA_TO_DEVICE);
         priv->tx_skbuff[entry] = NULL;
         priv->hw->desc->prepare_tx_desc(desc, 0, len, csum_insertion);
@@ -1142,7 +1142,7 @@ static int stmmac_poll(struct napi_struct *napi, int budget)
  *   netdev structure and arrange for the device to be reset to a sane state
  *   in order to transmit a new packet.
  */
-static void stmmac_tx_timeout(struct net_device *dev)
+static void stmmac_tx_timeout(struct net_device *dev, unsigned int i)
 {
     struct stmmac_priv *priv = netdev_priv(dev);
 
@@ -1158,13 +1158,13 @@ static int stmmac_config(struct net_device *dev, struct ifmap *map)
 
     /* Don't allow changing the I/O address */
     if (map->base_addr != dev->base_addr) {
-        pr_warning("%s: can't change I/O address\n", dev->name);
+        pr_warn("%s: can't change I/O address\n", dev->name);
         return -EOPNOTSUPP;
     }
 
     /* Don't allow changing the IRQ */
     if (map->irq != dev->irq) {
-        pr_warning("%s: can't change IRQ number %d\n",
+        pr_warn("%s: can't change IRQ number %d\n",
                 dev->name, dev->irq);
         return -EOPNOTSUPP;
     }
@@ -1237,14 +1237,14 @@ static netdev_features_t stmmac_fix_features(struct net_device *dev,
     if (!priv->rx_coe)
         features &= ~NETIF_F_RXCSUM;
     if (!priv->plat->tx_coe)
-        features &= ~NETIF_F_ALL_CSUM;
+        features &= ~NETIF_F_IP_CSUM;
 
     /* Some GMAC devices have a bugged Jumbo frame support that
      * needs to have the Tx COE disabled for oversized frames
      * (due to limited buffer sizes). In this case we disable
      * the TX csum insertionin the TDES and not use SF. */
     if (priv->plat->bugged_jumbo && (dev->mtu > ETH_DATA_LEN))
-        features &= ~NETIF_F_ALL_CSUM;
+        features &= ~NETIF_F_IP_CSUM;
 
     return features;
 }
@@ -1352,7 +1352,7 @@ static int stmmac_probe(struct net_device *dev)
             dev->dev_addr, 0);
 
     if (!is_valid_ether_addr(dev->dev_addr))
-        pr_warning("\tno valid MAC address;"
+        pr_warn("\tno valid MAC address;"
                 "please, use ifconfig or nwhwconfig!\n");
 
     spin_lock_init(&priv->lock);
