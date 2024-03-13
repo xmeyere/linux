@@ -106,6 +106,14 @@
             dr_mode = "host";
         };
 
+
+        rtc: rtc@10017000 {
+			compatible = "xmeye,rtc";
+			reg = <0x100A0000 0x1000>;
+			clocks = <&pclk>;
+			clock-names = "apb_pclk";
+		};
+
         amba {
 			#address-cells = <1>;
 			#size-cells = <1>;
