@@ -20,7 +20,6 @@
 #define _HANTRODEC_H_
 #include <linux/ioctl.h>
 #include <linux/types.h>
-#include "../pcidriver/hantrommu.h"
 
 #undef PDEBUG
 #ifdef HANTRODEC_DEBUG

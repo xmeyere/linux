@@ -42,8 +42,10 @@
 #include <linux/of.h>
 #include <linux/of_address.h>
 #include <linux/of_irq.h>
+#include <linux/platform_device.h>
+#include <linux/miscdevice.h>
 
-#define HXDEC_MAX_CORES                 2
+#define HXDEC_MAX_CORES                 4
 
 /* hantro G1 regs config including dec and pp */
 #define HANTRO_DEC_ORG_REGS             60
@@ -109,14 +111,14 @@
 #endif
 
 /* Logic module base address */
-#define SOCLE_LOGIC_0_BASE              0xe7802000 /* add 0x2000 for RTL bug v.1042 */
+#define SOCLE_LOGIC_0_BASE              0x38300000
 #define SOCLE_LOGIC_1_BASE              -1
 
 
 #define DEC_IO_SIZE_0                   DEC_IO_SIZE_MAX /* bytes */
-#define DEC_IO_SIZE_1                   0
+#define DEC_IO_SIZE_1                   DEC_IO_SIZE_MAX
 
-#define DEC_IRQ_0                       319 /* RTL v.1042 */
+#define DEC_IRQ_0                       108 /* RTL v.1042 */
 #define DEC_IRQ_1                       -1
 
 #define IS_VC8000D(hw_id)               (((hw_id) == 0x8001)? 1 : 0)
@@ -125,16 +127,20 @@ static const int DecHwId[] = {
   0x8001  /* VC8000D */
 };
 
-unsigned long base_port = -1;
+unsigned long base_port = 0x21100000;
 volatile unsigned char *reg = NULL;
 
 unsigned long multicorebase[HXDEC_MAX_CORES] = {
   SOCLE_LOGIC_0_BASE,
   SOCLE_LOGIC_1_BASE,
+  SOCLE_LOGIC_1_BASE,
+  SOCLE_LOGIC_1_BASE,
 };
 
 int irq[HXDEC_MAX_CORES] = {
   DEC_IRQ_0,
+  DEC_IRQ_1,
+  DEC_IRQ_1,
   DEC_IRQ_1,
 };
 
@@ -148,44 +154,6 @@ unsigned long multicorebase_actual[HXDEC_MAX_CORES];
 
 /* SE1000 Maximum decoders is 1 */
 int elements = 1;
-
-#ifdef CLK_CFG
-struct clk *clk_cfg;
-#else
-/* CLOCK_WRAPER function */
-void enable_wraper_clocks(int enable)
-{
-	if (enable) {
-		ENABLE_CLOCK(CLK_VPU_DEC_AXI);
-	    ENABLE_CLOCK(CLK_VPU_DEC_CORE);
-    	ENABLE_CLOCK(CLK_VPU_DEC_APB);
-    	RESET_DEVICE(REG_VPU_DEC_AXI_RST_N, 1);
-    	RESET_DEVICE(REG_VPU_DEC_CORE_RST_N, 1);
-    	RESET_DEVICE(REG_VPU_DEC_APB_RST_N, 1);
-		//RTL V1042 bug: need to enable Encoder clock too to enable Decoder
-		//               fixed in V1044. To verify
-        ENABLE_CLOCK(CLK_VPU_ENC_AXI);
-        ENABLE_CLOCK(CLK_VPU_ENC_CORE);
-        ENABLE_CLOCK(CLK_VPU_ENC_APB);
-        RESET_DEVICE(REG_VPU_ENC_AXI_RST_N, 1);
-        RESET_DEVICE(REG_VPU_ENC_CORE_RST_N, 1);
-        RESET_DEVICE(REG_VPU_ENC_APB_RST_N, 1);
-
-	} else {
-        RESET_DEVICE(REG_VPU_DEC_AXI_RST_N, 0);
-        RESET_DEVICE(REG_VPU_DEC_CORE_RST_N, 0);
-        RESET_DEVICE(REG_VPU_DEC_APB_RST_N, 0);
-        //RTL V1042 bug: need to enable Encoder clock too to enable Decoder
-        //               fixed in V1044. To verify
-		//We should not disable encoder. Remove below lines in formal release. 
-        RESET_DEVICE(REG_VPU_ENC_AXI_RST_N, 0);
-        RESET_DEVICE(REG_VPU_ENC_CORE_RST_N, 0);
-        RESET_DEVICE(REG_VPU_ENC_APB_RST_N, 0);
-	}
-}	
-#endif
-int is_clk_on;
-struct timer_list timer;
 
 /* module_param(name, type, perm) */
 module_param(base_port, ulong, 0);
@@ -251,9 +219,6 @@ DEFINE_SPINLOCK(owner_lock);
 DECLARE_WAIT_QUEUE_HEAD(dec_wait_queue);
 DECLARE_WAIT_QUEUE_HEAD(pp_wait_queue);
 DECLARE_WAIT_QUEUE_HEAD(hw_queue);
-//#ifdef CLK_CFG //lock for clock functions
-DEFINE_SPINLOCK(clk_lock);
-//#endif
 
 #define DWL_CLIENT_TYPE_H264_DEC        1U
 #define DWL_CLIENT_TYPE_MPEG4_DEC       2U
@@ -927,32 +892,12 @@ static long hantrodec_ioctl(struct file *filp, unsigned int cmd,
    * "write" is reversed
    */
   if (_IOC_DIR(cmd) & _IOC_READ)
-    err = !access_ok(VERIFY_WRITE, (void *) arg, _IOC_SIZE(cmd));
+    err = !access_ok((void *) arg, _IOC_SIZE(cmd));
   else if (_IOC_DIR(cmd) & _IOC_WRITE)
-    err = !access_ok(VERIFY_READ, (void *) arg, _IOC_SIZE(cmd));
+    err = !access_ok((void *) arg, _IOC_SIZE(cmd));
 
   if (err)
     return -EFAULT;
-
-  spin_lock_irqsave(&clk_lock, flags);
-  if (is_clk_on == 0) {
-#ifdef CLK_CFG	  
-  	if (clk_cfg!=NULL && !IS_ERR(clk_cfg))) {
-    	printk("turn on clock by user\n");
-    	if (clk_enable(clk_cfg)) {
-      		spin_unlock_irqrestore(&clk_lock, flags);
-      		return -EFAULT;
-    	} else
-      		is_clk_on=1;
-  	}
-#else
-	enable_wraper_clocks(1);
-	printk("enable encoder clock\n");
-	is_clk_on=1;
-#endif	
-  }
-  spin_unlock_irqrestore(&clk_lock, flags);
-  mod_timer(&timer, jiffies + 10*HZ); /*the interval is 10s*/
 
   switch (cmd) {
   case HANTRODEC_IOC_CLI: {
@@ -1237,31 +1182,6 @@ static int hantrodec_release(struct inode *inode, struct file *filp) {
   return 0;
 }
 
-void hantrodec_disable_clk(unsigned long value) {
-  unsigned long flags;
-  /*entering this function means decoder is idle over expiry.So disable clk*/
-#ifdef CLK_CFG  
-  if (clk_cfg!=NULL && !IS_ERR(clk_cfg)) {
-    spin_lock_irqsave(&clk_lock, flags);
-    if (is_clk_on==1) {
-      clk_disable(clk_cfg);
-      is_clk_on = 0;
-      printk("turned off hantrodec clk\n");
-    }
-    spin_unlock_irqrestore(&clk_lock, flags);
-  }
-#else
-  spin_lock_irqsave(&clk_lock, flags);
-  if (is_clk_on==1) {
-      enable_wraper_clocks(0);
-      is_clk_on = 0;
-      printk("turned off decoder clock\n");
-  }
-  spin_unlock_irqrestore(&clk_lock, flags);
-
-#endif  
-}
-
 /* VFS methods */
 static struct file_operations hantrodec_fops = {
   .owner = THIS_MODULE,
@@ -1271,14 +1191,20 @@ static struct file_operations hantrodec_fops = {
   .fasync = NULL
 };
 
+static struct miscdevice xm_h265d_dev = {
+    .minor = MISC_DYNAMIC_MINOR,
+    .name = "handrodec",
+    .fops = &hantrodec_fops,
+};
+
 /*------------------------------------------------------------------------------
- Function name   : hantrodec_init
- Description     : Initialize the driver
+ Function name   : hantrodec_probe
+ Description     : Probe device
 
  Return type     : int
 ------------------------------------------------------------------------------*/
 
-int __init hantrodec_init(void) {
+int hantrodec_probe(struct platform_device* pdev) {
   int result, i;
 
   PDEBUG("module init\n");
@@ -1296,6 +1222,7 @@ int __init hantrodec_init(void) {
                      "           IRQ_0=%i\n",
            multicorebase[0], irq[0]);
   }
+  irq[0] = platform_get_irq(pdev, 0);
 
   hantrodec_data.cores = 0;
 
@@ -1317,7 +1244,7 @@ int __init hantrodec_init(void) {
   hantrodec_data.async_queue_dec = NULL;
   hantrodec_data.async_queue_pp = NULL;
 
-  result = register_chrdev(hantrodec_major, "hantrodec", &hantrodec_fops);
+  result = misc_register(&xm_h265d_dev);
   if(result < 0) {
     printk(KERN_INFO "hantrodec: unable to get major %d\n", hantrodec_major);
     goto err;
@@ -1325,29 +1252,8 @@ int __init hantrodec_init(void) {
     hantrodec_major = result;
   }
 
-#ifdef CLK_CFG
-  /* first get clk instance pointer */
-  clk_cfg = clk_get(NULL, CLK_ID);
-  if (!clk_cfg||IS_ERR(clk_cfg)) {
-    printk("get handrodec clk failed!\n");
-    goto err;
-  }
-
-  /* prepare and enable clk */
-  if(clk_prepare_enable(clk_cfg)) {
-    printk("try to enable handrodec clk failed!\n");
-    goto err;
-  }
-#else
-  enable_wraper_clocks(1);
-#endif  
-  is_clk_on = 1;
-
-  /*init a timer to disable clk*/
-  init_timer(&timer);
-  timer.function = &hantrodec_disable_clk;
-  timer.expires =  jiffies + 100*HZ; //the expires time is 100s
-  add_timer(&timer);
+  // xm580: Enable the handrodec device in the SOC
+  writel(readl((void*)0xfe100120) | 2, (void*)0xfe100120);
 
   result = ReserveIO();
   if(result < 0) {
@@ -1402,7 +1308,7 @@ int __init hantrodec_init(void) {
 
     if(result != 0) {
       if(result == -EINVAL) {
-        printk(KERN_ERR "hantrodec: Bad irq number or handler\n");
+        printk(KERN_ERR "hantrodec: Bad irq number or handler for IRQ 1\n");
       } else if(result == -EBUSY) {
         printk(KERN_ERR "hantrodec: IRQ <%d> busy, change your config\n",
                hantrodec_data.irq[1]);
@@ -1433,7 +1339,7 @@ err:
  Return type     : int
 ------------------------------------------------------------------------------*/
 
-void __exit hantrodec_cleanup(void) {
+int hantrodec_remove(struct platform_device* t) {
   hantrodec_t *dev = &hantrodec_data;
   int n =0;
   /* reset hardware */
@@ -1448,22 +1354,10 @@ void __exit hantrodec_cleanup(void) {
 
   ReleaseIO();
 
-#ifdef CLK_CFG
-  if (clk_cfg!=NULL && !IS_ERR(clk_cfg)) {
-    clk_disable_unprepare(clk_cfg);
-    is_clk_on = 0;
-    printk("turned off hantrodec clk\n");
-  }
-#else
-  enable_wraper_clocks(0);
-#endif  
-  /*delete timer*/
-  del_timer(&timer);
-
   unregister_chrdev(hantrodec_major, "hantrodec");
 
   printk(KERN_INFO "hantrodec: module removed\n");
-  return;
+  return 0;
 }
 
 /*------------------------------------------------------------------------------
@@ -1528,7 +1422,7 @@ static int ReserveIO(void) {
         return -EBUSY;
       }
 
-      hantrodec_data.hwregs[i] = (volatile u8 *) ioremap_nocache(multicorebase_actual[i],
+      hantrodec_data.hwregs[i] = (volatile u8 *) ioremap(multicorebase_actual[i],
                                  hantrodec_data.iosize[i]);
 
       if (hantrodec_data.hwregs[i] == NULL ) {
@@ -1561,7 +1455,7 @@ static int ReserveIO(void) {
             return -EBUSY;
           }
 
-          hantrodec_data.hwregs[i] = (volatile u8 *) ioremap_nocache(multicorebase_actual[i],
+          hantrodec_data.hwregs[i] = (volatile u8 *) ioremap(multicorebase_actual[i],
                                      hantrodec_data.iosize[i]);
 
           if (hantrodec_data.hwregs[i] == NULL ) {
@@ -1703,9 +1597,21 @@ void dump_regs(hantrodec_t *dev) {
 }
 #endif
 
+static const struct of_device_id handrodec_driver_ids[] = {
+	{.compatible = "xmeye,handrodec"},
+	{ /* sentinel value */ }
+};
 
-module_init( hantrodec_init);
-module_exit( hantrodec_cleanup);
+static struct platform_driver handrodec_driver = {
+	.driver		= {
+		.name	= "xm580-handrodec",
+        .of_match_table = handrodec_driver_ids,
+	},
+	.probe		= hantrodec_probe,
+	.remove		= hantrodec_remove,
+};
+module_platform_driver(handrodec_driver);
+
 
 /* module description */
 MODULE_LICENSE("GPL");

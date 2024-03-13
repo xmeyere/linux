@@ -53,7 +53,7 @@ static int __init xmacodec_init_module(void)
   writel(0x3f, (void*)(0xfe06808c));
   writel(0xd0, (void*)(0xfe068090));
   writel(0x2f, (void*)(0xfe068094));
-  writel(0xc0, (void*)(0xfe068098));
+  writel(0xc0, (void*)(0xfe068098)); // unmute device
   writel(0x99, (void*)(0xfe06809c));
 
   if (misc_register(&xm_acodec_dev) != 0) {

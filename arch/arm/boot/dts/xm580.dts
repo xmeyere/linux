@@ -114,6 +114,12 @@
 			clock-names = "apb_pclk";
 		};
 
+        handrodec: handrodec@38300000
+        {
+            compatible = "xmeye,handrodec";
+            interrupts		= <GIC_SPI 76 IRQ_TYPE_LEVEL_HIGH>;
+        };
+
         amba {
 			#address-cells = <1>;
 			#size-cells = <1>;
