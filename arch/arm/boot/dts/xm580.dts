@@ -94,6 +94,7 @@
 			interrupts		= <GIC_SPI 44 IRQ_TYPE_LEVEL_HIGH>;
             clocks = <&pclk>; /* The hardware does not require any additional clocks to be enabled, so a dummy clock is used */
             clock-names = "otg";
+            dr_mode = "host";
         };
 
         usb1: usb1@550400000 {
@@ -102,6 +103,7 @@
 			interrupts		= <GIC_SPI 59 IRQ_TYPE_LEVEL_HIGH>;
             clocks = <&pclk>; /* The hardware does not require any additional clocks to be enabled, so a dummy clock is used */
             clock-names = "otg";
+            dr_mode = "host";
         };
 
         amba {

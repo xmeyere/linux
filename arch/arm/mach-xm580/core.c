@@ -142,7 +142,7 @@ DT_MACHINE_START(XM580, "xm580 (Flattened Device Tree)")
 	.atag_offset  = 0x100,
 	.map_io         = xm580_map_io,
 	.init_early     = xm580_init_early,
-	//.smp          = smp_ops(xm580_smp_ops),
+	.smp          = smp_ops(xm580_smp_ops),
 	.restart      = xm580_restart,
 	.dt_compat	= xm580_match,
 MACHINE_END

@@ -205,12 +205,10 @@ static void dwc2_set_xm580_hsotg_params(struct dwc2_hsotg *hsotg)
 {
 	struct dwc2_core_params *p = &hsotg->params;
 
-	printk(KERN_INFO "!!!dwc2_set_xm580_hsotg_params\n");
 	p->otg_cap = DWC2_CAP_PARAM_NO_HNP_SRP_CAPABLE;
 	p->dma_desc_enable = 0;
 	p->lpm = false;
 	p->host_channels = 11;
-	//p->thr_ctl = 1;
 }
 
 const struct of_device_id dwc2_of_match_table[] = {
