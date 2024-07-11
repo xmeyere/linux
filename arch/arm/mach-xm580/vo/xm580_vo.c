@@ -8,7 +8,9 @@
 #include <linux/io.h>
 #include <linux/time.h>
 
-//NOTE: This file was orginally a kernel module (xm_vo.ko), but I added it here for simplicity.
+// NOTE: This file was orginally a kernel module (xm_vo.ko), but I added it here for simplicity.
+// TODO: Convert to device tree
+
 void* reg_vo_base_va = NULL;
 
 static int __init xmvo_init_module(void)

@@ -8,7 +8,8 @@
 #include <linux/io.h>
 #include <linux/time.h>
 
-//NOTE: This file was orginally a kernel module (xm_rtc.ko), but I added it here for simplicity.
+// NOTE: This file was orginally a kernel module (xm_rtc.ko), but I added it here for simplicity.
+// TODO: Convert to device tree
 static DEFINE_MUTEX(g_rtc_lock);
 
 static long rtc_ioctl(struct file *file,uint cmd_in,unsigned long arg);
@@ -51,7 +52,7 @@ static u64 rtc_get(void)
     return finalResult >> 15;
 }
 
-static void rtc_adjust(unsigned long l)
+static void rtc_adjust(struct timer_list* l)
 {
     g_timer.expires = jiffies + 60000;
     g_timer.function = rtc_adjust;
@@ -71,7 +72,7 @@ static void rtc_adjust(unsigned long l)
 static int __init xmrtc_init_module(void)
 {
     u64 timestamp;
-    struct timespec ts;
+    struct timespec64 ts;
     int error = misc_register(&xm_rtc_dev);
     if (error) {
         printk("xm_rtc init error!\n");
@@ -84,15 +85,14 @@ static int __init xmrtc_init_module(void)
     {   
         ts.tv_sec = timestamp;
         ts.tv_nsec = 0;
-        if(do_settimeofday(&ts))
+        if(do_settimeofday64(&ts))
         {
             printk("do_settimeofday() failed\n");
         }
     }
-    init_timer_key(&g_timer, 0,0,0);
+    init_timer_key(&g_timer, rtc_adjust, 0,0,0);
     g_timer.function = rtc_adjust;
     g_timer.expires = jiffies + 60000;
-    g_timer.data = 0;
     add_timer(&g_timer);
     printk("xm_rtc init is ok!\n");
     return 0;
@@ -102,17 +102,17 @@ static long rtc_ioctl(struct file *file,uint cmd_in,unsigned long arg)
 {
     u64 rtctime;
     u64 rtctimeraw;
-    unsigned long time;
+    u64 newtime;
     struct rtc_time time_struct;
     if (cmd_in == RTC_SET_TIME)
     {
         //printk("RTC_SET_TIME is 0x%X!\n", cmd_in);
         if (copy_from_user(&time_struct, (void __user *)arg, sizeof(time_struct)))
 			return -EFAULT;
-        rtc_tm_to_time(&time_struct, &time);
-        rtctimeraw = (u64)time << 15;
+        newtime = rtc_tm_to_time64(&time_struct);
+        rtctimeraw = (u64)newtime << 15;
 
-        mutex_lock(&g_rtc_lock);
+        mutex_lock(&g_rtc_lock);        
 
         writel(rtctimeraw & 0xFFFFFFFF, (void*)0xfe0a0084);
         writel(((rtctimeraw >> 32) & 0xFFFFFFFF), (void*)0xfe0a0088);
@@ -128,7 +128,7 @@ static long rtc_ioctl(struct file *file,uint cmd_in,unsigned long arg)
     {
         //printk("RTC_RD_TIME is 0x%X!\n", cmd_in);
         rtctime = rtc_get();
-        rtc_time_to_tm(rtctime, &time_struct);
+        rtc_time64_to_tm(rtctime, &time_struct);
         //todo: there is more stuff here
         return copy_to_user((void __user *)arg, &time_struct, sizeof(struct rtc_time));
     }
